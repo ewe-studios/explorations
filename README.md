@@ -18,13 +18,14 @@ Each explored project has its own directory:
 ```
 repo-expolorations/
 ├── penpot/
-│   ├── exploration.md           # Main exploration document
-│   ├── wasm-render-deep-dive.md # Wasm rendering deep dive
-│   ├── backend-deep-dive.md     # Backend architecture deep dive
-│   └── frontend-deep-dive.md    # Frontend architecture deep dive
+│   ├── exploration.md              # Main exploration document
+│   ├── wasm-render-deep-dive.md    # Wasm rendering deep dive
+│   ├── wasm-plugin-deep-dive.md    # Wasm plugin system deep dive
+│   ├── backend-deep-dive.md        # Backend architecture deep dive
+│   └── frontend-deep-dive.md       # Frontend architecture deep dive
 ├── [project-name]/
 │   ├── exploration.md
-│   └── rust-revision.md         # Rust translation (if applicable)
+│   └── rust-revision.md            # Rust translation (if applicable)
 └── examples/
     └── [project-examples].md
 ```
@@ -35,6 +36,7 @@ repo-expolorations/
 |---------|-------------|--------|
 | [Penpot](./penpot/exploration.md) | Open-source design & code collaboration platform | Complete |
 | | - Wasm Render Deep Dive | Complete |
+| | - Wasm Plugin System Deep Dive | Complete |
 | | - Backend Deep Dive | Complete |
 | | - Frontend Deep Dive | Complete |
 

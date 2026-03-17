@@ -14,6 +14,7 @@ For detailed architecture and implementation details, see:
 - **[Wasm Render Engine Deep Dive](./wasm-render-deep-dive.md)** - Complete guide to the Rust/Wasm rendering system
 - **[Backend Deep Dive](./backend-deep-dive.md)** - Backend architecture, RPC system, and worker patterns
 - **[Frontend Deep Dive](./frontend-deep-dive.md)** - ClojureScript SPA, FRP stack, and component architecture
+- **[Wasm Plugin System Deep Dive](./wasm-plugin-deep-dive.md)** - Plugin architecture, API proxies, and event system
 
 ---
 
