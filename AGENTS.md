@@ -65,13 +65,18 @@ Explorations are written to this directory using the required structure below (n
 
 ```
 [project-name]/
-  exploration.md          # Exploration agent output
-  rust-revision.md        # Rust revision agent output (if applicable)
+  exploration.md              # Main exploration document
+  rust-revision.md            # Rust revision agent output (if applicable)
+  wasm-render-deep-dive.md    # Deep dive documents (optional)
+  backend-deep-dive.md        # Deep dive documents (optional)
+  frontend-deep-dive.md       # Deep dive documents (optional)
   examples/
     example-1.md
     example-2.md
     ...
 ```
+
+Deep dive files should be created for complex subsystems (Wasm, backend RPC, frontend architecture) and referenced from the main `exploration.md`.
 
 ## Workflow
 
@@ -81,6 +86,11 @@ Explorations are written to this directory using the required structure below (n
    - Rust translation → Rust Revision Agent (after exploration)
 3. **Execute agent** with target directory/repository
 4. **Review and iterate** on outputs as needed
+5. **Commit and push** changes to this repository
+   - Use conventional commits: `ADD:`, `FIX:`, `UPDATE:`, `REFACTOR:`
+   - Do NOT include Claude attribution in commit messages
+   - Do NOT use `--no-verify` or skip hooks
+   - Push to remote after committing
 
 ## Agent Creation
 

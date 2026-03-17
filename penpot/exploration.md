@@ -7,6 +7,16 @@ language: Clojure, ClojureScript, Rust
 
 # Project Exploration: Penpot
 
+## Deep Dive Documents
+
+For detailed architecture and implementation details, see:
+
+- **[Wasm Render Engine Deep Dive](./wasm-render-deep-dive.md)** - Complete guide to the Rust/Wasm rendering system
+- **[Backend Deep Dive](./backend-deep-dive.md)** - Backend architecture, RPC system, and worker patterns
+- **[Frontend Deep Dive](./frontend-deep-dive.md)** - ClojureScript SPA, FRP stack, and component architecture
+
+---
+
 ## Overview
 
 Penpot is the first open-source design tool for design and code collaboration. It enables designers to create stunning designs, interactive prototypes, and design systems at scale, while developers get ready-to-use code with a smooth workflow. The platform is available both as a SaaS offering and self-hosted deployment.
@@ -183,7 +193,12 @@ graph TB
 
 ### Component Breakdown
 
+> **Note:** Each component below has a corresponding deep dive document with detailed implementation information.
+
 #### Backend
+
+**Deep Dive:** See [backend-deep-dive.md](./backend-deep-dive.md) for complete architecture details.
+
 - **Location:** `backend/`
 - **Purpose:** API server, data persistence, business logic, real-time collaboration
 - **Key Technologies:** Clojure, Integrant (dependency injection), Yetti (HTTP server), PostgreSQL, Redis
@@ -199,6 +214,9 @@ Key modules:
 - `app.worker` - Background job processing with Redis queues
 
 #### Frontend
+
+**Deep Dive:** See [frontend-deep-dive.md](./frontend-deep-dive.md) for complete architecture details.
+
 - **Location:** `frontend/`
 - **Purpose:** Design canvas, UI components, user interaction, collaboration
 - **Key Technologies:** ClojureScript, shadow-cljs, Rumext (React-like), Potok (FRP)
@@ -212,6 +230,9 @@ Key modules:
 - `app.worker` - Web workers for background processing
 
 #### Wasm Render Engine
+
+**Deep Dive:** See [wasm-render-deep-dive.md](./wasm-render-deep-dive.md) for complete implementation details.
+
 - **Location:** `render-wasm/`
 - **Purpose:** High-performance canvas rendering using Skia graphics library
 - **Key Technologies:** Rust, Emscripten, Skia, WebGL
