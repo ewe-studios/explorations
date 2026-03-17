@@ -61,7 +61,7 @@ This repository uses custom agents to drive systematic project explorations and 
 
 ## Project Structure Convention
 
-Each explored project lives in its own directory with:
+Explorations are written to this directory using the required structure below (not the target project directory):
 
 ```
 [project-name]/
