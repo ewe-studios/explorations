@@ -39,6 +39,7 @@ repo-expolorations/
 | | - Wasm Plugin System Deep Dive | Complete |
 | | - Backend Deep Dive | Complete |
 | | - Frontend Deep Dive | Complete |
+| [OpenPencil](./open-pencil/exploration.md) | AI-native Figma-compatible design editor | Complete |
 
 ## Agents
 
