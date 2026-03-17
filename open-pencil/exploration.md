@@ -7,6 +7,12 @@ language: TypeScript, Vue, Rust (Tauri)
 
 # Project Exploration: OpenPencil
 
+## Deep Dive Documents
+
+- **[Frontend Components Deep Dive](./frontend-components-deep-dive.md)** — Vue 3 component architecture, composables, Reka UI primitives, Tailwind CSS 4 styling, canvas rendering integration
+
+---
+
 ## Overview
 
 OpenPencil is an open-source, AI-native design editor that serves as a Figma-compatible alternative. It enables designers to work with native .fig files while providing programmatic access through AI tools, MCP server, and headless CLI.
