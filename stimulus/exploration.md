@@ -472,6 +472,13 @@ Applications can provide a custom schema at construction time to use different a
 - **Run:** `yarn test` (builds TypeScript, then runs Karma)
 - **Coverage areas:** Action parsing, keyboard/click filters, event options, action params, action ordering/timing, application lifecycle, class/data/target/value/outlet properties, error handling, memory management, string helpers, mutation observers
 
+## Deep Dives
+
+- **[Mutation Observers](mutation-observers-deep-dive.md)** — The 5-layer observer hierarchy from MutationObserver to ScopeObserver
+- **[Action System](action-system-deep-dive.md)** — Event binding pipeline from descriptor parsing to controller method invocation
+- **[Blessing System](blessing-system-deep-dive.md)** — Shadow prototype metaprogramming for target/value/outlet/class accessors
+- **[Web APIs & Anti-Component Philosophy](web-apis-deep-dive.md)** — Complete web API inventory, Web Components comparison, and the DOM-as-state-store design
+
 ## Key Insights
 
 - **Zero runtime dependencies** — The entire framework is self-contained TypeScript compiled to ~15KB minified
