@@ -199,7 +199,10 @@ graph TB
 
 ## Data Flow
 
-See [Rendering & Signals Deep Dive](./rendering-signals-deep-dive.md) for the complete reactive pipeline and SSE protocol details.
+See the deep dive documents for detailed analysis:
+- [Rendering & Signals Deep Dive](./rendering-signals-deep-dive.md) — Reactive pipeline, SSE protocol, signal propagation
+- [DOM Morphing Deep Dive](./dom-morphing-deep-dive.md) — ID-set matching, pantry pattern, node reconciliation algorithm
+- [Form Preservation Deep Dive](./form-preservation-deep-dive.md) — Form state preservation during morphing, two-way data binding
 
 ```mermaid
 sequenceDiagram
