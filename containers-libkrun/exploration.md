@@ -376,17 +376,26 @@ Firecracker with Docker-like UX:
 
 ## Deep Dive Documents
 
+### Core Architecture
 - [libkrun Deep Dive](libkrun-deep-dive.md) - Core library architecture and API
+- [libkrun Primary Deep Dive](libkrun-primary-deep-dive.md) - Complete architecture, memory model, device model, KVM/HVF backends
 - [libkrunfw Deep Dive](libkrunfw-deep-dive.md) - Bundled kernel library
 - [krunvm Deep Dive](krunvm-deep-dive.md) - OCI-based microVM CLI
 - [krunkit Deep Dive](krunkit-deep-dive.md) - macOS VM launcher with GPU support
 - [crun Deep Dive](crun-deep-dive.md) - OCI runtime with libkrun integration
-- [Rust Container VM Builder](rust-container-vm-builder.md) - Comprehensive Rust guide
 
-## Rust Development Guides
+### Ecosystem
+- [libkrun Ecosystem Exploration](libkrun-ecosystem-full.md) - Complete ecosystem overview with comparisons
+- [libkrun Ecosystem (Original)](libkrun-ecosystem-exploration.md) - Original ecosystem exploration
 
+### RootFS and Kernel
+- [RootFS and Kernel Creation](libkrun-rootfs-kernel-creation.md) - Comprehensive guide for creating root filesystems and kernels
+- [Rust RootFS Kernel Build](rust-rootfs-kernel-build.md) - Rust implementation guide
+
+### Rust Development Guides
 - [Rust libkrun Guide](rust-libkrun-guide.md) - Basic Rust integration examples
 - [Rust Container VM Builder](rust-container-vm-builder.md) - Complete guide for building container VMs
+- [Rust libkrun Container Images](rust-libkrun-container-images.md) - Building bootable VMs from OCI images in Rust
 
 ## References
 
