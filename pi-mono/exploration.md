@@ -26,7 +26,7 @@ pi-mono/
 │   ├── ai/               # LLM toolkit and provider implementations
 │   ├── tui/              # Terminal UI components
 │   ├── web-ui/           # Web-based UI (alternative to TUI)
-│   ├── mom/              # Memory/observability module
+│   ├── mom/              # Slack bot integration (memory/observability via Slack)
 │   └── pods/             # Local model deployment
 ├── .pi/                  # Runtime config directory
 │   ├── extensions/       # User extensions
@@ -123,6 +123,7 @@ See deep dives for more details on specific subsystems.
 - [Coding Agents](./coding-agents-deep-dive.md) - Tools, skills, extensions
 - [Harness Architecture](./harness-architecture-deep-dive.md) - CLI, SDK, TUI
 - [Extension System](./extension-system-deep-dive.md) - Extension loading, virtual modules, event hooks, tool/command registration, UI context
+- [Slack Integration (Mom)](./slack-integration-deep-dive.md) - Slack bot architecture, Socket Mode, per-channel state, events system, Docker sandbox
 
 ## Dependencies
 

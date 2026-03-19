@@ -70,11 +70,17 @@ Explorations are written to this directory using the required structure below (n
   wasm-render-deep-dive.md    # Deep dive documents (optional)
   backend-deep-dive.md        # Deep dive documents (optional)
   frontend-deep-dive.md       # Deep dive documents (optional)
+  other_directory/
+    its_own_exploration.md
+    other_examples/
+      other_example1.md
   examples/
     example-1.md
     example-2.md
     ...
 ```
+
+When you are provided a directory of directories (i.e rather than a git directory but a directory that contains other projects and their own specific git repositories), dont just create the exploration in the root, rather create a directory for all the exploration and then create the individual directory explorations per directory in there for organisation.
 
 Deep dive files should be created for complex subsystems (Wasm, backend RPC, frontend architecture) and referenced from the main `exploration.md`.
 
