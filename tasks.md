@@ -2,7 +2,7 @@
 
 You are to spawn exploration agents where each must singularly generate deep and detailed explorations of each of the project, create a directory. Once the exploration is done, spawn the rust agent to create the version of that type of project in rust.
 
-Important: 
+Important:
 
 1. Some explorations have already started before, were paused, review whats there, update what's necessary, continue where you left off. Remember do it one by one.
 2. Do go duplicating code and copying files over, dont be stupid.
@@ -11,9 +11,23 @@ Important:
 
 Mark each that is completed so we do not need to redo them:
 
-1. [ ] Create an exploration for: /home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.protocols/
-2. [ ] Create an exploration for: /home/darkvoid/Boxxed/@formulas/src.rust/src.cloudflare/ (ignore the 'others' directory)
-3. [ ] Create an exploration for: /home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.HKUSD
+## Status Review (2026-03-20)
+
+### 1. protocols - COMPLETE
+- Main exploration: DONE
+- Sub-projects DONE: A2A, a2a-go, a2a-inspector, a2a-js, a2a-python, conformance, js-sdk, mpp-rs, mppx, prool, pympp, python-sdk, samples, tempo, ucp, ucp-schema, wallet
+
+### 2. cloudflare - COMPLETE
+- Main exploration + all deep-dives: DONE (boringtun, lol-html, pingora, quiche, workers-rs)
+
+### 3. HKUSD - COMPLETE
+- All projects DONE: AI-Trader, AnyTool, DeepCode, DeepInnovator, DeepTutor, DiffKG, FastAgent, FastCode, LightRAG, Litewrite, MoChat, nanobot, OpenPhone, VideoRAG, ViMax
+
+---
+
+## Remaining Work:
+
+1. [ ] Create an exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.tldraw/ (especially how it uses svg, html to create infinite canvases, then perform deeper review of all its parts)
 2. [ ] Create an exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.tldraw/ (especially how it uses svg, html to create infinite canvases, then perform deeper review of all its parts)
 2. [ ] Create an exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.remix-run/remix
 3. [ ] Create an exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.11ty/
