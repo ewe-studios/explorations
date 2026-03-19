@@ -4,6 +4,7 @@ You are to spawn exploration agents where each must singularly generate deep and
 
 Important: Run the agents on the list one by one, only multi-task within each item.
 Important: do go duplicating code and copying files over, dont be stupid.
+Important: some explorations have already started, review whats there, update whats necessary, continue where you left off.
 
 Mark each that is completed so we do not need to redo them:
 
