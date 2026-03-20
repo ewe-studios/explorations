@@ -23,13 +23,27 @@ Mark each that is completed so we do not need to redo them:
   - [x] Message passing deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/strada-ios/message-passing-deep-dive.md
   - [x] BridgeComponent deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/strada-ios/bridge-component-deep-dive.md
   - [x] Rust reimplementation: /home/darkvoid/Boxxed/@dev/repo-expolorations/strada-ios/rust-reimplementation.md
-11. [ ] Create an deep exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/strada-android (just like the iOS version, deep dive into structure, interaction with webview, native andropid views and component, moving data between android and js in the webview, the whole deep, and capabilities, i want to be able to recreate this in rust with android)
+11. [x] Create an deep exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/strada-android
+  - [x] Main exploration: /home/darkvoid/Boxxed/@dev/repo-expolorations/strada-android/strada-android-exploration.md
+  - [x] WebView/Bridge deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/strada-android/webview-bridge-deep-dive.md
+  - [x] Message passing deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/strada-android/message-passing-deep-dive.md
+  - [x] BridgeComponent deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/strada-android/bridge-component-deep-dive.md
+  - [x] Rust reimplementation: /home/darkvoid/Boxxed/@dev/repo-expolorations/strada-android/rust-reimplementation.md
 12. [x] Create a deep exploration for: /home/darkvoid/Boxxed/@formulas/src.Gaming/src.Impactjs
   - [x] Rendering deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/impactjs/rendering-deep-dive.md
   - [x] Animation deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/impactjs/animation-deep-dive.md
   - [x] Game loop deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/impactjs/game-loop-deep-dive.md
-13. [ ] Create a deep exploration for:  /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.animations/mojs
-  - Lets add more markdown files on how it renders html, svg
-  - Lets explore the animation system in detail in a new file
-  - Lets explore how it tracks and replays animation forward and backward
-  - Lets explore how it creates splines and custom curve animations and drawing
+13. [x] Create a deep exploration for:  /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.animations/mojs
+  - [x] Rendering deep dive (HTML/SVG): /home/darkvoid/Boxxed/@dev/repo-expolorations/mojs/rendering-deep-dive.md
+  - [x] Animation system deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/mojs/animation-system-deep-dive.md
+  - [x] Forward/backward replay tracking: /home/darkvoid/Boxxed/@dev/repo-expolorations/mojs/playback-tracking-deep-dive.md
+  - [x] Splines and curves deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/mojs/splines-curves-deep-dive.md
+  - [x] Delta system deep exploration: /home/darkvoid/Boxxed/@dev/repo-expolorations/mojs/DELTA_SYSTEM_DEEP_EXPLORATION.md
+  - [x] Main exploration: /home/darkvoid/Boxxed/@dev/repo-expolorations/mojs/exploration.md
+14. [x] Create a deep exploration for: /home/darkvoid/Boxxed/@formulas/src.Gaming/src.Impactjs/high_impact
+  - [x] Main exploration: /home/darkvoid/Boxxed/@dev/repo-expolorations/high_impact/exploration.md
+  - [x] Entity system deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/high_impact/entity-system-deep-dive.md
+  - [x] Rendering deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/high_impact/rendering-deep-dive.md
+  - [x] Input system deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/high_impact/input-system-deep-dive.md
+  - [x] Sound system deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/high_impact/sound-system-deep-dive.md
+  - [x] Map system deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/high_impact/map-system-deep-dive.md
