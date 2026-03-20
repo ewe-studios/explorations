@@ -1,3 +1,11 @@
+---
+location: /home/darkvoid/Boxxed/@dev/repo-expolorations/agentfs
+repository: git@github.com:agentfs/agentfs
+explored_at: 2026-03-20
+language: Rust
+parent: exploration.md
+---
+
 # FUSE Integration in Rust: Beginner to Advanced
 
 A comprehensive guide to becoming a skilled FUSE developer on Linux, using the AgentFS codebase as a reference implementation.

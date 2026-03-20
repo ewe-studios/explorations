@@ -1,3 +1,11 @@
+---
+location: /home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.GedWeb/utm-dev/pkg/utm
+repository: git@github.com:joeblew999/utm-dev.git
+explored_at: 2026-03-19
+language: Go
+parent: exploration.md
+---
+
 # pkg/utm Deep Dive - UTM Virtualization Integration
 
 ## Overview

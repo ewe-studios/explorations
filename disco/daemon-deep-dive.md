@@ -1,3 +1,11 @@
+---
+location: /home/darkvoid/Boxxed/@dev/repo-expolorations/disco
+repository: N/A - local project
+explored_at: 2026-03-20
+language: Python, FastAPI
+parent: exploration.md
+---
+
 # Deep Dive: disco-daemon
 
 ## Overview

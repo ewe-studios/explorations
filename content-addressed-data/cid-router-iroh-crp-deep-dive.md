@@ -1,3 +1,11 @@
+---
+location: /home/darkvoid/Boxxed/@formulas/src.rust/src.ContentAddressing/cid-router/crps/iroh/
+repository: N/A - exploration based on cid-router project
+explored_at: 2026-03-19
+language: Rust
+parent: exploration.md
+---
+
 # Iroh CRP Deep Dive
 
 **Source:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.ContentAddressing/cid-router/crps/iroh/`

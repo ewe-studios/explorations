@@ -1,10 +1,10 @@
-# Using BoringTun as a Rust Dependency
-
 ---
 source: /home/darkvoid/Boxxed/@formulas/src.rust/src.cloudflare/boringtun
 repository: https://github.com/cloudflare/boringtun
 created: 2026-03-19
 ---
+
+# Using BoringTun as a Rust Dependency
 
 ## Quick Start
 

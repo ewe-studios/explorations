@@ -1,3 +1,11 @@
+---
+location: /home/darkvoid/Boxxed/@formulas/src.rust/src.ContentAddressing/cid-router/
+repository: N/A - exploration based on cid-router project
+explored_at: 2026-03-19
+language: Rust
+parent: exploration.md
+---
+
 # CID Router Architecture Deep Dive
 
 ## Overview

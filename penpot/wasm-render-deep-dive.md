@@ -1,3 +1,11 @@
+---
+location: /home/darkvoid/Boxxed/@formulas/src.AppOSS/src.penpot/penpot/frontend/app/src/wasm-render/
+repository: git@github.com:penpot/penpot
+explored_at: 2026-03-17
+language: Rust, C (Skia)
+parent: exploration.md
+---
+
 # Penpot Wasm Render Engine - Deep Dive
 
 ## Overview

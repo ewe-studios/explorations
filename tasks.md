@@ -15,20 +15,21 @@ Mark each that is completed so we do not need to redo them:
 
 ---
 
-## Remaining Work:
-
-
-### Completed
-1. [x] Create a deep exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.animations/velocity
-2. [x] Create a deep exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.animations/mojs
-3. [x] Create a deep exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.animations/motion
-4. [x] Create a deep exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.animations/motionone
-5. [x] Create a deep exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.animations/popmotion
-6. [x] Create a deep exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.animations/theatre
-7. [x] Create a deep exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.animations/vekta
-8. [x] Create a deep exploration for: /home/darkvoid/Boxxed/@formulas/src.rust/src.cap/
-9. [x] Create a deep exploration for: /home/darkvoid/Boxxed/@formulas/src.Gaming/src.Impactjs/
 
 ### Pending - Next Batch
-10. [ ] Create an deep exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/strada-ios (lets go deep, how the iOS structures work, how it setups the webview, interact with the javascript side, load the content, interacts with native  IOS capabilities and views, everything needed to recreate this with rust and ios)
+10. [x] Create an deep exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/strada-ios
+  - [x] Main exploration: /home/darkvoid/Boxxed/@dev/repo-expolorations/strada-ios/strada-ios-exploration.md
+  - [x] WebView/Bridge deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/strada-ios/webview-bridge-deep-dive.md
+  - [x] Message passing deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/strada-ios/message-passing-deep-dive.md
+  - [x] BridgeComponent deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/strada-ios/bridge-component-deep-dive.md
+  - [x] Rust reimplementation: /home/darkvoid/Boxxed/@dev/repo-expolorations/strada-ios/rust-reimplementation.md
 11. [ ] Create an deep exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/strada-android (just like the iOS version, deep dive into structure, interaction with webview, native andropid views and component, moving data between android and js in the webview, the whole deep, and capabilities, i want to be able to recreate this in rust with android)
+12. [x] Create a deep exploration for: /home/darkvoid/Boxxed/@formulas/src.Gaming/src.Impactjs
+  - [x] Rendering deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/impactjs/rendering-deep-dive.md
+  - [x] Animation deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/impactjs/animation-deep-dive.md
+  - [x] Game loop deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/impactjs/game-loop-deep-dive.md
+13. [ ] Create a deep exploration for:  /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.animations/mojs
+  - Lets add more markdown files on how it renders html, svg
+  - Lets explore the animation system in detail in a new file
+  - Lets explore how it tracks and replays animation forward and backward
+  - Lets explore how it creates splines and custom curve animations and drawing

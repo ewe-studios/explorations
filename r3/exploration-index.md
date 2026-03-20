@@ -1,3 +1,10 @@
+---
+location: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.reactivity/r3/
+repository: N/A - not a git repository (local copy)
+explored_at: 2026-03-17
+language: TypeScript
+---
+
 # R3 Reactivity System - Exploration Index
 
 This exploration provides a complete understanding of the r3 reactive system located at:

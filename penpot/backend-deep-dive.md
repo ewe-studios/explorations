@@ -1,3 +1,11 @@
+---
+location: /home/darkvoid/Boxxed/@formulas/src.AppOSS/src.penpot/penpot/backend/
+repository: git@github.com:penpot/penpot
+explored_at: 2026-03-17
+language: Clojure
+parent: exploration.md
+---
+
 # Penpot Backend Architecture - Deep Dive
 
 ## Overview

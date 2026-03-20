@@ -1,3 +1,11 @@
+---
+location: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.reactivity/r3/src/index.ts
+repository: N/A - not a git repository (local copy)
+explored_at: 2026-03-17
+language: TypeScript
+parent: exploration.md
+---
+
 # R3 Source Code - Function-by-Function Deep Dive
 
 This document connects each function in `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.reactivity/r3/src/index.ts` to the reactive concepts it implements.

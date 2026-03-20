@@ -1,3 +1,11 @@
+---
+location: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.reactivity/r3/tests/basic.test.ts
+repository: N/A - not a git repository (local copy)
+explored_at: 2026-03-17
+language: TypeScript
+parent: exploration.md
+---
+
 # R3 Test Cases - Annotated Walkthrough
 
 This document walks through each test in `test/basic.test.ts` with line-by-line explanations of what's happening internally.

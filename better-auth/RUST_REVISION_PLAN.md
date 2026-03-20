@@ -1,3 +1,11 @@
+---
+source: /home/darkvoid/Boxxed/@formulas/src.auth/better-auth
+repository: git@github.com:better-auth/better-auth
+revised_at: 2026-03-20
+language: Rust (proposed)
+parent: exploration.md
+---
+
 # Better Auth Rust Revision Plan
 
 ## Executive Summary

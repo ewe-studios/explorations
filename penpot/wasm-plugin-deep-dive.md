@@ -1,3 +1,11 @@
+---
+location: /home/darkvoid/Boxxed/@formulas/src.AppOSS/src.penpot/penpot/frontend/app/src/plugins/
+repository: git@github.com:penpot/penpot
+explored_at: 2026-03-17
+language: TypeScript
+parent: exploration.md
+---
+
 # Penpot Wasm Plugin System - Deep Dive
 
 ## Overview

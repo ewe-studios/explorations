@@ -1,3 +1,10 @@
+---
+location: /home/darkvoid/Boxxed/@formulas/src.rust/src.ContentAddressing/
+repository: N/A - exploration based on cid-router project
+explored_at: 2026-03-20
+language: Rust
+---
+
 # Content-Addressed Data Systems: A Comprehensive Guide
 
 > From first principles to advanced implementation in Rust
