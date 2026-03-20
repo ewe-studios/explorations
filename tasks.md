@@ -18,14 +18,17 @@ Mark each that is completed so we do not need to redo them:
 ## Remaining Work:
 
 
+### Completed
+1. [x] Create a deep exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.animations/velocity
+2. [x] Create a deep exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.animations/mojs
+3. [x] Create a deep exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.animations/motion
+4. [x] Create a deep exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.animations/motionone
+5. [x] Create a deep exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.animations/popmotion
+6. [x] Create a deep exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.animations/theatre
+7. [x] Create a deep exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.animations/vekta
+8. [x] Create a deep exploration for: /home/darkvoid/Boxxed/@formulas/src.rust/src.cap/
+9. [x] Create a deep exploration for: /home/darkvoid/Boxxed/@formulas/src.Gaming/src.Impactjs/
+
 ### Pending - Next Batch
-1. [ ] Create a deep exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.animations/velocity
-1. [ ] Create a deep exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.animations/mojs (i want every detail here, how it does animation, maths its using, how it uses svg to draw splines, how its editor works and the intricate construction, its devtooling, animation logic, go deep)
-1. [ ] Create a deep exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.animations/motion
-1. [ ] Create a deep exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.animations/motionone
-1. [ ] Create a deep exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.animations/popmotion
-1. [ ] Create a deep exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.animations/threatre
-1. [ ] Create a deep exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.animations/vekta
-1. [ ] Create a deep exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.animations/mojs
-11. [ ] Create an deep exploration for: /home/darkvoid/Boxxed/@formulas/src.rust/src.cap/
-25. [ ] Create an deep exploration for: /home/darkvoid/Boxxed/@formulas/src.Gaming/src.Impactjs/ ( i want details on every piece of this, from how it renders, how it calculates tilemaps, animation system, rendering on canvas, or webgl, every part of it should be done in detail)
+10. [ ] Create an deep exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/strada-ios (lets go deep, how the iOS structures work, how it setups the webview, interact with the javascript side, load the content, interacts with native  IOS capabilities and views, everything needed to recreate this with rust and ios)
+11. [ ] Create an deep exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/strada-android (just like the iOS version, deep dive into structure, interaction with webview, native andropid views and component, moving data between android and js in the webview, the whole deep, and capabilities, i want to be able to recreate this in rust with android)

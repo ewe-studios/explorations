@@ -1,7 +1,11 @@
+---
+location: npm:popmotion
+repository: https://github.com/motiondivision/popmotion
+explored_at: 2026-03-20
+---
+
 # Popmotion - Technical Exploration
 
-**Location:** `npm:popmotion` / `https://github.com/motiondivision/popmotion`
-**Explored_at:** 2026-03-20
 **Category:** Functional Animation Library
 **Package Size:** ~9KB (minified + gzip)
 

@@ -1,7 +1,11 @@
+---
+location: npm:motion
+repository: https://github.com/motiondivision/motionone
+explored_at: 2026-03-20
+---
+
 # Motion One - Technical Exploration
 
-**Location:** `npm:motion` / `https://github.com/motiondivision/motionone`
-**Explored_at:** 2026-03-20
 **Category:** CSS-Based Animation Library
 **Package Size:** ~6KB (minified + gzip)
 

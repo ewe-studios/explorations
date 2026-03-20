@@ -1,7 +1,11 @@
+---
+location: npm:vekta
+repository: https://github.com/Andarist/vekta
+explored_at: 2026-03-20
+---
+
 # Vekta Animation Library - Technical Exploration
 
-**Location:** `npm:vekta` / `https://github.com/Andarist/vekta`
-**Explored_at:** 2026-03-20
 **Category:** React Animation Utilities
 **Package Size:** ~2KB (minified + gzip)
 

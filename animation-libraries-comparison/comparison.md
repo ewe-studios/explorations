@@ -1,6 +1,11 @@
+---
+location: /home/darkvoid/Boxxed/@dev/repo-expolorations/animation-libraries-comparison
+repository: N/A (derived analysis)
+explored_at: 2026-03-20
+---
+
 # Animation Libraries Comparison: Vekta, Popmotion, Motion One
 
-**Created:** 2026-03-20
 **Category:** Comparative Analysis
 
 ---
