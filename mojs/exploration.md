@@ -1072,6 +1072,23 @@ The timeline editor (`@mojs/timeline-editor`) provides a visual timeline interfa
 | Safari | 8+ |
 | Edge | 79+ |
 
+## Deep Dive Documents
+
+The following deep dive documents provide comprehensive coverage of specific areas:
+
+| Document | Description |
+|----------|-------------|
+| [`animation-system-deep-dive.md`](./animation-system-deep-dive.md) | Tween engine, Timeline composition, Thenable chaining, Delta system overview, Stagger |
+| [`rendering-deep-dive.md`](./rendering-deep-dive.md) | SVG shape system, Bit base class, HTML element animation, Transform system, Stroke/fill rendering |
+| [`DELTA_SYSTEM_DEEP_EXPLORATION.md`](./DELTA_SYSTEM_DEEP_EXPLORATION.md) | Comprehensive delta system: Delta/Deltas classes, interpolation mathematics, SVG vs HTML paths |
+| [`playback-tracking-deep-dive.md`](./playback-tracking-deep-dive.md) | Forward/backward replay tracking, period detection, yoyo handling |
+| [`splines-curves-deep-dive.md`](./splines-curves-deep-dive.md) | Cubic bezier curves, Newton-Raphson iteration, sample tables |
+| [`module-system-deep-dive.md`](./module-system-deep-dive.md) | Base Module class, defaults inheritance, Thenable pattern, Tunable pattern |
+| [`helpers-utilss-deep-dive.md`](./helpers-utilss-deep-dive.md) | Core utilities (h.coffee): Math, DOM, parsing, color, delta, array utilities |
+| [`easing-composition-deep-dive.md`](./easing-composition-deep-dive.md) | Easing parser, Bezier easing, Path easing, Approximated easing, Easing mix |
+| [`performance-memory-deep-dive.md`](./performance-memory-deep-dive.md) | DOM batching, render queue, attribute caching, memory management, cleanup patterns |
+| [`responsive-adaptive-deep-dive.md`](./responsive-adaptive-deep-dive.md) | DPI/retina handling, reduced motion, viewport awareness, dynamic resizing |
+
 ## Open Questions
 
 1. How does the `isRefreshState` option affect module initialization?

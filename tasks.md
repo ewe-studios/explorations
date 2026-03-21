@@ -40,6 +40,12 @@ Mark each that is completed so we do not need to redo them:
   - [x] Splines and curves deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/mojs/splines-curves-deep-dive.md
   - [x] Delta system deep exploration: /home/darkvoid/Boxxed/@dev/repo-expolorations/mojs/DELTA_SYSTEM_DEEP_EXPLORATION.md
   - [x] Main exploration: /home/darkvoid/Boxxed/@dev/repo-expolorations/mojs/exploration.md
+  - [x] Module system deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/mojs/module-system-deep-dive.md
+  - [x] Helpers/utilities deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/mojs/helpers-utils-deep-dive.md
+  - [x] Easing composition deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/mojs/easing-composition-deep-dive.md
+  - [x] Performance/memory deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/mojs/performance-memory-deep-dive.md
+  - [x] Responsive/adaptive deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/mojs/responsive-adaptive-deep-dive.md
+  - [x] Rust reimplementation: /home/darkvoid/Boxxed/@dev/repo-expolorations/mojs/rust-mojs-reimplementation.md
 14. [x] Create a deep exploration for: /home/darkvoid/Boxxed/@formulas/src.Gaming/src.Impactjs/high_impact
   - [x] Main exploration: /home/darkvoid/Boxxed/@dev/repo-expolorations/high_impact/exploration.md
   - [x] Entity system deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/high_impact/entity-system-deep-dive.md
