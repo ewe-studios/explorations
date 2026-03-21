@@ -17,39 +17,41 @@ Mark each that is completed so we do not need to redo them:
 
 
 ### Pending - Next Batch
-10. [x] Create an deep exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/strada-ios
-  - [x] Main exploration: /home/darkvoid/Boxxed/@dev/repo-expolorations/strada-ios/strada-ios-exploration.md
-  - [x] WebView/Bridge deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/strada-ios/webview-bridge-deep-dive.md
-  - [x] Message passing deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/strada-ios/message-passing-deep-dive.md
-  - [x] BridgeComponent deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/strada-ios/bridge-component-deep-dive.md
-  - [x] Rust reimplementation: /home/darkvoid/Boxxed/@dev/repo-expolorations/strada-ios/rust-reimplementation.md
-11. [x] Create an deep exploration for: /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/strada-android
-  - [x] Main exploration: /home/darkvoid/Boxxed/@dev/repo-expolorations/strada-android/strada-android-exploration.md
-  - [x] WebView/Bridge deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/strada-android/webview-bridge-deep-dive.md
-  - [x] Message passing deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/strada-android/message-passing-deep-dive.md
-  - [x] BridgeComponent deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/strada-android/bridge-component-deep-dive.md
-  - [x] Rust reimplementation: /home/darkvoid/Boxxed/@dev/repo-expolorations/strada-android/rust-reimplementation.md
-12. [x] Create a deep exploration for: /home/darkvoid/Boxxed/@formulas/src.Gaming/src.Impactjs
-  - [x] Rendering deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/impactjs/rendering-deep-dive.md
-  - [x] Animation deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/impactjs/animation-deep-dive.md
-  - [x] Game loop deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/impactjs/game-loop-deep-dive.md
-13. [x] Create a deep exploration for:  /home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.animations/mojs
-  - [x] Rendering deep dive (HTML/SVG): /home/darkvoid/Boxxed/@dev/repo-expolorations/mojs/rendering-deep-dive.md
-  - [x] Animation system deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/mojs/animation-system-deep-dive.md
-  - [x] Forward/backward replay tracking: /home/darkvoid/Boxxed/@dev/repo-expolorations/mojs/playback-tracking-deep-dive.md
-  - [x] Splines and curves deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/mojs/splines-curves-deep-dive.md
-  - [x] Delta system deep exploration: /home/darkvoid/Boxxed/@dev/repo-expolorations/mojs/DELTA_SYSTEM_DEEP_EXPLORATION.md
-  - [x] Main exploration: /home/darkvoid/Boxxed/@dev/repo-expolorations/mojs/exploration.md
-  - [x] Module system deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/mojs/module-system-deep-dive.md
-  - [x] Helpers/utilities deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/mojs/helpers-utils-deep-dive.md
-  - [x] Easing composition deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/mojs/easing-composition-deep-dive.md
-  - [x] Performance/memory deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/mojs/performance-memory-deep-dive.md
-  - [x] Responsive/adaptive deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/mojs/responsive-adaptive-deep-dive.md
-  - [x] Rust reimplementation: /home/darkvoid/Boxxed/@dev/repo-expolorations/mojs/rust-mojs-reimplementation.md
-14. [x] Create a deep exploration for: /home/darkvoid/Boxxed/@formulas/src.Gaming/src.Impactjs/high_impact
-  - [x] Main exploration: /home/darkvoid/Boxxed/@dev/repo-expolorations/high_impact/exploration.md
-  - [x] Entity system deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/high_impact/entity-system-deep-dive.md
-  - [x] Rendering deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/high_impact/rendering-deep-dive.md
-  - [x] Input system deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/high_impact/input-system-deep-dive.md
-  - [x] Sound system deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/high_impact/sound-system-deep-dive.md
-  - [x] Map system deep dive: /home/darkvoid/Boxxed/@dev/repo-expolorations/high_impact/map-system-deep-dive.md
+0. [ ] Create an exploration for: /home/darkvoid/Boxxed/@formulas/src.rust/src.turso/turso*
+  1. It needs to be very deep and detailed
+  2. It should be created in a ./turso directory, including all the other projects in point 2 here above, create them all as sub-directory of ./turso and any sub-directory or related directory should exists under ./turso and no where else
+  3. Include an additional exploration on what multi-cloud sync ontop of turso will look like with rust, read their  https://turso.tech/blog in details, create a subdirectory called blog, so ./turso/blog, where you copy all blogs into, then create a exploration of them condensing all their important technical gold nuggets into.
+  4. Lets also create an exploration for what integration into our ewe-platform project will look like, what we need to consider, how do we run queries, what crates will make migration with turso easier, what a production setup looks like, see /home/darkvoid/Boxxed/@dev/ewe_platform for project code.
+1. [ ] Create an exploration for: /home/darkvoid/Boxxed/@formulas/src.rust/src.n0-computer
+  1. It needs to be very deep and detailed
+  2. It should be created in a ./iroh directory, including all the other projects in point 2 here above, create them all as sub-directory of ./iroh and any sub-directory or related directory should exists under ./iroh and no where else
+  3. Include a detailed exploration and explanation of p2p from ground up, as if i was building from scratch up to what it should look like in production, should be detailed, production grade wisdom.
+  6. Include exploration on how iroh uses private and public rsa keys, how this really helps in exchange, communication 
+  7. Include a detailed write up on how iroh ids represent both the public key, location and help each iroh client connect
+  8. What other production grade and interesting p2p details that makes iroh unique, how iroh works across network nats issues, ensures consistent connectivity of p2p agents
+  9. Include a detailed: how you can use, integrate iroh now in rust in the ewe-platform project, see /home/darkvoid/Boxxed/@dev/ewe_platform
+1. [ ] Create an exploration for: /home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.AICoders/src.Moltbot/ironclaw
+  1. It needs to be very deep and detailed
+  2. It should be created in a ./ironclaw directory and any sub-directory should exists under ./ironclaw and no where else
+  3. Include an additional what this looks like in rust and what a production grade version looks like
+2. [ ] Create an exploration for: /home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.AICoders/src.Moltbot/ironclaw/src.openclaw
+  1. It needs to be very deep and detailed
+  2. It should be created in a ./src.openclaw directory and any sub-directory should exists under ./src.openclaw and no where else
+  3. Include an additional what this looks like in rust and what a production grade version looks like
+3. [ ] Create an exploration for: /home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.AICoders/src.Moltbot/ironclaw/zeroclaw
+  1. It needs to be very deep and detailed
+  2. It should be created in a ./zeroclaw directory and any sub-directory should exists under ./zeroclaw and no where else
+  3. Include an additional what this looks like in rust and what a production grade version looks like
+4. [ ] Create an exploration for: /home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.AICoders/src.Moltbot/ironclaw/nanobot
+  1. It needs to be very deep and detailed
+  2. It should be created in a ./nanobot directory and any sub-directory should exists under ./nanobot and no where else
+  3. Include an additional what this looks like in rust and what a production grade version looks like
+5. [ ] Create an exploration for: /home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.AICoders/src.Moltbot/ironclaw/moltbook*
+  1. It needs to be very deep and detailed
+  2. Include review of molthub, moltinators, molt.bot, moltbot, molthub*,spacemolt*,lobster,flawd-bot,clawd*,barnacle,ironclaw,spacemolt,thepopebot
+  2. It should be created in a ./moltbook directory, including all the other projects in point 2 here above, create them all as sub-directory of ./moltbot and any sub-directory or related directory should exists under ./moltbook and no where else
+  3. Include an additional what this looks like in rust and what a production grade version looks like
+6. [ ] Create an exploration for: /home/darkvoid/Boxxed/@formulas/src.rust/src.Taubyte
+  1. It needs to be very deep and detailed
+  2. It should be created in a ./taubyte directory, including all its subdirectories, create them all as sub-directory of ./taubyte and any sub-directory or related directory should exists under ./taubyte and no where else
+  3. Include an additional what this looks like in rust and what a production grade version looks like
