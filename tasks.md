@@ -16,6 +16,10 @@ You are to spawn exploration agents where each must singularly generate deep and
 ## Completed Explorations
 
 - [x] turso - Comprehensive exploration with 15+ deep-dive documents in ./turso directory
+- [x] spacetimedb - 12 documents including sub-projects (blackholio, omnipaxos, cookbook, jwks, minecraft, workshop, core-crates) + rust-revision.md
+- [x] fframes - 12 documents including sub-projects (core, renderer, webvtt, ffmpeg-sys, skia, remotion, resvg, svgtypes, zlob, fff-nvim) + rust-revision.md
+- [x] rustwasm - 11 documents including sub-projects (wasm-bindgen, wasm-pack, gloo, twiggy, walrus, console-error-panic-hook, wee-alloc, wasm-snip, create-wasm-app) + rust-revision.md
+- [x] wasmtime - 6 documents including sub-projects (runtime, wasm-tools, wasi, wit-bindgen) + rust-revision.md
 
 ---
 
@@ -199,3 +203,11 @@ You are to spawn exploration agents where each must singularly generate deep and
   1. It should be created in a ./src.mcp directory, including all the other projects/directory within
   2. Review all directories within it and create a detailed exploration for each
   3. How do we reproduce its functionality in rust to a production level.
+  
+37. Create an exploration for: /home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.AICoders/src.MCP/ext-apps
+  1. It should be created in a ./src.mcp-apps directory, including all the other projects/directory within
+  2. Review all directories within it and create a detailed exploration for each
+  3. How do we reproduce its functionality in rust to a production level.
+  4. Dive deep into MCP-Apps, the old post message protocol vs the new protocol, how UI is rendered, the sandboxed iframes, how apps negotiate how to deliver these apps, and what is needed for a production ready experience.
+  5. See existing implementation in: /home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.AICoders/src.MCP/mcp-ui, do a detailed review with breakdowns, insights, techniques it uses.
+  6. Write up a how to do this in rust exploration for my needs.
