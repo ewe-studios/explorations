@@ -1,7 +1,7 @@
 ---
 location: /home/darkvoid/Boxxed/@formulas/src.rust/src.matrix-web
 repository: https://github.com/element-hq (main)
-explored_at: 2026-03-22
+explored_at: 2026-03-23
 language: Rust, TypeScript, Kotlin, Swift, Go, Python
 ---
 
@@ -722,6 +722,80 @@ cargo doc --open
 - **vodozemac** - Modern Olm/Megolm implementation
 - **conduit** - Lightweight Matrix homeserver in Rust
 - **beeper** - Matrix-based unified inbox
+
+## Deep-Dive Documents
+
+### Rust Projects (Core)
+
+| Sub-Project | Exploration | Language |
+|-------------|-------------|----------|
+| Matrix Authentication Service | [matrix-authentication-service-exploration.md](./matrix-authentication-service-exploration.md) | Rust |
+| Matrix Rich Text Editor | [matrix-rich-text-editor-exploration.md](./matrix-rich-text-editor-exploration.md) | Rust |
+| josekit-rs | [josekit-rs-exploration.md](./josekit-rs-exploration.md) | Rust |
+| Synapse (Rust extensions) | [synapse-exploration.md](./synapse-exploration.md) | Python + Rust |
+
+### Homeservers
+
+| Sub-Project | Exploration | Language |
+|-------------|-------------|----------|
+| Dendrite | [dendrite-exploration.md](./dendrite-exploration.md) | Go |
+
+### Client Applications
+
+| Sub-Project | Exploration | Language |
+|-------------|-------------|----------|
+| Element Web | [element-web-exploration.md](./element-web-exploration.md) | TypeScript/React |
+| Element Desktop | [element-desktop-exploration.md](./element-desktop-exploration.md) | TypeScript/Electron |
+| Element Call | [element-call-exploration.md](./element-call-exploration.md) | TypeScript/React |
+| Hydrogen Web | [hydrogen-web-exploration.md](./hydrogen-web-exploration.md) | TypeScript |
+| Element Android (legacy) | [element-android-exploration.md](./element-android-exploration.md) | Kotlin |
+| Element iOS (legacy) | [element-ios-exploration.md](./element-ios-exploration.md) | Swift |
+| Element X Android | [element-x-android-exploration.md](./element-x-android-exploration.md) | Kotlin |
+| Element X iOS | [element-x-ios-exploration.md](./element-x-ios-exploration.md) | Swift |
+| Element Android P2P | [element-android-p2p-exploration.md](./element-android-p2p-exploration.md) | Kotlin |
+| Element iOS P2P | [element-ios-p2p-exploration.md](./element-ios-p2p-exploration.md) | Swift |
+| Chatterbox | [chatterbox-exploration.md](./chatterbox-exploration.md) | TypeScript |
+
+### Design System (Compound)
+
+| Sub-Project | Exploration | Language |
+|-------------|-------------|----------|
+| Compound Web | [compound-web-exploration.md](./compound-web-exploration.md) | TypeScript/React |
+| Compound Design Tokens | [compound-design-tokens-exploration.md](./compound-design-tokens-exploration.md) | TypeScript |
+| Compound Android | [compound-android-exploration.md](./compound-android-exploration.md) | Kotlin |
+| Compound iOS | [compound-ios-exploration.md](./compound-ios-exploration.md) | Swift |
+
+### Bridges
+
+| Sub-Project | Exploration | Language |
+|-------------|-------------|----------|
+| mautrix-go | [mautrix-go-exploration.md](./mautrix-go-exploration.md) | Go |
+| mautrix-whatsapp | [mautrix-whatsapp-exploration.md](./mautrix-whatsapp-exploration.md) | Go |
+| mautrix-telegram | [mautrix-telegram-exploration.md](./mautrix-telegram-exploration.md) | Python |
+
+### Swift Distribution Packages
+
+| Sub-Project | Exploration | Language |
+|-------------|-------------|----------|
+| matrix-rich-text-editor-swift | [matrix-rich-text-editor-swift-exploration.md](./matrix-rich-text-editor-swift-exploration.md) | Swift |
+| matrix-rust-components-swift | [matrix-rust-components-swift-exploration.md](./matrix-rust-components-swift-exploration.md) | Swift |
+
+### Infrastructure & Tooling
+
+| Sub-Project | Exploration | Language |
+|-------------|-------------|----------|
+| Matrix Bot SDK | [matrix-bot-sdk-exploration.md](./matrix-bot-sdk-exploration.md) | TypeScript |
+| lk-jwt-service | [lk-jwt-service-exploration.md](./lk-jwt-service-exploration.md) | Go |
+| Chaos | [chaos-exploration.md](./chaos-exploration.md) | Go/Python |
+| Actions Runner Controller | [actions-runner-controller-exploration.md](./actions-runner-controller-exploration.md) | Go |
+| Element Meta | [element-meta-exploration.md](./element-meta-exploration.md) | TypeScript |
+| Element Modules | [element-modules-exploration.md](./element-modules-exploration.md) | TypeScript/Python |
+| packages.element.io | [packages-element-io-exploration.md](./packages-element-io-exploration.md) | TypeScript |
+| tailscale-k8s | [tailscale-k8s-exploration.md](./tailscale-k8s-exploration.md) | Shell |
+
+### Rust Revision
+
+- [rust-revision.md](./rust-revision.md) - Comprehensive Rust translation guide covering crate architecture, type system design, dependency recommendations, concurrency patterns, and code examples for the Rust components (MAS, Rich Text Editor, josekit-rs, Synapse).
 
 ## References
 

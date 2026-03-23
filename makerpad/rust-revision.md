@@ -1,15 +1,15 @@
 ---
 source: /home/darkvoid/Boxxed/@dev/repo-expolorations/makerpad/
 explored_at: 2026-03-22
-revised_at: 2026-03-22
+revised_at: 2026-03-23
 workspace: makerpad-rust-workspace
 ---
 
-# Rust Revision: Makepad & Project Robius
+# Rust Revision: Makepad & Project Robius (Full Ecosystem)
 
 ## Overview
 
-This document provides guidance for building UI applications in Rust using Makepad-style patterns, including custom GPU rendering, reactive state management, and cross-platform deployment.
+This document provides guidance for building UI applications in Rust using Makepad-style patterns, including custom GPU rendering, reactive state management, cross-platform deployment, Wasm interpretation, serialization, shader parsing, platform abstraction libraries, and AI/ML integration. Updated to cover ALL sub-projects in the Makepad ecosystem.
 
 ## Workspace Structure
 
@@ -22,9 +22,17 @@ makerpad-rust-workspace/
 │   ├── platform-abstraction/          # Platform layer
 │   ├── reactive-state/                # Observable state (eyeball-like)
 │   ├── live-design/                   # Hot reload system
-│   ├── mpsl-parser/                   # Style language parser
+│   ├── mpsl-parser/                   # Style language parser (GLSL/MPSL)
 │   ├── audio-graph/                   # Audio synthesis
-│   └── text-engine/                   # Text shaping & layout
+│   ├── text-engine/                   # Text shaping & layout
+│   ├── wasm-interpreter/              # Wasm interpreter (stitch-like)
+│   ├── microserde/                    # Minimal serialization (JSON, RON, binary, TOML)
+│   ├── platform-auth/                 # Cross-platform authentication
+│   ├── platform-keychain/             # Secure credential storage
+│   ├── platform-open/                 # URI opening
+│   ├── platform-url-handler/          # URL scheme registration
+│   ├── android-build-tools/           # Android Java compilation in build.rs
+│   └── irq-safety/                    # Interrupt-safe locks (no_std)
 ├── examples/
 │   ├── basic-app/                     # Basic application
 │   ├── chat-app/                      # Chat application
@@ -777,6 +785,268 @@ async fn main() {
 }
 ```
 
+## Crate 4: wasm-interpreter (Stitch-like)
+
+### Purpose
+Fast, lightweight Wasm interpreter using sibling call optimization for hot-reloading support.
+
+### Cargo.toml
+
+```toml
+[package]
+name = "wasm-interpreter"
+version = "0.1.0"
+edition = "2021"
+
+# Zero runtime dependencies - entirely self-contained
+[dev-dependencies]
+criterion = "0.5"
+wast = "200.0"
+```
+
+### Key Design
+
+```rust
+// Public API mirrors Wasmtime's ergonomic interface
+pub struct Engine { /* configuration */ }
+pub struct Store<T> { /* runtime state + user data */ }
+pub struct Module { /* compiled wasm module */ }
+pub struct Linker<T> { /* import resolution */ }
+pub struct Instance { /* instantiated module */ }
+
+impl Module {
+    /// Decode, validate, and compile a Wasm binary
+    pub fn new(engine: &Engine, bytes: &[u8]) -> Result<Self, DecodeError> {
+        let decoded = decode(bytes)?;
+        validate(&decoded)?;
+        let code = compile(&decoded)?;
+        Ok(Self { code })
+    }
+}
+
+impl<T> Linker<T> {
+    /// Define a host function import
+    pub fn define(
+        &mut self,
+        module: &str,
+        name: &str,
+        val: impl Into<ExternVal>,
+    ) -> &mut Self { /* ... */ }
+
+    /// Instantiate a module with resolved imports
+    pub fn instantiate(
+        &self,
+        store: &mut Store<T>,
+        module: &Module,
+    ) -> Result<Instance, InstantiateError> { /* ... */ }
+}
+
+// Core interpreter trick: sibling call dispatch
+// Each opcode handler has the same signature and calls the next directly
+// LLVM optimizes these into jumps (tail call elimination)
+fn exec_i32_add(state: &mut ExecState) -> ExecResult {
+    let b = state.stack.pop_i32();
+    let a = state.stack.pop_i32();
+    state.stack.push_i32(a.wrapping_add(b));
+    // Sibling call to next instruction handler
+    let next = state.code.next_handler();
+    next(state)
+}
+```
+
+### Rust-Specific Patterns
+- **Zero dependencies** at runtime -- fully self-contained
+- Relies on LLVM sibling call optimization (not guaranteed by Rust, but reliable on 64-bit)
+- `AliasableBox` for self-referential structures without unsafe
+- Comprehensive error types with `thiserror`-style variants
+
+---
+
+## Crate 5: microserde (Minimal Serialization)
+
+### Purpose
+Lightweight serialization replacing serde for reduced compile times and binary sizes.
+
+### Design
+
+```rust
+// Traits per format (no unified Serialize/Deserialize)
+pub trait SerJson {
+    fn ser_json(&self, d: usize, s: &mut SerJsonState);
+}
+
+pub trait DeJson: Sized {
+    fn de_json(s: &mut DeJsonState, i: &mut Chars) -> Result<Self, DeJsonErr>;
+}
+
+pub trait SerBin {
+    fn ser_bin(&self, s: &mut Vec<u8>);
+}
+
+pub trait DeBin: Sized {
+    fn de_bin(o: &mut usize, d: &[u8]) -> Result<Self, DeBinErr>;
+}
+
+pub trait SerRon {
+    fn ser_ron(&self, d: usize, s: &mut SerRonState);
+}
+
+pub trait DeRon: Sized {
+    fn de_ron(s: &mut DeRonState, i: &mut Chars) -> Result<Self, DeRonErr>;
+}
+
+// Derive macros auto-generate implementations
+#[derive(SerJson, DeJson, SerBin, DeBin, SerRon, DeRon)]
+pub struct MyStruct {
+    field: String,
+    count: u32,
+}
+```
+
+### Key Rust-Specific Changes
+- Per-format traits instead of serde's unified `Serialize`/`Deserialize` -- avoids the serde compilation overhead
+- Hand-written recursive descent parsers for each format
+- Proc-macros generate format-specific code directly (no intermediate representation)
+- Binary format uses variable-length encoding for integers
+
+---
+
+## Crate 6: platform-auth (Cross-Platform Authentication)
+
+### Design Pattern
+
+```rust
+// The cfg-if dispatch pattern used by all Robius platform crates
+use cfg_if::cfg_if;
+
+pub struct Context { /* platform-specific inner */ }
+
+impl Context {
+    pub fn blocking_authenticate(
+        &self,
+        text: Text,
+        policy: &Policy,
+    ) -> Result<(), Error> {
+        cfg_if! {
+            if #[cfg(target_vendor = "apple")] {
+                self.inner.authenticate_apple(text, policy)
+            } else if #[cfg(target_os = "android")] {
+                self.inner.authenticate_android(text, policy)
+            } else if #[cfg(target_os = "linux")] {
+                self.inner.authenticate_linux(text, policy)
+            } else if #[cfg(target_os = "windows")] {
+                self.inner.authenticate_windows(text, policy)
+            } else {
+                Err(Error::Unsupported)
+            }
+        }
+    }
+}
+
+// Policy is compile-time constructable
+pub struct PolicyBuilder { /* ... */ }
+
+impl PolicyBuilder {
+    pub const fn new() -> Self { /* ... */ }
+    pub const fn biometrics(self, strength: Option<BiometricStrength>) -> Self { /* ... */ }
+    pub const fn password(self, enabled: bool) -> Self { /* ... */ }
+    pub const fn build(self) -> Option<Policy> { /* ... */ }
+}
+```
+
+### Rust-Specific Patterns
+- `const fn` builders for compile-time policy construction
+- `cfg_if!` macro for zero-overhead platform dispatch
+- Apple: `objc2` crate for safe Objective-C interop
+- Android: JNI via `jni` crate with Java companion code compiled via `android-build`
+- Windows: Both WinRT (modern) and Win32 (fallback) paths
+
+---
+
+## Crate 7: irq-safety (Interrupt-Safe Primitives)
+
+### Design
+
+```rust
+#![no_std]
+
+use spin::{Mutex as SpinMutex, RwLock as SpinRwLock};
+
+/// A Mutex that disables interrupts while held
+pub struct MutexIrqSafe<T> {
+    inner: SpinMutex<T>,
+}
+
+impl<T> MutexIrqSafe<T> {
+    pub fn lock(&self) -> MutexIrqSafeGuard<T> {
+        let held = hold_interrupts(); // Disable IRQs
+        let guard = self.inner.lock();
+        MutexIrqSafeGuard { guard, held }
+    }
+}
+
+/// Guard that re-enables interrupts on drop (if they were enabled before)
+pub struct MutexIrqSafeGuard<'a, T> {
+    guard: spin::MutexGuard<'a, T>,
+    held: HeldInterrupts,
+}
+
+impl<'a, T> Drop for MutexIrqSafeGuard<'a, T> {
+    fn drop(&mut self) {
+        // Guard drops first (releases spinlock), then HeldInterrupts
+        // restores interrupt state
+    }
+}
+
+/// Holds interrupts disabled; re-enables on drop if they were enabled
+pub struct HeldInterrupts {
+    was_enabled: bool,
+}
+
+impl Drop for HeldInterrupts {
+    fn drop(&mut self) {
+        if self.was_enabled {
+            enable_interrupts();
+        }
+    }
+}
+```
+
+### Rust-Specific Patterns
+- RAII-based interrupt management (HeldInterrupts)
+- `no_std` compatible for kernel/embedded use
+- Architecture-specific interrupt enable/disable via `cfg(target_arch)`
+- Drop ordering ensures spinlock is released before interrupts are re-enabled
+
+---
+
+## Full Ecosystem Coverage
+
+### Sub-Project to Crate Mapping
+
+| Source Project | Proposed Crate | Category |
+|----------------|---------------|----------|
+| makepad/ | ui-toolkit, render-engine, platform-abstraction, audio-graph, text-engine | Core |
+| eyeball/ | reactive-state | Core |
+| stitch/ | wasm-interpreter | Core |
+| microserde/ | microserde | Core |
+| makepad-mpsl-parser/ | mpsl-parser | Core |
+| robius-authentication/ | platform-auth | Platform |
+| robius-keychain/ | platform-keychain | Platform |
+| robius-open/ | platform-open | Platform |
+| robius-url-handler/ | platform-url-handler | Platform |
+| android-build/ | android-build-tools | Platform |
+| irq_safety/ | irq-safety | Low-level |
+| uX/ | ux (external) | Low-level |
+| robrix/ | chat-app example | Application |
+| src.Moxin-Org/moly/ | ai-chat-app example | Application |
+| makepad_taobao/ | taobao example | Showcase |
+| makepad_wechat/ | wechat example | Showcase |
+| makepad_wonderous/ | wonderous example | Showcase |
+| image_viewer/ | tutorial series | Documentation |
+| glui/ | (historical reference) | Legacy |
+| experiments/ | experimental workspace | R&D |
+
 ## Summary
 
 This Rust revision provides:
@@ -784,12 +1054,22 @@ This Rust revision provides:
 - **GPU rendering** with wgpu (render-engine)
 - **Style language parsing** (mpsl-parser)
 - **Cross-platform** windowing with winit
-- **Hot reload patterns** for live editing
+- **Hot reload patterns** via Wasm interpretation (wasm-interpreter)
 - **Audio synthesis** capabilities (audio-graph)
+- **Minimal serialization** without serde overhead (microserde)
+- **Platform abstraction** for auth, keychain, URIs, URLs (platform-* crates)
+- **Android build tooling** for JNI/Java integration (android-build-tools)
+- **Interrupt-safe primitives** for embedded/kernel contexts (irq-safety)
+- **AI/ML integration** patterns from Moly/Moxin
 
-Key patterns from Makepad/Robius:
-1. Immediate mode rendering
-2. Observable-based reactive state
-3. GPU-first rendering approach
-4. DSL for styling and layout
-5. Batch updates for efficiency
+Key patterns from the full Makepad/Robius ecosystem:
+1. Immediate mode rendering with GPU-first approach
+2. Observable-based reactive state (eyeball pattern)
+3. DSL for styling and layout (MPSL)
+4. Sibling call optimization for interpreter performance
+5. cfg-if based zero-cost platform dispatch
+6. RAII everywhere: lock guards, interrupt guards, draw contexts
+7. Zero-dependency design where possible (stitch, microserde, mpsl-parser)
+8. Batch updates for efficiency in both state and rendering
+9. const fn constructors for compile-time configuration
+10. Proc-macro code generation for serialization and shader processing

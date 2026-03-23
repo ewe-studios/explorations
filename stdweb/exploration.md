@@ -914,6 +914,40 @@ ws.send_text( "Hello Server" ).unwrap();
 - Early futures/async support for web Rust
 - Pioneered closure FFI patterns
 
+## Deep-Dive Explorations
+
+Detailed exploration documents for each sub-project in this repository:
+
+### By Koute (Jan Bujak)
+
+| Sub-Project | Document | Description |
+|-------------|----------|-------------|
+| **stdweb** | [stdweb-exploration.md](./stdweb-exploration.md) | Core library: Web API bindings, `js!` macro, FFI backends, event system |
+| **cargo-web** | [cargo-web-exploration.md](./cargo-web-exploration.md) | Cargo subcommand: build, test, deploy, dev server, WASM post-processing pipeline |
+| **speedy** | [speedy-exploration.md](./speedy-exploration.md) | Fast binary serialization with derive macros, endianness control, `no_std` support |
+| **picoalloc** | [picoalloc-exploration.md](./picoalloc-exploration.md) | Minimal O(1) memory allocator: two-level bitmap, 2.5KB footprint, WASM/embedded targets |
+
+### By Inanna Malick
+
+| Sub-Project | Document | Description |
+|-------------|----------|-------------|
+| **embed-wasm** | [embed-wasm-exploration.md](./embed-wasm-exploration.md) | Embed WASM build output in native binaries via PHF maps |
+| **mnestic** | [mnestic-exploration.md](./mnestic-exploration.md) | Full-stack Rust app: Yew frontend + Cloudflare Workers + R2 storage |
+| **recursion** | [recursion-exploration.md](./recursion-exploration.md) | Stack-safe recursion schemes: catamorphisms, anamorphisms, GATs |
+| **tracing-honeycomb** | [tracing-honeycomb-exploration.md](./tracing-honeycomb-exploration.md) | Distributed tracing: generic layer + Honeycomb/Jaeger backends |
+
+### External / Ecosystem
+
+| Sub-Project | Document | Description |
+|-------------|----------|-------------|
+| **object** | [object-exploration.md](./object-exploration.md) | Unified object file format library (gimli-rs): ELF, Mach-O, PE, WASM |
+
+### Rust Revision
+
+| Document | Description |
+|----------|-------------|
+| [rust-revision.md](./rust-revision.md) | Modernization guide: crate breakdown, dependency updates, type system design, code examples |
+
 ## Related Projects
 
 ### In this Repository

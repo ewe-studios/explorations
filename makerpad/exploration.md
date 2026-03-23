@@ -1,7 +1,7 @@
 ---
 location: /home/darkvoid/Boxxed/@formulas/src.rust/src.Makerpad
 repository: https://github.com/makepad/makepad, https://github.com/project-robius
-explored_at: 2026-03-22
+explored_at: 2026-03-23
 language: Rust, JavaScript, Kotlin, Swift, HLSL/GLSL
 ---
 
@@ -695,6 +695,56 @@ example-simple:     ~1.2 MB (raw)
 - **wasm-bindgen** - Rust/WASM interop
 - **wgpu** - GPU abstraction (alternative rendering backend)
 - **sliding-sync** - Matrix protocol extension
+
+## Deep-Dive Documents
+
+Each sub-project has been explored in detail. See the following documents:
+
+### Core Projects
+| Document | Sub-Project | Description |
+|----------|-------------|-------------|
+| [makepad-exploration.md](./makepad-exploration.md) | makepad/ | Main UI toolkit: rendering engine, widgets, platform abstraction, audio, studio IDE |
+| [eyeball-exploration.md](./eyeball-exploration.md) | eyeball/ | Observable types library for reactive state management |
+| [robrix-exploration.md](./robrix-exploration.md) | robrix/ | Matrix protocol chat client built with Makepad |
+| [stitch-exploration.md](./stitch-exploration.md) | stitch/ | High-performance Wasm interpreter for hot-reloading |
+| [microserde-exploration.md](./microserde-exploration.md) | microserde/ | Minimal serialization library (JSON, RON, binary, TOML) |
+| [mpsl-parser-exploration.md](./mpsl-parser-exploration.md) | makepad-mpsl-parser/ | GLSL/MPSL shader language parser |
+
+### Platform Libraries (Project Robius)
+| Document | Sub-Projects | Description |
+|----------|--------------|-------------|
+| [robius-libs-exploration.md](./robius-libs-exploration.md) | robius-authentication/, robius-keychain/, robius-open/, robius-url-handler/, android-build/ | Cross-platform OS abstraction crates |
+
+### AI/ML Ecosystem
+| Document | Sub-Project | Description |
+|----------|-------------|-------------|
+| [moxin-org-exploration.md](./moxin-org-exploration.md) | src.Moxin-Org/ | Moxin models, Moly AI chat client, model infrastructure |
+
+### Showcase & Tutorials
+| Document | Sub-Projects | Description |
+|----------|--------------|-------------|
+| [showcase-apps-exploration.md](./showcase-apps-exploration.md) | makepad_taobao/, makepad_wechat/, makepad_wonderous/, image_viewer/, ai_snake/, html_experiment/ | Demo apps and tutorial series |
+
+### Legacy & History
+| Document | Sub-Project | Description |
+|----------|-------------|-------------|
+| [glui-exploration.md](./glui-exploration.md) | glui/ | Legacy UI system (Makepad predecessor) |
+
+### VR/XR
+| Document | Sub-Projects | Description |
+|----------|--------------|-------------|
+| [vr-quest-exploration.md](./vr-quest-exploration.md) | hello_quest/, rustquest/ | Minimal Oculus Quest VR projects |
+
+### Experimental & Supporting
+| Document | Sub-Projects | Description |
+|----------|--------------|-------------|
+| [experiments-exploration.md](./experiments-exploration.md) | experiments/ | AI/MR, embedded, XR networking, Vulkan prototypes |
+| [supporting-projects-exploration.md](./supporting-projects-exploration.md) | jsast/, irq_safety/, uX/, glmeshdraw/, makepad_docs/, makepad.github.io/, makepad_history/, book/, robius.rs/, boiler/, wasm-index/, files/, fonts/ | Utilities, docs, and resources |
+
+### Rust Revision
+| Document | Scope | Description |
+|----------|-------|-------------|
+| [rust-revision.md](./rust-revision.md) | All sub-projects | Idiomatic Rust patterns and crate design covering the full ecosystem |
 
 ## References
 
