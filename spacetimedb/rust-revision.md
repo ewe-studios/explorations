@@ -598,6 +598,14 @@ spacetime publish --server https://spacetimedb.com my-chat-app
 spacetime logs my-chat-app
 ```
 
+## Deep Dive Documents
+
+### Storage Internals
+- [Storage Internals Deep Dive](./storage-internals-deep-dive.md) - BSATN/BFLATN formats, page manager, commit log, transaction model, indexes, blob store
+
+### Consensus and Replication
+- [Consensus and Replication Deep Dive](./consensus-and-replication-deep-dive.md) - Leader-based replication, reducer execution, subscriptions, durability guarantees, efficiency comparisons
+
 ## Related Documents
 
 - [Blackholio](./blackholio-exploration.md) - Full MMO reference
