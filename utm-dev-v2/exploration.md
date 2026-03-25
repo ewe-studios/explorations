@@ -1255,7 +1255,8 @@ flowchart TD
 
 ## Related Deep-Dives
 
-- **[utm-dev-v2-vagrant-primer.md](./utm-dev-v2-vagrant-primer.md)** -- Vagrant fundamentals primer: teaches Vagrant from scratch, full integration guide from zero to production, and mental models for how Vagrant + mise + utm-dev-v2 fit together. **Read this first.**
+- **[utm-dev-v2-latest-update.md](./utm-dev-v2-latest-update.md)** -- **CRITICAL UPDATE (2026-03-25):** Tasks are now TypeScript/Bun, not bash. 5 VM profiles, auto-bootstrap, MCP integration, WebDriver screenshots, platform-aware setup. Read this to correct assumptions in the base exploration.
+- **[utm-dev-v2-vagrant-primer.md](./utm-dev-v2-vagrant-primer.md)** -- Vagrant fundamentals primer: teaches Vagrant from scratch, full integration guide from zero to production, and mental models for how Vagrant + mise + utm-dev-v2 fit together.
 - **[utm-dev-v2-vagrant.md](./utm-dev-v2-vagrant.md)** -- Vagrant-based cross-platform testing: production Vagrantfile, provisioning scripts, CI/CD pipelines, testing matrix, security hardening, and performance optimization.
 
 ## References
