@@ -1,0 +1,1106 @@
+# VTK Integration Deep Dive
+
+**Source:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.Spline3d/`
+
+This document covers the Visualization Toolkit (VTK) architecture, its JavaScript implementation (vtk.js), and integration patterns.
+
+---
+
+## Table of Contents
+
+1. [VTK Overview](#vtk-overview)
+2. [VTK Architecture](#vtk-architecture)
+3. [Data Pipeline](#data-pipeline)
+4. [Rendering Pipeline](#rendering-pipeline)
+5. [VTK.js Implementation](#vtkjs-implementation)
+6. [Core Classes](#core-classes)
+7. [Filters and Mappers](#filters-and-mappers)
+8. [Web Integration](#web-integration)
+9. [React Integration](#react-integration)
+10. [Rust Implementation Guide](#rust-implementation-guide)
+
+---
+
+## VTK Overview
+
+### What is VTK?
+
+**VTK (Visualization Toolkit)** is an open-source software system for:
+- 3D computer graphics
+- Image processing
+- Volume rendering
+- Scientific visualization
+
+### VTK Ecosystem
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        VTK Ecosystem                             │
+│                                                                  │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐             │
+│  │   VTK/C++   │  │   VTK.js    │  │  ParaView   │             │
+│  │  (Native)   │  │ (JavaScript)│  │  (App)      │             │
+│  │             │  │             │  │             │             │
+│  │ - Full      │  │ - WebGL     │  │ - Desktop   │             │
+│  │ - All filters│ │ - WebGPU    │  │ - Server    │             │
+│  │ - Fastest   │  │ - WASM opt  │  │ - GUI       │             │
+│  └─────────────┘  └─────────────┘  └─────────────┘             │
+│                                                                  │
+│  ┌─────────────┐  ┌─────────────┐                               │
+│  │  Kitware    │  │  Community  │                               │
+│  │  Products   │  │  Projects   │                               │
+│  │             │  │             │                               │
+│  │ - 3D Slicer │  │ - OHIF      │                               │
+│  │ - ParaView  │  │ - VTK.js    │                               │
+│  │ - Girder    │  │ - Resonant  │                               │
+│  └─────────────┘  └─────────────┘                               │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### VTK Versions
+
+| Version | Language | Target | Size |
+|---------|----------|--------|------|
+| VTK/C++ | C++ | Desktop, Server | ~100MB |
+| VTK.js | JavaScript (ES6) | Web Browser | ~2-5MB |
+| VTK.Wasm | C++ → WASM | Web Browser | ~10-20MB |
+
+---
+
+## VTK Architecture
+
+### Core Design Principles
+
+1. **Data Pipeline**: Lazy evaluation with demand-driven execution
+2. **Object-Oriented**: Extensible class hierarchy
+3. **Separation of Concerns**: Data, processing, rendering separated
+4. **Reference Counting**: Automatic memory management
+5. **Event System**: Observable pattern for updates
+
+### Class Hierarchy
+
+```
+vtkObject (base with reference counting)
+    │
+    └── vtkAlgorithm (data processing base)
+            │
+            ├── vtkAlgorithmOutput (port for connections)
+            │
+            ├── vtkSource (data generators)
+            │       └── vtkPolyDataAlgorithm
+            │
+            └── vtkFilter (data transformers)
+                    └── vtkPolyDataFilter
+
+vtkProp (anything that can be rendered)
+    │
+    ├── vtkActor (3D geometric props)
+    │
+    ├── vtkVolume (volume rendering)
+    │
+    └── vtkMapper (geometry to graphics primitives)
+```
+
+### VTK.js Class Structure
+
+```javascript
+// Sources/Rendering/Core/Actor/index.js
+export function extend(publicAPI, model, initialValues = {}) {
+  Object.setPrototypeOf(publicAPI, vtkActor);
+
+  // Create internal model
+  model = {};
+  Object.assign(model, DEFAULTS, initialValues);
+
+  // vtkProp extends
+  vtkProp.extend(publicAPI, model, initialValues);
+
+  // Add Actor-specific methods
+  publicAPI.getMapper = () => model.mapper;
+  publicAPI.setMapper = (mapper) => {
+    if (model.mapper !== mapper) {
+      model.mapper = mapper;
+      publicAPI.modified();
+    }
+  };
+
+  // Getters/Setters generated by macros
+  macro.get(publicAPI, model);
+  macro.setGet(publicAPI, model, [
+    'property',
+    'mapper',
+  ]);
+}
+
+export const vtkActor = {
+  extend,
+  newInstance: macro.newInstance(extend, 'vtkActor'),
+};
+```
+
+---
+
+## Data Pipeline
+
+### Pipeline Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     VTK Data Pipeline                            │
+│                                                                  │
+│   ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐ │
+│   │  Source  │───>│  Filter  │───>│  Filter  │───>│  Mapper  │ │
+│   │          │    │          │    │          │    │          │ │
+│   │  Cone    │    │  Clip    │    │  Decimate│    │  Geometry│ │
+│   │  Source  │    │  Data    │    │  PolyData│    │  Mapper  │ │
+│   └────┬─────┘    └────┬─────┘    └────┬─────┘    └────┬─────┘ │
+│        │               │               │               │        │
+│        ▼               ▼               ▼               ▼        │
+│   vtkPolyData     vtkPolyData     vtkPolyData     vtkPolyData  │
+│   (Input)         (Clipped)       (Simplified)    (Ready)       │
+│                                                                  │
+│                              │                                   │
+│                              ▼                                   │
+│                      ┌──────────────┐                           │
+│                      │    Actor     │                           │
+│                      │  + Property  │                           │
+│                      │  + Texture   │                           │
+│                      └──────────────┘                           │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Pipeline Execution
+
+```javascript
+// Create pipeline
+const coneSource = vtkConeSource.newInstance({ height: 1.0 });
+const clipFilter = vtkClipPolyData.newInstance();
+const mapper = vtkMapper.newInstance();
+const actor = vtkActor.newInstance();
+
+// Connect pipeline
+clipFilter.setInputConnection(coneSource.getOutputPort());
+mapper.setInputConnection(clipFilter.getOutputPort());
+actor.setMapper(mapper);
+
+// Execute pipeline (lazy - triggers on render)
+renderer.addActor(actor);
+renderWindow.render();
+```
+
+### Update Mechanism
+
+```javascript
+// VTK uses ModifiedTime for pipeline updates
+class vtkObject {
+  constructor() {
+    this.mtime = 0; // Modified time
+  }
+
+  modified() {
+    this.mtime = ++globalMTime;
+    this.fireEvent({ type: 'modified' });
+  }
+
+  getMTime() {
+    return this.mtime;
+  }
+}
+
+// Filters check input mtime to avoid unnecessary recomputation
+update() {
+  const inputMTime = this.getInput().getMTime();
+  if (inputMTime <= this.executedMTime) {
+    return; // Already up to date
+  }
+  this.execute();
+  this.executedMTime = inputMTime;
+}
+```
+
+### Data Flow vs. Request Flow
+
+```
+Request Flow (top-down):              Data Flow (bottom-up):
+
+    Request Update                        Render
+        │                                    │
+        ▼                                    ▼
+    ┌───────┐                           ┌────────┐
+    │ Actor │                           │ Mapper │
+    └───┬───┘                           └───┬────┘
+        │ RequestData()                     │ RequestData()
+        ▼                                   ▼
+    ┌───────┐                           ┌────────┐
+    │Mapper │                           │ Filter │
+    └───┬───┘                           └───┬────┘
+        │ RequestData()                     │ RequestData()
+        ▼                                   ▼
+    ┌───────┐                           ┌────────┐
+    │Filter │                           │ Source │
+    └───┬───┘                           └───┬────┘
+        │                                   │ Generate Data
+        ▼                                   ▼
+    ┌───────┐
+    │Source │
+    └───────┘
+```
+
+---
+
+## Rendering Pipeline
+
+### Rendering Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Rendering Pipeline                            │
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │                    RenderWindow                           │   │
+│  │  ┌────────────────────────────────────────────────────┐   │   │
+│  │  │                     Renderer                        │   │   │
+│  │  │                                                     │   │   │
+│  │  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐ │   │   │
+│  │  │  │    Actor    │  │    Actor    │  │   Volume    │ │   │   │
+│  │  │  │   + Mapper  │  │   + Mapper  │  │   + Mapper  │ │   │   │
+│  │  │  │   + Prop    │  │   + Prop    │  │   + Prop    │ │   │   │
+│  │  │  └─────────────┘  └─────────────┘  └─────────────┘ │   │   │
+│  │  │                                                     │   │   │
+│  │  │  ┌─────────────┐  ┌─────────────┐                  │   │   │
+│  │  │  │   Camera    │  │    Light    │                  │   │   │
+│  │  │  │  (View)     │  │  (Illum.)   │                  │   │   │
+│  │  │  └─────────────┘  └─────────────┘                  │   │   │
+│  │  └────────────────────────────────────────────────────┘   │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                              │                                   │
+│              ┌───────────────┴───────────────┐                  │
+│              ▼                               ▼                  │
+│  ┌──────────────────────┐      ┌──────────────────────────┐    │
+│  │   OpenGLRenderWindow │      │    WebGPURenderWindow    │    │
+│  │   (WebGL 1.0/2.0)    │      │    (WebGPU)              │    │
+│  └──────────────────────┘      └──────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Render Pipeline Stages
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Graphics Pipeline                             │
+│                                                                  │
+│  Application Stage:                                             │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │  VTK Scene Graph → Traverse → Generate Commands         │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│                              │                                   │
+│                              ▼                                   │
+│  Geometry Processing Stage:                                     │
+│  ┌────────────┐   ┌────────────┐   ┌────────────┐              │
+│  │  Vertex    │──>│  Vertex    │──>│  Clipping  │              │
+│  │  Shader    │   │  Post      │   │  & Culling │              │
+│  │  (VGS)     │   │  Processing│   │            │              │
+│  └────────────┘   └────────────┘   └────────────┘              │
+│                              │                                   │
+│                              ▼                                   │
+│  Rasterization Stage:                                           │
+│  ┌────────────┐   ┌────────────┐   ┌────────────┐              │
+│  │  Triangle  │──>│  Fragment  │──>│  Frame     │              │
+│  │  Setup     │   │  Shader    │   │  Buffer    │              │
+│  │            │   │  (VFS)     │   │  (Output)  │              │
+│  └────────────┘   └────────────┘   └────────────┘              │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Camera Model
+
+```javascript
+// Camera parameters
+{
+  position: [x, y, z],       // Camera location
+  focalPoint: [x, y, z],     // Point camera looks at
+  viewUp: [x, y, z],         // Up direction
+  viewAngle: 30,             // Field of view (degrees)
+  parallelProjection: false, // Perspective vs Orthographic
+  clippingRange: [0.01, 1000], // Near and far planes
+}
+
+// View matrix computation
+viewMatrix = lookAt(position, focalPoint, viewUp);
+projectionMatrix = perspective(fov, aspect, near, far);
+```
+
+### Lighting Model
+
+```javascript
+// VTK Light properties
+{
+  color: [1, 1, 1],          // RGB color
+  intensity: 1.0,            // Light intensity
+  lightType: 'Headlight',    // Headlight, Scene, Camera
+  position: [x, y, z],       // Light position
+  focalPoint: [x, y, z],     // Light target
+  coneAngle: 30,             // Spotlight cone
+  attenuationValues: [1, 0, 0], // Constant, linear, quadratic
+}
+
+// Phong illumination model
+I = Ia*ka + Σ(LIGHTS) [
+  Id*kd*(L·N) +           // Diffuse
+  Is*ks*(R·V)^n           // Specular
+]
+```
+
+---
+
+## VTK.js Implementation
+
+### Module Structure
+
+```
+vtk-js/Sources/
+├── Common/
+│   ├── Core/
+│   │   ├── ClassHierarchy.js    # Inheritance system
+│   │   └── macros.js            # Macro utilities
+│   └── Core/
+│
+├── Rendering/
+│   ├── Core/
+│   │   ├── Actor/
+│   │   ├── Mapper/
+│   │   ├── Camera/
+│   │   ├── Renderer/
+│   │   ├── RenderWindow/
+│   │   └── ...
+│   ├── OpenGL/
+│   │   └── ...
+│   └── WebGPU/
+│       └── ...
+│
+├── Filters/
+│   ├── Sources/
+│   │   ├── ConeSource/
+│   │   ├── CubeSource/
+│   │   └── ...
+│   ├── Core/
+│   │   ├── ClipPolyData/
+│   │   └── ...
+│   └── General/
+│       └── ...
+│
+├── IO/
+│   ├── Core/
+│   ├── Geometry/
+│   │   └── OBJImporter/
+│   └── XML/
+│       └── XMLPolyDataReader/
+│
+└── Interaction/
+    ├── Core/
+    └── Widgets/
+```
+
+### Macro System
+
+VTK.js uses a macro system for class creation:
+
+```javascript
+import macro from 'macros';
+
+function extend(publicAPI, model, initialValues = {}) {
+  Object.setPrototypeOf(publicAPI, vtkMyClass);
+
+  model = {};
+  Object.assign(model, DEFAULTS, initialValues);
+
+  // Generate getters/setters
+  macro.get(publicAPI, model, ['property1', 'property2']);
+  macro.setGet(publicAPI, model, ['enabled', 'value']);
+
+  // Event handling
+  macro.event(publicAPI, model, 'modified');
+  macro.event(publicAPI, model, 'startInteraction');
+  macro.event(publicAPI, model, 'endInteraction');
+
+  // Generate default modified() method
+  macro.algo.modified(publicAPI, model);
+}
+
+export const vtkMyClass = {
+  extend,
+  newInstance: macro.newInstance(extend, 'vtkMyClass'),
+};
+```
+
+### Data Arrays
+
+```javascript
+// vtkDataArray structure
+{
+  vtkClass: 'vtkDataArray',
+  name: 'Scalars',
+  numberOfComponents: 1,
+  size: 1000,
+  dataType: 'Float32Array',
+  values: new Float32Array([/* data */]),
+  ranges: [
+    { min: 0, max: 1, component: 0, name: 'Scalar' }
+  ]
+}
+
+// Typed array support
+const TYPED_ARRAYS = {
+  Float32Array,
+  Float64Array,
+  Uint8Array,
+  Int8Array,
+  Uint16Array,
+  Int16Array,
+  Uint32Array,
+  Int32Array,
+  Uint8ClampedArray,
+};
+```
+
+---
+
+## Core Classes
+
+### vtkActor
+
+```javascript
+// Actor connects mapper to renderer
+const actor = vtkActor.newInstance();
+
+actor.setMapper(mapper);           // Set geometry source
+actor.getProperty().setColor(1, 0, 0); // Red color
+actor.getProperty().setOpacity(0.5);   // 50% transparent
+actor.getProperty().setRepresentation('surface'); // or 'wireframe', 'points'
+
+// Transformation
+actor.setPosition(x, y, z);
+actor.setRotation(x, y, z);
+actor.setScale(sx, sy, sz);
+```
+
+### vtkMapper
+
+```javascript
+// Mapper converts data to graphics primitives
+const mapper = vtkMapper.newInstance();
+
+// Connect data source
+mapper.setInputConnection(source.getOutputPort());
+
+// Mapper options
+mapper.setScalarVisibility(true);
+mapper.setScalarRange(min, max);
+mapper.setLookupTable(lookupTable);
+```
+
+### vtkRenderer
+
+```javascript
+// Renderer manages scene
+const renderer = vtkRenderer.newInstance();
+
+// Add props
+renderer.addActor(actor);
+renderer.addVolume(volume);
+
+// Camera access
+const camera = renderer.getActiveCamera();
+camera.setPosition(1, 1, 1);
+camera.setFocalPoint(0, 0, 0);
+camera.setViewUp(0, 0, 1);
+
+// Reset camera to fit all actors
+renderer.resetCamera();
+
+// Background
+renderer.setBackground(0.5, 0.5, 0.5);
+```
+
+### vtkRenderWindow
+
+```javascript
+// RenderWindow is the output target
+const renderWindow = vtkRenderWindow.newInstance();
+
+// Add renderer
+renderWindow.addRenderer(renderer);
+
+// Set size
+renderWindow.setSize(width, height);
+
+// Render
+renderWindow.render();
+```
+
+---
+
+## Filters and Mappers
+
+### Source Filters (Data Generators)
+
+```javascript
+// Cone Source
+const cone = vtkConeSource.newInstance({
+  height: 1.0,
+  radius: 0.5,
+  resolution: 32,
+});
+
+// Cube Source
+const cube = vtkCubeSource.newInstance({
+  xLength: 1.0,
+  yLength: 1.0,
+  zLength: 1.0,
+});
+
+// Sphere Source
+const sphere = vtkSphereSource.newInstance({
+  radius: 1.0,
+  phiResolution: 32,
+  thetaResolution: 32,
+});
+
+// Plane Source
+const plane = vtkPlaneSource.newInstance({
+  xResolution: 10,
+  yResolution: 10,
+});
+```
+
+### Processing Filters
+
+```javascript
+// Clip PolyData
+const clipper = vtkClipPolyData.newInstance();
+clipper.setInputConnection(source.getOutputPort());
+clipper.setValue(0.0); // Iso value
+
+// Decimate (reduce polygon count)
+const decimate = vtkDecimatePro.newInstance();
+decimate.setInputConnection(source.getOutputPort());
+decimate.setTargetReduction(0.5); // 50% reduction
+
+// Contour (extract isosurface)
+const contour = vtkContourFilter.newInstance();
+contour.setInputConnection(source.getOutputPort());
+contour.addContourValue(isoValue);
+
+// Glyph (place geometry at points)
+const glyph = vtkGlyph3DMapper.newInstance();
+glyph.setInputConnection(source.getOutputPort());
+glyph.setSourceConnection(glyphSource.getOutputPort());
+glyph.setScaleFactor(0.1);
+```
+
+### Mappers
+
+```javascript
+// Geometry Mapper (PolyData)
+const mapper = vtkMapper.newInstance();
+mapper.setInputConnection(filter.getOutputPort());
+
+// Volume Mapper
+const volumeMapper = vtkGPUVolumeRayCastMapper.newInstance();
+volumeMapper.setInputConnection(imageData.getOutputPort());
+
+// Image Mapper (2D)
+const imageMapper = vtkImageMapper.newInstance();
+imageMapper.setInputConnection(imageData.getOutputPort());
+```
+
+---
+
+## Web Integration
+
+### Basic Setup (Vanilla JS)
+
+```javascript
+import '@kitware/vtk.js/Rendering/Profiles/Geometry';
+
+import vtkFullScreenRenderWindow from '@kitware/vtk.js/Rendering/Misc/FullScreenRenderWindow';
+import vtkActor from '@kitware/vtk.js/Rendering/Core/Actor';
+import vtkMapper from '@kitware/vtk.js/Rendering/Core/Mapper';
+import vtkConeSource from '@kitware/vtk.js/Filters/Sources/ConeSource';
+
+// Create render window
+const fullScreenRenderer = vtkFullScreenRenderWindow.newInstance();
+const renderer = fullScreenRenderer.getRenderer();
+const renderWindow = fullScreenRenderer.getRenderWindow();
+
+// Create cone
+const coneSource = vtkConeSource.newInstance({ height: 1.0 });
+
+// Create mapper and actor
+const mapper = vtkMapper.newInstance();
+mapper.setInputConnection(coneSource.getOutputPort());
+
+const actor = vtkActor.newInstance();
+actor.setMapper(mapper);
+
+// Add to renderer
+renderer.addActor(actor);
+renderer.resetCamera();
+renderWindow.render();
+```
+
+### WASM Integration
+
+```javascript
+// Load VTK/C++ compiled to WASM
+import { vtkWasm } from '@kitware/vtk-wasm';
+
+async function init() {
+  // Initialize WASM module
+  const wasm = await vtkWasm.load({
+    locateFile: (file) => `/vtk-wasm/${file}`
+  });
+
+  // Use C++ VTK through WASM
+  const coneSource = wasm.vtkConeSource.New();
+  const mapper = wasm.vtkPolyDataMapper.New();
+  mapper.SetInputConnection(coneSource.GetOutputPort());
+
+  // Export to vtk.js for rendering
+  const jsMapper = vtkMapper.newInstance();
+  jsMapper.setInputData(mapper.GetOutputData());
+}
+```
+
+### File Loading
+
+```javascript
+// Load OBJ file
+import vtkOBJImporter from '@kitware/vtk.js/IO/Geometry/OBJImporter';
+
+const importer = vtkOBJImporter.newInstance();
+importer.setUrl('model.obj').then(() => {
+  const polyData = importer.getPolyData();
+  mapper.setInputData(polyData);
+});
+
+// Load STL file
+import vtkSTLImporter from '@kitware/vtk.js/IO/Geometry/STLImporter';
+
+// Load VTP (VTK XML PolyData)
+import vtkXMLPolyDataReader from '@kitware/vtk.js/IO/XML/XMLPolyDataReader';
+```
+
+---
+
+## React Integration
+
+### Using VTK.js with React
+
+```jsx
+import { useRef, useEffect } from 'react';
+import vtkActor from '@kitware/vtk.js/Rendering/Core/Actor';
+import vtkMapper from '@kitware/vtk.js/Rendering/Core/Mapper';
+import vtkConeSource from '@kitware/vtk.js/Filters/Sources/ConeSource';
+import vtkRenderWindow from '@kitware/vtk.js/Rendering/Core/RenderWindow';
+import vtkRenderer from '@kitware/vtk.js/Rendering/Core/Renderer';
+import vtkOpenGLRenderWindow from '@kitware/vtk.js/Rendering/OpenGL/RenderWindow';
+
+function VTKComponent() {
+  const containerRef = useRef(null);
+  const context = useRef(null);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+
+    // Create render window
+    const renderWindow = vtkRenderWindow.newInstance();
+    const renderer = vtkRenderer.newInstance();
+    renderWindow.addRenderer(renderer);
+
+    // Create OpenGL render window
+    const glWindow = vtkOpenGLRenderWindow.newInstance();
+    glWindow.setContainer(containerRef.current);
+    renderWindow.addView(glWindow);
+
+    // Create cone
+    const coneSource = vtkConeSource.newInstance({ height: 1.0 });
+    const mapper = vtkMapper.newInstance();
+    mapper.setInputConnection(coneSource.getOutputPort());
+    const actor = vtkActor.newInstance();
+    actor.setMapper(mapper);
+
+    // Add to scene
+    renderer.addActor(actor);
+    renderer.resetCamera();
+    renderWindow.render();
+
+    context.current = { renderWindow, renderer, coneSource };
+
+    return () => {
+      // Cleanup
+      actor.delete();
+      mapper.delete();
+      coneSource.delete();
+      renderWindow.delete();
+    };
+  }, []);
+
+  return <div ref={containerRef} style={{ width: '100%', height: '500px' }} />;
+}
+```
+
+### React with vtk.js State
+
+```jsx
+import { useState, useRef, useEffect } from 'react';
+
+function InteractiveVTK() {
+  const [coneResolution, setResolution] = useState(6);
+  const containerRef = useRef(null);
+  const context = useRef(null);
+
+  useEffect(() => {
+    // Initialize VTK (same as above)
+    // ...
+  }, []);
+
+  // Update when resolution changes
+  useEffect(() => {
+    if (context.current) {
+      const { coneSource, renderWindow } = context.current;
+      coneSource.setResolution(coneResolution);
+      renderWindow.render();
+    }
+  }, [coneResolution]);
+
+  return (
+    <>
+      <div ref={containerRef} />
+      <input
+        type="range"
+        min="4"
+        max="80"
+        value={coneResolution}
+        onChange={(e) => setResolution(Number(e.target.value))}
+      />
+    </>
+  );
+}
+```
+
+---
+
+## Rust Implementation Guide
+
+### Crate Recommendations
+
+| Crate | Purpose |
+|-------|---------|
+| `vtkio` | VTK file format I/O |
+| `nalgebra` | Linear algebra |
+| `wgpu` | GPU rendering |
+| `winit` | Window management |
+| `ecsy` | Entity-component-system |
+
+### Pipeline Architecture in Rust
+
+```rust
+// Define pipeline trait
+pub trait Algorithm {
+    type Input;
+    type Output;
+
+    fn execute(&mut self, input: &Self::Input) -> Self::Output;
+    fn modified(&mut self);
+    fn get_mtime(&self) -> u64;
+}
+
+// Data source trait
+pub trait Source: Algorithm {
+    fn generate(&mut self) -> Self::Output;
+}
+
+// Filter trait
+pub trait Filter: Algorithm {
+    fn set_input(&mut self, input: Self::Input);
+}
+
+// Concrete filter example
+pub struct ClipPolyData {
+    input: Option<PolyData>,
+    clip_value: f64,
+    output: Option<PolyData>,
+    mtime: u64,
+    executed_mtime: u64,
+}
+
+impl ClipPolyData {
+    pub fn new() -> Self {
+        ClipPolyData {
+            input: None,
+            clip_value: 0.0,
+            output: None,
+            mtime: 0,
+            executed_mtime: 0,
+        }
+    }
+
+    pub fn set_input(&mut self, input: PolyData) {
+        self.input = Some(input);
+        self.modified();
+    }
+
+    pub fn set_clip_value(&mut self, value: f64) {
+        self.clip_value = value;
+        self.modified();
+    }
+
+    fn modified(&mut self) {
+        self.mtime += 1;
+    }
+
+    pub fn update(&mut self) -> &PolyData {
+        if let Some(ref input) = self.input {
+            if input.mtime() <= self.executed_mtime {
+                return self.output.as_ref().unwrap();
+            }
+            self.output = Some(self.clip(input.clone()));
+            self.executed_mtime = input.mtime();
+        }
+        self.output.as_ref().unwrap()
+    }
+
+    fn clip(&self, input: PolyData) -> PolyData {
+        // Clip implementation
+        todo!()
+    }
+}
+```
+
+### Data Structures
+
+```rust
+use nalgebra::Vector3;
+
+/// Polygonal data representation
+pub struct PolyData {
+    points: Vec<Vector3<f64>>,
+    verts: CellArray,
+    lines: CellArray,
+    polys: CellArray,
+    strips: CellArray,
+    point_data: DataSetAttributes,
+    cell_data: DataSetAttributes,
+    mtime: u64,
+}
+
+/// Cell array for topology
+pub struct CellArray {
+    connectivity: Vec<u32>,  // Vertex indices
+    offsets: Vec<u32>,       // Cell start positions
+}
+
+/// Point/Cell attributes
+pub struct DataSetAttributes {
+    scalars: Option<DataArray<f64>>,
+    vectors: Option<DataArray<Vector3<f64>>>,
+    normals: Option<DataArray<Vector3<f64>>>,
+    tcoords: Option<DataArray<Vector2<f64>>>,
+}
+
+/// Typed data array
+pub struct DataArray<T> {
+    name: String,
+    values: Vec<T>,
+    num_components: usize,
+}
+
+impl PolyData {
+    pub fn mtime(&self) -> u64 {
+        self.mtime
+    }
+
+    pub fn modified(&mut self) {
+        self.mtime += 1;
+    }
+
+    pub fn points(&self) -> &[Vector3<f64>] {
+        &self.points
+    }
+
+    pub fn polys(&self) -> &CellArray {
+        &self.polys
+    }
+}
+```
+
+### Rendering with wgpu
+
+```rust
+use wgpu::*;
+
+/// Graphics pipeline for PolyData
+pub struct GraphicsPipeline {
+    device: Device,
+    queue: Queue,
+    pipeline: RenderPipeline,
+    vertex_buffer: Buffer,
+    index_buffer: Buffer,
+    uniform_buffer: Buffer,
+    bind_group: BindGroup,
+}
+
+impl GraphicsPipeline {
+    pub fn new(device: Device, queue: Queue) -> Self {
+        // Create pipeline layout
+        let shader = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("Graphics Shader"),
+            source: ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+            label: Some("Pipeline Layout"),
+            bind_group_layouts: &[/* ... */],
+            push_constant_ranges: &[],
+        });
+
+        // Create render pipeline
+        let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+            label: Some("Render Pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: VertexState {
+                module: &shader,
+                entry_point: "vs_main",
+                buffers: &[VertexBufferLayout {
+                    array_stride: std::mem::size_of::<Vertex>() as u64,
+                    step_mode: VertexStepMode::Vertex,
+                    attributes: &vertex_attr_array![
+                        0 => Float32x3,  // Position
+                        1 => Float32x3,  // Normal
+                    ],
+                }],
+            },
+            fragment: Some(FragmentState {
+                module: &shader,
+                entry_point: "fs_main",
+                targets: &[Some(ColorTargetState {
+                    format: TextureFormat::Bgra8UnormSrgb,
+                    blend: Some(BlendState::REPLACE),
+                    write_mask: ColorWrites::ALL,
+                })],
+            }),
+            // ... more config
+        });
+
+        GraphicsPipeline {
+            device,
+            queue,
+            pipeline,
+            vertex_buffer: todo!(),
+            index_buffer: todo!(),
+            uniform_buffer: todo!(),
+            bind_group: todo!(),
+        }
+    }
+
+    pub fn update_geometry(&mut self, poly_data: &PolyData) {
+        // Upload vertices
+        let vertices: Vec<Vertex> = poly_data.points()
+            .iter()
+            .map(|p| Vertex { position: *p, normal: /* compute normal */ })
+            .collect();
+
+        self.vertex_buffer = self.device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("Vertex Buffer"),
+            contents: bytemuck::cast_slice(&vertices),
+            usage: BufferUsages::VERTEX,
+        });
+
+        // Upload indices
+        let indices: Vec<u32> = poly_data.polys().to_index_buffer();
+        self.index_buffer = self.device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("Index Buffer"),
+            contents: bytemuck::cast_slice(&indices),
+            usage: BufferUsages::INDEX,
+        });
+    }
+
+    pub fn render(&mut self, encoder: &mut CommandEncoder, view: &TextureView) {
+        let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
+            label: Some("Render Pass"),
+            color_attachments: &[Some(RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: Operations {
+                    load: LoadOp::Clear(Color::BLACK),
+                    store: StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(/* ... */),
+        });
+
+        render_pass.set_pipeline(&self.pipeline);
+        render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        render_pass.set_index_buffer(self.index_buffer.slice(..), IndexFormat::Uint32);
+        render_pass.set_bind_group(0, &self.bind_group, &[]);
+        render_pass.draw_indexed(0..self.index_count, 0, 0..1);
+    }
+}
+```
+
+### WGSL Shader
+
+```wgsl
+// shader.wgsl
+struct Uniforms {
+    model: mat4x4<f32>,
+    view: mat4x4<f32>,
+    projection: mat4x4<f32>,
+};
+
+@group(0) @binding(0)
+var<uniform> uniforms: Uniforms;
+
+struct VertexInput {
+    @location(0) position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+};
+
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) world_position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+};
+
+@vertex
+fn vs_main(input: VertexInput) -> VertexOutput {
+    var output: VertexOutput;
+    output.position = uniforms.projection * uniforms.view * uniforms.model * vec4<f32>(input.position, 1.0);
+    output.world_position = (uniforms.model * vec4<f32>(input.position, 1.0)).xyz;
+    output.normal = (uniforms.model * vec4<f32>(input.normal, 0.0)).xyz;
+    return output;
+}
+
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    let light_dir = normalize(vec3<f32>(1.0, 1.0, 1.0));
+    let normal = normalize(input.normal);
+    let diff = max(dot(normal, light_dir), 0.0);
+
+    let ambient = 0.1;
+    let diffuse = diff * 0.9;
+
+    return vec4<f32>(diffuse + ambient, 1.0);
+}
+```
+
+---
+
+## References
+
+1. **VTK User's Guide** - Official Kitware documentation
+2. **VTK.js Documentation** - https://kitware.github.io/vtk-js/docs/
+3. **VTK Source Code** - https://github.com/Kitware/VTK
+4. **VTK.js Source** - https://github.com/Kitware/vtk-js
+5. **The Visualization Toolkit** - Book by Schroeder, Martin, Lorensen
