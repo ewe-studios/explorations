@@ -115,13 +115,24 @@ You are to spawn exploration agents where each must singularly generate deep and
   - exploration.md, ssg-fundamentals.md, zola-architecture.md, tera-templating.md
   - content-management.md, themes.md, rust-revision.md, production-grade.md
 
+- [x] **OMMA & Spline.design Exploration** - Completed with 4 documents:
+  - exploration.md (main summary comparing both platforms)
+  - omma-analysis.md (AI 3D generation platform deep dive)
+  - spline-design-analysis.md (web-based 3D design tool deep dive)
+  - rust-wasm-webgpu-replication-guide.md (comprehensive implementation guide)
+
+- [x] **foundation_wasm WebGPU Integration** - Completed with 1 document:
+  - foundation_wasm-webgpu-integration-guide.md (complete guide on using WebGPU without wasm-bindgen)
+
 ---
 
 ## Notes
 
-- All 16 explorations completed (1 enhanced + 15 new)
-- Total: ~300+ documents created
-- Total output: ~2+ MB of technical documentation
+- All 16 original explorations + 2 additional explorations completed
+- Total: ~305+ documents created
+- Total output: ~2.5+ MB of technical documentation
 - Duplicate entry for zola was removed
 - "vfxemboy" corrected to "vxfemboy" based on actual directory name
 - ash exploration was already completed (exploration.md, rust-revision.md, 5 deep-dives)
+- OMMA/Spline exploration covers both AI 3D generation and web-based 3D design tools
+- foundation_wasm guide shows how to wrap WebGPU using custom binding generator
