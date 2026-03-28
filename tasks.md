@@ -161,22 +161,67 @@ You are to spawn exploration agents where each must singularly generate deep and
     - `production-grade.md` - Production deployment guide
   - **Note:** Concurrency patterns fully covered with Valtron integration
 
+12. [x] /home/darkvoid/Boxxed/@formulas/src.rust/src.db/src.dragonflydb
+  - **Status:** COMPLETE - Comprehensive deep dives with 8 documents
+  - **Location:** `./src.db/src.dragonflydb/`
+  - **Documents:**
+    - `exploration.md` - Overview of DragonflyDB architecture
+    - `00-zero-to-db-engineer.md` - In-memory fundamentals, shared-nothing architecture
+    - `01-storage-engine-deep-dive.md` - Dashtable, DenseSet, memory efficiency
+    - `02-query-execution-deep-dive.md` - VLL transaction framework, command processing
+    - `03-consensus-replication-deep-dive.md` - Replication protocol, consistency models
+    - `rust-revision.md` - Valtron-based Rust translation
+    - `production-grade.md` - Kubernetes, Terraform, monitoring
+    - `04-valtron-integration.md` - Edge cache patterns for Lambda
+  - **Note:** 25X throughput vs Redis (3.8M QPS), 30% more memory efficient, shared-nothing architecture with VLL for strict serializability
+
 ---
 
 ## Pending Explorations
 
-1. [ ] /home/darkvoid/Boxxed/@formulas/src.rust/src.db
-  1. It needs to be very deep and detailed
-  2. For each directory within create a root level directory with its name, following below 2.1. point.
-  2.1. It should be created in a `./[provided-parent-directory-name-above]` directory and any sub-directory should exist under this directory and nowhere else
-  3. Include an additional "what this looks like in Rust" and "what a production grade version looks like"
-  4. Do a good cover and add fundamental explainers for the algorithms, concepts used, how this works in WASM and wasm web
-  5. How do we replicate the implementation in the project in Rust, what we need to keep in mind
-  6. How do we build a resilient system like this for an inexperienced software engineer from first principles to expert level covering all topics related to this project.
-  7. How do we replicate this without the aws-lambda-rust-runtime, what http API must we follow, what data and response must we create to be 1 to 1 compatible with the runtime, how do we correctly expose the API to be callable from lambda, be very detailed, cover all areas for production level replication in rust without async/tokio with valtron from /home/darkvoid/Boxxed/@dev/ewe_platform/backends/foundation_core/src/valtron (see /home/darkvoid/Boxxed/@dev/ewe_platform/specifications/08-valtron-async-iterators and /home/darkvoid/Boxxed/@dev/ewe_platform/specifications/10-simple-http-client-enhancements)
+### src.db Remaining Databases
 
+1. [ ] /home/darkvoid/Boxxed/@formulas/src.rust/src.db/src.deltalake
+  - **Status:** Pending - Only exploration.md exists
+  - **Location:** `./src.db/src.deltalake/`
+  - **Needed:** Deep dives into Delta Lake protocol, ACID transactions, time travel
 
-2. [ ] /home/darkvoid/Boxxed/@formulas/src.rust/src.bubbletea
+2. [ ] /home/darkvoid/Boxxed/@formulas/src.rust/src.db/src.ArrowAndDBs
+  - **Status:** Pending - Only exploration.md exists
+  - **Location:** `./src.db/src.ArrowAndDBs/`
+  - **Needed:** Columnar storage, Apache Arrow format, query optimization
+
+3. [ ] /home/darkvoid/Boxxed/@formulas/src.rust/src.db/src.gimli-rs
+  - **Status:** Pending - Only exploration.md exists
+  - **Location:** `./src.db/src.gimli-rs/`
+  - **Needed:** DWARF debugging format, binary analysis
+
+4. [ ] /home/darkvoid/Boxxed/@formulas/src.rust/src.db/src.GoatPlatform
+  - **Status:** Pending - Only exploration.md exists
+  - **Location:** `./src.db/src.GoatPlatform/`
+  - **Needed:** Platform architecture, plugin system
+
+5. [ ] /home/darkvoid/Boxxed/@formulas/src.rust/src.db/src.OrbitingHail
+  - **Status:** Pending - Only exploration.md exists
+  - **Location:** `./src.db/src.OrbitingHail/`
+  - **Needed:** Distributed systems, consensus protocols
+
+6. [ ] /home/darkvoid/Boxxed/@formulas/src.rust/src.db/src.TigerBeetle
+  - **Status:** Pending - Only exploration.md exists
+  - **Location:** `./src.db/src.TigerBeetle/`
+  - **Needed:** Financial ledger, ACID guarantees, two-phase commit
+
+7. [ ] /home/darkvoid/Boxxed/@formulas/src.rust/src.db/src.Neodatabase
+  - **Status:** Pending - Only exploration.md exists
+  - **Location:** `./src.db/src.Neodatabase/`
+  - **Needed:** Graph database, Cypher query language
+
+8. [ ] /home/darkvoid/Boxxed/@formulas/src.rust/src.db/src.libsql (Turso)
+  - **Status:** COMPLETE - See Completed Explorations section
+
+### Other Pending
+
+9. [ ] /home/darkvoid/Boxxed/@formulas/src.rust/src.bubbletea
   1. It needs to be very deep and detailed
   2. It should be created in a `./bubbletea` directory and any sub-directory should exist under this directory and nowhere else
   3. Include an additional "what this looks like in Rust" and "what a production grade version looks like"
@@ -185,7 +230,7 @@ You are to spawn exploration agents where each must singularly generate deep and
   6. How do we build a resilient system like this for an inexperienced software engineer from first principles to expert level covering all topics related to this project.
   7. How do we replicate this without the aws-lambda-rust-runtime, what http API must we follow, what data and response must we create to be 1 to 1 compatible with the runtime, how do we correctly expose the API to be callable from lambda, be very detailed, cover all areas for production level replication in rust without async/tokio with valtron from /home/darkvoid/Boxxed/@dev/ewe_platform/backends/foundation_core/src/valtron (see /home/darkvoid/Boxxed/@dev/ewe_platform/specifications/08-valtron-async-iterators and /home/darkvoid/Boxxed/@dev/ewe_platform/specifications/10-simple-http-client-enhancements)
 
-3. [ ] /home/darkvoid/Boxxed/@formulas/src.rust/src.Containers/colima
+10. [ ] /home/darkvoid/Boxxed/@formulas/src.rust/src.Containers/colima
   1. It needs to be very deep and detailed
   2. It should be created in a `./colima` directory and any sub-directory should exist under this directory and nowhere else
   3. Include an additional "what this looks like in Rust" and "what a production grade version looks like"
@@ -194,7 +239,7 @@ You are to spawn exploration agents where each must singularly generate deep and
   6. How do we build a resilient system like this for an inexperienced software engineer from first principles to expert level covering all topics related to this project.
   7. How do we replicate this without the aws-lambda-rust-runtime, what http API must we follow, what data and response must we create to be 1 to 1 compatible with the runtime, how do we correctly expose the API to be callable from lambda, be very detailed, cover all areas for production level replication in rust without async/tokio with valtron from /home/darkvoid/Boxxed/@dev/ewe_platform/backends/foundation_core/src/valtron (see /home/darkvoid/Boxxed/@dev/ewe_platform/specifications/08-valtron-async-iterators and /home/darkvoid/Boxxed/@dev/ewe_platform/specifications/10-simple-http-client-enhancements)
 
-4. [ ] /home/darkvoid/Boxxed/@formulas/src.rust/src.cloudflare/telescope
+11. [ ] /home/darkvoid/Boxxed/@formulas/src.rust/src.cloudflare/telescope
   1. It needs to be very deep and detailed
   2. Create this under cloudflare (in this repo) as `./cloudflare/telescope`
   3. Include an additional "what this looks like in Rust" and "what a production grade version looks like"
@@ -203,7 +248,7 @@ You are to spawn exploration agents where each must singularly generate deep and
   6. How do we build a resilient system like this for an inexperienced software engineer from first principles to expert level covering all topics related to this project.
   7. How do we replicate this without the aws-lambda-rust-runtime, what http API must we follow, what data and response must we create to be 1 to 1 compatible with the runtime, how do we correctly expose the API to be callable from lambda, be very detailed, cover all areas for production level replication in rust without async/tokio with valtron from /home/darkvoid/Boxxed/@dev/ewe_platform/backends/foundation_core/src/valtron (see /home/darkvoid/Boxxed/@dev/ewe_platform/specifications/08-valtron-async-iterators and /home/darkvoid/Boxxed/@dev/ewe_platform/specifications/10-simple-http-client-enhancements)
 
-13. [ ] /home/darkvoid/Boxxed/@formulas/src.rust/src.cloudflare/quiche
+12. [ ] /home/darkvoid/Boxxed/@formulas/src.rust/src.cloudflare/quiche
   1. It needs to be very deep and detailed
   2. Create this under cloudflare (in this repo) as `./cloudflare/quiche`
   3. Include an additional "what this looks like in Rust" and "what a production grade version looks like"
@@ -212,7 +257,7 @@ You are to spawn exploration agents where each must singularly generate deep and
   6. How do we build a resilient system like this for an inexperienced software engineer from first principles to expert level covering all topics related to this project.
   7. How do we replicate this without the aws-lambda-rust-runtime, what http API must we follow, what data and response must we create to be 1 to 1 compatible with the runtime, how do we correctly expose the API to be callable from lambda, be very detailed, cover all areas for production level replication in rust without async/tokio with valtron from /home/darkvoid/Boxxed/@dev/ewe_platform/backends/foundation_core/src/valtron (see /home/darkvoid/Boxxed/@dev/ewe_platform/specifications/08-valtron-async-iterators and /home/darkvoid/Boxxed/@dev/ewe_platform/specifications/10-simple-http-client-enhancements)
 
-14. [ ] /home/darkvoid/Boxxed/@formulas/src.rust/src.cloudflare/partykit
+13. [ ] /home/darkvoid/Boxxed/@formulas/src.rust/src.cloudflare/partykit
   1. It needs to be very deep and detailed
   2. Create this under cloudflare (in this repo) as `./cloudflare/partykit`
   3. Include an additional "what this looks like in Rust" and "what a production grade version looks like"
@@ -221,7 +266,7 @@ You are to spawn exploration agents where each must singularly generate deep and
   6. How do we build a resilient system like this for an inexperienced software engineer from first principles to expert level covering all topics related to this project.
   7. How do we replicate this without the aws-lambda-rust-runtime, what http API must we follow, what data and response must we create to be 1 to 1 compatible with the runtime, how do we correctly expose the API to be callable from lambda, be very detailed, cover all areas for production level replication in rust without async/tokio with valtron from /home/darkvoid/Boxxed/@dev/ewe_platform/backends/foundation_core/src/valtron (see /home/darkvoid/Boxxed/@dev/ewe_platform/specifications/08-valtron-async-iterators and /home/darkvoid/Boxxed/@dev/ewe_platform/specifications/10-simple-http-client-enhancements)
 
-15. [ ] /home/darkvoid/Boxxed/@formulas/src.rust/src.cloudflare (core subdirectories)
+14. [ ] /home/darkvoid/Boxxed/@formulas/src.rust/src.cloudflare (core subdirectories)
   1. It needs to be very deep and detailed
   2. Focus on these directories:
     a. agents
@@ -240,7 +285,7 @@ You are to spawn exploration agents where each must singularly generate deep and
   8. How do we replicate this without the aws-lambda-rust-runtime, what http API must we follow, what data and response must we create to be 1 to 1 compatible with the runtime, how do we correctly expose the API to be callable from lambda, be very detailed, cover all areas for production level replication in rust without async/tokio with valtron from /home/darkvoid/Boxxed/@dev/ewe_platform/backends/foundation_core/src/valtron (see /home/darkvoid/Boxxed/@dev/ewe_platform/specifications/08-valtron-async-iterators and /home/darkvoid/Boxxed/@dev/ewe_platform/specifications/10-simple-http-client-enhancements)
   9. Each must have a detailed first principle explanation for someone who has not done ML, AI related logic, code or project before, step by step guide, explanations with detailed and clear answers so detailed that is close to a mini textbook to move me from zero to ML engineer by the time i am done, skip nothing, cover everything.
 
-16. [ ] /home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.AIResearch
+15. [ ] /home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.AIResearch
   1. It needs to be very deep and detailed
   2. It should be created in a `./llamacpp/AIResearch` directory and any sub-directory should exist under this directory and nowhere else
   3. Include an additional "what this looks like in Rust" and "what a production grade version looks like"
