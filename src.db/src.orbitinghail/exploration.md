@@ -21,8 +21,9 @@ explored_at: 2026-03-27
 
 1. **[Zero to DB Engineer](00-zero-to-db-engineer.md)** - Distributed SQL
 2. **[Storage Engine](01-storage-engine-deep-dive.md)** - SQLSync internals
-3. **[Consensus](03-consensus-replication-deep-dive.md)** - CRDT sync
-4. **[Rust Revision](rust-revision.md)** - Translation guide
+3. **[Rust Revision](rust-revision.md)** - Translation guide
+4. **[Production](production-grade.md)** - Deployment
+5. **[Valtron Integration](04-valtron-integration.md)** - Valtron patterns
 
 ---
 
@@ -42,3 +43,8 @@ SQLSync uses CRDTs for conflict-free replication:
 | Date | Change |
 |------|--------|
 | 2026-03-27 | Initial exploration created |
+| 2026-03-28 | Added 00-zero-to-db-engineer.md |
+| 2026-03-28 | Added 01-storage-engine-deep-dive.md |
+| 2026-03-28 | Added rust-revision.md |
+| 2026-03-28 | Added production-grade.md |
+| 2026-03-28 | Added 04-valtron-integration.md |
