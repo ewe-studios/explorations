@@ -52,232 +52,200 @@ You are to spawn exploration agents where each must singularly generate deep and
 4. [x] **expect** - Core exploration complete (7 docs), missing: production-grade
 5. [x] **companion** - Core exploration complete (6 docs), missing: rust-revision, production-grade
 
-## Priority Explorations (Next Up)
+### llamacpp/AIResearch
 
-### Priority 1 - Database & Storage Systems
-1. [ ] **duckdb** - `/home/darkvoid/Boxxed/@formulas/src.rust/src.db/src.ArrowAndDBs/src.duckdb/duckdb`
-   - Target: `./duckdb`
+6. [x] **AIResearch** - Complete (8 docs: exploration, zero-to, 3 deep-dives, valtron-integration, rust-revision, production-grade)
+
+### Database & Storage
+
+7. [x] **turso** - Complete (14 docs: libsql exploration, client explorations for rs/ts/go/c, embedded-replicas, cli, pg_turso, rusqlite, multi-cloud-sync, agentfs, ewe-platform, rust-revision, blog)
+8. [x] **DragonflyDB** (src.db/src.dragonflydb) - Complete (8 docs: exploration, zero-to, 3 deep-dives, valtron-integration, rust-revision, production-grade)
+9. [x] **spacetimedb** - Complete (14 docs: exploration, deep-dives, rust-revision, production-grade)
+
+### Infrastructure & Networking
+
+10. [x] **cloudflare/partykit** - Complete (9 docs: exploration, zero-to, 4 deep-dives, valtron-integration, rust-revision, production-grade)
+11. [x] **process-compose** (src.process-compose) - Complete (2 docs: exploration, rust-revision)
+
+### Application Frameworks
+
+12. [x] **wildcard-ai** - Complete (12 docs)
+13. [x] **Zero** - Complete (11 docs)
+
+---
+
+## In Progress (Exploration started, needs deep-dives / rust-revision / production-grade)
+
+### Core explorations done (2 docs each, need deep-dives + rust-revision + production-grade)
+
+1. [ ] **htmx** - `./htmx` (has: zero-to + exploration)
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/HTMX`
+   - Missing: Deep-dives, rust-revision, production-grade
+
+2. [ ] **extism** - `./extism` (has: zero-to + exploration)
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.extism`
+   - Missing: Deep-dives, rust-revision, production-grade
+
+3. [ ] **zeromicro** - `./zeromicro` (has: zero-to + exploration)
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.zeromicro`
+   - Missing: Deep-dives, rust-revision, production-grade
+
+4. [ ] **p2p/hyperswarm** - `./p2p` (has: zero-to + exploration)
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.Peer2Peer`
+   - Missing: Deep-dives, rust-revision, production-grade
+
+5. [ ] **duckdb** - `./duckdb` (has: zero-to + storage-engine deep-dive)
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.db/src.ArrowAndDBs/src.duckdb/duckdb`
+   - Missing: More deep-dives, rust-revision, production-grade
    - **Focus Areas:**
      - File storage efficiency into object storage (S3, GCP)
      - Large file reading optimizations
      - Processing algorithms and approaches
      - All optimization tricks, algorithms, and approaches fully detailed
-   - Missing: Full exploration + rust-revision + production-grade
 
-### Priority 2 - Deployment & Infrastructure
-2. [ ] **cloudflare (remaining subdirs)** - `/home/darkvoid/Boxxed/@formulas/src.rust/src.cloudflare`
-   - Target: `./cloudflare/[subdirectory-name]`
-   - **Missing:** agents, ai, ai-search-snippet, api-schemas, capnweb, cloudflared, containers, daemonize
+6. [ ] **smithy** - `./smithy` (has: zero-to + exploration)
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.deployAnywhere/smithy`
+   - Subdirs: smithy-examples, smithy-python, smithy-rs, smithy-typescript
+   - Missing: Deep-dives, rust-revision, production-grade
+
+7. [ ] **pheonixLiveView** - `./pheonixLiveView` (has: zero-to + exploration)
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.pheonixLiveView`
+   - Missing: Deep-dives, rust-revision, production-grade
+
+8. [ ] **rivet-dev** - `./rivet-dev` (has: zero-to + exploration)
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.rivet-dev`
+   - Missing: Deep-dives, rust-revision, production-grade
+
+9. [ ] **basecamp/kamal** - `./basecamp/kamal` (has: zero-to + exploration)
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/kamal`
+   - Subdirs: kamal-proxy, kamal-site, kamal-skiff
+   - Missing: Deep-dives, rust-revision, production-grade
+
+10. [ ] **basecamp/once** - `./basecamp/once` (has: zero-to + exploration)
+    - Source: `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/once`
+    - Missing: Deep-dives, rust-revision, production-grade
+
+11. [ ] **basecamp/gh-signoff** - `./basecamp/gh-signoff` (has: zero-to + exploration)
+    - Source: `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/gh-signoff`
+    - Missing: Deep-dives, rust-revision, production-grade
+
+### Light explorations (1 doc each, need full treatment)
+
+12. [ ] **AppOSS** - `./AppOSS` (has: exploration.md only)
+    - Source: `/home/darkvoid/Boxxed/@formulas/src.AppOSS`
+    - Missing: Zero-to, deep-dives, rust-revision, production-grade
+    1. It needs to be very deep and detailed
+    2. It should be created in a `./AppOSS` directory and any sub-directory should exist under this directory and nowhere else
+    3. Include an additional "what this looks like in Rust" and "what a production grade version looks like"
+    4. Do a good cover and add fundamental explainers for the algorithms, concepts used, how the WASM web rendering works, what graphics and SVG/vector algorithms
+    5. How do we replicate the implementation for each around of rendering, animation, organisations, workflows, functionality, optimizations in the project in Rust, what we need to keep in mind
+    6. How do we build a resilient storage system like this for an inexperienced software engineer
+
+13. [ ] **superfly** - `./superfly` (has: exploration.md only)
+    - Source: `/home/darkvoid/Boxxed/@formulas/src.superfly`
+    - Missing: Zero-to, deep-dives, rust-revision, production-grade
+
+14. [ ] **hono** - `./hono` (has: exploration.md only)
+    - Source: `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/hono`
+    - Missing: Zero-to, deep-dives, rust-revision, production-grade
+
+15. [ ] **shoelace** - `./shoelace` (has: exploration.md only)
+    - Source: `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/shoelace`
+    - Missing: Zero-to, deep-dives, rust-revision, production-grade
+
+16. [ ] **11ty** - `./11ty` (has: exploration.md only)
+    - Source: `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.11ty`
+    - Missing: Zero-to, deep-dives, rust-revision, production-grade
+
+17. [ ] **MendableAI** - `./MendableAI` (has: 1 doc)
+    - Source: `/home/darkvoid/Boxxed/@formulas/src.MendableAI`
+    - Missing: Zero-to, deep-dives, rust-revision, production-grade
+
+18. [ ] **localfirst** - `./localfirst` (has: 1 doc)
+    - Source: `/home/darkvoid/Boxxed/@formulas/src.localfirst`
+    - Missing: Zero-to, deep-dives, rust-revision, production-grade
+
+19. [ ] **trpc** - `./trpc` (has: 1 doc)
+    - Source: `/home/darkvoid/Boxxed/@formulas/src.trpc`
+    - Missing: Zero-to, deep-dives, rust-revision, production-grade
+
+20. [ ] **Kobweb** - `./Kobweb` (has: 1 doc)
+    - Source: `/home/darkvoid/Boxxed/@formulas/src.kobweb`
+    - Missing: Zero-to, deep-dives, rust-revision, production-grade
+
+---
+
+## Not Started
+
+1. [ ] **ClaudOpen** - `./llamacpp/ClaudOpen`
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.ClaudOpen`
+   - Missing: Full exploration + rust-revision + production-grade
+   1. It needs to be very deep and detailed
+   2. It should be created in a `./llamacpp/ClaudOpen` directory and any sub-directory should exist under this directory and nowhere else
+   3. Include an additional "what this looks like in Rust" and "what a production grade version looks like"
+   4. Do a good cover and add fundamental explainers for the algorithms, concepts used, how the WASM web rendering works, what graphics and SVG/vector algorithms
+   5. How do we replicate the implementation for each around of rendering, animation, organisations, workflows, functionality, optimizations in the project in Rust, what we need to keep in mind
+   6. How do we build a resilient storage system like this for an inexperienced software engineer
+
+2. [x] **TabbyML** - `./llamacpp/TabbyML`
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.AICoders/src.TabbyML`
+   - **Complete** (6 docs: exploration, zero-to, 3 deep-dives, rust-revision, production-grade)
+
+3. [ ] **cloudflare (remaining subdirs)** - `./cloudflare/[subdirectory-name]`
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.cloudflare`
+   - Missing: agents, ai, ai-search-snippet, api-schemas, capnweb, cloudflared, containers, daemonize
    - Each needs: Full exploration + rust-revision + production-grade
 
-3. [ ] **basecamp/kamal** - `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/kamal`
-   - Target: `./basecamp/kamal`
-   - Subdirs: kamal-proxy, kamal-site, kamal-skiff
+4. [ ] **nordcraftengine** - `./nordcraftengine`
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.nordcraftengine`
    - Missing: Full exploration + rust-revision + production-grade
 
-4. [ ] **smithy** - `/home/darkvoid/Boxxed/@formulas/src.rust/src.deployAnywhere/smithy`
-   - Target: `./smithy`
-   - Subdirs: smithy-examples, smithy-python, smithy-rs, smithy-typescript
+5. [ ] **aws/aws-lambda-web-adapter** - `./aws/aws-lambda-web-adapter`
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.aws/aws-lambda-web-adapter`
    - Missing: Full exploration + rust-revision + production-grade
 
-### Priority 3 - LiveView & Real-time Systems
-5. [ ] **pheonixLiveView** - `/home/darkvoid/Boxxed/@formulas/src.pheonixLiveView`
-   - Target: `./pheonixLiveView`
+6. [ ] **aws/aws-lambda-rust-runtime** - `./aws/aws-lambda-rust-runtime`
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.aws/aws-lambda-rust-runtime`
    - Missing: Full exploration + rust-revision + production-grade
 
-6. [ ] **HTMX** - `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/HTMX`
-   - Target: `./htmlx`
+7. [ ] **CodingIDE/rockies** - `./CodingIDE/rockies`
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.CodingIDE/rockies`
    - Missing: Full exploration + rust-revision + production-grade
 
-### Priority 4 - Platform & Runtime Systems
-7. [ ] **rivet-dev** - `/home/darkvoid/Boxxed/@formulas/src.rivet-dev`
-   - Target: `./rivet-dev`
+8. [ ] **driftingspace** - `./driftingspace`
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.driftingspace`
    - Missing: Full exploration + rust-revision + production-grade
 
-8. [ ] **nordcraftengine** - `/home/darkvoid/Boxxed/@formulas/src.nordcraftengine`
-   - Target: `./nordcraftengine`
+9. [ ] **turbopuffer** - `./turbopuffer`
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.turbopuffer`
    - Missing: Full exploration + rust-revision + production-grade
 
-9. [ ] **backtrace** - `/home/darkvoid/Boxxed/@formulas/src.rust/src.backtrace-labs`
-   - Target: `./backtrace`
-   - Missing: Full exploration + rust-revision + production-grade
-
-10. [ ] **extism** - `/home/darkvoid/Boxxed/@formulas/src.rust/src.extism`
-    - Target: `./extism`
+10. [ ] **WebEditors** - `./WebEditors`
+    - Source: `/home/darkvoid/Boxxed/@formulas/src.WebEditors`
     - Missing: Full exploration + rust-revision + production-grade
 
-11. [ ] **zeromicro** - `/home/darkvoid/Boxxed/@formulas/src.zeromicro`
-    - Target: `./zeromicro`
+11. [ ] **opencontainer** - `./opencontainer`
+    - Source: `/home/darkvoid/Boxxed/@formulas/src.opencontainer`
     - Missing: Full exploration + rust-revision + production-grade
 
-### Priority 5 - UI & Communication Frameworks
-12. [ ] **Peer2Peer** - `/home/darkvoid/Boxxed/@formulas/src.Peer2Peer`
-    - Target: `./Peer2Peer`
+12. [ ] **OpenDevin** - `./OpenDevin`
+    - Source: `/home/darkvoid/Boxxed/@formulas/src.OpenDevin`
     - Missing: Full exploration + rust-revision + production-grade
 
-13. [ ] **basecamp/once** - `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/once`
-    - Target: `./basecamp/once`
+13. [ ] **OpenMCP** - `./OpenMCP`
+    - Source: `/home/darkvoid/Boxxed/@formulas/src.OpenMCP`
     - Missing: Full exploration + rust-revision + production-grade
 
-14. [ ] **basecamp/gh-signoff** - `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/gh-signoff`
-    - Target: `./basecamp/gh-signoff`
+14. [ ] **hyperflask** - `./hyperflask`
+    - Source: `/home/darkvoid/Boxxed/@formulas/src.hyperflask`
     - Missing: Full exploration + rust-revision + production-grade
 
-## Remaining Explorations (Lower Priority)
-
-1. [ ] **cloudflare/partykit** - `/home/darkvoid/Boxxed/@formulas/src.rust/src.cloudflare/partykit`
-   - Target: `./cloudflare/partykit`
-   - Missing: Full exploration + rust-revision + production-grade
-
-2. [ ] **cloudflare (core subdirs)** - `/home/darkvoid/Boxxed/@formulas/src.rust/src.cloudflare`
-   - Focus: agents, ai, ai-search-snippet, api-schemas, capnweb, cloudflared, containers, daemonize
-   - Target: `./cloudflare/[subdirectory-name]`
-   - Missing: 8 sub-directory explorations
-
-3. [ ] **llamacpp/AIResearch** - `/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.AIResearch`
-   - Target: `./llamacpp/AIResearch`
-   - Missing: Full exploration + rust-revision + production-grade
-
-4. [ ] **aws/aws-lambda-web-adapter** - `/home/darkvoid/Boxxed/@formulas/src.rust/src.aws/aws-lambda-web-adapter`
-   - Target: `./aws/aws-lambda-web-adapter`
-   - Missing: Full exploration + rust-revision + production-grade
-
-5. [ ] **aws/aws-lambda-rust-runtime** - `/home/darkvoid/Boxxed/@formulas/src.rust/src.aws/aws-lambda-rust-runtime`
-   - Target: `./aws/aws-lambda-rust-runtime`
-   - Missing: Full exploration + rust-revision + production-grade
-
-6. [ ] **CodingIDE/rockies** - `/home/darkvoid/Boxxed/@formulas/src.rust/src.CodingIDE/rockies`
-   - Target: `./CodingIDE/rockies`
-   - Missing: Full exploration + rust-revision + production-grade
-
-7. [ ] **driftingspace** - `/home/darkvoid/Boxxed/@formulas/src.rust/src.driftingspace`
-   - Target: `./driftingspace`
-   - Missing: Full exploration + rust-revision + production-grade
-
-8. [ ] **Zero** - `/home/darkvoid/Boxxed/@formulas/src.rust/src.Zero`
-   - Target: `./Zero`
-   - Missing: Full exploration + rust-revision + production-grade
-
-9. [ ] **wildcard-ai** - `/home/darkvoid/Boxxed/@formulas/src.rust/src.wildcard-ai`
-   - Target: `./wildcard-ai`
-   - Missing: Full exploration + rust-revision + production-grade
-
-10. [ ] **turbopuffer** - `/home/darkvoid/Boxxed/@formulas/src.rust/src.turbopuffer`
-    - Target: `./turbopuffer`
+15. [ ] **joy** - `./joy`
+    - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.Joy`
     - Missing: Full exploration + rust-revision + production-grade
 
-11. [ ] **WebEditors** - `/home/darkvoid/Boxxed/@formulas/src.WebEditors`
-    - Target: `./WebEditors`
-    - Missing: Full exploration + rust-revision + production-grade
-
-12. [ ] **superfly** - `/home/darkvoid/Boxxed/@formulas/src.superfly`
-    - Target: `./superfly`
-    - Missing: Full exploration + rust-revision + production-grade
-
-13. [ ] **extism** - `/home/darkvoid/Boxxed/@formulas/src.rust/src.extism`
-    - Target: `./extism`
-    - Missing: Full exploration + rust-revision + production-grade
-
-14. [ ] **zeromicro** - `/home/darkvoid/Boxxed/@formulas/src.zeromicro`
-    - Target: `./zeromicro`
-    - Missing: Full exploration + rust-revision + production-grade
-
-15. [ ] **hyperflask** - `/home/darkvoid/Boxxed/@formulas/src.hyperflask`
-    - Target: `./hyperflask`
-    - Missing: Full exploration + rust-revision + production-grade
-
-16. [ ] **kobweb** - `/home/darkvoid/Boxxed/@formulas/src.kobweb`
-    - Target: `./kobweb`
-    - Missing: Full exploration + rust-revision + production-grade
-
-17. [ ] **localfirst** - `/home/darkvoid/Boxxed/@formulas/src.localfirst`
-    - Target: `./localfirst`
-    - Missing: Full exploration + rust-revision + production-grade
-
-18. [ ] **MendableAI** - `/home/darkvoid/Boxxed/@formulas/src.MendableAI`
-    - Target: `./MendableAI`
-    - Missing: Full exploration + rust-revision + production-grade
-
-19. [ ] **nordcraftengine** - `/home/darkvoid/Boxxed/@formulas/src.nordcraftengine`
-    - Target: `./nordcraftengine`
-    - Missing: Full exploration + rust-revision + production-grade
-
-20. [ ] **opencontainer** - `/home/darkvoid/Boxxed/@formulas/src.opencontainer`
-    - Target: `./opencontainer`
-    - Missing: Full exploration + rust-revision + production-grade
-
-21. [ ] **OpenDevin** - `/home/darkvoid/Boxxed/@formulas/src.OpenDevin`
-    - Target: `./OpenDevin`
-    - Missing: Full exploration + rust-revision + production-grade
-
-22. [ ] **OpenMCP** - `/home/darkvoid/Boxxed/@formulas/src.OpenMCP`
-    - Target: `./OpenMCP`
-    - Missing: Full exploration + rust-revision + production-grade
-
-23. [ ] **rivet-dev** - `/home/darkvoid/Boxxed/@formulas/src.rivet-dev`
-    - Target: `./rivet-dev`
-    - Missing: Full exploration + rust-revision + production-grade
-
-24. [ ] **Peer2Peer** - `/home/darkvoid/Boxxed/@formulas/src.Peer2Peer`
-    - Target: `./Peer2Peer`
-    - Missing: Full exploration + rust-revision + production-grade
-
-25. [ ] **pheonixLiveView** - `/home/darkvoid/Boxxed/@formulas/src.pheonixLiveView`
-    - Target: `./pheonixLiveView`
-    - Missing: Full exploration + rust-revision + production-grade
-
-26. [ ] **trpc** - `/home/darkvoid/Boxxed/@formulas/src.trpc`
-    - Target: `./trpc`
-    - Missing: Full exploration + rust-revision + production-grade
-
-27. [ ] **smithy** - `/home/darkvoid/Boxxed/@formulas/src.rust/src.deployAnywhere/smithy`
-    - Target: `./smithy`
-    - Subdirs: smithy-examples, smithy-python, smithy-rs, smithy-typescript
-    - Missing: Full exploration + rust-revision + production-grade
-
-28. [ ] **hono** - `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/hono`
-    - Target: `./hono`
-    - Missing: Full exploration + rust-revision + production-grade
-
-29. [ ] **shoelace** - `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/shoelace`
-    - Target: `./shoelace`
-    - Missing: Full exploration + rust-revision + production-grade
-
-30. [ ] **HTMX** - `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/HTMX`
-    - Target: `./htmlx`
-    - Missing: Full exploration + rust-revision + production-grade
-
-31. [ ] **11ty** - `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.11ty`
-    - Target: `./11ty`
-    - Missing: Full exploration + rust-revision + production-grade
-
-32. [ ] **basecamp/once** - `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/once`
-    - Target: `./basecamp/once`
-    - Missing: Full exploration + rust-revision + production-grade
-
-33. [ ] **basecamp/kamal** - `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/kamal`
-    - Target: `./basecamp/kamal`
-    - Subdirs: kamal-proxy, kamal-site, kamal-skiff
-    - Missing: Full exploration + rust-revision + production-grade
-
-34. [ ] **basecamp/gh-signoff** - `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/gh-signoff`
-    - Target: `./basecamp/gh-signoff`
-    - Missing: Full exploration + rust-revision + production-grade
-
-35. [ ] **joy** - `/home/darkvoid/Boxxed/@formulas/src.rust/src.Joy`
-    - Target: `./joy`
-    - Missing: Full exploration + rust-revision + production-grade
-
-36. [ ] **duckdb** - `/home/darkvoid/Boxxed/@formulas/src.rust/src.db/src.ArrowAndDBs/src.duckdb/duckdb`
-    - Target: `./duckdb`
-    - Missing: Full exploration + rust-revision + production-grade
-
-37. [ ] **backtrace** - `/home/darkvoid/Boxxed/@formulas/src.rust/src.backtrace-labs`
-    - Target: `./backtrace`
-    - Missing: Full exploration + rust-revision + production-grade
-
-38. [ ] **spacetimedb** - `/home/darkvoid/Boxxed/@formulas/src.rust/src.SpacetimeDB/SpacetimeDB`
-    - Target: `./spacetimedb`
+16. [ ] **backtrace** - `./backtrace`
+    - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.backtrace-labs`
     - Missing: Full exploration + rust-revision + production-grade
 
 ---
