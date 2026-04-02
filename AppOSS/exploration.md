@@ -2,7 +2,8 @@
 location: /home/darkvoid/Boxxed/@formulas/src.AppOSS
 repository: N/A - Multiple repositories mirrored locally
 explored_at: 2026-03-20T00:00:00Z
-languages: JavaScript, TypeScript, Python, Clojure, C++, Java, Go
+updated_at: 2026-04-02
+languages: JavaScript, TypeScript, Python, Clojure, C++, Java, Go, Rust
 ---
 
 # AppOSS Project Exploration
@@ -17,6 +18,33 @@ The focus of this deep-dive is on five major projects:
 - **Penpot** - Open-source design and prototyping platform
 - **Budibase** - Low-code application builder
 - **Skia** - Google's 2D graphics library
+
+---
+
+## Related Documents
+
+This exploration is part of a comprehensive documentation set:
+
+| Document | Description |
+|----------|-------------|
+| [`00-zero-to-apposs.md`](./00-zero-to-apposs.md) | Beginner's guide from zero to understanding AppOSS projects |
+| [`exploration.md`](./exploration.md) | This file - main exploration document |
+| [`rust-revision.md`](./rust-revision.md) | Complete Rust translation guide |
+| [`production-grade.md`](./production-grade.md) | Production readiness and scaling guide |
+
+### Deep Dive Documents
+
+| Document | Description |
+|----------|-------------|
+| [`deep-dives/graphics-rendering-deep-dive.md`](./deep-dives/graphics-rendering-deep-dive.md) | Vector rendering, GPU pipeline, rasterization |
+| [`deep-dives/wasm-web-rendering-deep-dive.md`](./deep-dives/wasm-web-rendering-deep-dive.md) | WASM architecture, JavaScript bindings, CanvasKit |
+| [`deep-dives/vector-graphics-algorithms.md`](./deep-dives/vector-graphics-algorithms.md) | Path tessellation, curve rendering, anti-aliasing |
+
+### Examples
+
+| Document | Description |
+|----------|-------------|
+| [`examples/vector-graphics-examples.md`](./examples/vector-graphics-examples.md) | Practical code examples for vector graphics |
 
 ---
 
