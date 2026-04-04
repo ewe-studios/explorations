@@ -11,7 +11,6 @@ You are to spawn exploration agents where each must singularly generate deep and
 5. We are to do detailed exploration, not just one single exploration.md file, do deep dives into each sub project, sub-module, make it super detailed
 6. Trigger up to 3 agents to parallelize the work on the items.
 7. When user says `./[provided-parent-directory-name-above]` they mean the directory (named after the base directory of the exploration e.g /alex/alex.workers, then the directory is alex.workers), dont mess that up, and the directory is supposed to be in this repo.
-8. First fix my markdown numbering in the tasks list and ensure to mark what is done (ignore the template section)
 
 ---
 
@@ -39,223 +38,180 @@ You are to spawn exploration agents where each must singularly generate deep and
   5. How do we replicate the implementation in the project in Rust, what we need to keep in mind
   6. How do we build a resilient system like this for an inexperienced software engineer from first principles to expert level covering all topics related to this project.
 
+---
+
+## In Progress (Exploration started, needs deep-dives / rust-revision / production-grade)
+
+### Partially Complete (zero-to + exploration done, need deep-dives + rust-revision + production-grade)
+
+1. [x] **htmx** - `./htmx` (has: 00-zero-to + 01-exploration + 5 deep-dives + rust-revision + production-grade) - **COMPLETE**
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/HTMX`
+   - Documents: 9 total (zero-to, exploration, 5 deep-dives, rust-revision, production-grade)
+
+2. [x] **extism** - `./extism` (has: 00-zero-to + 01-exploration + 4 deep-dives + rust-revision + production-grade) - **COMPLETE**
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.extism`
+   - Documents: 8 total (zero-to, exploration, 4 deep-dives, rust-revision, production-grade)
+
+3. [x] **zeromicro** - `./zeromicro` (has: 00-zero-to + 01-exploration + 4 deep-dives + rust-revision + production-grade) - **COMPLETE**
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.zeromicro`
+   - Documents: 8 total (zero-to, exploration, 4 deep-dives, rust-revision, production-grade)
+
+4. [x] **p2p/hyperswarm** - `./p2p` (has: 00-zero-to + 01-exploration + 2 deep-dives + rust-revision + production-grade) - **COMPLETE**
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.Peer2Peer`
+   - Documents: 6 total (zero-to, exploration, 2 deep-dives, rust-revision, production-grade)
+
+5. [x] **duckdb** - `./duckdb` (has: 00-zero-to + 01-storage-engine + 02-object-storage + 03-query-execution + 04-compression + rust-revision + production-grade) - **COMPLETE**
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.db/src.ArrowAndDBs/src.duckdb/duckdb`
+   - Documents: 7 total (zero-to, 4 deep-dives, rust-revision, production-grade)
+
+6. [x] **smithy** - `./smithy` (has: 00-zero-to + 01-exploration + 02-model-system + 03-code-generation + 04-protocol-generation + 05-aws-sdk + rust-revision + production-grade) - **COMPLETE**
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.deployAnywhere/smithy`
+   - Subdirs: smithy-examples, smithy-python, smithy-rs, smithy-typescript
+   - Documents: 8 total (zero-to, exploration, 5 deep-dives, rust-revision, production-grade)
+
+7. [x] **pheonixLiveView** - `./pheonixLiveView` (has: 00-zero-to + 01-exploration + 02-liveview-lifecycle + 03-heex-templating + 04-websocket-protocol + 05-pubsub-broadcast + 06-forms-validation + 07-live-components + 08-javascript-hooks + rust-revision + production-grade) - **COMPLETE**
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.pheonixLiveView/phoenix`
+   - Documents: 10 total (zero-to, exploration, 7 deep-dives, rust-revision, production-grade)
+
+8. [x] **rivet-dev** - `./rivet-dev` (has: 00-zero-to + 01-exploration + 02-actor-lifecycle + 03-storage-drivers + 04-realtime-patterns + 05-distribution-scaling + rust-revision + production-grade) - **COMPLETE**
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.rivet-dev/rivetkit`
+   - Documents: 8 total (zero-to, exploration, 4 deep-dives, rust-revision, production-grade)
+
+9. [x] **basecamp/kamal** - `./basecamp/kamal` (has: 00-zero-to + 01-exploration + 02-deployment-workflow + 03-proxy-internals + 04-secrets-management + 05-asset-handling + rust-revision + production-grade) - **COMPLETE**
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/kamal`
+   - Subdirs: kamal-proxy, kamal-site, kamal-skiff
+   - Documents: 8 total (zero-to, exploration, 4 deep-dives, rust-revision, production-grade)
+
+10. [x] **basecamp/once** - `./basecamp/once` (has: 00-zero-to + 01-exploration + 02-tui-dashboard + 03-docker-orchestration + 04-backup-restore + rust-revision + production-grade) - **COMPLETE**
+    - Source: `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/once`
+    - Documents: 7 total (zero-to, exploration, 3 deep-dives, rust-revision, production-grade)
+
+11. [x] **basecamp/gh-signoff** - `./basecamp/gh-signoff` (has: 00-zero-to + 01-exploration + 02-github-api + 03-branch-protection + 04-team-workflows + rust-revision + production-grade) - **COMPLETE**
+    - Source: `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/gh-signoff`
+    - Documents: 7 total (zero-to, exploration, 3 deep-dives, rust-revision, production-grade)
+
+### Light explorations (exploration.md only, need zero-to + deep-dives + rust-revision + production-grade)
+
+12. [x] **superfly** - `./superfly` (has: 00-zero-to + 5 deep-dives + rust-revision + production-grade) - **COMPLETE**
+    - Source: `/home/darkvoid/Boxxed/@formulas/src.superfly`
+    - Documents: 8 total (zero-to, 5 deep-dives, rust-revision, production-grade)
+
+13. [x] **hono** - `./hono` (has: 00-zero-to + 5 deep-dives + rust-revision + production-grade) - **COMPLETE**
+    - Source: `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/hono`
+    - Documents: 8 total (zero-to, 5 deep-dives, rust-revision, production-grade)
+
+14. [x] **trpc** - `./trpc` (has: 00-zero-to + 5 deep-dives + rust-revision + production-grade) - **COMPLETE**
+    - Source: `/home/darkvoid/Boxxed/@formulas/src.trpc`
+    - Documents: 8 total (zero-to, 5 deep-dives, rust-revision, production-grade)
+
+15. [x] **Kobweb** - `./Kobweb` (has: 00-zero-to + 5 deep-dives + rust-revision + production-grade) - **COMPLETE**
+    - Source: `/home/darkvoid/Boxxed/@formulas/src.kobweb`
+    - Documents: 8 total (zero-to, 5 deep-dives, rust-revision, production-grade)
+
+---
+
+## Not Started (Empty directories or no exploration yet)
+
+1. [x] **nordcraftengine** - `./nordcraftengine` (has: 00-zero-to + 5 deep-dives + rust-revision + production-grade) - **COMPLETE**
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.nordcraftengine`
+   - Documents: 8 total (zero-to, 5 deep-dives, rust-revision, production-grade)
+
+2. [x] **joy** - `./joy` (has: 00-zero-to + 5 deep-dives + rust-revision + production-grade) - **COMPLETE**
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.Joy`
+   - Documents: 8 total (zero-to, 5 deep-dives, rust-revision, production-grade)
+
+3. [x] **backtrace** - `./backtrace` (has: 00-zero-to + 5 deep-dives + rust-revision + production-grade) - **COMPLETE**
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.backtrace-labs`
+   - Documents: 8 total (zero-to, 5 deep-dives, rust-revision, production-grade)
+
+4. [x] **opencontainer** - `./opencontainer` (has: 00-zero-to + 5 deep-dives + rust-revision + production-grade) - **COMPLETE**
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.opencontainer`
+   - Documents: 8 total (zero-to, 5 deep-dives, rust-revision, production-grade)
+
+5. [ ] **OpenDevin** - `./OpenDevin` - **SKIPPED: Source directory does not exist**
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.OpenDevin` - DOES NOT EXIST
+
+6. [ ] **OpenMCP** - `./OpenMCP` - **SKIPPED: Source directory does not exist**
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.OpenMCP` - DOES NOT EXIST
+
+7. [ ] **hyperflask** - `./hyperflask`
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.hyperflask`
+   - Missing: Full exploration + rust-revision + production-grade
+
+8. [ ] **WebEditors** - `./WebEditors`
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.WebEditors`
+   - Missing: Full exploration + rust-revision + production-grade
+
+---
+
+## Already Started - Specific Projects (Need Full Treatment)
+
+1. [ ] **HKUSD/OpenSpace** - `./HKUSD/OpenSpace`
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.HKUSD/OpenSpace`
+   - Missing: Full exploration (zero-to, exploration, deep-dives, rust-revision, production-grade)
+
+2. [ ] **AIResearch/pretext** - `./AIResearch/pretext`
+   - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.AIResearch/pretext`
+   - Missing: Full exploration with ewe_platform foundation_wasm crate integration details
+   - Special focus: Text rendering, measuring across browsers/OS, internationalization
 
 ---
 
 ## Completed Explorations
 
-### llamacpp/MillionCo
+### llamacpp
 
-1. [x] **ami-releases** - Complete (4 docs: exploration, zero-to, rust-revision, production-grade)
-2. [x] **Sink** - Core exploration complete (4 docs), missing: rust-revision, production-grade
-3. [x] **cal.com** - Complete (8 docs: exploration, zero-to, 4 deep-dives, rust-revision, production-grade)
-4. [x] **expect** - Core exploration complete (7 docs), missing: production-grade
-5. [x] **companion** - Core exploration complete (6 docs), missing: rust-revision, production-grade
-
-### llamacpp/AIResearch
-
-6. [x] **AIResearch** - Complete (8 docs: exploration, zero-to, 3 deep-dives, valtron-integration, rust-revision, production-grade)
+- [x] **ClaudOpen** - `./llamacpp/ClaudOpen` (COMPLETE - 47 documents across 5 subdirectories)
+  - claw-code, fff.nvim, free-code, openclaude, claude-code-system-prompts
+- [x] **TabbyML** - `./llamacpp/TabbyML` (7 docs: exploration, zero-to, 3 deep-dives, rust-revision, production-grade)
+- [x] **MillionCo/ami-releases** - Complete (4 docs)
+- [x] **MillionCo/Sink** - Core exploration complete (4 docs)
+- [x] **MillionCo/cal.com** - Complete (8 docs)
+- [x] **MillionCo/expect** - Core exploration complete (7 docs)
+- [x] **MillionCo/companion** - Core exploration complete (6 docs)
+- [x] **AIResearch** - Complete (8 docs)
 
 ### Database & Storage
 
-7. [x] **turso** - Complete (14 docs: libsql exploration, client explorations for rs/ts/go/c, embedded-replicas, cli, pg_turso, rusqlite, multi-cloud-sync, agentfs, ewe-platform, rust-revision, blog)
-8. [x] **DragonflyDB** (src.db/src.dragonflydb) - Complete (8 docs: exploration, zero-to, 3 deep-dives, valtron-integration, rust-revision, production-grade)
-9. [x] **spacetimedb** - Complete (14 docs: exploration, deep-dives, rust-revision, production-grade)
+- [x] **turso** - Complete (14 docs)
+- [x] **DragonflyDB** - Complete (8 docs)
+- [x] **spacetimedb** - Complete (14 docs)
 
 ### Infrastructure & Networking
 
-10. [x] **cloudflare/partykit** - Complete (9 docs: exploration, zero-to, 4 deep-dives, valtron-integration, rust-revision, production-grade)
-11. [x] **process-compose** (src.process-compose) - Complete (2 docs: exploration, rust-revision)
+- [x] **cloudflare/partykit** - Complete (9 docs)
+- [x] **process-compose** - Complete (2 docs)
+- [x] **cloudflare** (main) - Complete (workerd, trie-hard, quiche, boringtun, lol-html, workers-rs deep-dives)
 
 ### Application Frameworks
 
-12. [x] **wildcard-ai** - Complete (12 docs)
-13. [x] **Zero** - Complete (11 docs)
+- [x] **wildcard-ai** - Complete (12 docs)
+- [x] **Zero** - Complete (11 docs)
+- [x] **driftingspace** - Complete (10 docs: exploration, zero-to, 5 deep-dives, valtron-integration, rust-revision, production-grade)
+
+### Other Complete
+
+- [x] **AppOSS** - Complete (10 documents)
+- [x] **fframes** - Complete (13 documents)
+- [x] **basecamp** (main exploration) - Complete
+- [x] **aws/aws-lambda-rust-runtime** - Complete (7 docs: exploration, zero-to, 3 deep-dives, valtron-integration, rust-revision, production-grade)
+- [x] **aws/aws-lambda-web-adapter** - Complete (7 docs: exploration, 4 deep-dives, valtron-integration, rust-revision, production-grade)
+- [x] **CodingIDE/rockies** - Complete (8 docs: exploration, zero-to, 5 deep-dives, valtron-integration, rust-revision, production-grade)
+- [x] **turbopuffer** - Complete (9 docs: exploration, 3 deep-dives, sdk-comparison, performance-optimizations, storage-system-guide, rust-revision, production-grade, blog posts)
 
 ---
 
-## In Progress (Exploration started, needs deep-dives / rust-revision / production-grade)
+## Cloudflare Remaining Subdirs (Not Started)
 
-### Core explorations done (2 docs each, need deep-dives + rust-revision + production-grade)
+These subdirectories under `/home/darkvoid/Boxxed/@formulas/src.rust/src.cloudflare` need exploration:
 
-1. [ ] **htmx** - `./htmx` (has: zero-to + exploration)
-   - Source: `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/HTMX`
-   - Missing: Deep-dives, rust-revision, production-grade
-
-2. [ ] **extism** - `./extism` (has: zero-to + exploration)
-   - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.extism`
-   - Missing: Deep-dives, rust-revision, production-grade
-
-3. [ ] **zeromicro** - `./zeromicro` (has: zero-to + exploration)
-   - Source: `/home/darkvoid/Boxxed/@formulas/src.zeromicro`
-   - Missing: Deep-dives, rust-revision, production-grade
-
-4. [ ] **p2p/hyperswarm** - `./p2p` (has: zero-to + exploration)
-   - Source: `/home/darkvoid/Boxxed/@formulas/src.Peer2Peer`
-   - Missing: Deep-dives, rust-revision, production-grade
-
-5. [ ] **duckdb** - `./duckdb` (has: zero-to + storage-engine deep-dive)
-   - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.db/src.ArrowAndDBs/src.duckdb/duckdb`
-   - Missing: More deep-dives, rust-revision, production-grade
-   - **Focus Areas:**
-     - File storage efficiency into object storage (S3, GCP)
-     - Large file reading optimizations
-     - Processing algorithms and approaches
-     - All optimization tricks, algorithms, and approaches fully detailed
-
-6. [ ] **smithy** - `./smithy` (has: zero-to + exploration)
-   - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.deployAnywhere/smithy`
-   - Subdirs: smithy-examples, smithy-python, smithy-rs, smithy-typescript
-   - Missing: Deep-dives, rust-revision, production-grade
-
-7. [ ] **pheonixLiveView** - `./pheonixLiveView` (has: zero-to + exploration)
-   - Source: `/home/darkvoid/Boxxed/@formulas/src.pheonixLiveView`
-   - Missing: Deep-dives, rust-revision, production-grade
-
-8. [ ] **rivet-dev** - `./rivet-dev` (has: zero-to + exploration)
-   - Source: `/home/darkvoid/Boxxed/@formulas/src.rivet-dev`
-   - Missing: Deep-dives, rust-revision, production-grade
-
-9. [ ] **basecamp/kamal** - `./basecamp/kamal` (has: zero-to + exploration)
-   - Source: `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/kamal`
-   - Subdirs: kamal-proxy, kamal-site, kamal-skiff
-   - Missing: Deep-dives, rust-revision, production-grade
-
-10. [ ] **basecamp/once** - `./basecamp/once` (has: zero-to + exploration)
-    - Source: `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/once`
-    - Missing: Deep-dives, rust-revision, production-grade
-
-11. [ ] **basecamp/gh-signoff** - `./basecamp/gh-signoff` (has: zero-to + exploration)
-    - Source: `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/gh-signoff`
-    - Missing: Deep-dives, rust-revision, production-grade
-
-### Completed Explorations
-
-#### AppOSS - Complete
-
-12. [x] **AppOSS** - `./AppOSS` (COMPLETE - 10 documents)
-    - Source: `/home/darkvoid/Boxxed/@formulas/src.AppOSS`
-    - Documents created:
-      1. `00-zero-to-apposs.md` - Beginner's guide from zero to understanding AppOSS (898 lines)
-      2. `exploration.md` - Updated main exploration with references (1582 lines)
-      3. `rust-revision.md` - Complete Rust translation guide (1057 lines)
-      4. `production-grade.md` - Production readiness and scaling guide (1202 lines)
-      5. `storage-system-guide.md` - Storage system guide for beginners (738 lines)
-      6. `deep-dives/graphics-rendering-deep-dive.md` - Vector rendering, GPU pipeline (1056 lines)
-      7. `deep-dives/wasm-web-rendering-deep-dive.md` - WASM architecture, CanvasKit (738 lines)
-      8. `deep-dives/vector-graphics-algorithms.md` - Path tessellation, Bezier curves (932 lines)
-      9. `examples/vector-graphics-examples.md` - Practical code examples (492 lines)
-    - Total: ~8,700 lines of comprehensive documentation
-
----
-
-### Light explorations (1 doc each, need full treatment)
-
-13. [ ] **superfly** - `./superfly` (has: exploration.md only)
-    - Source: `/home/darkvoid/Boxxed/@formulas/src.superfly`
-    - Missing: Zero-to, deep-dives, rust-revision, production-grade
-
-14. [ ] **hono** - `./hono` (has: exploration.md only)
-    - Source: `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/hono`
-    - Missing: Zero-to, deep-dives, rust-revision, production-grade
-
-15. [ ] **shoelace** - `./shoelace` (has: exploration.md only)
-    - Source: `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/shoelace`
-    - Missing: Zero-to, deep-dives, rust-revision, production-grade
-
-16. [ ] **11ty** - `./11ty` (has: exploration.md only)
-    - Source: `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.11ty`
-    - Missing: Zero-to, deep-dives, rust-revision, production-grade
-
-17. [ ] **MendableAI** - `./MendableAI` (has: 1 doc)
-    - Source: `/home/darkvoid/Boxxed/@formulas/src.MendableAI`
-    - Missing: Zero-to, deep-dives, rust-revision, production-grade
-
-18. [ ] **localfirst** - `./localfirst` (has: 1 doc)
-    - Source: `/home/darkvoid/Boxxed/@formulas/src.localfirst`
-    - Missing: Zero-to, deep-dives, rust-revision, production-grade
-
-19. [ ] **trpc** - `./trpc` (has: 1 doc)
-    - Source: `/home/darkvoid/Boxxed/@formulas/src.trpc`
-    - Missing: Zero-to, deep-dives, rust-revision, production-grade
-
-20. [ ] **Kobweb** - `./Kobweb` (has: 1 doc)
-    - Source: `/home/darkvoid/Boxxed/@formulas/src.kobweb`
-    - Missing: Zero-to, deep-dives, rust-revision, production-grade
-
----
-
-## Not Started
-
-1. [ ] **ClaudOpen** - `./llamacpp/ClaudOpen`
-   - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.ClaudOpen`
-   - Missing: Full exploration + rust-revision + production-grade
-   1. It needs to be very deep and detailed
-   2. It should be created in a `./llamacpp/ClaudOpen` directory and any sub-directory should exist under this directory and nowhere else
-   3. Include an additional "what this looks like in Rust" and "what a production grade version looks like"
-   4. Do a good cover and add fundamental explainers for the algorithms, concepts used, how the WASM web rendering works, what graphics and SVG/vector algorithms
-   5. How do we replicate the implementation for each around of rendering, animation, organisations, workflows, functionality, optimizations in the project in Rust, what we need to keep in mind
-   6. How do we build a resilient storage system like this for an inexperienced software engineer
-
-2. [x] **TabbyML** - `./llamacpp/TabbyML`
-   - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.AICoders/src.TabbyML`
-   - **Complete** (6 docs: exploration, zero-to, 3 deep-dives, rust-revision, production-grade)
-
-3. [ ] **cloudflare (remaining subdirs)** - `./cloudflare/[subdirectory-name]`
-   - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.cloudflare`
-   - Missing: agents, ai, ai-search-snippet, api-schemas, capnweb, cloudflared, containers, daemonize
-   - Each needs: Full exploration + rust-revision + production-grade
-
-4. [ ] **nordcraftengine** - `./nordcraftengine`
-   - Source: `/home/darkvoid/Boxxed/@formulas/src.nordcraftengine`
-   - Missing: Full exploration + rust-revision + production-grade
-
-5. [ ] **aws/aws-lambda-web-adapter** - `./aws/aws-lambda-web-adapter`
-   - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.aws/aws-lambda-web-adapter`
-   - Missing: Full exploration + rust-revision + production-grade
-
-6. [ ] **aws/aws-lambda-rust-runtime** - `./aws/aws-lambda-rust-runtime`
-   - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.aws/aws-lambda-rust-runtime`
-   - Missing: Full exploration + rust-revision + production-grade
-
-7. [ ] **CodingIDE/rockies** - `./CodingIDE/rockies`
-   - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.CodingIDE/rockies`
-   - Missing: Full exploration + rust-revision + production-grade
-
-8. [ ] **driftingspace** - `./driftingspace`
-   - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.driftingspace`
-   - Missing: Full exploration + rust-revision + production-grade
-
-9. [ ] **turbopuffer** - `./turbopuffer`
-   - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.turbopuffer`
-   - Missing: Full exploration + rust-revision + production-grade
-
-10. [ ] **WebEditors** - `./WebEditors`
-    - Source: `/home/darkvoid/Boxxed/@formulas/src.WebEditors`
-    - Missing: Full exploration + rust-revision + production-grade
-
-11. [ ] **opencontainer** - `./opencontainer`
-    - Source: `/home/darkvoid/Boxxed/@formulas/src.opencontainer`
-    - Missing: Full exploration + rust-revision + production-grade
-
-12. [ ] **OpenDevin** - `./OpenDevin`
-    - Source: `/home/darkvoid/Boxxed/@formulas/src.OpenDevin`
-    - Missing: Full exploration + rust-revision + production-grade
-
-13. [ ] **OpenMCP** - `./OpenMCP`
-    - Source: `/home/darkvoid/Boxxed/@formulas/src.OpenMCP`
-    - Missing: Full exploration + rust-revision + production-grade
-
-14. [ ] **hyperflask** - `./hyperflask`
-    - Source: `/home/darkvoid/Boxxed/@formulas/src.hyperflask`
-    - Missing: Full exploration + rust-revision + production-grade
-
-15. [ ] **joy** - `./joy`
-    - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.Joy`
-    - Missing: Full exploration + rust-revision + production-grade
-
-16. [ ] **backtrace** - `./backtrace`
-    - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.backtrace-labs`
-    - Missing: Full exploration + rust-revision + production-grade
+1. [ ] **agents**
+2. [ ] **ai**
+3. [ ] **ai-search-snippet**
+4. [ ] **api-schemas**
+5. [ ] **capnweb**
+6. [ ] **cloudflared**
+7. [ ] **containers**
+8. [ ] **daemonize**
 
 ---
