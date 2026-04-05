@@ -41,8 +41,10 @@ The following explorations have been completed with full documentation (zero-to 
 - opencontainer (8 docs), hyperflask (8 docs), WebEditors (8 docs)
 - HKUSD/OpenSpace (8 docs), turso (14 docs), DragonflyDB (8 docs), spacetimedb (14 docs)
 
-### Cloudflare Subdirs (4 complete)
+### Cloudflare Subdirs (9 complete)
 - agents (2 docs: zero-to, durable-objects-architecture), ai (1 doc: zero-to), cloudflared (1 doc: zero-to)
+- ai-search-snippet (1 doc: zero-to), api-schemas (1 doc: zero-to), capnweb (1 doc: zero-to)
+- containers (1 doc: zero-to), daemonize (1 doc: zero-to)
 
 ### Application Frameworks (5 complete)
 - wildcard-ai (12 docs), Zero (11 docs), driftingspace (10 docs)
@@ -58,6 +60,6 @@ The following explorations have been completed with full documentation (zero-to 
 - MillionCo: ami-releases, Sink, cal.com (8 docs), expect (7 docs), companion (6 docs)
 - AIResearch (8 docs), pretext (2 docs: zero-to, text-rendering-engine)
 
-**Total: 48+ projects completed with 400+ documents**
+**Total: 53+ projects completed with 405+ documents**
 
 ---
