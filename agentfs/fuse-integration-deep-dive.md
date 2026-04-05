@@ -1,14 +1,23 @@
 ---
 location: /home/darkvoid/Boxxed/@dev/repo-expolorations/agentfs
 repository: git@github.com:agentfs/agentfs
-explored_at: 2026-03-20
+explored_at: 2026-03-20 (expanded 2026-04-05)
 language: Rust
 parent: exploration.md
 ---
 
-# FUSE Integration in Rust: Beginner to Advanced
+# FUSE Integration in Rust: Complete Platform Guide
 
-A comprehensive guide to becoming a skilled FUSE developer on Linux, using the AgentFS codebase as a reference implementation.
+**Comprehensive deep-dive into AgentFS filesystem implementation across Linux, macOS, and Windows**
+
+This document provides exhaustive technical detail about how AgentFS implements filesystem mounting on each platform, including:
+- Linux: FUSE via `fuser` crate with full syscall-level implementation
+- macOS: NFS server via `nfsserve` crate (macFUSE limitations)
+- Windows: Considerations and future approaches (Dokan/CBFS)
+- OverlayFS: Copy-on-write mechanics with whiteout tracking
+- Syscall interception: Ptrace-based sandboxing with Reverie
+
+A complete reference for understanding every line of the 2000+ line FUSE implementation.
 
 ## Table of Contents
 

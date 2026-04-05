@@ -1,7 +1,7 @@
 ---
 location: /home/darkvoid/Boxxed/@formulas/src.rust/src.turso/agentfs
 repository: git@github.com:tursodatabase/agentfs.git
-explored_at: 2026-03-19T00:00:00Z
+explored_at: 2026-03-19T00:00:00Z (expanded 2026-04-05)
 language: Rust
 ---
 
@@ -20,6 +20,182 @@ Everything an agent does—every file it creates, every piece of state it stores
 - **Auditability**: Query agent history with SQL
 - **Reproducibility**: Snapshot state with `cp agent.db snapshot.db`
 - **Portability**: Move the single SQLite file between machines
+
+## What Makes AgentFS Unique
+
+### 1. SQLite-Backed Virtual Filesystem
+
+Unlike traditional filesystems that store data in blocks on disk, AgentFS stores files in SQLite tables:
+
+```sql
+-- File content stored in chunks (4KB each)
+CREATE TABLE fs_data (
+    ino INTEGER NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    data BLOB NOT NULL,
+    PRIMARY KEY (ino, chunk_index)
+);
+
+-- Metadata in separate table
+CREATE TABLE fs_inode (
+    ino INTEGER PRIMARY KEY AUTOINCREMENT,
+    mode INTEGER, nlink INTEGER, uid INTEGER, gid INTEGER,
+    size INTEGER, atime INTEGER, mtime INTEGER, ctime INTEGER
+);
+
+-- Directory entries (name → inode mapping)
+CREATE TABLE fs_dentry (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    parent_ino INTEGER NOT NULL,
+    ino INTEGER NOT NULL,
+    UNIQUE(parent_ino, name)
+);
+```
+
+**Benefits:**
+- ACID transactions for file operations
+- Easy backup (single file, consistent snapshot)
+- SQL queries for file metadata (`SELECT * FROM fs_dentry WHERE parent_ino = 5`)
+- Built-in compression potential (SQLite page compression)
+
+### 2. Cross-Platform Mounting Strategy
+
+AgentFS uses **different mounting strategies per platform** to avoid kernel extensions:
+
+| Platform | Mechanism | Why This Choice |
+|----------|-----------|-----------------|
+| Linux | FUSE via `fuser` crate | Native kernel support, best performance |
+| macOS | NFS via `nfsserve` crate | No kext required, works with Apple security |
+| Windows | (Future) Dokan/WinFsp | Would require driver installation |
+
+**Linux FUSE** (`cli/src/fuse.rs` - 800+ lines):
+- Direct `/dev/fuse` kernel interface
+- 20+ FUSE operations (lookup, getattr, readdir, open, read, write, etc.)
+- Inode-to-path cache (SQLite has no native inodes)
+- Writeback caching for performance
+
+**macOS NFS** (`cli/src/nfs.rs` - 400+ lines):
+- NFS v3 protocol over loopback TCP
+- No kernel extensions needed
+- Uses `mount_nfs` command
+- Slightly higher overhead than FUSE
+
+See [`03-platform-fuse-implementation-deep-dive.md`](./03-platform-fuse-implementation-deep-dive.md) for complete line-by-line analysis.
+
+### 3. Copy-on-Write Overlay with Whiteout Tracking
+
+The OverlayFS implementation (`sdk/rust/src/filesystem/overlayfs.rs` - 600+ lines) provides:
+
+```
+                    APPLICATION VIEW
+           /-----------------------------\
+           |  /src/main.rs (merged)      |
+           \-----------------------------/
+                      /    \
+         +----------+        +----------+
+         |   DELTA  |        |   BASE   |
+         | (writable|        |(read-only|
+         |  AgentFS |        |  HostFS  |
+         |  SQLite  |        |/home/proj|
+         +----------+        +----------+
+                |
+         +-----------+
+         | Whiteouts |
+         | (deleted  |
+         |  paths)   |
+         +-----------+
+```
+
+**Whiteout Mechanism:**
+When you `rm /src/old.rs` (exists in base):
+1. Cannot delete from base (read-only host filesystem)
+2. Create whiteout record: `INSERT INTO fs_whiteout VALUES('/src/old.rs', ...)`
+3. Subsequent lookups check whiteout table first → return ENOENT
+
+**Copy-on-Write:**
+When you write to `/src/main.rs` (exists in base):
+1. Read entire file from base layer
+2. Write complete copy to delta (SQLite)
+3. Mark `copied_to_delta = true`
+4. All subsequent reads/writes use delta version
+5. Base layer remains unchanged
+
+See [`04-overlayfs-and-syscall-interception-deep-dive.md`](./04-overlayfs-and-syscall-interception-deep-dive.md) for complete analysis.
+
+### 4. Ptrace-Based Syscall Interception
+
+The `agentfs run` command uses Reverie (Facebook's ptrace library) to intercept syscalls:
+
+```
++------------------+
+|   AgentFS        |  ← Tracer process
+|   (ptrace)       |
++------------------+
+        |
+        | ptrace(PTRACE_TRACEME)
+        |
+        v
++------------------+
+|   User Program   |  ← Tracee (cargo, bash, etc.)
++------------------+
+
+Every syscall:
+1. Tracee stops at syscall entry
+2. Tracer inspects arguments
+3. Tracer decides: native or emulated?
+4. If emulated: redirect to AgentFS
+5. If native: let kernel handle
+```
+
+**Syscalls Intercepted:**
+- `open()`, `read()`, `write()`, `close()` - File I/O
+- `stat()`, `lstat()`, `fstat()` - File metadata
+- `getcwd()`, `chdir()` - Directory operations
+- `access()` - Permission checks
+
+**Syscalls Passed Through:**
+- Network: `socket()`, `connect()`, `sendto()`
+- Process: `fork()`, `clone()`, `execve()`
+- Memory: `mmap()`, `munmap()`, `mprotect()`
+
+See [`04-overlayfs-and-syscall-interception-deep-dive.md`](./04-overlayfs-and-syscall-interception-deep-dive.md) for syscall handler implementations.
+
+### 5. FUSE Performance Optimizations
+
+The FUSE implementation requests these kernel optimizations:
+
+```rust
+fn init(&mut self, _req: &Request, config: &mut KernelConfig) -> Result<(), libc::c_int> {
+    config.add_capabilities(
+        FUSE_ASYNC_READ          // Parallel read requests (+50-100% throughput)
+        | FUSE_WRITEBACK_CACHE   // Kernel buffers writes (+10x small writes)
+        | FUSE_PARALLEL_DIROPS   // Concurrent readdir (+30% for ls -la)
+        | FUSE_CACHE_SYMLINKS    // Cache symlink targets (+5x symlink workloads)
+        | FUSE_NO_OPENDIR_SUPPORT // Skip opendir/releasedir round-trips
+    );
+    Ok(())
+}
+```
+
+**Writeback Caching Impact:**
+
+Without writeback cache:
+```
+write(fd, "a", 1) → FUSE_REQUEST → userspace → FUSE_RESPONSE  (1ms)
+write(fd, "b", 1) → FUSE_REQUEST → userspace → FUSE_RESPONSE  (1ms)
+write(fd, "c", 1) → FUSE_REQUEST → userspace → FUSE_RESPONSE  (1ms)
+Total: 3ms for 3 bytes
+```
+
+With writeback cache:
+```
+write(fd, "a", 1) → Kernel buffers (0μs)
+write(fd, "b", 1) → Kernel buffers (0μs)
+write(fd, "c", 1) → Kernel buffers (0μs)
+Kernel flushes all at once → FUSE_REQUEST → userspace → FUSE_RESPONSE (1ms)
+Total: 1ms for 3 bytes
+```
 
 ## Repository
 
@@ -695,3 +871,45 @@ For becoming a skilled FUSE developer with this codebase on Linux:
    - Encrypted FUSE layer over existing directory
    - Versioned filesystem with snapshot support
    - Network-synced distributed filesystem
+
+---
+
+## Document Index
+
+This exploration consists of the following documents:
+
+| Document | Purpose | Key Topics |
+|----------|---------|------------|
+| [`exploration.md`](./exploration.md) | High-level architecture overview | Repository structure, SQLite schema, component breakdown |
+| [`fuse-integration-deep-dive.md`](./fuse-integration-deep-dive.md) | FUSE tutorial with AgentFS examples | FUSE basics, building your first FUSE filesystem, advanced topics |
+| [`03-platform-fuse-implementation-deep-dive.md`](./03-platform-fuse-implementation-deep-dive.md) | **Platform-specific implementation details** | Linux FUSE (line-by-line), macOS NFS, Windows considerations, OverlayFS mechanics, ptrace syscall interception |
+| [`04-overlayfs-and-syscall-interception-deep-dive.md`](./04-overlayfs-and-syscall-interception-deep-dive.md) | **Copy-on-write and sandbox internals** | Whiteout tracking, directory merging, FD remapping, security model |
+
+### Quick Reference by Topic
+
+**FUSE Implementation (Linux):**
+- Read: `03-platform-fuse-implementation-deep-dive.md` → Sections 2 (complete line-by-line analysis)
+- Code: `cli/src/fuse.rs` (800+ lines)
+- Topics: lookup, getattr, readdir, open/read/write, setattr, error mapping
+
+**NFS Implementation (macOS):**
+- Read: `03-platform-fuse-implementation-deep-dive.md` → Section 3
+- Code: `cli/src/nfs.rs` (400+ lines)
+- Topics: nfsserve adapter, inode mapping, mount_nfs command
+
+**OverlayFS Copy-on-Write:**
+- Read: `04-overlayfs-and-syscall-interception-deep-dive.md` → Sections 1-4
+- Code: `sdk/rust/src/filesystem/overlayfs.rs` (600+ lines)
+- Topics: stat/open/read/write, whiteout creation/checking, directory merging
+
+**Ptrace Syscall Interception:**
+- Read: `04-overlayfs-and-syscall-interception-deep-dive.md` → Sections 5-7
+- Code: `sandbox/src/syscall/`, `cli/src/cmd/run.rs`
+- Topics: Reverie library, syscall handlers, FD remapping, security model
+
+**SQLite Schema:**
+- Read: `exploration.md` → SQLite Schema section
+- Code: `SPEC.md` in source repository
+- Tables: fs_inode, fs_dentry, fs_data, fs_whiteout, fs_overlay_config, kv_store, tool_calls
+
+---
