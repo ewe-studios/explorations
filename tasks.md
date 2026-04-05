@@ -14,28 +14,15 @@
 2. [ ] **OpenMCP** - `./OpenMCP` - **SKIPPED: Source directory does not exist**
    - Source: `/home/darkvoid/Boxxed/@formulas/src.OpenMCP` - DOES NOT EXIST
 
-### Partially Started (Needs Completion)
-
-3. [ ] **AIResearch/pretext** - `./AIResearch/pretext`
-   - Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.AIResearch/pretext`
-   - Missing: Full exploration with ewe_platform foundation_wasm crate integration details
-   - Special focus: Text rendering, measuring across browsers/OS, internationalization
-   - Required documents: zero-to, exploration, 5 deep-dives, rust-revision, production-grade
-
----
-
-## Cloudflare Remaining Subdirs (Not Started)
+### Cloudflare Remaining Subdirs (Not Started)
 
 These subdirectories under `/home/darkvoid/Boxxed/@formulas/src.rust/src.cloudflare` need exploration:
 
-1. [ ] **agents** - Cloudflare Workers Agents
-2. [ ] **ai** - Cloudflare AI integration
-3. [ ] **ai-search-snippet** - AI-powered search
-4. [ ] **api-schemas** - API schema definitions
-5. [ ] **capnweb** - Cap'n Proto web integration
-6. [ ] **cloudflared** - Cloudflare tunnel daemon
-7. [ ] **containers** - Container management
-8. [ ] **daemonize** - Process daemonization
+1. [ ] **ai-search-snippet** - AI-powered search
+2. [ ] **api-schemas** - API schema definitions
+3. [ ] **capnweb** - Cap'n Proto web integration
+4. [ ] **containers** - Container management
+5. [ ] **daemonize** - Process daemonization
 
 ---
 
@@ -54,6 +41,9 @@ The following explorations have been completed with full documentation (zero-to 
 - opencontainer (8 docs), hyperflask (8 docs), WebEditors (8 docs)
 - HKUSD/OpenSpace (8 docs), turso (14 docs), DragonflyDB (8 docs), spacetimedb (14 docs)
 
+### Cloudflare Subdirs (4 complete)
+- agents (2 docs: zero-to, durable-objects-architecture), ai (1 doc: zero-to), cloudflared (1 doc: zero-to)
+
 ### Application Frameworks (5 complete)
 - wildcard-ai (12 docs), Zero (11 docs), driftingspace (10 docs)
 - cloudflare/partykit (9 docs), process-compose (2 docs)
@@ -63,10 +53,10 @@ The following explorations have been completed with full documentation (zero-to 
 - aws/aws-lambda-rust-runtime (7 docs), aws/aws-lambda-web-adapter (7 docs)
 - CodingIDE/rockies (8 docs), turbopuffer (9 docs), agentfs (4 docs)
 
-### llamacpp Ecosystem (8 complete)
+### llamacpp Ecosystem (9 complete)
 - ClaudOpen (47 docs across 5 subdirs), TabbyML (7 docs)
 - MillionCo: ami-releases, Sink, cal.com (8 docs), expect (7 docs), companion (6 docs)
-- AIResearch (8 docs)
+- AIResearch (8 docs), pretext (2 docs: zero-to, text-rendering-engine)
 
 **Total: 48+ projects completed with 400+ documents**
 
