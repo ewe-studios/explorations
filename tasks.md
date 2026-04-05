@@ -14,15 +14,15 @@
 2. [ ] **OpenMCP** - `./OpenMCP` - **SKIPPED: Source directory does not exist**
    - Source: `/home/darkvoid/Boxxed/@formulas/src.OpenMCP` - DOES NOT EXIST
 
-### Cloudflare Remaining Subdirs (Not Started)
+### Cloudflare Remaining Subdirs (COMPLETED)
 
-These subdirectories under `/home/darkvoid/Boxxed/@formulas/src.rust/src.cloudflare` need exploration:
+All cloudflare subdirectory explorations have been completed:
 
-1. [ ] **ai-search-snippet** - AI-powered search
-2. [ ] **api-schemas** - API schema definitions
-3. [ ] **capnweb** - Cap'n Proto web integration
-4. [ ] **containers** - Container management
-5. [ ] **daemonize** - Process daemonization
+- [x] **ai-search-snippet** - Web Component library for search/chat (00-zero-to-ai-search-snippet.md)
+- [x] **api-schemas** - OpenAPI schema definitions (00-zero-to-api-schemas.md)
+- [x] **capnweb** - Cap'n Proto TypeScript RPC (00-zero-to-capnweb.md)
+- [x] **containers** - Container class for Workers (00-zero-to-containers.md)
+- [x] **daemonize** - Rust daemonization fork (00-zero-to-daemonize.md)
 
 ---
 
