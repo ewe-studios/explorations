@@ -1228,6 +1228,12 @@ Currently focuses on pulling/running existing images:
 
 ---
 
+## Related Deep Dives
+
+- [`secrets-deep-dive.md`](./secrets-deep-dive.md) - Placeholder-based secret injection: how secrets are replaced with placeholders, injected as env vars, and substituted at the TLS network proxy layer
+
+---
+
 ## Appendix: File Reference
 
 ### Key Source Files
