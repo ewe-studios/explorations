@@ -485,7 +485,227 @@ const ToolNotFound = ToolNotFoundError.annotations(
 
 ---
 
-## 12. Summary
+## 11. Design Decisions
+
+### Why Effect Platform?
+
+1. **Type safety** — Endpoints, requests, and responses are fully typed
+2. **Composability** — APIs are built from composable groups
+3. **Schema integration** — Effect Schema for validation and serialization
+4. **OpenAPI support** — Auto-generated API documentation
+
+### Why Versioned Prefixes?
+
+```typescript
+.prefix("/v1")
+```
+
+1. **Future-proofing** — Can evolve API without breaking clients
+2. **Clear versioning** — Clients know which version they're using
+3. **Standard practice** — REST API versioning convention
+
+### Why Modular Groups?
+
+1. **Separation of concerns** — Each resource has its own definition
+2. **Plugin extensibility** — Plugins can add their own groups
+3. **Maintainability** — Easier to find and update endpoints
+
+---
+
+## 12. Handler Implementations
+
+### Tools Handlers (`handlers/tools.ts:7-32`)
+
+```typescript
+export const ToolsHandlers = HttpApiBuilder.group(
+  ExecutorApi,
+  "tools",
+  (handlers) =>
+    handlers
+      .handle("list", ({ path }) =>
+        Effect.gen(function* () {
+          const executor = yield* ExecutorService;
+          const tools = yield* executor.tools.list();
+          return tools.map((t) => ({
+            id: t.id,
+            pluginKey: t.pluginKey,
+            sourceId: t.sourceId,
+            name: t.name,
+            description: t.description,
+            mayElicit: t.mayElicit,
+          }));
+        }),
+      )
+      .handle("schema", ({ path }) =>
+        Effect.gen(function* () {
+          const executor = yield* ExecutorService;
+          return yield* executor.tools.schema(path.toolId);
+        }),
+      ),
+);
+```
+
+**Key patterns:**
+1. **Effect.gen** — Effect-based handler with automatic error handling
+2. **ExecutorService** — Dependency injected via Context.Tag
+3. **Response mapping** — Transform SDK types to API response types
+
+### Executions Handlers (`handlers/executions.ts:12-67`)
+
+```typescript
+export const ExecutionsHandlers = HttpApiBuilder.group(
+  ExecutorApi,
+  "executions",
+  (handlers) =>
+    handlers
+      .handle("execute", ({ payload }) =>
+        Effect.gen(function* () {
+          const engine = yield* ExecutionEngineService;
+          const outcome = yield* Effect.promise(() =>
+            engine.executeWithPause(payload.code),
+          );
+
+          if (outcome.status === "completed") {
+            const formatted = formatExecuteResult(outcome.result);
+            return {
+              status: "completed" as const,
+              text: formatted.text,
+              structured: formatted.structured,
+              isError: formatted.isError,
+            };
+          }
+
+          const formatted = formatPausedExecution(outcome.execution);
+          return {
+            status: "paused" as const,
+            text: formatted.text,
+            structured: formatted.structured,
+          };
+        }),
+      )
+      .handle("resume", ({ path, payload }) =>
+        Effect.gen(function* () {
+          const engine = yield* ExecutionEngineService;
+          const result = yield* Effect.promise(() =>
+            engine.resume(path.executionId, {
+              action: payload.action,
+              content: payload.content as Record<string, unknown> | undefined,
+            }),
+          );
+
+          if (!result) {
+            return yield* Effect.fail({
+              _tag: "ExecutionNotFoundError" as const,
+              executionId: path.executionId,
+            });
+          }
+
+          const formatted = formatExecuteResult(result);
+          return {
+            text: formatted.text,
+            structured: formatted.structured,
+            isError: formatted.isError,
+          };
+        }),
+      ),
+);
+```
+
+**Key patterns:**
+1. **Effect.promise** — Bridge async/await to Effect
+2. **Status branching** — Different response for completed vs paused
+3. **Error handling** — ExecutionNotFoundError returned as Effect.fail
+
+### Secrets Handlers (`handlers/secrets.ts:8-70`)
+
+```typescript
+const refToResponse = (ref) => ({
+  id: ref.id,
+  scopeId: ref.scopeId,
+  name: ref.name,
+  provider: Option.getOrUndefined(ref.provider),
+  purpose: ref.purpose,
+  createdAt: ref.createdAt.getTime(),
+});
+
+export const SecretsHandlers = HttpApiBuilder.group(
+  ExecutorApi,
+  "secrets",
+  (handlers) =>
+    handlers
+      .handle("list", ({ path }) =>
+        Effect.gen(function* () {
+          const executor = yield* ExecutorService;
+          const refs = yield* executor.secrets.list();
+          return refs.map(refToResponse);
+        }),
+      )
+      .handle("status", ({ path }) =>
+        Effect.gen(function* () {
+          const executor = yield* ExecutorService;
+          const status = yield* executor.secrets.status(path.secretId);
+          return { secretId: path.secretId, status };
+        }),
+      )
+      .handle("set", ({ path, payload }) =>
+        Effect.gen(function* () {
+          const executor = yield* ExecutorService;
+          const ref = yield* executor.secrets.set({
+            id: payload.id,
+            name: payload.name,
+            value: payload.value,
+            purpose: payload.purpose,
+            provider: payload.provider,
+          });
+          return refToResponse(ref);
+        }),
+      )
+      .handle("resolve", ({ path }) =>
+        Effect.gen(function* () {
+          const executor = yield* ExecutorService;
+          const value = yield* executor.secrets.resolve(path.secretId);
+          return { secretId: path.secretId, value };
+        }),
+      )
+      .handle("remove", ({ path }) =>
+        Effect.gen(function* () {
+          const executor = yield* ExecutorService;
+          const removed = yield* executor.secrets.remove(path.secretId);
+          return { removed };
+        }),
+      ),
+);
+```
+
+**Key patterns:**
+1. **Response mapper** — `refToResponse` transforms SDK types to API types
+2. **Option handling** — `Option.getOrUndefined` for optional provider
+3. **CRUD operations** — Full create, read, update, delete support
+
+### Handler Layer Composition (`server/main.ts:44-57`)
+
+```typescript
+const ApiBase = HttpApiBuilder.api(ExecutorApiWithPlugins).pipe(
+  Layer.provide([
+    ToolsHandlers,
+    SourcesHandlers,
+    SecretsHandlers,
+    ExecutionsHandlers,
+    ScopeHandlers,
+    OpenApiHandlersLive,
+    McpSourceHandlersLive,
+    GoogleDiscoveryHandlersLive,
+    OnePasswordHandlersLive,
+    GraphqlHandlersLive,
+  ]),
+);
+```
+
+**Key pattern:** All handler groups provided as Effect Layers to the API.
+
+---
+
+## 13. Summary
 
 The API package provides a **type-safe, composable REST API** for the Executor system:
 
@@ -494,5 +714,6 @@ The API package provides a **type-safe, composable REST API** for the Executor s
 3. **OpenAPI ready** — Auto-generated API documentation
 4. **Extensible** — Plugin groups can extend the API
 5. **Error mapping** — Domain errors mapped to HTTP status codes
+6. **Handler composition** — Effect Layers for each handler group
 
 The API layer enables **remote access** to Executor functionality while maintaining **type safety** and **documentation** through Effect Platform.
