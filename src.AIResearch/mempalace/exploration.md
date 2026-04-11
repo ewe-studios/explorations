@@ -1292,6 +1292,557 @@ For any memory system that AI writes to, audit trails are critical for detecting
 
 ---
 
+## Testing Strategy
+
+### Testing Philosophy
+
+MemPalace's Python codebase uses pytest for unit tests. The Rust version should use the standard testing approach with additional property-based testing for the AAAK parser.
+
+### Test Structure
+
+```
+mempalace-rs/
+├── crates/
+│   ├── mempalace-core/
+│   │   ├── src/
+│   │   │   ├── palace.rs
+│   │   │   ├── layers.rs
+│   │   │   └── ...
+│   │   └── tests/
+│   │       ├── palace_test.rs
+│   │       └── layers_test.rs
+│   │
+│   ├── mempalace-aaak/
+│   │   ├── src/
+│   │   │   ├── parser.rs
+│   │   │   ├── encoder.rs
+│   │   │   └── ...
+│   │   └── tests/
+│   │       ├── parser_test.rs
+│   │       └── emotion_test.rs
+│   │
+│   └── mempalace-miner/
+│       ├── src/
+│       │   ├── entity_detector.rs
+│       │   ├── room_detector.rs
+│       │   └── ...
+│       └── tests/
+│           ├── entity_test.rs
+│           └── room_test.rs
+│
+├── tests/
+│   ├── common/
+│   │   ├── mod.rs
+│   │   ├── temp_palace.rs
+│   │   └── fixtures.rs
+│   ├── knowledge_graph_test.rs
+│   ├── mining_integration_test.rs
+│   ├── search_retrieval_test.rs
+│   └── mcp_integration_test.rs
+│
+└── benches/
+    ├── mining_benchmark.rs
+    └── search_benchmark.rs
+```
+
+### Unit Testing Pattern
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+    
+    #[test]
+    fn test_palace_structure() {
+        let temp_dir = TempDir::new().unwrap();
+        let palace = Palace::new(temp_dir.path().to_path_buf());
+        
+        // Create wing
+        let wing = palace.create_wing("wing_test").unwrap();
+        
+        // Create room
+        let room = wing.create_room("auth-migration", HallType::Facts).unwrap();
+        
+        assert_eq!(room.name, "auth-migration");
+        assert_eq!(room.hall, HallType::Facts);
+    }
+    
+    #[test]
+    fn test_drawer_metadata() {
+        let metadata = DrawerMetadata {
+            wing: "wing_kai".to_string(),
+            room: "oauth-debug".to_string(),
+            hall: HallType::Events,
+            date: Some("2026-04-10".to_string()),
+            entities: vec!["Kai".to_string(), "OAuth".to_string()],
+        };
+        
+        let serialized = serde_json::to_string(&metadata).unwrap();
+        let deserialized: DrawerMetadata = serde_json::from_str(&serialized).unwrap();
+        
+        assert_eq!(deserialized.wing, metadata.wing);
+        assert_eq!(deserialized.entities, metadata.entities);
+    }
+    
+    #[test]
+    fn test_knowledge_graph_triple() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("knowledge_graph.sqlite3");
+        let kg = KnowledgeGraph::new(&db_path).unwrap();
+        
+        // Add temporal fact
+        kg.add_triple(
+            "Max",
+            "child_of",
+            "Alice",
+            Some(chrono::NaiveDate::from_ymd_opt(2015, 4, 1).unwrap()),
+        ).unwrap();
+        
+        // Query
+        let triples = kg.query_entity("Max", None).unwrap();
+        assert!(triples.iter().any(|t| t.subject == "Max" && t.predicate == "child_of"));
+    }
+    
+    #[test]
+    fn test_knowledge_graph_temporal_query() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("knowledge_graph.sqlite3");
+        let kg = KnowledgeGraph::new(&db_path).unwrap();
+        
+        // Add fact with validity period
+        kg.add_triple(
+            "Max",
+            "does",
+            "swimming",
+            Some(chrono::NaiveDate::from_ymd_opt(2025, 1, 1).unwrap()),
+        ).unwrap();
+        
+        // Invalidate
+        kg.invalidate(
+            "Max",
+            "does",
+            "swimming",
+            Some(chrono::NaiveDate::from_ymd_opt(2026, 2, 15).unwrap()),
+        ).unwrap();
+        
+        // Query as of January 2026 (should include swimming)
+        let jan_2026 = chrono::NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+        let triples = kg.query_entity("Max", Some(jan_2026)).unwrap();
+        assert!(triples.iter().any(|t| t.predicate == "does" && t.object == "swimming"));
+        
+        // Query as of March 2026 (should NOT include swimming)
+        let mar_2026 = chrono::NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
+        let triples = kg.query_entity("Max", Some(mar_2026)).unwrap();
+        assert!(!triples.iter().any(|t| t.predicate == "does" && t.object == "swimming"));
+    }
+}
+```
+
+### AAAK Parser Property-Based Testing
+
+```rust
+use proptest::prelude::*;
+
+proptest! {
+    #[test]
+    fn test_aaak_zettel_parse(
+        id in "[A-Z0-9]{4}",
+        entities in prop::collection::vec("[a-zA-Z]+", 1..5),
+        weight in 0.0..=1.0f32,
+    ) {
+        let entities_str = entities.join(",");
+        let zettel_line = format!(
+            "Z{}:{}|topic|\"quote\"|{}|vul|TECHNICAL",
+            id, entities_str, weight
+        );
+        
+        // Should parse without crashing
+        let result = parse_zettel(&zettel_line);
+        
+        // If it parses, verify structure
+        if let Ok((_, zettel)) = result {
+            assert_eq!(zettel.id, format!("Z{}", id));
+            assert!((zettel.weight - weight).abs() < 0.001);
+        }
+    }
+    
+    #[test]
+    fn test_emotion_code_round_trip(
+        code in prop::sample::select(&[
+            "vul", "joy", "fear", "trust", "grief", "wonder",
+            "rage", "love", "hope", "despair", "peace", "humor",
+        ])
+    ) {
+        let emotion = Emotion::from_code(code).unwrap();
+        let encoded = emotion.to_code();
+        assert_eq!(encoded, code);
+    }
+}
+```
+
+### Integration Testing with Temp Palace
+
+```rust
+// tests/common/temp_palace.rs
+use std::fs;
+use std::path::PathBuf;
+use tempfile::TempDir;
+
+pub struct TempPalace {
+    _dir: TempDir,
+    pub path: PathBuf,
+}
+
+impl TempPalace {
+    pub fn new() -> Self {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("palace");
+        fs::create_dir_all(&path).unwrap();
+        
+        // Create standard palace structure
+        fs::create_dir_all(path.join("chroma")).unwrap();
+        fs::create_dir_all(path.join("wal")).unwrap();
+        
+        Self { _dir: dir, path }
+    }
+    
+    pub fn create_wing(&self, name: &str) {
+        let wing_path = self.path.join(name);
+        fs::create_dir_all(&wing_path).unwrap();
+        
+        // Create standard halls
+        for hall in &["hall_facts", "hall_events", "hall_discoveries"] {
+            fs::create_dir_all(wing_path.join(hall)).unwrap();
+        }
+    }
+    
+    pub fn create_drawer(&self, wing: &str, hall: &str, content: &str) {
+        use uuid::Uuid;
+        let id = Uuid::new_v4();
+        let drawer_path = self.path.join(wing).join(hall).join(format!("{}.md", id));
+        fs::write(&drawer_path, content).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn test_mining_integration() {
+    let temp_palace = TempPalace::new();
+    
+    // Create wings
+    temp_palace.create_wing("wing_kai");
+    temp_palace.create_wing("wing_project_alpha");
+    
+    // Create test drawers
+    temp_palace.create_drawer(
+        "wing_kai",
+        "hall_facts",
+        "Kai decided to migrate auth to Clerk after evaluating Auth0."
+    );
+    
+    // Build miner
+    let miner = Miner::new(&temp_palace.path).unwrap();
+    
+    // Mine content
+    let result = miner.mine_text(
+        "wing_kai",
+        "hall_facts",
+        "Kai spent 3 hours debugging OAuth token refresh. Found root cause: token expiry not handled.",
+        MiningMode::General,
+    ).await.unwrap();
+    
+    assert!(!result.rooms.is_empty());
+    assert!(result.rooms.iter().any(|r| r.contains("oauth") || r.contains("auth")));
+}
+```
+
+### Search & Retrieval Testing
+
+```rust
+#[tokio::test]
+async fn test_search_by_wing_room() {
+    let temp_palace = TempPalace::new();
+    temp_palace.create_wing("wing_auth");
+    
+    // Create test content
+    temp_palace.create_drawer(
+        "wing_auth",
+        "hall_facts",
+        "Team decided to use Clerk for authentication."
+    );
+    temp_palace.create_drawer(
+        "wing_auth",
+        "hall_events",
+        "Kai debugged OAuth token refresh issue."
+    );
+    
+    // Initialize search
+    let chroma = ChromaIndex::new(&temp_palace.path).await.unwrap();
+    
+    // Search filtered by wing
+    let results = chroma.search(
+        "authentication decision",
+        Some("wing_auth"),
+        None,
+        5,
+    ).await.unwrap();
+    
+    assert!(!results.is_empty());
+    assert!(results[0].content.contains("Clerk"));
+}
+```
+
+### Running Tests
+
+```bash
+# Run all tests
+cargo test
+
+# Run with output
+cargo test -- --nocapture
+
+# Run AAAK parser tests
+cargo test -p mempalace-aaak
+
+# Run integration tests
+cargo test --test '*'
+
+# Run with coverage
+cargo tarpaulin --out Html
+
+# Benchmark
+cargo bench
+```
+
+---
+
+## Deployment & Operations
+
+### CI/CD Pipeline
+
+```yaml
+# .github/workflows/ci.yml
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-action@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Run clippy
+        run: cargo clippy --all-targets -- -D warnings
+  
+  test:
+    runs-on: ubuntu-latest
+    services:
+      chromadb:
+        image: chromadb/chroma:latest
+        ports:
+          - 8000:8000
+    
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-action@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run tests
+        run: cargo test --all-features
+        env:
+          CHROMA_URL: http://localhost:8000
+  
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-action@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mempalace-linux
+          path: target/release/mempalace
+```
+
+### Python CLI Compatibility
+
+For backward compatibility with the Python version:
+
+```rust
+// mempalace-rs should support the same CLI commands:
+// mempalace mine ~/chats/ --mode convos
+// mempalace wake-up
+// mempalace search "query"
+
+use clap::{Parser, Subcommand};
+
+#[derive(Parser)]
+#[command(name = "mempalace")]
+#[command(about = "AI memory system")]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Mine conversations and projects
+    Mine {
+        #[arg(required = true)]
+        path: String,
+        
+        #[arg(long, default_value = "general")]
+        mode: String,
+    },
+    
+    /// Load context for AI
+    WakeUp,
+    
+    /// Search memories
+    Search {
+        #[arg(required = true)]
+        query: String,
+    },
+}
+```
+
+### MCP Server Distribution
+
+```rust
+// The MCP server can be distributed as:
+// 1. Standalone binary: mempalace-mcp
+// 2. Python module wrapper using PyO3
+
+// users install via:
+// cargo install mempalace-mcp
+// or
+// pip install mempalace-mcp (if PyO3 wrapper)
+```
+
+---
+
+## Migration Guide
+
+### Phase 1: Core Palace (Weeks 1-4)
+
+**Goal**: Working palace structure with ChromaDB
+
+**Scope**:
+- `mempalace-types` - Shared types (Palace, Wing, Room, Drawer)
+- `mempalace-config` - Configuration loading
+- `mempalace-palace` - Palace structure
+- `mempalace-chroma` - ChromaDB integration
+
+**Milestones**:
+1. Week 1: Project setup, types, config
+2. Week 2: Palace structure, wings/rooms
+3. Week 3: ChromaDB integration
+4. Week 4: Testing
+
+**Deliverable**: Palace can store and retrieve drawers
+
+### Phase 2: Knowledge Graph (Weeks 5-8)
+
+**Goal**: SQLite knowledge graph with temporal triples
+
+**Scope**:
+- `mempalace-kg` - Knowledge graph with SQLite
+- `mempalace-miner` - Entity detection, room classification
+- `mempalace-search` - Search and retrieval
+
+**Milestones**:
+1. Week 5: SQLite schema, triple storage
+2. Week 6: Entity detection
+3. Week 7: Room classification
+4. Week 8: Search integration
+
+**Deliverable**: Knowledge graph with temporal queries
+
+### Phase 3: AAAK Dialect (Weeks 9-10)
+
+**Goal**: AAAK parser and encoder
+
+**Scope**:
+- `mempalace-aaak` - AAAK parsing, encoding
+
+**Milestones**:
+1. Week 9: Parser with nom
+2. Week 10: Encoder, emotion codes
+
+**Deliverable**: AAAK encoding/decoding
+
+### Phase 4: MCP Server & CLI (Weeks 11-14)
+
+**Goal**: Production CLI and MCP server
+
+**Scope**:
+- `mempalace-cli` - CLI application
+- `mempalace-mcp` - MCP server
+
+**Milestones**:
+1. Week 11: CLI structure
+2. Week 12: Mining commands
+3. Week 13: MCP server
+4. Week 14: Testing, documentation
+
+**Deliverable**: Production release v0.1.0
+
+---
+
+## Performance Expectations
+
+| Metric | Python | Rust | Improvement |
+|--------|--------|------|-------------|
+| **Startup time** | ~500ms | ~50ms | 10x faster |
+| **Memory usage** | ~200MB | ~40MB | 5x less |
+| **Mining speed** | ~100 docs/sec | ~1000 docs/sec | 10x faster |
+| **Search latency** | ~50ms | ~5ms | 10x faster |
+| **Binary size** | ~50MB (venv) | ~20MB | 2.5x smaller |
+
+### Benchmark Suite
+
+```rust
+// benches/mining_benchmark.rs
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
+
+fn criterion_benchmark(c: &mut Criterion) {
+    let text = "Kai debugged OAuth token refresh for 3 hours...";
+    
+    c.bench_function("entity_detection", |b| {
+        b.iter(|| {
+            detect_entities(black_box(text))
+        })
+    });
+    
+    c.bench_function("room_classification", |b| {
+        b.iter(|| {
+            classify_room(black_box(text))
+        })
+    });
+}
+
+criterion_group!(benches, criterion_benchmark);
+criterion_main!(benches);
+```
+
+---
+
 ## Open Questions
 
 1. **AAAK Future**: Will AAAK-encoded closets improve recall beyond raw mode?

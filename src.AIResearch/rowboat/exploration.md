@@ -1376,6 +1376,507 @@ Simple cron expressions for scheduling:
 
 ---
 
+## Testing Strategy
+
+### Testing Philosophy
+
+Rowboat's TypeScript/JavaScript codebase uses a combination of unit tests, integration tests, and E2E tests. The Rust version should match this coverage while leveraging Rust's type system for compile-time guarantees.
+
+### Test Structure
+
+```
+rowboat-rs/
+├── crates/
+│   ├── rowboat-core/
+│   │   ├── src/
+│   │   │   ├── agents/
+│   │   │   ├── knowledge/
+│   │   │   └── ...
+│   │   └── tests/
+│   │       ├── agent_schedule_test.rs
+│   │       └── knowledge_graph_test.rs
+│   │
+│   └── rowboat-knowledge/
+│       ├── src/
+│       │   ├── markdown_parser.rs
+│       │   ├── backlink_index.rs
+│       │   └── ...
+│       └── tests/
+│           ├── frontmatter_test.rs
+│           └── backlink_test.rs
+│
+├── tests/
+│   ├── common/
+│   │   ├── mod.rs
+│   │   ├── temp_vault.rs
+│   │   └── mock_oauth.rs
+│   ├── knowledge_graph_integration_test.rs
+│   ├── agent_execution_test.rs
+│   ├── oauth_flow_test.rs
+│   └── mcp_integration_test.rs
+│
+└── e2e/
+    └── full_workflow_test.rs
+```
+
+### Unit Testing Pattern
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+    
+    #[test]
+    fn test_frontmatter_parsing() {
+        let content = r#"---
+type: person
+company: Acme Corp
+role: Engineering Manager
+tags:
+  - engineering
+  - decision-maker
+---
+
+# Alex Johnson
+
+Content here...
+"#;
+        
+        let (frontmatter, body) = Note::parse_frontmatter(content).unwrap();
+        
+        assert_eq!(frontmatter.note_type, "person");
+        assert_eq!(frontmatter.company, Some("Acme Corp".to_string()));
+        assert_eq!(frontmatter.tags, vec!["engineering", "decision-maker"]);
+        assert!(body.contains("Alex Johnson"));
+    }
+    
+    #[test]
+    fn test_backlink_extraction() {
+        let content = "See [[Project Alpha]] and [[Meeting Notes]] for context.";
+        let backlinks = Note::extract_backlinks(content);
+        
+        assert_eq!(backlinks, vec!["Project Alpha", "Meeting Notes"]);
+    }
+    
+    #[test]
+    fn test_backlink_index_building() {
+        let mut index = BacklinkIndex::new();
+        let notes = vec![
+            ("note-a".to_string(), vec!["note-b".to_string()]),
+            ("note-c".to_string(), vec!["note-b".to_string(), "note-a".to_string()]),
+        ];
+        
+        index.build(&notes);
+        
+        let backlinks_to_b = index.get_backlinks("note-b");
+        assert_eq!(backlinks_to_b.len(), 2);
+        assert!(backlinks_to_b.contains(&&"note-a".to_string()));
+        assert!(backlinks_to_b.contains(&&"note-c".to_string()));
+    }
+    
+    #[tokio::test]
+    async fn test_agent_schedule_cron() {
+        let schedule = AgentSchedule {
+            id: "test-daily".to_string(),
+            name: "Daily Digest".to_string(),
+            cron_expression: "0 9 * * 1-5".to_string(),
+            prompt: "Generate daily digest".to_string(),
+            output_note: "Daily/Digest.md".to_string(),
+            enabled: true,
+        };
+        
+        let cron_schedule = schedule.parse_cron().unwrap();
+        let now = chrono::Utc::now();
+        
+        // Verify cron parses correctly
+        assert!(cron_schedule.seconds_from(now).next().is_some());
+    }
+}
+```
+
+### Integration Testing with Temp Vault
+
+```rust
+// tests/common/temp_vault.rs
+use std::fs;
+use std::path::PathBuf;
+use tempfile::TempDir;
+
+pub struct TempVault {
+    _dir: TempDir,
+    pub path: PathBuf,
+}
+
+impl TempVault {
+    pub fn new() -> Self {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+        
+        // Create standard vault structure
+        fs::create_dir_all(path.join("People")).unwrap();
+        fs::create_dir_all(path.join("Projects")).unwrap();
+        fs::create_dir_all(path.join("Meetings")).unwrap();
+        
+        Self { _dir: dir, path }
+    }
+    
+    pub fn create_note(&self, folder: &str, name: &str, content: &str) {
+        let path = self.path.join(folder).join(format!("{}.md", name));
+        fs::write(path, content).unwrap();
+    }
+    
+    pub fn read_note(&self, folder: &str, name: &str) -> String {
+        let path = self.path.join(folder).join(format!("{}.md", name));
+        fs::read_to_string(path).unwrap()
+    }
+}
+
+#[tokio::test]
+async fn test_knowledge_graph_query() {
+    let temp_vault = TempVault::new();
+    
+    // Create test notes
+    temp_vault.create_note("People", "Alex", r#"---
+type: person
+company: Acme
+---
+
+# Alex Johnson
+Engineering Manager. See [[Project Alpha]].
+"#);
+    
+    temp_vault.create_note("Projects", "Alpha", r#"---
+type: project
+status: active
+---
+
+# Project Alpha
+Led by [[Alex Johnson]].
+"#);
+    
+    // Build knowledge graph
+    let kg = KnowledgeGraph::load(&temp_vault.path).await.unwrap();
+    
+    // Query backlinks
+    let alex_backlinks = kg.get_backlinks("Alex").await;
+    assert!(alex_backlinks.iter().any(|n| n.name == "Project Alpha"));
+}
+```
+
+### OAuth Flow Testing with Mock Server
+
+```rust
+// tests/common/mock_oauth.rs
+use wiremock::{MockServer, Mock, ResponseTemplate};
+use wiremock::matchers::{method, path, header};
+
+pub async fn create_mock_google_oauth() -> MockServer {
+    let server = MockServer::start().await;
+    
+    // Mock device code endpoint
+    Mock::given(method("POST"))
+        .and(path("/o/oauth2/device/code"))
+        .respond_with(ResponseTemplate::new(200)
+            .set_body_json(serde_json::json!({
+                "device_code": "test-device-code",
+                "user_code": "ABCD-1234",
+                "verification_url": "https://devices.google.com",
+                "expires_in": 900,
+                "interval": 5
+            }))
+        )
+        .mount(&server)
+        .await;
+    
+    // Mock token endpoint (pending then success)
+    Mock::given(method("POST"))
+        .and(path("/oauth2/token"))
+        .respond_with(ResponseTemplate::new(200)
+            .set_body_json(serde_json::json!({
+                "access_token": "ya29.test-token",
+                "refresh_token": "1//0gZ.test-refresh",
+                "token_type": "Bearer",
+                "expires_in": 3600
+            }))
+        )
+        .mount(&server)
+        .await;
+    
+    server
+}
+
+#[tokio::test]
+async fn test_oauth_device_flow() {
+    let mock_server = create_mock_google_oauth().await;
+    
+    let client = OAuthClient::new(
+        "test-client-id",
+        &mock_server.uri(),
+        &mock_server.uri(),
+    );
+    
+    // Request device code
+    let device_response = client.request_device_code().await.unwrap();
+    assert_eq!(device_response.user_code, "ABCD-1234");
+    
+    // Poll for token (will succeed immediately in mock)
+    let token_response = client.poll_device_token(&device_response.device_code).await.unwrap();
+    assert_eq!(token_response.access_token, "ya29.test-token");
+}
+```
+
+### Property-Based Testing for Frontmatter
+
+```rust
+use proptest::prelude::*;
+
+proptest! {
+    #[test]
+    fn test_frontmatter_round_trip(
+        note_type in "[a-z]+",
+        company in "[a-zA-Z ]+",
+        tag_count in 1..5usize,
+    ) {
+        let tags: Vec<String> = (0..tag_count)
+            .map(|_| "[a-z]+".prop_map(|s| s.to_string()).sample())
+            .collect();
+        
+        let frontmatter = NoteFrontmatter {
+            note_type,
+            company: Some(company),
+            tags,
+            created: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
+            backlinks: vec![],
+        };
+        
+        let yaml = serde_yaml::to_string(&frontmatter).unwrap();
+        let parsed: NoteFrontmatter = serde_yaml::from_str(&yaml).unwrap();
+        
+        assert_eq!(parsed.note_type, frontmatter.note_type);
+        assert_eq!(parsed.company, frontmatter.company);
+        assert_eq!(parsed.tags, frontmatter.tags);
+    }
+}
+```
+
+### Running Tests
+
+```bash
+# Run all tests
+cargo test
+
+# Run with output
+cargo test -- --nocapture
+
+# Run specific test
+cargo test test_frontmatter_parsing
+
+# Run integration tests only
+cargo test --test '*'
+
+# Run with coverage (requires cargo-tarpaulin)
+cargo tarpaulin --out Html
+
+# Generate test coverage report
+cargo llvm-cov --html
+```
+
+---
+
+## Deployment & Operations
+
+### CI/CD Pipeline
+
+```yaml
+# .github/workflows/ci.yml
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-action@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Run clippy
+        run: cargo clippy --all-targets -- -D warnings
+  
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-action@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev libxcb1-dev
+      - name: Run tests
+        run: cargo test --all-features
+  
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-action@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rowboat-${{ matrix.os }}
+          path: target/release/rowboat
+```
+
+### Tauri App Distribution
+
+```rust
+// tauri.conf.json
+{
+  "package": {
+    "productName": "Rowboat",
+    "version": "0.1.0"
+  },
+  "build": {
+    "beforeBuildCommand": "cargo build --release",
+    "devPath": "http://localhost:5173",
+    "distDir": "../dist"
+  },
+  "tauri": {
+    "bundle": {
+      "active": true,
+      "targets": ["deb", "appimage", "msi", "dmg"],
+      "identifier": "com.rowboat.app",
+      "icon": ["icons/icon.ico", "icons/icon.png"]
+    }
+  }
+}
+```
+
+### Release Process
+
+```bash
+# Bump version
+cargo semver-release minor
+
+# Build release
+cargo build --release
+
+# Create GitHub release
+gh release create v0.1.0 \
+  --title "Rowboat v0.1.0" \
+  --notes "Initial Rust release" \
+  target/release/rowboat
+```
+
+---
+
+## Migration Guide
+
+### Phase 1: Core Knowledge Graph (Weeks 1-4)
+
+**Goal**: Working knowledge graph with Markdown parsing
+
+**Scope**:
+- `rowboat-types` - Shared types
+- `rowboat-config` - Configuration loading
+- `rowboat-knowledge` - Markdown parsing, frontmatter, backlinks
+- `rowboat-chroma` - ChromaDB integration
+
+**Milestones**:
+1. Week 1: Project setup, types, config
+2. Week 2: Markdown parser, frontmatter
+3. Week 3: Backlink extraction, index
+4. Week 4: ChromaDB integration, testing
+
+**Deliverable**: Knowledge graph can parse vault and query backlinks
+
+### Phase 2: Agent System (Weeks 5-8)
+
+**Goal**: Agent scheduling and execution
+
+**Scope**:
+- `rowboat-agents` - Agent types, scheduling
+- `rowboat-runs` - Run execution
+- `rowboat-models` - LLM providers (OpenAI, Anthropic, Ollama)
+
+**Milestones**:
+1. Week 5: Agent schedule parsing (cron)
+2. Week 6: LLM provider abstraction
+3. Week 7: Agent execution loop
+4. Week 8: Integration testing
+
+**Deliverable**: Scheduled agents can run and update vault
+
+### Phase 3: OAuth & Integrations (Weeks 9-12)
+
+**Goal**: Google/Microsoft OAuth, Composio, MCP
+
+**Scope**:
+- `rowboat-auth` - OAuth flows
+- `rowboat-composio` - Composio integration
+- `rowboat-mcp` - MCP client
+- `rowboat-voice` - Deepgram, ElevenLabs
+
+**Milestones**:
+1. Week 9: OAuth Device Flow
+2. Week 10: Composio handler
+3. Week 11: MCP client
+4. Week 12: Voice processing
+
+**Deliverable**: Full integration parity
+
+### Phase 4: Tauri Desktop App (Weeks 13-16)
+
+**Goal**: Desktop application with UI
+
+**Scope**:
+- `rowboat-app` - Tauri app
+- React/TypeScript UI (reuse existing)
+- IPC bridge
+
+**Milestones**:
+1. Week 13: Tauri setup, basic window
+2. Week 14: IPC handlers
+3. Week 15: UI integration
+4. Week 16: Polish, release
+
+**Deliverable**: Production release v0.1.0
+
+---
+
+## Performance Expectations
+
+| Metric | TypeScript (Electron) | Rust (Tauri) | Improvement |
+|--------|----------------------|--------------|-------------|
+| **Startup time** | ~3000ms | ~500ms | 6x faster |
+| **Memory usage** | ~400MB | ~80MB | 5x less |
+| **Binary size** | ~150MB | ~25MB | 6x smaller |
+| **Markdown parsing** | ~50ms/file | ~5ms/file | 10x faster |
+| **Backlink index** | ~200ms | ~20ms | 10x faster |
+
+---
+
 ## Open Questions
 
 1. **Vector DB Choice**: Why ChromaDB over alternatives like Qdrant or Weaviate?
