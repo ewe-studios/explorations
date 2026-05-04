@@ -309,6 +309,16 @@ python3 build.py graphify                      # build one project
 - Copies shared `styles.css` on first run
 - Idempotent (safe to re-run)
 
+## Critical Quality Warning: Depth Over Brevity
+
+**This is the most common failure mode: explorations that are too light.** A 200-line markdown file for a large, multi-file project is unacceptable. The purpose of exploration is to **teach** — a reader should be able to understand the project deeply without reading the source. That means:
+
+- **Every file matters.** Read every source file. Document every significant function, type, algorithm, and data structure.
+- **No summaries where detail is required.** Don't say "the parser handles expressions" — show the expression grammar, the precedence table, the AST nodes, the evaluation order.
+- **Include the Aha moments from the actual code,** not guessed ones. Read the implementation, find the clever bit, document it.
+- **Length is not a constraint.** If a project needs 50 pages to explain properly, write 50 pages. If it needs 200, write 200. Short documents are a failure of thoroughness, not a virtue.
+- **Grandfather review is mandatory, not optional.** Every exploration must be verified against the source before being marked complete.
+
 ## Checklist: Before Marking a Document Complete
 
 - [ ] Every function name matches the source code

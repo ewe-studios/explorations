@@ -1,41 +1,39 @@
 # Todo - Remaining Exploration Tasks
 
-**Last Updated:** 2026-04-05
+## CRITICAL: Depth Requirement
 
----
+**ALL explorations must be deep and thorough.** A 200-line markdown for a large, multi-file project is unacceptable. The purpose of exploration is to **teach** — a reader should understand the project deeply without reading source code. Read every file. Document every significant function, type, algorithm, and data structure. Include actual code snippets with file paths. Length is not a constraint — write as much as needed.
 
-## Pending Explorations
+## Sequential Task List
 
-1. [ ] /home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.QwenCode
-1. It needs to be very deep and detailed
-1. It should be created in a `./[provided-parent-directory-name-above]` directory and any sub-directory should exist under this directory and nowhere else
-1. Include an additional "what this looks like in Rust" and "what a production grade version looks like"
-1. Do a good cover and add fundamental explainers for the algorithms, concepts used, how the WASM web rendering works, what graphics and SVG/vector algorithms
-1. How do we replicate the C++ implementation of rendering, animation, vector graphics, optimizations in the project in Rust, what we need to keep in mind
-1. How do we build a resilient storage system like this for an inexperienced software engineer1. How it performs networking and connecting agents across platforms like signal, whatsapp and the coding agent securely, how it generates the certificate it uses, how it finds and allows users continue conversation from devices.
+Complete these in order. Do NOT skip grandfather review. Do NOT produce shallow summaries.
 
-1. [ ] /home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.AIResearch/rowboat
-1. It needs to be very deep and detailed
-1. It should be created in a `./[provided-parent-directory-name-above]` directory and any sub-directory should exist under this directory and nowhere else
-1. Include an additional "what this looks like in Rust" and "what a production grade version looks like"
-1. Do a good cover and add fundamental explainers for the algorithms, concepts used, how the WASM web rendering works, what graphics and SVG/vector algorithms
-1. How do we replicate the C++ implementation of rendering, animation, vector graphics, optimizations in the project in Rust, what we need to keep in mind
-1. How do we build a resilient storage system like this for an inexperienced software engineer
-1. How do we build a resilient storage system like this for an inexperienced software engineer1. How it performs networking and connecting agents across platforms like signal, whatsapp and the coding agent securely, how it generates the certificate it uses, how it finds and allows users continue conversation from devices.
+### Phase 1: src.datastar — Rewrite from scratch
 
-1. [ ] /home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.AIResearch/mempalace
-1. It needs to be very deep and detailed
-1. It should be created in a `./[provided-parent-directory-name-above]` directory and any sub-directory should exist under this directory and nowhere else
-1. Include an additional "what this looks like in Rust" and "what a production grade version looks like"
-1. Do a good cover and add fundamental explainers for the algorithms, concepts used, how the WASM web rendering works, what graphics and SVG/vector algorithms
-1. How do we replicate the C++ implementation of rendering, animation, vector graphics, optimizations in the project in Rust, what we need to keep in mind
-1. How do we build a resilient storage system like this for an inexperienced software engineer
-1. How do we build a resilient storage system like this for an inexperienced software engineer1. How it performs networking and connecting agents across platforms like signal, whatsapp and the coding agent securely, how it generates the certificate it uses, how it finds and allows users continue conversation from devices.
+- [x] Initial exploration (shallow — needs full rewrite)
+- [ ] **1.1:** Read every source file in `/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.datastar/datastar/` — document every package, every type, every function, every algorithm
+- [ ] **1.2:** Rewrite `./src.datastar/datastar/` documentation — as many documents and as much content as needed to fully teach the project. Output goes inside `./src.datastar/datastar/` with its own `spec.md`, `markdown/`, `html/`.
+- [ ] **1.3:** Grandfather review — verify every name, number, and flow against source
+- [ ] **1.4:** Apply all grandfather review fixes
+- [ ] **1.5:** Rebuild HTML with build.py, verify all pages render
+- [ ] **1.6:** Commit
 
----
+### Phase 2: src.orbitinghail — Rewrite from scratch
 
-## Completed Explorations Summary
+- [x] Initial exploration (shallow — needs full rewrite)
+- [ ] **2.1:** Read every source file in `/home/darkvoid/Boxxed/@formulas/src.rust/src.orbitinghail/` — document every crate, every type, every algorithm
+- [ ] **2.2:** Rewrite `./src.orbitinghail/orbitinghail/` documentation — as many documents and as much content as needed. Output goes inside `./src.orbitinghail/orbitinghail/` with its own `spec.md`, `markdown/`, `html/`.
+- [ ] **2.3:** Grandfather review — verify every name, number, and flow against source
+- [ ] **2.4:** Apply all grandfather review fixes
+- [ ] **2.5:** Rebuild HTML with build.py, verify all pages render
+- [ ] **2.6:** Commit
 
-**Total: 53+ projects completed with 405+ documents**
+### Phase 3: src.ui — Rewrite from scratch + cover all 11 sub-projects
 
----
+- [x] Initial exploration (shallow — needs full rewrite)
+- [ ] **3.1:** Read every source file in `/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.ui/` — all 12 sub-projects
+- [ ] **3.2:** Rewrite `./src.ui/ui/` documentation — as many documents and as much content as needed. Output goes inside `./src.ui/ui/` with its own `spec.md`, `markdown/`, `html/`.
+- [ ] **3.3:** Grandfather review — verify every name, number, and flow against source
+- [ ] **3.4:** Apply all grandfather review fixes
+- [ ] **3.5:** Rebuild HTML with build.py, verify all pages render
+- [ ] **3.6:** Commit

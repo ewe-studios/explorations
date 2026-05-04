@@ -61,28 +61,43 @@ This repository uses custom agents to drive systematic project explorations and 
 
 ## Project Structure Convention
 
-Explorations are written to this directory using the required structure below (not the target project directory):
+Each project's exploration lives in a subdirectory named after the project itself within the parent exploration directory. The source directory name determines the nested path:
 
 ```
-[project-name]/
-  exploration.md              # Main exploration document
-  rust-revision.md            # Rust revision agent output (if applicable)
-  wasm-render-deep-dive.md    # Deep dive documents (optional)
-  backend-deep-dive.md        # Deep dive documents (optional)
-  frontend-deep-dive.md       # Deep dive documents (optional)
-  other_directory/
+[src.datastar]/                    ← parent exploration directory
+  datastar/                        ← project subdirectory (matches source name)
+    exploration.md
+    rust-revision.md
+    spec.md
+    markdown/
+      README.md
+      00-overview.md
+      ...
+    html/
+      index.html
+      *.html
+  other_project/                   ← another project in the same parent
     its_own_exploration.md
-    other_examples/
-      other_example1.md
-  examples/
-    example-1.md
-    example-2.md
     ...
+
+[src.orbitinghail]/
+  orbitinghail/
+    exploration.md
+    spec.md
+    markdown/
+    html/
+
+[src.ui]/
+  ui/
+    exploration.md
+    spec.md
+    markdown/
+    html/
 ```
 
 When you are provided a directory of directories (i.e rather than a git directory but a directory that contains other projects and their own specific git repositories), dont just create the exploration in the root, rather create a directory for all the exploration and then create the individual directory explorations per directory in there for organisation.
 
-Deep dive files should be created for complex subsystems (Wasm, backend RPC, frontend architecture) and referenced from the main `exploration.md`.
+The parent directory contains a central `build.py` and generates a central `html/index.html` that links to all project subdirectories.
 
 ## Workflow
 
