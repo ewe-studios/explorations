@@ -1,6 +1,6 @@
 # Datastar -- DOM Morphing
 
-The DOM morphing algorithm in `patchElements.ts` (730 lines) is Datastar's approach to updating the DOM while preserving component state. Rather than innerHTML replacement (which destroys all state), morphing matches old and new nodes by ID and tag name, updating only what changed.
+The DOM morphing algorithm in `patchElements.ts` (729 lines) is Datastar's approach to updating the DOM while preserving component state. Rather than innerHTML replacement (which destroys all state), morphing matches old and new nodes by ID and tag name, updating only what changed.
 
 **Aha:** Datastar's morph algorithm uses ID-set matching — a bottom-up algorithm that builds a map of "which IDs live under which element" and uses this to find the best match for each new node among old siblings. This is more precise than simple tag-name matching (like morphdom's soft match) because it considers the semantic structure of the tree, not just the immediate node.
 

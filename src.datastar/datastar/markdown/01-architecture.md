@@ -10,7 +10,7 @@ library/src/
 │   ├── engine.ts    # Plugin registration, genRx compiler, mutation observer (551 lines)
 │   ├── signals.ts   # Reactive signal system (781 lines)
 │   ├── consts.ts    # Delimiters, event names
-│   └── types.ts     # Full TypeScript surface (137 lines)
+│   └── types.ts     # Full TypeScript surface (136 lines)
 ├── plugins/         # Behavior plugins (23 files)
 │   ├── actions/     # 4 action plugins: fetch, peek, setAll, toggleAll
 │   ├── attributes/  # 17 attribute plugins: attr, bind, class, computed,
@@ -90,10 +90,10 @@ import '@plugins/watchers/patchElements'
 import '@plugins/watchers/patchSignals'
 ```
 
-Each plugin file calls `action()`, `attribute()`, or `watcher()` at module load time. These registration functions (defined in `engine.ts:316-324`) add the plugin to a `Map<string, Plugin>`:
+Each plugin file calls `action()`, `attribute()`, or `watcher()` at module load time. These registration functions add the plugin to a `Map<string, Plugin>`:
 
 ```typescript
-// engine/engine.ts:316-324
+// engine/engine.ts:40-42 (Maps), 89-91 (action), 66-87 (attribute), 113-115 (watcher)
 const actionPlugins = new Map<string, ActionPlugin>()
 const attributePlugins = new Map<string, AttributePlugin>()
 const watcherPlugins = new Map<string, WatcherPlugin>()

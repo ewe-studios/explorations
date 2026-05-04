@@ -25,7 +25,8 @@ A reader should understand:
 6. How the DOM morphing algorithm preserves state (ID-set matching, pantry pattern, soft matching)
 7. How watchers (patchElements, patchSignals) integrate with the engine
 8. How to replicate these systems in Rust
-9. What a production-grade version looks like
+9. How the Rust Server SDK generates typed SSE events (datastar-rust crate)
+10. What a production-grade version looks like
 
 ## Documentation Structure
 
@@ -47,7 +48,8 @@ src.datastar/datastar/
 │   ├── 10-utility-systems.md
 │   ├── 11-rust-equivalents.md
 │   ├── 12-production-patterns.md
-│   └── 13-web-tooling.md
+│   ├── 13-web-tooling.md
+│   └── 14-datastar-rust-sdk.md
 ├── html/
 │   ├── index.html
 │   ├── styles.css
@@ -73,9 +75,10 @@ src.datastar/datastar/
 | 13 | Write 11-rust-equivalents.md | DONE |
 | 14 | Write 12-production-patterns.md | DONE |
 | 15 | Write 13-web-tooling.md | DONE |
+| 15 | Write 14-datastar-rust-sdk.md | DONE |
 | 16 | Write README.md (index) | DONE |
 | 17 | Generate HTML with build.py | DONE |
-| 18 | Grandfather Review | DONE |
+| 18 | Grandfather Review + Fix Gaps | DONE |
 
 ## Build System
 
