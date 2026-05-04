@@ -1,81 +1,48 @@
-# Repo Explorations
+# Documentation
 
-A repository for systematic codebase explorations and architectural documentation generated using custom agents.
+Codebase documentation and reference docs. Organized by project.
 
-## Purpose
+## Documented Projects
 
-This repository stores detailed exploration documents for various codebases, providing:
+| Project | What It Is | Docs |
+|---------|-----------|------|
+| [Pi](./pi/markdown/) | Modular AI agent framework (TypeScript, 7 packages) | [Overview](./pi/markdown/00-overview.md), [Architecture](./pi/markdown/01-architecture.md), [Tool System](./pi/markdown/09-tool-system.md) |
+| [Hermes](./hermes/markdown/) | Self-improving AI agent (Python, 40+ tools, 10+ platforms) | [Overview](./hermes/markdown/00-overview.md), [Architecture](./hermes/markdown/01-architecture.md), [Data Flow](./hermes/markdown/11-data-flow.md) |
+| [markdown.engineering](./markdown_engineering/) | Site analysis + build-your-own guide | [Overview](./markdown_engineering/00-overview.md), [Build Guide](./markdown_engineering/build-your-own/00-architecture.md) |
 
-- Comprehensive architecture documentation
-- Deep dives into specific subsystems
-- Cross-reference materials for engineering onboarding
-- Foundation for Rust translation initiatives
+## Rendered HTML
 
-## Structure
+Each project has a `html/` directory with browser-ready HTML generated from markdown:
 
-Each explored project has its own directory:
+- [Pi HTML](./pi/html/index.html) -- 14 pages with Mermaid diagrams, dark/light theme
+- [Hermes HTML](./hermes/html/index.html) -- 14 pages with Mermaid diagrams, dark/light theme
 
-```
-repo-expolorations/
-├── penpot/
-│   ├── exploration.md              # Main exploration document
-│   ├── wasm-render-deep-dive.md    # Wasm rendering deep dive
-│   ├── wasm-plugin-deep-dive.md    # Wasm plugin system deep dive
-│   ├── backend-deep-dive.md        # Backend architecture deep dive
-│   └── frontend-deep-dive.md       # Frontend architecture deep dive
-├── [project-name]/
-│   ├── exploration.md
-│   └── rust-revision.md            # Rust translation (if applicable)
-└── examples/
-    └── [project-examples].md
-```
+## Build System
 
-## Explored Projects
-
-| Project | Description | Status |
-|---------|-------------|--------|
-| [Penpot](./penpot/exploration.md) | Open-source design & code collaboration platform | Complete |
-| | - Wasm Render Deep Dive | Complete |
-| | - Wasm Plugin System Deep Dive | Complete |
-| | - Backend Deep Dive | Complete |
-| | - Frontend Deep Dive | Complete |
-| [OpenPencil](./open-pencil/exploration.md) | AI-native Figma-compatible design editor | Complete |
-
-## Agents
-
-This repository uses custom agents for systematic exploration:
-
-| Agent | Purpose |
-|-------|---------|
-| **Exploration Agent** | Generate comprehensive codebase explorations with architecture diagrams |
-| **Rust Revision Agent** | Translate explored projects into idiomatic Rust |
-
-See [AGENTS.md](./AGENTS.md) for detailed agent documentation and usage.
-
-## Workflow
-
-1. **Explore** - Run exploration agent on target codebase
-2. **Document** - Generate `exploration.md` with architecture details
-3. **Deep Dive** - Create subsystem-specific deep dives for complex areas
-4. **Translate** (optional) - Run Rust revision agent for translation proposals
-
-## Usage
+A shared Python script converts all markdown to HTML with zero dependencies:
 
 ```bash
-# Explore a codebase
-/agents explore <directory_or_repo>
+# Build all projects
+python3 build.py
 
-# Create Rust revision
-/agents rust-revision <directory_or_repo>
+# Build a specific project
+python3 build.py pi
+python3 build.py hermes
 ```
 
-## Conventions
+The build script:
+- Converts markdown to HTML (tables, code blocks, headings, lists, links, blockquotes)
+- Embeds Mermaid client-side rendering (CDN, only loads when diagrams exist)
+- Embeds dark/light theme toggle with localStorage persistence
+- Generates index pages with document navigation
+- Generates prev/next navigation between pages
+- Uses only Python stdlib -- no pip install needed
 
-- All exploration output is written to this repository, NOT the target project directory
-- Deep dives are created for complex subsystems (Wasm, backend RPC, etc.)
-- Commit messages use conventional format: `ADD:`, `FIX:`, `UPDATE:`, `REFACTOR:`
-- No Claude attribution in commit messages
+## Other Docs
 
-## License
-
-Exploration documents are derivative works of their respective codebases. Refer to each project's original license.
+| File | Topic |
+|------|-------|
+| [aws-lc-sys-linker-fix.md](./aws-lc-sys-linker-fix.md) | AWS-LC linker fix for OpenSSL migration |
+| [mtls-fundamentals.md](./mtls-fundamentals.md) | mTLS fundamentals and implementation |
+| [fuzz-testing-rust/markdown/00-overview.md](./fuzz-testing-rust/markdown/00-overview.md) | Fuzz testing in Rust — from setup to advanced techniques |
+| [property-based-testing-rust/markdown/00-overview.md](./property-based-testing-rust/markdown/00-overview.md) | Property-based testing in Rust — from setup to advanced techniques |
