@@ -30,3 +30,7 @@ A lightweight reactive frontend framework (11.80 KiB) that uses HTML `data-*` at
 - [Rust Equivalents](11-rust-equivalents.md) — How to replicate Datastar's architecture in Rust
 - [Production Patterns](12-production-patterns.md) — Memory management, security, performance, debugging
 - [Web Tooling](13-web-tooling.md) — VS Code extension, IntelliJ plugin, SDK schema, build pipeline
+
+## Server-Side SDK
+
+- [Rust Server SDK](14-datastar-rust-sdk.md) — datastar crate (v0.3.2): DatastarEvent, PatchElements, PatchSignals, ExecuteScript, Axum/Rocket/Warp integrations, ReadSignals extractor
