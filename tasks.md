@@ -37,3 +37,13 @@ Complete these in order. Do NOT skip grandfather review. Do NOT produce shallow 
 - [ ] **3.4:** Apply all grandfather review fixes
 - [ ] **3.5:** Rebuild HTML with build.py, verify all pages render
 - [ ] **3.6:** Commit
+
+
+### Phase 4: src.datstar — Rewrite other directories projects in datastar
+
+- [ ] **1.1:** Read each project and create an exploration for it from `/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.datastar` (excluding data-star and data-star-rust  - already done) — document every package, every type, every function, every algorithm
+- [ ] **1.2:** Write to `./src.datastar/[projectdir_name]/` documentation — as many documents and as much content as needed to fully teach the project. Output goes inside `./src.datastar/[projectdir_name]/` with its own `spec.md`, `markdown/`, `html/`.
+- [ ] **1.3:** Grandfather review — verify every name, number, and flow against source
+- [ ] **1.4:** Apply all grandfather review fixes
+- [ ] **1.5:** Rebuild HTML with build.py, verify all pages render
+- [ ] **1.6:** Commit
