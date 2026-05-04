@@ -11,11 +11,11 @@ Complete these in order. Do NOT skip grandfather review. Do NOT produce shallow 
 ### Phase 1: src.datastar — Rewrite from scratch
 
 - [x] Initial exploration (shallow — needs full rewrite)
-- [ ] **1.1:** Read every source file in `/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.datastar/datastar/` — document every package, every type, every function, every algorithm
-- [ ] **1.2:** Rewrite `./src.datastar/datastar/` documentation — as many documents and as much content as needed to fully teach the project. Output goes inside `./src.datastar/datastar/` with its own `spec.md`, `markdown/`, `html/`.
-- [ ] **1.3:** Grandfather review — verify every name, number, and flow against source
-- [ ] **1.4:** Apply all grandfather review fixes
-- [ ] **1.5:** Rebuild HTML with build.py, verify all pages render
+- [x] **1.1:** Read every source file in `/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.datastar/datastar/` — document every package, every type, every function, every algorithm
+- [x] **1.2:** Rewrite `./src.datastar/datastar/` documentation — 15 documents covering engine, signals, genRx compiler, 3 plugin types, all 23 plugins, DOM morphing, SSE streaming, utilities, Rust equivalents, production patterns, web tooling
+- [x] **1.3:** Grandfather review — verified names, numbers (line counts, fetch defaults, plugin counts, event names), flows, coverage
+- [x] **1.4:** Applied grandfather review fixes (line counts off-by-1, missing None=0 in ReactiveFlags)
+- [x] **1.5:** Rebuilt HTML with build.py, all 16 pages render
 - [ ] **1.6:** Commit
 
 ### Phase 2: src.orbitinghail — Rewrite from scratch
