@@ -5,7 +5,7 @@
 **Path**: `src.datastar/pai-sho/`  
 **Version**: 0.2.2  
 **Repository**: https://github.com/cablehead/pai-sho  
-**Language**: Rust (7 source files)  
+**Language**: Rust (6 source files)  
 **License**: MIT
 
 "What happens when you want dumbpipe to stay running, handle a few ports at once, and reconnect when your laptop wakes up."
@@ -40,14 +40,14 @@ Both serve Datastar frontends via SSE, but target different use cases.
 ## www.cross.stream
 
 **Path**: `src.datastar/www.cross.stream/`  
-**Language**: Nushell + HTML/CSS (8 files)
+**Language**: Nushell + HTML/CSS (52 files, 2 .nu files)
 
 The website for cross.stream (xs). Likely a documentation/marketing site built with http-nu, serving as both documentation and a living example of the ecosystem in action.
 
 ## yoagent-1
 
 **Path**: `src.datastar/yoagent-1/`  
-**Language**: Rust (49 source files)
+**Language**: Rust (35 source files)
 
 An earlier version of the yoagent library (now at `yoke/yoagent/`). This appears to be v1 of the agent framework before it was refactored into the current architecture. The current version (v0.7.5) lives inside the yoke directory.
 
@@ -60,7 +60,7 @@ An earlier version of the yoagent library (now at `yoke/yoagent/`). This appears
 ## nushell
 
 **Path**: `src.datastar/nushell/`  
-**Language**: Rust (1897 source files!)
+**Language**: Rust (1601 source files in crates/)
 
 A full fork/clone of the Nushell project. This massive codebase is the structured shell that all ecosystem projects embed. Having it local enables:
 - Custom patches for embedding use cases

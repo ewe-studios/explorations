@@ -145,33 +145,38 @@
 </code></pre>
 <h2>fjall Database Configuration</h2>
 <p><strong>File</strong>: <code>src/store/mod.rs</code></p>
-<pre><code class="language-rust">let db = Database::builder()
-    .cache_size(32 * 1_024 * 1_024)  // 32 MiB block cache
-    .worker_threads(1)                // Single compaction worker
-    .persist_mode(PersistMode::SyncAll) // fsync after every write
-    .open(path.join(&quot;fjall&quot;))?;
+<pre><code class="language-rust">let db = Database::builder(path.join(&quot;fjall&quot;))
+    .cache_size(32 * 1024 * 1024)  // 32 MiB block cache
+    .worker_threads(1)              // Single compaction worker
+    .open()?;
+
+// After each write batch:
+self.db.persist(PersistMode::SyncAll)?;
 </code></pre>
 <p>Key configuration choices:</p>
-<ul><li><strong>32 MiB cache</strong> — Keeps hot blocks in memory for read performance</li><li><strong>1 worker thread</strong> — Single compaction thread (local workload, not high-throughput server)</li><li><strong>SyncAll persist mode</strong> — Durability guarantee: every write is fsynced. No data loss on crash.</li></ul>
+<ul><li><strong>32 MiB cache</strong> — Keeps hot blocks in memory for read performance</li><li><strong>1 worker thread</strong> — Single compaction thread (local workload, not high-throughput server)</li><li><strong>SyncAll persist</strong> — Called after each write batch. Durability guarantee: every write is fsynced.</li></ul>
 <h2>Stream Keyspace (Primary)</h2>
 <p>Stores all non-ephemeral frames.</p>
-<pre><code class="language-rust">let stream = db.open_keyspace(
-    &amp;KeyspaceConfig::new(&quot;stream&quot;)
+<pre><code class="language-rust">let stream_opts = || {
+    KeyspaceCreateOptions::default()
+        .max_memtable_size(8 * 1024 * 1024) // 8 MiB
+        .data_block_size_policy(BlockSizePolicy::all(16 * 1024)) // 16 KiB blocks
+        .data_block_hash_ratio_policy(HashRatioPolicy::all(8.0)) // Bloom filter
         .expect_point_read_hits(true)
-        .data_block_size(16 * 1024)    // 16 KiB blocks
-        .hash_ratio_policy(8.0)         // Bloom filter optimization
-        .memtable_size(8 * 1024 * 1024) // 8 MiB memtable
-)?;
+};
+let stream = db.keyspace(&quot;stream&quot;, stream_opts).unwrap();
 </code></pre>
 <ul><li><strong>Key</strong>: 16 bytes — raw SCRU128 ID in big-endian byte representation</li><li><strong>Value</strong>: JSON-serialized <code>Frame</code> struct</li><li><strong>Point read optimization</strong>: <code>expect_point_read_hits(true)</code> tunes compaction for frequent point lookups</li><li><strong>Hash ratio 8.0</strong>: Aggressive bloom filter (high space usage, very low false positive rate)</li><li><strong>16 KiB block size</strong>: Larger blocks reduce index overhead for sequential scans</li></ul>
 <h2>Topic Index Keyspace</h2>
 <p>Enables efficient topic-based queries without scanning the full stream.</p>
-<pre><code class="language-rust">let idx_topic = db.open_keyspace(
-    &amp;KeyspaceConfig::new(&quot;idx_topic&quot;)
-        .data_block_size(16 * 1024)
-        .hash_ratio_policy(0.0)          // No bloom filter (prefix scans only)
-        .memtable_size(8 * 1024 * 1024)
-)?;
+<pre><code class="language-rust">let idx_opts = || {
+    KeyspaceCreateOptions::default()
+        .max_memtable_size(8 * 1024 * 1024) // 8 MiB
+        .data_block_size_policy(BlockSizePolicy::all(16 * 1024))
+        .data_block_hash_ratio_policy(HashRatioPolicy::all(0.0)) // No bloom filter
+        .expect_point_read_hits(true)
+};
+let idx_topic = db.keyspace(&quot;idx_topic&quot;, idx_opts).unwrap();
 </code></pre>
 <ul><li><strong>Key format</strong>: <code><topic_bytes>\x00<frame_id_16_bytes></code></li><li><strong>Value</strong>: Empty (<code>b""</code>) — existence-only index</li><li><strong>Hash ratio 0.0</strong>: No bloom filter. This keyspace is only used for prefix scans, never point reads.</li><li><strong>NULL delimiter</strong>: Topic names cannot contain <code>\x00</code>, so it safely separates topic from ID</li></ul>
 <h3>Hierarchical Index Entries (ADR 0001)</h3>

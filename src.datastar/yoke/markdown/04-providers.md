@@ -5,25 +5,31 @@
 **File**: `yoagent/src/provider/traits.rs`
 
 ```rust
-#[async_trait]
 pub trait StreamProvider: Send + Sync {
-    async fn stream(&self, config: StreamConfig) -> Result<StreamHandle, ProviderError>;
+    async fn stream(
+        &self,
+        config: StreamConfig,
+        tx: mpsc::UnboundedSender<StreamEvent>,
+        cancel: CancellationToken,
+    ) -> Result<Message, ProviderError>;
 }
 ```
 
-All providers implement this single trait. They receive a `StreamConfig` and return a `StreamHandle` that yields `StreamEvent`s.
+All providers implement this single trait. They receive a `StreamConfig`, an unbounded channel sender for streaming `StreamEvent`s, and a cancellation token. They return the final complete assistant `Message` on success.
 
 ## Available Providers
 
-| Provider | Implementation | API | Auth |
-|----------|---------------|-----|------|
-| anthropic | `AnthropicProvider` | Anthropic Messages API | `ANTHROPIC_API_KEY` |
-| gemini | `GoogleProvider` | Google Generative AI | `GEMINI_API_KEY` |
-| openai | `OpenAiCompatProvider` | OpenAI Chat Completions | `OPENAI_API_KEY` |
-| openrouter | `OpenAiCompatProvider` | OpenAI-compatible | `OPENROUTER_API_KEY` |
-| ollama | `OpenAiCompatProvider` | OpenAI-compatible (local) | None |
-| azure | `OpenAiCompatProvider` | Azure OpenAI | Azure credentials |
-| bedrock | `BedrockProvider` | AWS Bedrock | AWS credentials |
+| Provider | File | API Protocol | Auth |
+|----------|------|--------------|------|
+| anthropic | `anthropic.rs` | `AnthropicMessages` | `ANTHROPIC_API_KEY` |
+| google | `google.rs` | `GoogleGenerativeAi` | `GEMINI_API_KEY` |
+| google_vertex | `google_vertex.rs` | `GoogleVertex` | GCP credentials |
+| openai (compat) | `openai_compat.rs` | `OpenAiCompletions` | `OPENAI_API_KEY` |
+| openai (responses) | `openai_responses.rs` | `OpenAiResponses` | `OPENAI_API_KEY` |
+| azure | `azure_openai.rs` | `AzureOpenAiResponses` | Azure credentials |
+| bedrock | `bedrock.rs` | `BedrockConverseStream` | AWS credentials |
+
+OpenAI-compatible providers (OpenRouter, Ollama, xAI, etc.) use the `openai_compat` implementation with different base URLs and API keys.
 
 ## ModelConfig
 
@@ -31,11 +37,17 @@ All providers implement this single trait. They receive a `StreamConfig` and ret
 
 ```rust
 pub struct ModelConfig {
-    pub base_url: Option<String>,
-    pub model_id: String,
-    pub display_name: String,
-    pub headers: HashMap<String, String>,
-    pub compat: Option<CompatConfig>,
+    pub id: String,              // Model identifier sent to API
+    pub name: String,            // Human-friendly name
+    pub api: ApiProtocol,        // Which API protocol to use
+    pub provider: String,        // Provider name (e.g. "openai", "anthropic")
+    pub base_url: String,        // Base URL for API requests
+    pub reasoning: bool,         // Whether model supports thinking/reasoning
+    pub context_window: u32,     // Context window size in tokens
+    pub max_tokens: u32,         // Default max output tokens
+    pub cost: CostConfig,        // Cost per million tokens
+    pub headers: HashMap<String, String>,  // Additional request headers
+    pub compat: Option<OpenAiCompat>,      // OpenAI-compat quirk flags
 }
 
 pub struct CompatConfig {

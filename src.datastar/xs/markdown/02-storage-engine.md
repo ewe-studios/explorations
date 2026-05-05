@@ -18,30 +18,33 @@
 **File**: `src/store/mod.rs`
 
 ```rust
-let db = Database::builder()
-    .cache_size(32 * 1_024 * 1_024)  // 32 MiB block cache
-    .worker_threads(1)                // Single compaction worker
-    .persist_mode(PersistMode::SyncAll) // fsync after every write
-    .open(path.join("fjall"))?;
+let db = Database::builder(path.join("fjall"))
+    .cache_size(32 * 1024 * 1024)  // 32 MiB block cache
+    .worker_threads(1)              // Single compaction worker
+    .open()?;
+
+// After each write batch:
+self.db.persist(PersistMode::SyncAll)?;
 ```
 
 Key configuration choices:
 - **32 MiB cache** — Keeps hot blocks in memory for read performance
 - **1 worker thread** — Single compaction thread (local workload, not high-throughput server)
-- **SyncAll persist mode** — Durability guarantee: every write is fsynced. No data loss on crash.
+- **SyncAll persist** — Called after each write batch. Durability guarantee: every write is fsynced.
 
 ## Stream Keyspace (Primary)
 
 Stores all non-ephemeral frames.
 
 ```rust
-let stream = db.open_keyspace(
-    &KeyspaceConfig::new("stream")
+let stream_opts = || {
+    KeyspaceCreateOptions::default()
+        .max_memtable_size(8 * 1024 * 1024) // 8 MiB
+        .data_block_size_policy(BlockSizePolicy::all(16 * 1024)) // 16 KiB blocks
+        .data_block_hash_ratio_policy(HashRatioPolicy::all(8.0)) // Bloom filter
         .expect_point_read_hits(true)
-        .data_block_size(16 * 1024)    // 16 KiB blocks
-        .hash_ratio_policy(8.0)         // Bloom filter optimization
-        .memtable_size(8 * 1024 * 1024) // 8 MiB memtable
-)?;
+};
+let stream = db.keyspace("stream", stream_opts).unwrap();
 ```
 
 - **Key**: 16 bytes — raw SCRU128 ID in big-endian byte representation
@@ -55,12 +58,14 @@ let stream = db.open_keyspace(
 Enables efficient topic-based queries without scanning the full stream.
 
 ```rust
-let idx_topic = db.open_keyspace(
-    &KeyspaceConfig::new("idx_topic")
-        .data_block_size(16 * 1024)
-        .hash_ratio_policy(0.0)          // No bloom filter (prefix scans only)
-        .memtable_size(8 * 1024 * 1024)
-)?;
+let idx_opts = || {
+    KeyspaceCreateOptions::default()
+        .max_memtable_size(8 * 1024 * 1024) // 8 MiB
+        .data_block_size_policy(BlockSizePolicy::all(16 * 1024))
+        .data_block_hash_ratio_policy(HashRatioPolicy::all(0.0)) // No bloom filter
+        .expect_point_read_hits(true)
+};
+let idx_topic = db.keyspace("idx_topic", idx_opts).unwrap();
 ```
 
 - **Key format**: `<topic_bytes>\x00<frame_id_16_bytes>`

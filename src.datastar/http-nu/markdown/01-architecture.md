@@ -33,19 +33,22 @@ The engine manages Nushell state with hot-swap support:
 
 ```rust
 pub struct Engine {
-    pub engine_state: EngineState,
-    pub closure: Closure,
+    pub state: EngineState,
+    pub closure: Option<Closure>,
+    pub sse_cancel_token: CancellationToken,
 }
 ```
 
 ### ArcSwap for Hot Reload
 
-```rust
-// In main:
-let engine = Arc::new(ArcSwap::from_pointee(engine));
+The `ArcSwap` is held in `handler.rs` (as a field) and instantiated in `main.rs`:
 
-// On reload:
-let new_engine = script_to_engine(script, options)?;
+```rust
+// In main.rs:
+let engine = Arc::new(ArcSwap::from_pointee(first_engine));
+
+// On reload (via file_source or stdin_source):
+let new_engine = script_to_engine(&base_engine, &script, file.as_deref());
 engine.store(Arc::new(new_engine));
 // All new requests use the new engine. In-flight requests finish with old engine.
 ```
@@ -56,9 +59,14 @@ engine.store(Arc::new(new_engine));
 
 ```rust
 pub struct HttpNuOptions {
-    pub plugins: Vec<PathBuf>,
-    pub store: Option<Store>,
-    pub dev_mode: bool,
+    pub dev: bool,
+    pub datastar: bool,
+    pub watch: bool,
+    pub store: Option<String>,
+    pub topic: Option<String>,
+    pub expose: Option<String>,
+    pub tls: Option<String>,
+    pub services: bool,
 }
 ```
 
@@ -119,12 +127,23 @@ Special response types:
 
 ```rust
 pub enum Listener {
-    Tcp(TcpListener),
+    Tcp {
+        listener: Arc<TcpListener>,
+        tls_config: Option<TlsConfig>,
+    },
+    #[cfg(unix)]
     Unix(UnixListener),
+    #[cfg(windows)]
+    Unix(WinUnixListener),
 }
 
 pub struct TlsConfig {
-    pub cert_path: PathBuf,
+    pub config: Arc<ServerConfig>,
+    acceptor: TlsAcceptor,
+}
+
+impl TlsConfig {
+    pub fn from_pem(pem_path: PathBuf) -> io::Result<Self> { /* ... */ }
 }
 ```
 

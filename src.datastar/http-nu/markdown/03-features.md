@@ -94,14 +94,14 @@ Built-in template engine with:
 Uses syntect with bundled syntax definitions:
 - Supports all major languages
 - Multiple themes available
-- Used by the `html highlight` stdlib command
+- Used by the `.highlight` command (from `commands.rs`)
 
 ## Markdown Rendering
 
 Uses pulldown-cmark:
 - CommonMark compliant
 - Code block highlighting (via syntect)
-- Used by the `html md` stdlib command
+- Used by the `.md` command (from `commands.rs`)
 
 ## Logging
 

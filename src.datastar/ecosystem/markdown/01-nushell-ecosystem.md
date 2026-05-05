@@ -30,7 +30,7 @@ Nushell's `EngineState` has specific threading requirements (not Send). This tut
 
 **Path**: `src.datastar/reedline/`  
 **Repository**: https://github.com/nushell/reedline  
-**Language**: Rust (87 source files)  
+**Language**: Rust (65 source files)  
 **Authors**: The Nushell Project Developers  
 **License**: MIT
 
@@ -74,7 +74,7 @@ The Datastar ecosystem builds custom CLIs and REPLs (particularly for xs's `eval
 ## stacks.nu
 
 **Path**: `src.datastar/stacks.nu/`  
-**Language**: Nushell (7 files)
+**Language**: Nushell (5 .nu files, 44 files total)
 
 Nushell scripts for the "stacks" system. Provides user-facing commands for managing stacks — likely environment/service configurations that can be activated, deactivated, and composed.
 

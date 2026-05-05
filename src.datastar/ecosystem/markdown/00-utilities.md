@@ -33,7 +33,7 @@ A monitoring/watcher utility. Based on the name and ecosystem context, likely wa
 ## stacks
 
 **Path**: `src.datastar/stacks/`  
-**Language**: Rust (27 source files)
+**Language**: Rust (18 source files)
 
 A stack-based tooling application. In the context of the xs ecosystem, "stacks" likely refers to a layered configuration or environment management tool — managing collections of related services/configs as named stacks.
 
@@ -45,13 +45,15 @@ A stack-based tooling application. In the context of the xs ecosystem, "stacks" 
 **Language**: Rust  
 **License**: Unlicense
 
-Windows Unix Domain Socket compatibility layer. Provides `WinUnixStream` and `WinUnixListener` types that implement tokio's `AsyncRead`/`AsyncWrite` traits, enabling xs and http-nu to use Unix domain sockets on Windows.
+Windows Unix Domain Socket compatibility layer. Provides synchronous `UnixStream`/`UnixListener` types (built on socket2) plus async variants (`AsyncStream`/`AsyncListener`) implementing `futures_io::{AsyncRead, AsyncWrite}`. Use `tokio_util::compat` to adapt for tokio.
 
 ### Key types:
-- `WinUnixStream` — Async UDS stream for Windows
-- `WinUnixListener` — Async UDS listener for Windows
+- `UnixStream` — Synchronous UDS stream for Windows
+- `UnixListener` — Synchronous UDS listener for Windows
+- `AsyncStream` — Async UDS stream (futures_io traits)
+- `AsyncListener` — Async UDS listener (futures_io traits)
 
-Used by xs's listener module for cross-platform Unix socket support.
+Used by xs's and http-nu's listener modules for cross-platform Unix socket support.
 
 ## syntect-SyntaxSet-with-nushell
 
