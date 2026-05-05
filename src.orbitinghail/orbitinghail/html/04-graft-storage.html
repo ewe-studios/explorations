@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Orbitinghail -- Graft Syncable Storage Engine -- src.orbitinghail</title>
+  <title>Orbitinghail -- Graft Syncable Storage Engine -- orbitinghail</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
   <script>
@@ -122,7 +122,7 @@
 </head>
 <body>
   <nav class="nav">
-    <span class="nav-brand">~/src.orbitinghail/docs</span>
+    <span class="nav-brand">~/orbitinghail/docs</span>
     <div class="nav-actions">
       <a href="01-architecture.html" class="nav-breadcrumb">Orbitinghail Rust Projects -- Architecture and Layer Map</a><a href="02-lsm-tree.html" class="nav-breadcrumb">Orbitinghail -- LSM-Tree Storage Engine</a><a href="03-fjall-database.html" class="nav-breadcrumb">Orbitinghail -- Fjall Database</a>
       <a href="index.html" class="nav-btn" title="Back to index">index</a>
@@ -139,21 +139,23 @@
 <h2>Core Data Model</h2>
 <h3>Page</h3>
 <pre><code class="language-rust">// graft/crates/graft/src/core/page.rs
-pub const PAGESIZE: usize = 4096;  // 4KB pages
+pub const PAGESIZE: ByteUnit = ByteUnit::from_kb(4);  // 4KB pages
 
-pub type Page = Bytes;  // Wrapped in bytes::Bytes for zero-copy sharing
-pub type PageIdx = NonZero&lt;u32&gt;;  // 1-based index
-pub type PageCount = u32;
+pub struct Page(Bytes);  // Newtype wrapper for zero-copy sharing
+pub struct PageIdx(NonZero&lt;u32&gt;);  // 1-based index, newtype with validation
+pub struct PageCount(u32);  // Newtype with validation
 </code></pre>
 <p>Pages are the atomic unit of storage. Every read and write operates on a full page. This is the same design as database page files and filesystem blocks.</p>
 <h3>PageSet (Compressed Bitmap)</h3>
 <pre><code class="language-rust">// Uses splinter-rs for compressed bitmap
-pub type PageSet = splinter_rs::Bitmap;
+pub struct PageSet {
+    splinter: CowSplinter&lt;Bytes&gt;,
+}
 </code></pre>
 <p>A <code>PageSet</code> tracks which pages exist in a set. Instead of a <code>Vec<PageIdx></code> or <code>HashSet<PageIdx></code>, it uses a compressed bitmap — for sparse sets of 100 pages within a 10GB volume, the bitmap uses ~12 bytes instead of 400 bytes.</p>
 <p>Source: <code>splinter-rs/</code> — compressed bitmap implementation</p>
 <h3>LSN (Log Sequence Number)</h3>
-<pre><code class="language-rust">pub type LSN = NonZero&lt;u64&gt;;
+<pre><code class="language-rust">pub struct LSN(NonZero&lt;u64&gt;);  // Newtype wrapper for log sequence numbers
 </code></pre>
 <p>LSNs are monotonically increasing integers assigned to each commit. They provide a total ordering of writes within a log. LSNs wrap around using modular arithmetic for circular logs.</p>
 <h3>GID (Global ID)</h3>
@@ -169,43 +171,48 @@ pub type PageSet = splinter_rs::Bitmap;
 <pre><code class="language-rust">// graft/crates/graft/src/core/commit.rs
 // Protobuf-like message using bilrost
 pub struct Commit {
-    pub log_id: LogId,
+    pub log: LogId,
     pub lsn: LSN,
     pub page_count: PageCount,
     pub commit_hash: Option&lt;CommitHash&gt;,
     pub segment_idx: Option&lt;SegmentIdx&gt;,
-    pub checkpoints: Vec&lt;Checkpoint&gt;,
+    pub checkpoints: ThinVec&lt;LSN&gt;,
+    // SegmentIdx contains a pageset: PageSet field
 }
 </code></pre>
 <p>A commit records that <code>page_count</code> pages were written at <code>lsn</code> in <code>log_id</code>. The <code>commit_hash</code> provides integrity verification. The <code>segment_idx</code> points to the segment file containing the actual page data.</p>
 <h3>CommitHash</h3>
-<pre><code class="language-">┌──────┬──────────────────────────────┐
-│ &#x27;C&#x27;  │ BLAKE3 hash (31 bytes)       │
-│ magic│                              │
-└──────┴──────────────────────────────┘
+<pre><code class="language-">┌────────────────────────────────────┐
+│ 4-byte magic │ BLAKE3 hash (28b)   │
+│ [0x68,0xA4,0x19,0x30]             │
+└────────────────────────────────────┘
 </code></pre>
-<p>Hash covers: magic + log_id + lsn + vol_page_count + commit_page_count + ordered (pageidx, page_data) pairs. Base58 encoded (44 chars).</p>
-<p><strong>Aha:</strong> The magic prefix 'C' in the commit hash serves as a type tag. A commit hash always starts with 'C' in Base58. This prevents confusion with other hash types (like content hashes) — if a string doesn't start with 'C' in Base58, it's not a commit hash. This is a lightweight form of tagged typing without a full schema system.</p>
+<p>Hash covers: magic + log + lsn + page_count + commit_page_count + ordered (pageidx, page_data) pairs. Total 32 bytes (<code>COMMIT_HASH_SIZE</code>). Base58 encoded (44 chars).</p>
+<p><strong>Aha:</strong> The 4-byte magic prefix <code>[0x68, 0xA4, 0x19, 0x30]</code> in the commit hash serves as a type tag. This prevents confusion with other hash types — if the first 4 bytes don't match the magic, it's not a commit hash. This is a lightweight form of tagged typing without a full schema system.</p>
 <h3>Checksum (Order-Independent)</h3>
 <pre><code class="language-rust">// Order-independent checksum for unordered sets
-pub fn checksum(items: &amp;[&amp;[u8]]) -&gt; u128 {
-    let mut sum: u128 = 0;
-    let mut count: u64 = 0;
-    let mut total_bytes: u64 = 0;
+// Uses ChecksumBuilder struct with add()/build()/pretty() methods
+pub struct ChecksumBuilder {
+    sum: u128,
+    count: u64,
+    total_bytes: u64,
+}
 
-    for item in items {
+impl ChecksumBuilder {
+    pub fn add(&amp;mut self, item: &amp;[u8]) {
         let hash = xxhash_rust::xxh3::xxh3_128(item);
-        sum = sum.wrapping_add(hash);
-        sum ^= hash;  // XOR for order independence
-        count += 1;
-        total_bytes += item.len() as u64;
+        self.sum = self.sum.wrapping_add(hash);
+        self.sum ^= hash;  // XOR for order independence
+        self.count += 1;
+        self.total_bytes += item.len() as u64;
     }
 
-    // Combine with count and total bytes
-    sum ^ (count as u128) ^ (total_bytes as u128)
+    pub fn build(&amp;self) -&gt; u128 {
+        self.sum ^ (self.count as u128) ^ (self.total_bytes as u128)
+    }
 }
 </code></pre>
-<p>Uses Boyer-Moore majority voting in the <code>LeapOracle</code> for prefetch prediction. The checksum is order-independent: <code>checksum([a, b]) == checksum([b, a])</code>.</p>
+<p>The checksum is order-independent: <code>checksum([a, b]) == checksum([b, a])</code>. The <code>LeapOracle</code> (in <code>oracle.rs</code>) is a separate component for prefetch prediction using Boyer-Moore majority voting — it is unrelated to checksum computation.</p>
 <h2>FjallStorage Layout</h2>
 <p>Graft uses six fjall keyspaces:</p>
 <table><tr><th>Keyspace</th><th>Key</th><th>Value</th><th>Purpose</th></tr><tr><td>`tags`</td><td>`ByteString`</td><td>`VolumeId`</td><td>Named volume references (like git refs)</td></tr><tr><td>`volumes`</td><td>`VolumeId`</td><td>`Volume`</td><td>Volume metadata</td></tr><tr><td>`checkpoints`</td><td>`LogRef`</td><td>`()`</td><td>Checkpoint index</td></tr><tr><td>`log`</td><td>`LogRef`</td><td>`Commit`</td><td>Commit log, LSNs ordered descending</td></tr><tr><td>`page_versions`</td><td>`PageVersion`</td><td>`()`</td><td>Page version index: latest-wins lookup</td></tr><tr><td>`pages`</td><td>`PageKey`</td><td>`Page`</td><td>Actual page data (KV separation enabled)</td></tr></table>
@@ -233,13 +240,13 @@ sequenceDiagram
 <p>A <code>Snapshot</code> is a logical view of a Volume composed of LSN ranges from multiple Logs:</p>
 <pre><code class="language-rust">pub struct Snapshot {
     pub volume_id: VolumeId,
-    pub log_path: Vec&lt;LogRangeRef&gt;,  // Path of log ranges
+    pub path: ThinVec&lt;LogRangeRef&gt;,  // Path of log ranges
 }
 
 pub struct LogRangeRef {
     pub log_id: LogId,
-    pub lsn_range: Range&lt;LSN&gt;,
-    pub checkpoints: Vec&lt;Checkpoint&gt;,
+    pub lsns: RangeInclusive&lt;LSN&gt;,
+    // Note: no checkpoints field on LogRangeRef
 }
 </code></pre>
 <p>A snapshot captures the state at a point in time. It can include local log ranges and remote log ranges (from S3). Reading from a snapshot automatically fetches pages from the appropriate source.</p>
@@ -254,26 +261,27 @@ Prediction:      Next page will be current + 1
 <p>The oracle tracks recent page access deltas in a 32-entry circular buffer. It uses Boyer-Moore strict majority voting to find access trends. When a trend is detected (sequential, stride, reverse), it prefetches along the trend. When no trend is detected, it falls back to neighborhood prefetching.</p>
 <p><strong>Aha:</strong> LEAP is designed for the specific access patterns of database workloads: sequential scans, index lookups with predictable strides, and reverse scans. A generic LRU cache doesn't prefetch — it only caches what was read. LEAP predicts what will be read next and fetches it proactively.</p>
 <h2>Replicating in Rust</h2>
-<pre><code class="language-rust">use graft::{Runtime, Volume, RemoteConfig};
+<pre><code class="language-rust">use graft::{Runtime, Volume, GraftConfig, RemoteConfig, Page, PageIdx};
 
-// Open runtime with fjall + remote
-let runtime = Runtime::builder()
-    .fjall_storage(fjall_db)
-    .remote(RemoteConfig::S3Compatible {
-        bucket: &quot;my-bucket&quot;.to_string(),
-        region: &quot;us-east-1&quot;.to_string(),
-        // ... credentials
-    })
-    .build()?;
+// fjall database
+let db = ConfigBuilder::new().path(&quot;/tmp/my-db&quot;).open()?;
+let storage = FjallStorage::new(&amp;db)?;
 
-// Open or create volume
-let volume = runtime.open_volume(&quot;my-data&quot;)?;
+// remote config
+let remote = RemoteConfig::S3Compatible {
+    bucket: &quot;my-bucket&quot;.to_string(),
+    region: &quot;us-east-1&quot;.to_string(),
+    // ... credentials
+};
+
+// autosync configured in GraftConfig
+let config = GraftConfig::new(storage, remote).autosync(true);
+let runtime = Runtime::new(tokio_handle, remote, storage, config)?;
 
 // Write pages
+let volume = runtime.volume(&quot;my-data&quot;)?;
 volume.write_page(PageIdx::new(1)?, page_data)?;
-
-// Sync to remote
-runtime.autosync(&amp;volume)?;
+// Background sync runs automatically when autosync is enabled
 </code></pre>
 <p>See <a href="01-architecture.md">Architecture</a> for the layer diagram. See <a href="05-remote-sync.md">Remote Sync</a> for the S3 sync process. See <a href="08-storage-formats.md">Storage Formats</a> for the segment format.</p>
   </article>

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Orbitinghail -- Checksums and Data Validation -- src.orbitinghail</title>
+  <title>Orbitinghail -- Checksums and Data Validation -- orbitinghail</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
   <script>
@@ -122,7 +122,7 @@
 </head>
 <body>
   <nav class="nav">
-    <span class="nav-brand">~/src.orbitinghail/docs</span>
+    <span class="nav-brand">~/orbitinghail/docs</span>
     <div class="nav-actions">
       <a href="06-splinter-bitmap.html" class="nav-breadcrumb">Orbitinghail -- Splinter-RS Compressed Bitmap</a><a href="07-sqlsync.html" class="nav-breadcrumb">Orbitinghail -- SQLSync Offline-First SQLite</a><a href="08-storage-formats.html" class="nav-breadcrumb">Orbitinghail -- Storage Formats Deep Dive</a>
       <a href="index.html" class="nav-btn" title="Back to index">index</a>
@@ -134,7 +134,7 @@
   <article class="prose">
 <h1>Orbitinghail -- Checksums and Data Validation</h1>
 <p>The orbitinghail ecosystem uses multiple checksum and hash algorithms for data integrity, each chosen for its specific tradeoffs: speed, collision resistance, or cryptographic security.</p>
-<p><strong>Aha:</strong> The ecosystem uses a layered integrity strategy. At the block level, XXH3 128-bit catches random bit flips (fast, 99.999...% detection). At the commit level, BLAKE3 catches intentional tampering (cryptographic). At the bitmap level, CRC64-NVME catches storage corruption (optimized for the NVMe storage pattern). At the segment level, ZStd checksums catch decompression errors. Each layer catches corruption at its granularity — a corrupted page in a segment is caught by the ZStd frame checksum before the BLAKE3 commit hash is even checked.</p>
+<p><strong>Aha:</strong> The ecosystem uses a layered integrity strategy. At the block level, XXH3 128-bit catches random bit flips (fast, 99.999...% detection). At the commit level, BLAKE3 catches intentional tampering (cryptographic). At the segment level, ZStd checksums catch decompression errors. Each layer catches corruption at its granularity — a corrupted page in a segment is caught by the ZStd frame checksum before the BLAKE3 commit hash is even checked.</p>
 <h2>XXH3 128-bit Checksums</h2>
 <p><strong>Used by:</strong> lsm-tree blocks, SFA ToC, graft order-independent checksums</p>
 <pre><code class="language-rust">use xxhash_rust::xxh3::xxh3_128;
@@ -147,18 +147,20 @@ let hash: u128 = xxh3_128(data);
 <p><strong>Aha:</strong> XXH3 is used for block checksums because decompression speed is the bottleneck, not hash speed. LZ4 decompresses at ~20 GB/s — computing XXH3 at 30 GB/s doesn't add measurable overhead. A cryptographic hash like BLAKE3 (~5 GB/s) would add ~25% overhead to the decompression pipeline.</p>
 <h2>BLAKE3 Commit Hashes</h2>
 <p><strong>Used by:</strong> graft commit hashes</p>
-<pre><code class="language-">┌──────┬──────────────────────────────┐
-│ &#x27;C&#x27;  │ BLAKE3 hash (31 bytes)       │
-│ magic│                              │
-└──────┴──────────────────────────────┘
+<pre><code class="language-">┌────────────────────┬──────────────────────────┐
+│ 4-byte magic       │ BLAKE3 hash (28 bytes)   │
+│ [0x68,0xA4,0x19,0x30]                        │
+└────────────────────┴──────────────────────────┘
 </code></pre>
 
 <pre><code class="language-rust">use blake3::Hasher;
 
+const COMMIT_HASH_MAGIC: [u8; 4] = [0x68, 0xA4, 0x19, 0x30];
+
 let mut hasher = Hasher::new();
-hasher.update(&amp;[COMMIT_MAGIC]);
+hasher.update(&amp;COMMIT_HASH_MAGIC);
 hasher.update(log_id.as_bytes());
-hasher.update(&amp;lsn.to_le_bytes());
+hasher.update(CBE64::from(lsn).as_bytes());  // CBE64-encoded, not LE
 hasher.update(&amp;vol_page_count.to_le_bytes());
 hasher.update(&amp;commit_page_count.to_le_bytes());
 for (pageidx, page_data) in ordered_pages {
@@ -167,42 +169,40 @@ for (pageidx, page_data) in ordered_pages {
 }
 let hash = hasher.finalize();
 </code></pre>
-<table><tr><th>Property</th><th>Value</th></tr><tr><td>Output size</td><td>256 bits (truncated to 248 bits + 8-bit magic)</td></tr><tr><td>Speed</td><td>~5 GB/s</td></tr><tr><td>Collision resistance</td><td>Cryptographic (2^128 birthday bound)</td></tr><tr><td>Use case</td><td>Commit integrity, tamper detection</td></tr></table>
+<table><tr><th>Property</th><th>Value</th></tr><tr><td>Output size</td><td>256 bits (truncated to 248 bits + 32-bit magic)</td></tr><tr><td>Speed</td><td>~5 GB/s</td></tr><tr><td>Collision resistance</td><td>Cryptographic (2^128 birthday bound)</td></tr><tr><td>Use case</td><td>Commit integrity, tamper detection</td></tr></table>
 <p>The hash covers:</p>
-<ul><li>Magic byte 'C' (type safety)</li><li>Log ID (which log this commit belongs to)</li><li>LSN (ordering)</li><li>Volume page count (snapshot size)</li><li>Commit page count (this commit's scope)</li><li>Ordered (pageidx, page_data) pairs (actual data)</li></ul>
-<p><strong>Aha:</strong> Including the magic prefix in the hash input means a BLAKE3 hash of a commit can never equal a BLAKE3 hash of non-commit data. Even if someone computes BLAKE3 of the exact same bytes without the 'C' prefix, the result is different. This is a form of domain separation — the same hash function produces distinguishable outputs for different data types.</p>
-<h2>CRC64-NVME</h2>
-<p><strong>Used by:</strong> splinter-rs bitmap integrity</p>
-<pre><code class="language-rust">use crc64fast_nvme::Digest;
-
-let mut digest = Digest::new();
-digest.update(&amp;bitmap_data);
-let checksum: u64 = digest.finalize();
-</code></pre>
-<table><tr><th>Property</th><th>Value</th></tr><tr><td>Output size</td><td>64 bits</td></tr><tr><td>Speed</td><td>Very fast (hardware acceleration on x86)</td></tr><tr><td>Detection</td><td>All single-bit, double-bit, and odd-bit errors</td></tr><tr><td>Use case</td><td>Storage integrity for compressed bitmaps</td></tr></table>
-<p>CRC64-NVME is designed for NVMe storage workloads. It uses the CRC64 polynomial optimized for the error patterns common in flash storage.</p>
+<ul><li>Magic 4-byte prefix <code>[0x68, 0xA4, 0x19, 0x30]</code> (type safety)</li><li>Log ID (which log this commit belongs to)</li><li>LSN in CBE64 encoding (ordering)</li><li>Volume page count (snapshot size)</li><li>Commit page count (this commit's scope)</li><li>Ordered (pageidx, page_data) pairs (actual data)</li></ul>
+<p><strong>Aha:</strong> Including the 4-byte magic prefix in the hash input means a BLAKE3 hash of a commit can never equal a BLAKE3 hash of non-commit data. Even if someone computes BLAKE3 of the exact same bytes without the magic prefix, the result is different. This is a form of domain separation — the same hash function produces distinguishable outputs for different data types.</p>
 <h2>ZStd Frame Checksums</h2>
 <p><strong>Used by:</strong> graft segment frames</p>
 <p>ZStd's built-in checksum (32-bit XXH32) is enabled for every frame:</p>
-<pre><code class="language-rust">cctx.set_parameter(CompressionParameter::ChecksumFlag, true)?;
+<pre><code class="language-rust">use zstd::zstd_safe::{CCtx, CParameter};
+
+let mut cctx = CCtx::create();
+cctx.set_parameter(CParameter::ChecksumFlag(true))?;
 </code></pre>
 <p>The checksum covers the uncompressed frame content. On decompression, ZStd verifies the checksum — if it fails, decompression returns an error.</p>
 <h2>Order-Independent Checksum (Graft)</h2>
 <p>Source: <code>graft/crates/graft/src/core/checksum.rs</code></p>
-<pre><code class="language-rust">pub fn checksum(items: &amp;[&amp;[u8]]) -&gt; u128 {
-    let mut sum: u128 = 0;
-    let mut count: u64 = 0;
-    let mut total_bytes: u64 = 0;
+<pre><code class="language-rust">// Uses ChecksumBuilder struct with add()/build()/pretty() methods
+pub struct ChecksumBuilder {
+    sum: u128,
+    count: u64,
+    total_bytes: u64,
+}
 
-    for item in items {
+impl ChecksumBuilder {
+    pub fn add(&amp;mut self, item: &amp;[u8]) {
         let hash = xxh3_128(item);
-        sum = sum.wrapping_add(hash);
-        sum ^= hash;
-        count += 1;
-        total_bytes += item.len() as u64;
+        self.sum = self.sum.wrapping_add(hash);
+        self.sum ^= hash;
+        self.count += 1;
+        self.total_bytes += item.len() as u64;
     }
 
-    sum ^ (count as u128) ^ (total_bytes as u128)
+    pub fn build(&amp;self) -&gt; u128 {
+        self.sum ^ (self.count as u128) ^ (self.total_bytes as u128)
+    }
 }
 </code></pre>
 <p>This checksum has the property: <code>checksum([a, b]) == checksum([b, a])</code>. The XOR operation is commutative, and the wrapping sum is also commutative. The count and total_bytes are included to detect:</p>
@@ -239,8 +239,9 @@ if expected_checksum != actual_checksum {
 // Commit-level integrity with BLAKE3
 use blake3::Hasher;
 
+const MAGIC: [u8; 4] = [0x68, 0xA4, 0x19, 0x30];
 let mut hasher = Hasher::new();
-hasher.update(b&quot;C&quot;);  // Magic prefix
+hasher.update(&amp;MAGIC);  // 4-byte magic prefix
 hasher.update(&amp;commit_data);
 let hash = hasher.finalize();
 </code></pre>

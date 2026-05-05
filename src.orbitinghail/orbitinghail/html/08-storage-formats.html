@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Orbitinghail -- Storage Formats Deep Dive -- src.orbitinghail</title>
+  <title>Orbitinghail -- Storage Formats Deep Dive -- orbitinghail</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
   <script>
@@ -122,7 +122,7 @@
 </head>
 <body>
   <nav class="nav">
-    <span class="nav-brand">~/src.orbitinghail/docs</span>
+    <span class="nav-brand">~/orbitinghail/docs</span>
     <div class="nav-actions">
       <a href="05-remote-sync.html" class="nav-breadcrumb">Orbitinghail -- Remote Sync to S3</a><a href="06-splinter-bitmap.html" class="nav-breadcrumb">Orbitinghail -- Splinter-RS Compressed Bitmap</a><a href="07-sqlsync.html" class="nav-breadcrumb">Orbitinghail -- SQLSync Offline-First SQLite</a>
       <a href="index.html" class="nav-btn" title="Back to index">index</a>
@@ -134,7 +134,7 @@
   <article class="prose">
 <h1>Orbitinghail -- Storage Formats Deep Dive</h1>
 <p>This document details the on-disk and on-wire formats used across the orbitinghail ecosystem: SSTable layout, SFA archive format, WAL journal format, and graft segment format.</p>
-<p><strong>Aha:</strong> Every format in this ecosystem uses a trailer-at-end design. The SSTable trailer (29 bytes) contains offsets to all sections. The SFA trailer contains the ToC position. The WAL batch header contains the operation count. This means readers can find the structure metadata by seeking to the end of the file first — no magic number scanning or fixed-position headers required. The trailer is the table of contents.</p>
+<p><strong>Aha:</strong> Every format in this ecosystem uses a trailer-at-end design. The SSTable trailer (31 bytes) contains offsets to all sections. The SFA trailer contains the ToC position. The WAL batch header contains the operation count. This means readers can find the structure metadata by seeking to the end of the file first — no magic number scanning or fixed-position headers required. The trailer is the table of contents.</p>
 <h2>SSTable Format (lsm-tree)</h2>
 <p>Source: <code>lsm-tree/src/table/</code></p>
 <pre><code class="language-">┌─────────────────────────────────────────────────────────────┐
@@ -155,22 +155,23 @@
 │ (bloom filter: magic, type, hash, m, k, bit array)         │
 ├─────────────────────────────────────────────────────────────┤
 │ Meta Block (data block containing key-value pairs)          │
-│ - table_version: 3                                          │
+│ - table_version (string key &quot;table_version&quot;)                │
 │ - table_id, item_count, tombstone_count                     │
 │ - block_counts, file_size, created_at                       │
 │ - key_range (min/max), seqno range                          │
 │ - compression types, filter config                          │
 ├─────────────────────────────────────────────────────────────┤
-│ Trailer                                                     │
-│ - index_block_offset, index_block_size                      │
-│ - filter_block_offset, filter_block_size                    │
-│ - meta_block_offset, meta_block_size                        │
-│ - data_block_count, total_item_count                        │
-│ - checksum: XXH3_128 (16 bytes)                             │
+│ Trailer (31 bytes)                                          │
+│ - trailer_start_marker (0xFF, 1 byte)                       │
+│ - binary_index_step_size                                    │
+│ - binary_index_len, hash_index_len, hash_index_offset       │
+│ - prefix_truncation, fixed_key_size, fixed_value_size       │
+│ - item_count                                                │
+│ - checksum_padding                                          │
 └─────────────────────────────────────────────────────────────┘
 </code></pre>
-<h3>Data Block Trailer (29 bytes)</h3>
-<table><tr><th>Offset</th><th>Size</th><th>Field</th></tr><tr><td>0</td><td>4</td><td>Restart interval</td></tr><tr><td>4</td><td>4</td><td>Binary index offset</td></tr><tr><td>8</td><td>4</td><td>Binary index size</td></tr><tr><td>12</td><td>4</td><td>Hash index offset</td></tr><tr><td>16</td><td>4</td><td>Hash index size</td></tr><tr><td>20</td><td>4</td><td>Item count</td></tr><tr><td>24</td><td>4</td><td>Data size</td></tr><tr><td>28</td><td>1 (or more with checksum)</td><td>Checksum</td></tr></table>
+<h3>Data Block Trailer (31 bytes)</h3>
+<table><tr><th>Offset</th><th>Size</th><th>Field</th></tr><tr><td>0</td><td>1</td><td>Trailer start marker (0xFF)</td></tr><tr><td>1</td><td>1</td><td>Binary index step size</td></tr><tr><td>2</td><td>4</td><td>Binary index length</td></tr><tr><td>6</td><td>4</td><td>Hash index length</td></tr><tr><td>10</td><td>4</td><td>Hash index offset</td></tr><tr><td>14</td><td>1</td><td>Prefix truncation</td></tr><tr><td>15</td><td>1</td><td>Fixed key size</td></tr><tr><td>16</td><td>1</td><td>Fixed value size</td></tr><tr><td>17</td><td>4</td><td>Item count</td></tr><tr><td>21</td><td>10</td><td>Checksum padding</td></tr></table>
 <h3>Prefix Compression Detail</h3>
 <p>Each key-value pair in a data block is encoded as:</p>
 <pre><code class="language-">┌───────────┬───────────┬──────────┬───────────┐
@@ -204,9 +205,9 @@
 │ └─────────────────────────────────────────────────────────┘ │
 ├─────────────────────────────────────────────────────────────┤
 │ Trailer                                                     │
-│ ┌──────────────────┬──────────────┬───────────────────────┐ │
-│ │ toc_position: u64│ toc_len: u64 │ toc_checksum: XXH3_128│ │
-│ └──────────────────┴──────────────┴───────────────────────┘ │
+│ ┌──────────────────┬───────────────────────┐ │
+│ │ toc_position: u64│ toc_checksum: XXH3_128│ │
+│ └──────────────────┴───────────────────────┘ │
 └─────────────────────────────────────────────────────────────┘
 </code></pre>
 <h3>Writer Process</h3>

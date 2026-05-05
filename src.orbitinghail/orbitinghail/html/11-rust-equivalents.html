@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Orbitinghail -- Rust Equivalents and Patterns -- src.orbitinghail</title>
+  <title>Orbitinghail -- Rust Equivalents and Patterns -- orbitinghail</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
   <script>
@@ -122,7 +122,7 @@
 </head>
 <body>
   <nav class="nav">
-    <span class="nav-brand">~/src.orbitinghail/docs</span>
+    <span class="nav-brand">~/orbitinghail/docs</span>
     <div class="nav-actions">
       <a href="08-storage-formats.html" class="nav-breadcrumb">Orbitinghail -- Storage Formats Deep Dive</a><a href="09-checksums-validation.html" class="nav-breadcrumb">Orbitinghail -- Checksums and Data Validation</a><a href="10-s3-remote-optimizations.html" class="nav-breadcrumb">Orbitinghail -- S3 and Remote Storage Optimizations</a>
       <a href="index.html" class="nav-btn" title="Back to index">index</a>
@@ -136,29 +136,28 @@
 <p>This document maps every orbitinghail concept to idiomatic Rust patterns, showing how to use these crates in your own projects and what production-grade alternatives exist.</p>
 <h2>LSM-Tree Usage</h2>
 <h3>Basic KV Store</h3>
-<pre><code class="language-rust">use lsm_tree::{ConfigBuilder, Table};
+<pre><code class="language-rust">use lsm_tree::{Config, Tree};
 
-let config = ConfigBuilder::new()
-    .path(&quot;/tmp/my-store&quot;)
-    .flush_threshold(64 * 1024 * 1024)
-    .compression_type(CompressionType::Lz4)
+let config = Config::new(&quot;/tmp/my-store&quot;, seqno, visible_seqno)
+    .write_buffer_size_policy(16 * 1_024 * 1_024)
+    .data_block_size_policy(4096)
     .build()?;
 
-let table = Table::open(config)?;
-table.insert(b&quot;key&quot;, b&quot;value&quot;)?;
-table.insert(b&quot;key2&quot;, b&quot;value2&quot;)?;
+let tree = config.open()?;
+tree.insert(b&quot;key&quot;, b&quot;value&quot;)?;
+tree.insert(b&quot;key2&quot;, b&quot;value2&quot;)?;
 
-let value = table.get(b&quot;key&quot;)?;
+let value = tree.get(b&quot;key&quot;)?;
 assert_eq!(value.as_deref(), Some(b&quot;value&quot;.as_slice()));
 
 // Iterate over a range
-for entry in table.scan(b&quot;a&quot;..=b&quot;z&quot;)? {
+for entry in tree.scan(b&quot;a&quot;..=b&quot;z&quot;)? {
     println!(&quot;{:?} -&gt; {:?}&quot;, entry.key(), entry.value());
 }
 </code></pre>
 <h3>With Bloom Filter</h3>
-<pre><code class="language-rust">let config = ConfigBuilder::new()
-    .bloom_false_positive_rate(0.01)  // 1% false positive rate
+<pre><code class="language-rust">let config = Config::new(&quot;/tmp/my-store&quot;, seqno, visible_seqno)
+    .filter_policy(FilterPolicy::BitsPerKey(10.0))
     .build()?;
 </code></pre>
 <p><strong>Production pattern:</strong> For production workloads, configure the bloom filter's false positive rate based on your read/write ratio. A write-heavy workload benefits from a lower false positive rate (fewer unnecessary SSTable reads). A read-heavy workload can tolerate a higher rate.</p>
@@ -168,17 +167,16 @@ for entry in table.scan(b&quot;a&quot;..=b&quot;z&quot;)? {
 
 let db = ConfigBuilder::new()
     .path(&quot;/tmp/my-db&quot;)
-    .transaction_mode(fjall::TransactionMode::Optimistic)
     .open()?;
 
 let users = db.open_keyspace(&quot;users&quot;)?;
 let sessions = db.open_keyspace(&quot;sessions&quot;)?;
 
-// Atomic batch across keyspaces
-let batch = db.atomic_batch();
-batch.insert(&amp;users, b&quot;user:1&quot;, b&quot;Alice&quot;)?;
-batch.insert(&amp;sessions, b&quot;sess:abc&quot;, b&quot;user:1&quot;)?;
-batch.commit()?;
+// Atomic batch across keyspaces via single_writer_tx
+let tx = db.single_writer_tx()?;
+tx.insert(&amp;users, b&quot;user:1&quot;, b&quot;Alice&quot;)?;
+tx.insert(&amp;sessions, b&quot;sess:abc&quot;, b&quot;user:1&quot;)?;
+tx.commit()?;
 
 db.persist(PersistMode::SyncAll)?;
 </code></pre>
@@ -194,21 +192,27 @@ match tx.commit() {
     Err(e) =&gt; return Err(e),
 }
 </code></pre>
-<p><strong>Production pattern:</strong> Optimistic transactions work well for low-contention workloads. For high-contention (many threads updating the same key), use <code>SingleWriterTx</code> with external serialization or switch to pessimistic locking.</p>
+<p><strong>Production pattern:</strong> Optimistic transactions work well for low-contention workloads. For high-contention (many threads updating the same key), use <code>SingleWriterTxDatabase</code> with external serialization or switch to pessimistic locking.</p>
 <h2>Graft Volume</h2>
-<pre><code class="language-rust">use graft::{Runtime, RemoteConfig, Volume, PageIdx};
+<pre><code class="language-rust">use graft::{Runtime, GraftConfig, RemoteConfig, Volume, PageIdx, FjallStorage};
 
-let runtime = Runtime::builder()
-    .fjall_storage(fjall_db)
-    .remote(RemoteConfig::S3Compatible {
-        bucket: &quot;my-bucket&quot;.to_string(),
-        region: &quot;us-east-1&quot;.to_string(),
-        // credentials
-    })
-    .build()?;
+// fjall database
+let db = ConfigBuilder::new().path(&quot;/tmp/my-db&quot;).open()?;
+let storage = FjallStorage::new(&amp;db)?;
+
+// remote config
+let remote = RemoteConfig::S3Compatible {
+    bucket: &quot;my-bucket&quot;.to_string(),
+    region: &quot;us-east-1&quot;.to_string(),
+    // credentials
+};
+
+// autosync configured via GraftConfig
+let config = GraftConfig::new(storage, remote).autosync(true);
+let runtime = Runtime::new(tokio_handle, remote, storage, config)?;
 
 // Open volume
-let volume = runtime.open_volume(&quot;my-data&quot;)?;
+let volume = runtime.volume(&quot;my-data&quot;)?;
 
 // Write page
 volume.write_page(PageIdx::new(1)?, page_data)?;
@@ -216,15 +220,14 @@ volume.write_page(PageIdx::new(1)?, page_data)?;
 // Read page
 let page = volume.read_page(PageIdx::new(1)?)?;
 
-// Background sync
-runtime.autosync(&amp;volume)?;
+// Background sync runs automatically when autosync is enabled
 </code></pre>
 <p><strong>Production pattern:</strong> For offline-first applications, open the volume immediately with local-only mode and start the autosync task when connectivity is detected.</p>
 <h2>Splinter-RS Bitmap</h2>
-<pre><code class="language-rust">use splinter_rs::Bitmap;
+<pre><code class="language-rust">use splinter_rs::Splinter;
 
 // Sparse set
-let mut bm = Bitmap::new();
+let mut bm = Splinter::new();
 for i in [1, 5, 100, 1000, 5000] {
     bm.insert(i);
 }
@@ -234,10 +237,9 @@ assert!(!bm.contains(101));
 assert_eq!(bm.cardinality(), 5);
 
 // Set operations
-let other = Bitmap::from_iter([5, 200, 300]);
+let other = Splinter::from_iter([5, 200, 300]);
 let union = bm.union(&amp;other);
 let intersection = bm.intersection(&amp;other);
-let difference = bm.cut(&amp;..10);  // Remove bits &lt; 10
 </code></pre>
 <h2>SQLSync WASM</h2>
 <pre><code class="language-typescript">// TypeScript (generated by tsify)

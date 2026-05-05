@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Orbitinghail Rust Projects -- Architecture and Layer Map -- src.orbitinghail</title>
+  <title>Orbitinghail Rust Projects -- Architecture and Layer Map -- orbitinghail</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
   <script>
@@ -122,11 +122,11 @@
 </head>
 <body>
   <nav class="nav">
-    <span class="nav-brand">~/src.orbitinghail/docs</span>
+    <span class="nav-brand">~/orbitinghail/docs</span>
     <div class="nav-actions">
-      <a href="00-overview.html" class="nav-breadcrumb">Orbitinghail Rust Projects -- What They Are and Why They Exist</a>
+      <a href="00-overview.html" class="nav-breadcrumb">Orbitinghail -- Overview</a>
       <a href="index.html" class="nav-btn" title="Back to index">index</a>
-      <a href="00-overview.html" class="nav-btn" title="Previous: Orbitinghail Rust Projects -- What They Are and Why They Exist">← prev</a>
+      <a href="00-overview.html" class="nav-btn" title="Previous: Orbitinghail -- Overview">← prev</a>
       <a href="02-lsm-tree.html" class="nav-btn nav-btn-next" title="Next: Orbitinghail -- LSM-Tree Storage Engine">next →</a>
       <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
     </div>
@@ -134,13 +134,12 @@
   <article class="prose">
 <h1>Orbitinghail Rust Projects -- Architecture and Layer Map</h1>
 <p>The orbitinghail ecosystem is organized into layers: primitive types at the bottom, storage engines in the middle, and application-level systems at the top.</p>
-<p><strong>Aha:</strong> The dependency graph is a pyramid. At the base are single-purpose crates with no dependencies (<code>byteview</code>, <code>u24</code>, <code>sfa</code>). On top of those sits <code>lsm-tree</code>, which depends on all three. <code>fjall</code> depends on <code>lsm-tree</code> and adds transactions, multiple keyspaces, and crash recovery. <code>graft</code> depends on <code>fjall</code> and adds remote sync. At the very top, <code>sqlsync</code> depends on <code>graft</code> for storage and <code>splinter-rs</code> for page tracking. Each layer adds exactly one concern.</p>
+<p><strong>Aha:</strong> The dependency graph is a pyramid. At the base are single-purpose crates with no dependencies (<code>byteview</code>, <code>sfa</code>). On top of those sits <code>lsm-tree</code>, which depends on both. <code>fjall</code> depends on <code>lsm-tree</code> and adds transactions, multiple keyspaces, and crash recovery. <code>graft</code> depends on <code>fjall</code> and adds remote sync. At the very top, <code>sqlsync</code> depends on <code>graft</code> for storage and <code>splinter-rs</code> for page tracking. Each layer adds exactly one concern.</p>
 <h2>Layer Diagram</h2>
 <div class="mermaid">
 flowchart TB
     subgraph Primitives [&quot;Primitive Types&quot;]
         BV[&quot;byteview&lt;br/&gt;zero-copy byte slice&quot;]
-        U24[&quot;u24&lt;br/&gt;24-bit integer&quot;]
         SFA[&quot;sfa&lt;br/&gt;file archive format&quot;]
     end
 
@@ -166,7 +165,6 @@ flowchart TB
     end
 
     BV --&gt; LSM
-    U24 --&gt; LSM
     SFA --&gt; FJ
     LSM --&gt; VL
     LSM --&gt; FJ
@@ -183,7 +181,6 @@ flowchart TB
 <div class="mermaid">
 graph TD
     ByteView[&quot;byteview&lt;br/&gt;ByteView, StrView&quot;] --&gt; LSMCore
-    U24[&quot;u24&lt;br/&gt;24-bit int&quot;] --&gt; LSMCore
     QuickCache[&quot;quick_cache&lt;br/&gt;LRU cache&quot;] --&gt; LSMCore
 
     LSMCore[&quot;lsm-tree&lt;br/&gt;Memtable, SSTable, Compaction&quot;] --&gt; FJDB
@@ -205,26 +202,38 @@ graph TD
 <h2>Entry Points</h2>
 <h3>Fjall Database</h3>
 <p>Source: <code>fjall/src/lib.rs</code></p>
-<pre><code class="language-rust">let db = Database::builder()
+<pre><code class="language-rust">let db = ConfigBuilder::new()
     .path(&quot;/tmp/my-db&quot;)
-    .transaction_mode(TransactionMode::Optimistic)
-    .compression_type(CompressionType::Lz4)
     .open()?;
 
 let keyspace = db.open_keyspace(&quot;my-data&quot;)?;
 keyspace.insert(b&quot;key&quot;, b&quot;value&quot;)?;
-db.persist()?;
+db.persist(PersistMode::SyncAll)?;
 </code></pre>
 <h3>Graft Volume</h3>
 <p>Source: <code>graft/crates/graft/src/core/volume.rs</code></p>
-<pre><code class="language-rust">let runtime = Runtime::builder()
-    .fjall_storage(storage)
-    .remote(RemoteConfig::S3Compatible { ... })
-    .build()?;
+<p>Graft volumes are created through the setup/configuration process, not via a runtime builder. Autosync is configured via <code>GraftConfig.autosync</code> at construction time:</p>
+<pre><code class="language-rust">// fjall database
+let db = ConfigBuilder::new().path(&quot;/tmp/my-db&quot;).open()?;
 
-let volume = runtime.open_volume(&quot;my-volume&quot;)?;
-volume.write_page(page_idx, page_data)?;
-runtime.autosync(volume)?;  // Background sync to remote
+// graft storage wrapping fjall
+let storage = FjallStorage::new(&amp;db)?;
+
+// remote config
+let remote = RemoteConfig::S3Compatible {
+    bucket: &quot;my-bucket&quot;.to_string(),
+    region: &quot;us-east-1&quot;.to_string(),
+    // ... credentials
+};
+
+// autosync configured in GraftConfig, not on Runtime
+let config = GraftConfig::new(storage, remote).autosync(true);
+let runtime = Runtime::new(tokio_handle, remote, storage, config)?;
+
+// volume operations
+let volume = runtime.volume(&quot;my-volume&quot;)?;
+volume.write_page(PageIdx::new(1)?, page_data)?;
+// Background sync runs automatically when autosync is enabled
 </code></pre>
 <h3>SQLSync WASM</h3>
 <p>Source: <code>sqlsync-wasm/src/lib.rs</code></p>

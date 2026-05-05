@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Orbitinghail -- Splinter-RS Compressed Bitmap -- src.orbitinghail</title>
+  <title>Orbitinghail -- Splinter-RS Compressed Bitmap -- orbitinghail</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
   <script>
@@ -122,7 +122,7 @@
 </head>
 <body>
   <nav class="nav">
-    <span class="nav-brand">~/src.orbitinghail/docs</span>
+    <span class="nav-brand">~/orbitinghail/docs</span>
     <div class="nav-actions">
       <a href="03-fjall-database.html" class="nav-breadcrumb">Orbitinghail -- Fjall Database</a><a href="04-graft-storage.html" class="nav-breadcrumb">Orbitinghail -- Graft Syncable Storage Engine</a><a href="05-remote-sync.html" class="nav-breadcrumb">Orbitinghail -- Remote Sync to S3</a>
       <a href="index.html" class="nav-btn" title="Back to index">index</a>
@@ -134,13 +134,18 @@
   <article class="prose">
 <h1>Orbitinghail -- Splinter-RS Compressed Bitmap</h1>
 <p>Splinter-rs is a compressed bitmap for small, sparse sets of u32s with zero-copy querying. It is used by graft for <code>PageSet</code> tracking and by lsm-tree for block index compaction. The bitmap uses a combination of run-length encoding and sparse representation to achieve high compression for sparse sets.</p>
-<p><strong>Aha:</strong> Splinter-rs uses <code>u24</code> (24-bit integers) for compact storage within the bitmap structure. Since page indices and block offsets rarely exceed 16 million (2^24), using <code>u24</code> instead of <code>u32</code> saves 25% of space. Combined with <code>zerocopy</code> for safe transmutation between <code>u24</code> and byte slices, the bitmap can be read and written without deserialization — true zero-copy.</p>
-<p>Source: <code>splinter-rs/src/lib.rs</code> — compressed bitmap operations Source: <code>u24/</code> — 24-bit integer type</p>
+<p><strong>Aha:</strong> Splinter-rs provides two main types: <code>Splinter</code> (owned) and <code>CowSplinter</code> (copy-on-write). The <code>CowSplinter</code> variant enables zero-copy reads from byte slices — the bitmap can be read directly from disk or network without deserialization. For sparse sets, the bitmap stores sorted arrays of values. For dense sets, it switches to a bit vector with run-length encoding. The transition between representations is transparent to the caller.</p>
+<p>Source: <code>splinter-rs/src/lib.rs</code> — compressed bitmap operations</p>
 <h2>Bitmap Structure</h2>
-<pre><code class="language-rust">pub struct Bitmap {
+<p>The library exposes <code>Splinter</code> (owned) and <code>CowSplinter<B></code> (backed by any <code>AsRef<[u8]></code>):</p>
+<pre><code class="language-rust">pub struct Splinter {
     data: Vec&lt;u8&gt;,           // Compressed bitmap data
     cardinality: u32,        // Number of set bits
-    checksum: u64,           // CRC64-NVME for integrity
+}
+
+pub struct CowSplinter&lt;B&gt; {
+    data: B,                 // Backing byte slice (zero-copy)
+    cardinality: u32,
 }
 </code></pre>
 <h2>Operations</h2>
@@ -152,40 +157,16 @@ flowchart TD
     A[&quot;New bitmap&quot;] --&gt; B{&quot;Density &gt; threshold?&quot;}
     B --&gt;|Sparse| C[&quot;Sorted array of set values&quot;]
     B --&gt;|Dense| D[&quot;Bit vector with run-length encoding&quot;]
-    C --&gt; E[&quot;CRC64 checksum&quot;]
-    D --&gt; E
 
 </div>
-<p>For <strong>sparse sets</strong> (<10% density): Store sorted array of set values. Each value is a <code>u24</code> (3 bytes) instead of a full <code>u32</code>.</p>
+<p>For <strong>sparse sets</strong> (<10% density): Store sorted array of set values as <code>u32</code> entries.</p>
 <p>For <strong>dense sets</strong> (>10% density): Use a bit vector with run-length encoding. Consecutive runs of 0s or 1s are compressed as <code>(value, length)</code> pairs.</p>
-<h2>CRC64-NVME Integrity</h2>
-<pre><code class="language-rust">use crc64fast_nvme::Digest;
-
-let mut digest = Digest::new();
-digest.update(&amp;self.data);
-self.checksum = digest.finalize();
-</code></pre>
-<p>CRC64-NVME is a fast 64-bit CRC designed for storage integrity. It is computed over the compressed bitmap data and stored alongside it. On read, the checksum is verified — if it doesn't match, the bitmap is corrupted.</p>
-<h2>u24 Integer Type</h2>
-<p>Source: <code>u24/src/lib.rs</code></p>
-<pre><code class="language-rust">#[repr(align(4))]
-pub struct u24 {
-    data: [u8; 3],  // 3 bytes
-    _padding: u8,   // 1 byte padding for 4-byte alignment
-}
-</code></pre>
-<p>The <code>u24</code> type stores 3 bytes of data with 1 byte of padding to match <code>u32</code> alignment. This allows:</p>
-<ul><li>Zero-copy transmutation via <code>zerocopy</code></li><li>4-byte alignment for efficient memory access</li><li>No endianness issues (big-endian encoding)</li></ul>
-<pre><code class="language-rust">use zerocopy::{FromBytes, IntoBytes};
-
-let val = u24::from_u32(1_000_000).unwrap();
-let bytes: [u8; 4] = val.as_bytes();  // [0, 0x0F, 0x42, 0x40]
-let restored = u24::ref_from_bytes(&amp;bytes).unwrap();
-</code></pre>
 <h2>Usage in Graft</h2>
 <p>In graft, <code>PageSet</code> tracks which pages are in a volume:</p>
 <pre><code class="language-rust">// Pages 1, 5, 100, 1000 set in a 10,000-page volume
-let mut pageset = Bitmap::new();
+use splinter_rs::Splinter;
+
+let mut pageset = Splinter::new();
 pageset.insert(1);
 pageset.insert(5);
 pageset.insert(100);
@@ -203,10 +184,10 @@ let combined = pageset.union(&amp;pageset2);
 <h2>Usage in LSM-Tree</h2>
 <p>In lsm-tree, splinter-rs is used for block index tracking and prefix compression metadata. The compressed bitmap reduces the size of the binary index for large SSTables.</p>
 <h2>Replicating in Rust</h2>
-<pre><code class="language-rust">use splinter_rs::Bitmap;
+<pre><code class="language-rust">use splinter_rs::Splinter;
 
 // Create and populate
-let mut bm = Bitmap::new();
+let mut bm = Splinter::new();
 for i in [1, 5, 100, 1000] {
     bm.insert(i);
 }
@@ -216,7 +197,7 @@ assert_eq!(bm.cardinality(), 4);
 assert!(bm.contains(100));
 
 // Set operations
-let other = Bitmap::from_iter([5, 200, 300]);
+let other = Splinter::from_iter([5, 200, 300]);
 let union = bm.union(&amp;other);     // {1, 5, 100, 200, 300, 1000}
 let intersection = bm.intersection(&amp;other);  // {5}
 
@@ -224,6 +205,11 @@ let intersection = bm.intersection(&amp;other);  // {5}
 for value in bm.iter() {
     println!(&quot;Set bit: {}&quot;, value);
 }
+
+// Zero-copy read from bytes (CowSplinter)
+let bytes: &amp;[u8] = &amp;bm.to_bytes();
+let cow = splinter_rs::CowSplinter::from_bytes(bytes);
+assert_eq!(cow.cardinality(), 4);
 </code></pre>
 <p>See <a href="04-graft-storage.md">Graft Storage</a> for how PageSet is used. See <a href="02-lsm-tree.md">LSM-Tree</a> for block index usage. See <a href="01-architecture.md">Architecture</a> for the dependency graph.</p>
   </article>

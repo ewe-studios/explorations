@@ -4,7 +4,7 @@ The `lsm-tree` crate is a K.I.S.S. implementation of a Log-Structured Merge tree
 
 **Aha:** The LSM-tree's core insight is that writes are always fast when they're appends. Instead of updating a B-tree node in place (which requires reading the page, modifying it, and writing it back), an LSM-tree appends the new value to an in-memory memtable. When the memtable fills, it is flushed to disk as an immutable SSTable. Reads check the memtable first, then scan SSTables from newest to oldest. The tradeoff is read amplification (multiple SSTables to check) and space amplification (multiple versions of the same key), both solved by compaction.
 
-Source: `lsm-tree/src/memtable.rs` — memtable implementation
+Source: `lsm-tree/src/memtable/mod.rs` — memtable implementation
 Source: `lsm-tree/src/table/` — SSTable implementation
 
 ## LSM-Tree Architecture
@@ -44,26 +44,28 @@ flowchart TD
 
 ## Memtable
 
-Source: `lsm-tree/src/memtable.rs`
+Source: `lsm-tree/src/memtable/mod.rs`
 
 The memtable is an in-memory sorted data structure backed by `crossbeam-skiplist`:
 
 ```rust
 pub struct Memtable {
-    map: SkipMap<Vec<u8>, Vec<u8>>,  // Key → Value
-    size: AtomicUsize,                // Current size in bytes
-    max_size: usize,                  // Flush threshold
+    pub id: MemtableId,
+    pub items: SkipMap<InternalKey, UserValue>,
+    pub(crate) approximate_size: AtomicU64,
+    pub(crate) highest_seqno: AtomicU64,
+    pub(crate) requested_rotation: AtomicBool,
 }
 ```
 
 **Operations:**
-- `insert(key, value)`: O(log n) — append to skiplist, update size
-- `get(key)`: O(log n) — lookup in skiplist
+- `insert(item: InternalValue)`: O(log n) — append to skiplist, returns `(added_size, new_size)`
+- `get(key, seqno)`: O(log n) — lookup in skiplist (respecting sequence number visibility)
 - `remove(key)`: O(log n) — insert tombstone (special marker value)
 
 **Aha:** The memtable uses a skiplist, not a B-tree, because skiplists are naturally concurrent. `crossbeam-skiplist` provides lock-free reads and writes — no mutex needed. Multiple threads can insert and read simultaneously without blocking.
 
-When the memtable reaches `max_size` (configurable via `write_buffer_size_policy`, default 16 MiB), it is "frozen" — a new empty memtable becomes active, and the frozen one is flushed to disk as an SSTable.
+When the memtable's `approximate_size` reaches the flush threshold (configurable via fjall's `max_memtable_size`, default 64 MiB), it is "frozen" — a new empty memtable becomes active, and the frozen one is flushed to disk as an SSTable.
 
 ## SSTable Format
 
@@ -101,17 +103,18 @@ An SSTable (Sorted String Table) is an immutable file containing sorted key-valu
 ├──────────────────────────────────────────────────┤
 │  Hash index (optional, for large blocks)         │
 ├──────────────────────────────────────────────────┤
-│  Trailer (31 bytes):                             │
+│  Trailer:                                        │
 │    trailer_start_marker: u8 (0xFF)               │
 │    binary_index_step_size: u8                    │
 │    binary_index_len: u32                         │
+│    binary_index_offset: u32                      │
 │    hash_index_len: u32                           │
 │    hash_index_offset: u32                        │
 │    prefix_truncation: u8                         │
-│    fixed_key_size: u8                            │
-│    fixed_value_size: u8                          │
+│    restart_interval: u8                          │
+│    fixed_key_size: u8 flag + u16 value           │
+│    fixed_value_size: u8 flag + u32 value         │
 │    item_count: u32                               │
-│    checksum_padding: u8                          │
 └──────────────────────────────────────────────────┘
 ```
 
@@ -149,19 +152,23 @@ For large blocks (>64KB), an optional hash index provides O(1) lookup for exact 
 Source: `lsm-tree/src/table/filter/`
 
 ```rust
-pub struct BloomFilter {
-    magic: [u8; 4],          // Magic bytes for validation
-    filter_type: u8,         // 0 = standard bloom filter
-    hash_type: u8,           // 0 = double hashing
-    m: u32,                  // Bit array size
-    k: u8,                   // Number of hash functions
-    bits: Vec<u8>,           // Bit array
+// lsm-tree/src/table/filter/standard_bloom/mod.rs
+pub struct StandardBloomFilterReader<'a> {
+    inner: BitArrayReader<'a>,  // Raw bytes exposed as bit array
+    m: usize,                   // Bit count
+    k: usize,                   // Number of hash functions
+}
+
+// lsm-tree/src/table/filter/mod.rs
+pub enum BloomConstructionPolicy {
+    BitsPerKey(f32),
+    FalsePositiveRate(f32),
 }
 ```
 
 The bloom filter uses the **Kirsch-Mitzenmacher technique**: two hash functions `h1(x)` and `h2(x)` generate k hashes via `h_i(x) = h1(x) + i * h2(x)`. This avoids computing k independent hash functions.
 
-**False positive rate:** Configurable via `filter_policy`. With `BitsPerKey(10.0)`, the bit array is ~9.6 bits per key and k (number of hash functions) is computed as `(bpk * LN_2)` ≈ 7. The filter is checked before reading the SSTable — if the key is definitely not in the table, we skip the disk read entirely.
+**False positive rate:** Configurable via `FilterPolicy::all(FilterPolicyEntry::Bloom(BloomConstructionPolicy::BitsPerKey(10.0)))`. With `BitsPerKey(10.0)`, the bit array is ~9.6 bits per key and k (number of hash functions) is computed as `(bpk * LN_2)` ≈ 6 (truncated to usize). The filter is checked before reading the SSTable — if the key is definitely not in the table, we skip the disk read entirely.
 
 **Aha:** The bloom filter is the single most important optimization for read performance. Without it, every read that misses the memtable must check every SSTable on disk. With it, most misses are detected in memory, saving disk I/O. A 1% false positive rate means 99% of missing keys are detected without a disk read.
 
@@ -191,13 +198,13 @@ L0 SSTables can overlap in key range (they come directly from memtable flushes).
 
 ## Blob Tree (Key-Value Separation)
 
-Source: `lsm-tree/src/blob/`
+Source: `lsm-tree/src/blob_tree/`
 
 Following the **WiscKey pattern**, large values are stored separately from keys in a value log:
 
 ```
-LSM-tree stores:  key → ValueHandle { blob_id, offset, size }
-Value log stores:  blob_id:offset → actual value bytes
+LSM-tree stores:  key → ValueHandle { blob_file_id, offset, on_disk_size }
+Value log stores:  blob_file_id:offset → actual value bytes
 ```
 
 This keeps the LSM-tree compact (keys are small, handles are fixed-size) while large values live in append-only segments. Garbage collection merges segments and discards stale values.
@@ -209,31 +216,37 @@ Source: `value-log/` — separate crate for value log implementation
 Source: `lsm-tree/src/cache.rs`
 
 ```rust
-use quick_cache::sync::Cache;
+// lsm-tree/src/cache.rs
+struct CacheKey(u8, u64, u64, u64);  // (tag, root_id, table_id, offset)
 
-struct BlockCache {
-    cache: Cache<BlockKey, Arc<Block>>,
+pub struct Cache {
+    data: QuickCache<CacheKey, Item, BlockWeighter, FxBuildHasher>,
+    capacity: u64,
 }
 ```
 
-Uses `quick_cache` for LRU caching of data blocks. Hot blocks stay in memory, avoiding disk reads. The cache is keyed by `(table_id, block_offset)` and stores the decompressed block.
+Uses `quick_cache` with `FxBuildHasher` for LRU caching of data blocks and blob values. Hot blocks stay in memory, avoiding disk reads. The cache key is a 4-tuple `(tag, root_id, table_id, offset)` where the tag distinguishes block vs blob entries.
 
 ## Replicating in Rust
 
 The `lsm-tree` crate is already a Rust implementation. For building on top of it:
 
 ```rust
-use lsm_tree::{Config, Tree, Direction};
+use lsm_tree::{AbstractTree, Config};
+use lsm_tree::config::{FilterPolicy, FilterPolicyEntry, BloomConstructionPolicy, BlockSizePolicy};
 
-let config = Config::new("/tmp/my-store", seqno, visible_seqno)
-    .write_buffer_size_policy(16 * 1_024 * 1_024)  // 16 MiB memtable
-    .data_block_size_policy(4096)                   // 4KB blocks
-    .filter_policy(FilterPolicy::BitsPerKey(10.0))
-    .build()?;
+let seqno = Default::default();
+let visible_seqno = Default::default();
 
-let tree = config.open()?;
-tree.insert(b"key", b"value")?;
-let value = tree.get(b"key")?;
+let tree = Config::new("/tmp/my-store", seqno, visible_seqno)
+    .data_block_size_policy(BlockSizePolicy::all(4096))
+    .filter_policy(FilterPolicy::all(
+        FilterPolicyEntry::Bloom(BloomConstructionPolicy::BitsPerKey(10.0))
+    ))
+    .open()?;
+
+tree.insert("key", "value", 1);        // returns (added_size, new_size)
+let value = tree.get("key", Some(1))?;  // get with seqno visibility
 ```
 
 See [Fjall Database](03-fjall-database.md) for how lsm-tree is used in a full database.

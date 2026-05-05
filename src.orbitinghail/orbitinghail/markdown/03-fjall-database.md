@@ -4,7 +4,7 @@ Fjall is an embeddable KV database built on top of `lsm-tree`. It adds multiple 
 
 **Aha:** Fjall's multi-keyspace design shares a single WAL but has separate memtables and SSTables per keyspace. This means a single `db.persist()` fsyncs all keyspaces atomically — either all keyspaces are durable or none are. Cross-keyspace batch writes are supported: insert into keyspace A and delete from keyspace B in a single atomic operation. The shared WAL is the key insight that enables atomicity across keyspaces.
 
-Source: `fjall/src/database.rs` — Database struct
+Source: `fjall/src/db.rs` — Database struct
 Source: `fjall/src/journal/` — WAL journal implementation
 
 ## Architecture
@@ -49,10 +49,10 @@ flowchart TD
 ## Keyspaces (Column Families)
 
 ```rust
-let db = Database::builder().path("/tmp/my-db").open()?;
+let db = Database::builder("/tmp/my-db").open()?;
 
-let users = db.open_keyspace("users")?;
-let orders = db.open_keyspace("orders")?;
+let users = db.keyspace("users", KeyspaceCreateOptions::default)?;
+let orders = db.keyspace("orders", KeyspaceCreateOptions::default)?;
 
 users.insert(b"user:1", b"Alice")?;
 orders.insert(b"order:100", b"user:1,book")?;
@@ -67,21 +67,26 @@ Source: `fjall/src/journal/`
 Every write is first appended to the WAL before being applied to the memtable:
 
 ```
-WAL Entry:
+WAL Batch (fjall/src/journal/entry.rs):
 ┌─────────────────────────────────┐
-│ Batch header                    │
-│ - batch_id: u64                 │
-│ - timestamp: u64                │
-│ - num_operations: u32           │
+│ Entry::Start                    │
+│ - item_count: u32               │
+│ - seqno: SeqNo (u64)            │
 ├─────────────────────────────────┤
-│ Operation 1: Insert/Delete      │
-│ - keyspace_id: u8               │
+│ Entry::Item                     │
+│ - value_type: u8                │
+│ - compression: CompressionType  │
+│ - keyspace_id: u64              │
 │ - key_len: u16                  │
+│ - uncompressed_len: u32         │
+│ - compressed_len: u32           │
 │ - key: bytes                    │
-│ - value_len: u16 (if Insert)   │
-│ - value: bytes (if Insert)     │
+│ - value: bytes (compressed)     │
 ├─────────────────────────────────┤
-│ Operation 2: ...                │
+│ Entry::Item ...                 │
+├─────────────────────────────────┤
+│ Entry::End(checksum: u64)       │
+│ + TRAILER_MAGIC bytes           │
 └─────────────────────────────────┘
 ```
 
@@ -93,10 +98,12 @@ On crash recovery, the WAL is replayed: each entry is read and applied to the me
 
 ### SingleWriterTx
 
-For workloads where only one thread writes at a time:
+For workloads where only one thread writes at a time. Requires `TxDatabase` (aka `SingleWriterTxDatabase`):
 
 ```rust
-let tx = db.single_writer_tx()?;
+// Must use TxDatabase, not plain Database
+let db: TxDatabase = /* ... */;
+let tx = db.write_tx();  // returns WriteTransaction<'_> directly
 tx.insert(&users, b"key", b"value")?;
 tx.commit()?;
 ```
@@ -105,25 +112,26 @@ No conflict detection needed — there's only one writer. Reads can happen concu
 
 ### OptimisticTx
 
-For concurrent writers with conflict detection:
+For concurrent writers with conflict detection. Requires `OptimisticTxDatabase`:
 
 ```rust
-let tx = db.optimistic_tx()?;
+let db: OptimisticTxDatabase = /* ... */;
+let tx = db.write_tx()?;  // returns Result<WriteTransaction>
 tx.insert(&users, b"key", b"value")?;
 
-// On commit, check if any keys we read were modified by another transaction
-match tx.commit() {
+// commit() returns Result<Result<(), Conflict>>
+match tx.commit()? {
     Ok(()) => println!("Committed successfully"),
-    Err(CommitError::Conflict) => println!("Retry the transaction"),
+    Err(Conflict) => println!("Retry the transaction"),  // Conflict is a unit struct
 }
 ```
 
-**Aha:** Optimistic transactions don't acquire locks. They record which keys they read, and on commit, they check if any of those keys have been modified since the transaction started. If so, the commit fails with a conflict error and the application retries. This is much faster than lock-based transactions for low-contention workloads but requires retry logic.
+**Aha:** Optimistic transactions don't acquire locks. They record which keys they read, and on commit, they check if any of those keys have been modified since the transaction started. If so, the commit returns `Err(Conflict)` and the application retries. This is much faster than lock-based transactions for low-contention workloads but requires retry logic.
 
 ## MVCC Snapshots
 
 ```rust
-let snapshot = db.snapshot()?;  // Point-in-time view
+let snapshot = db.snapshot();  // Point-in-time view (not Result)
 let value = snapshot.get(&users, b"key")?;
 ```
 
@@ -166,14 +174,19 @@ The flush worker runs when the memtable is full. The compaction worker runs when
 ## Configuration
 
 ```rust
-let db = ConfigBuilder::new()
-    .path("/tmp/my-db")
-    .max_write_buffer_size(16 * 1_024 * 1_024)  // 16 MiB memtable (default)
-    .data_block_size(4096)                       // 4KB blocks
-    // Bloom filters are configured per-level:
-    // L0: FalsePositiveRate(0.0001), L1+: FalsePositiveRate(0.01)
-    .persist_mode(PersistMode::SyncAll)          // Durability
+// Database-level configuration
+let db = Database::builder("/tmp/my-db")
+    .cache_size(32 * 1024 * 1024)  // 32 MiB block cache
+    .worker_threads(1)              // Compaction worker count
     .open()?;
+
+// Per-keyspace configuration (block size, bloom filters, memtable size)
+let opts = || KeyspaceCreateOptions::default()
+    .max_memtable_size(64 * 1024 * 1024)  // 64 MiB memtable (default)
+    .data_block_size_policy(BlockSizePolicy::all(4096))  // 4KB blocks
+    .data_block_hash_ratio_policy(HashRatioPolicy::all(8.0));
+
+let kv = db.keyspace("my-data", opts)?;
 ```
 
 ## Replicating in Rust
@@ -182,20 +195,20 @@ Fjall is already a production-ready Rust implementation. For application use:
 
 ```rust
 // Simple key-value store
-use fjall::{ConfigBuilder, PersistMode};
+use fjall::{Database, KeyspaceCreateOptions, PersistMode};
 
-let db = ConfigBuilder::new().path("/tmp/app-db").open()?;
-let kv = db.open_keyspace("app-data")?;
+let db = Database::builder("/tmp/app-db").open()?;
+let kv = db.keyspace("app-data", KeyspaceCreateOptions::default)?;
 
 kv.insert(b"config", serde_json::to_vec(&config)?)?;
 db.persist(PersistMode::SyncAll)?;
 
-// Transactional update
-let tx = db.optimistic_tx()?;
+// Transactional update (requires OptimisticTxDatabase)
+let tx = db.write_tx()?;
 let old = tx.get(&kv, b"counter")?;
 let new = parse_counter(&old) + 1;
 tx.insert(&kv, b"counter", new.to_string().into_bytes())?;
-tx.commit()?;
+tx.commit()??;  // outer Result for I/O, inner for Conflict
 ```
 
 See [LSM-Tree](02-lsm-tree.md) for the underlying storage engine.

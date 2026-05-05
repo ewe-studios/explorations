@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Orbitinghail -- Production Patterns -- src.orbitinghail</title>
+  <title>Orbitinghail -- Production Patterns -- orbitinghail</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
   <script>
@@ -122,7 +122,7 @@
 </head>
 <body>
   <nav class="nav">
-    <span class="nav-brand">~/src.orbitinghail/docs</span>
+    <span class="nav-brand">~/orbitinghail/docs</span>
     <div class="nav-actions">
       <a href="09-checksums-validation.html" class="nav-breadcrumb">Orbitinghail -- Checksums and Data Validation</a><a href="10-s3-remote-optimizations.html" class="nav-breadcrumb">Orbitinghail -- S3 and Remote Storage Optimizations</a><a href="11-rust-equivalents.html" class="nav-breadcrumb">Orbitinghail -- Rust Equivalents and Patterns</a>
       <a href="index.html" class="nav-btn" title="Back to index">index</a>
@@ -134,11 +134,11 @@
   <article class="prose">
 <h1>Orbitinghail -- Production Patterns</h1>
 <p>This document covers production considerations for running the orbitinghail storage ecosystem: durability, recovery, monitoring, scaling, and operational concerns.</p>
-<p><strong>Aha:</strong> The single most important production consideration for LSM-tree databases is configuring the right flush threshold. Too small (4MB) and you generate too many SSTables, triggering excessive compaction. Too large (256MB) and you risk losing more data on crash (more data in the memtable) and have longer pause times during flush. The sweet spot is 64MB — enough to amortize the flush cost, small enough to recover quickly after a crash.</p>
+<p><strong>Aha:</strong> The single most important production consideration for LSM-tree databases is configuring the right write buffer size. Too small (4MB) and you generate too many SSTables, triggering excessive compaction. Too large (256MB) and you risk losing more data on crash (more data in the memtable) and have longer pause times during flush. The default is 16 MiB — enough to amortize the flush cost, small enough to recover quickly after a crash.</p>
 <h2>Durability Guarantees</h2>
 <h3>PersistMode Selection</h3>
-<table><tr><th>Mode</th><th>fsync Frequency</th><th>Data Loss Window</th><th>Throughput</th><th>Use Case</th></tr><tr><td>`SyncAll`</td><td>Every `persist()` call</td><td>None (if persist called frequently)</td><td>Low</td><td>Financial, audit</td></tr><tr><td>`SyncData`</td><td>Every `persist()` call (data only)</td><td>Metadata may be lost</td><td>Medium</td><td>General purpose</td></tr><tr><td>`None`</td><td>OS flush interval (~30s)</td><td>Up to 30s of data</td><td>High</td><td>Ephemeral, derived</td></tr></table>
-<p><strong>Aha:</strong> <code>PersistMode::None</code> doesn't mean data is lost on application crash — the OS still flushes dirty pages to disk. It means data is lost on power loss or kernel crash. For most applications, <code>None</code> with periodic manual <code>persist(SyncAll)</code> every few seconds is the right balance.</p>
+<table><tr><th>Mode</th><th>fsync Frequency</th><th>Data Loss Window</th><th>Throughput</th><th>Use Case</th></tr><tr><td>`SyncAll`</td><td>Every `persist()` call</td><td>None (if persist called frequently)</td><td>Low</td><td>Financial, audit</td></tr><tr><td>`SyncData`</td><td>Every `persist()` call (data only)</td><td>Metadata may be lost</td><td>Medium</td><td>General purpose</td></tr><tr><td>`Buffer`</td><td>OS flush interval (~30s)</td><td>Up to 30s of data</td><td>High</td><td>Ephemeral, derived</td></tr></table>
+<p><strong>Aha:</strong> <code>PersistMode::Buffer</code> doesn't mean data is lost on application crash — the OS still flushes dirty pages to disk. It means data is lost on power loss or kernel crash. For most applications, <code>Buffer</code> with periodic manual <code>persist(SyncAll)</code> every few seconds is the right balance.</p>
 <h3>WAL Recovery</h3>
 <p>On startup, the WAL is replayed:</p>
 <pre><code class="language-rust">// During Database::open()
@@ -162,29 +162,15 @@ Pending: LSN 101 (commit uploaded, but not confirmed)
 <h3>Key Metrics</h3>
 <table><tr><th>Metric</th><th>Source</th><th>Warning Threshold</th></tr><tr><td>`fjall_memtable_size`</td><td>Memtable atomic counter</td><td>>80% of flush threshold</td></tr><tr><td>`fjall_sstables_per_level`</td><td>Compaction state</td><td>L0 > 10 SSTables</td></tr><tr><td>`fjall_wal_size`</td><td>Journal file size</td><td>>256MB</td></tr><tr><td>`graft_pending_commits`</td><td>Volume state</td><td>>0 for >5 minutes</td></tr><tr><td>`graft_sync_lag`</td><td>LSN difference</td><td>>1000 LSNs</td></tr><tr><td>`graft_remote_errors`</td><td>OpenDAL errors</td><td>>1 per minute</td></tr><tr><td>`splinter_compression_ratio`</td><td>Bitmap size / uncompressed</td><td><1.5x (low density benefit)</td></tr></table>
 <h3>Health Checks</h3>
-<pre><code class="language-rust">// Database health check
-fn health_check(db: &amp;Database) -&gt; HealthStatus {
-    let memtable_size = db.memtable_size();
-    let sstable_count = db.sstable_count();
-    let wal_size = db.wal_size();
-
-    if memtable_size &gt; db.flush_threshold() * 80 / 100 {
-        return HealthStatus::Warning(&quot;Memtable near flush threshold&quot;);
-    }
-    if sstable_count &gt; 50 {
-        return HealthStatus::Warning(&quot;Too many SSTables, compaction may be behind&quot;);
-    }
-    HealthStatus::Healthy
-}
-</code></pre>
+<p>Monitor key metrics through fjall's internal state and graft's runtime. The memtable size is tracked via an atomic counter, SSTable counts are available through the compaction state, and WAL size can be measured from the journal file. For production deployments, expose these as Prometheus metrics and alert when memtable approaches the write buffer threshold or L0 accumulates too many SSTables.</p>
 <h2>Scaling</h2>
 <h3>Read Scaling</h3>
 <p>Reads scale by adding block cache:</p>
-<pre><code class="language-rust">use lsm_tree::cache::BlockCache;
+<pre><code class="language-rust">use lsm_tree::config::Cache;
 
-let cache = BlockCache::new(1024);  // Cache 1024 blocks (~4MB)
-let config = ConfigBuilder::new()
-    .block_cache(cache)
+let cache = Cache::with_capacity_bytes(16 * 1_024 * 1_024);  // 16 MiB cache
+let config = Config::new(&quot;/tmp/my-store&quot;, seqno, visible_seqno)
+    .cache(cache)
     .build()?;
 </code></pre>
 <p>Hot data stays in the cache, avoiding disk reads. The cache is shared across all keyspaces.</p>
@@ -224,17 +210,15 @@ let db = Database::builder()
 </code></pre>
 <p>The WAL contains all changes up to the target LSN. Changes after the target LSN are discarded.</p>
 <h2>Compaction Tuning</h2>
-<h3>Leveled Compaction Configuration</h3>
-<pre><code class="language-rust">let config = ConfigBuilder::new()
-    .compaction_strategy(CompactionStrategy::Leveled {
-        level_multiplier: 10,   // Each level is 10x the size of the previous
-        max_bytes_for_level_base: 64 * 1024 * 1024,  // L1 max size
-        target_file_size_base: 4 * 1024 * 1024,  // Target SSTable size
-    })
+<h3>Compaction Configuration</h3>
+<p>Compaction in lsm-tree is trait-based rather than enum-based. The <code>CompactionStrategy</code> trait allows custom implementations:</p>
+<pre><code class="language-rust">// Compaction is configured via the Config builder
+// Default uses leveled-style compaction with DEFAULT_LEVEL_COUNT = 7 levels
+let config = Config::new(&quot;/tmp/my-store&quot;, seqno, visible_seqno)
+    .write_buffer_size_policy(16 * 1_024 * 1_024)  // 16 MiB memtable
     .build()?;
 </code></pre>
-<p>The level multiplier determines how quickly levels grow. A multiplier of 10 means:</p>
-<ul><li>L0: variable (recent flushes)</li><li>L1: up to 64MB</li><li>L2: up to 640MB</li><li>L3: up to 6.4GB</li><li>L4: up to 64GB</li></ul>
+<p>The default configuration uses 7 levels. Each level grows by a factor determined by the internal configuration. Level 0 contains recently flushed SSTables (which may overlap), while L1+ SSTables are non-overlapping within their level.</p>
 <p><strong>Aha:</strong> For write-heavy workloads, consider tiered compaction. It merges all SSTables at once when a threshold is reached, resulting in lower write amplification but higher read amplification until compaction runs. The choice between leveled and tiered depends on whether reads or writes are the bottleneck.</p>
 <p>See <a href="02-lsm-tree.md">LSM-Tree</a> for compaction strategies. See <a href="03-fjall-database.md">Fjall Database</a> for durability settings. See <a href="10-s3-remote-optimizations.md">S3 Remote Optimizations</a> for remote reliability.</p>
   </article>
