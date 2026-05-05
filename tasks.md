@@ -8,6 +8,12 @@
 
 Complete these in order. Do NOT skip grandfather review. Do NOT produce shallow summaries.
 
+### Phase 0: mastra  (./mastra)
+
+- [ ] Expand exploration of mastra's context memory system - observations, reflections 
+- [ ] Pull the prompts it runs and the overall logic of the process in how it interleaves the 
+- [ ] agents (what model it uses, what services it uses, prompts for each step) to create memories, observations, working memory and reflections that help remember and pull up hold interactions with the users without hitting context limits.
+
 ### Phase 1: src.datastar — Rewrite from scratch
 
 - [x] Initial exploration (shallow — needs full rewrite)

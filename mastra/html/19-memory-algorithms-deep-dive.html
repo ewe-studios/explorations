@@ -1,0 +1,853 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mastra Memory Algorithms Deep Dive -- mastra</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/mastra/docs</span>
+    <div class="nav-actions">
+      <a href="16-plugin-ecosystem.html" class="nav-breadcrumb">Mastra -- Core Sub-Packages and Plugin Ecosystem</a><a href="17-examples.html" class="nav-breadcrumb">Mastra -- Examples</a><a href="18-docs.html" class="nav-breadcrumb">Mastra -- Official Documentation Site (docs/)</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="18-docs.html" class="nav-btn" title="Previous: Mastra -- Official Documentation Site (docs/)">← prev</a>
+      <a href="20-architecture-deep-dive.html" class="nav-btn nav-btn-next" title="Next: Mastra Architecture Deep Dive">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Mastra Memory Algorithms Deep Dive</h1>
+<p>This document provides implementation-level detail on Mastra's memory algorithms, written so that a developer without university-level CS training could understand and rebuild them from scratch.</p>
+<hr>
+<h2>Table of Contents</h2>
+<ol><li><a href="#1-working-memory-system">Working Memory System</a></li><li><a href="#2-semantic-recall-with-vector-search">Semantic Recall with Vector Search</a></li><li><a href="#3-observational-memory-observer--reflector">Observational Memory (Observer + Reflector)</a></li><li><a href="#4-token-estimation">Token Estimation</a></li><li><a href="#5-caching-strategies">Caching Strategies</a></li></ol>
+<hr>
+<h2>1. Working Memory System</h2>
+<h3>What It Is</h3>
+<p>Working Memory is like a sticky note that the AI keeps on its desk. Every time you talk to the AI, it reads this sticky note first to remember important facts about you.</p>
+<h3>Data Structure</h3>
+<pre><code class="language-typescript">// Stored in database
+interface WorkingMemoryRecord {
+  resourceId: string;      // User ID
+  content: string;         // Markdown or JSON string
+  updatedAt: Date;
+}
+</code></pre>
+<h3>Two Modes of Operation</h3>
+<h4>Mode 1: Template-Based (Markdown)</h4>
+<p><strong>Schema:</strong></p>
+<pre><code class="language-typescript">{
+  format: &#x27;markdown&#x27;,
+  content: `
+# User Information
+- **Name**: John Doe
+- **Location**: San Francisco
+- **Goals**: Build a todo app
+`
+}
+</code></pre>
+<p><strong>Update Behavior:</strong> REPLACE - entire content is overwritten</p>
+<p><strong>How It Works:</strong></p>
+<pre><code class="language-typescript">async function updateWorkingMemory(newContent: string) {
+  // Simple overwrite - everything is replaced
+  await db.workingMemory.update({
+    where: { resourceId },
+    data: { content: newContent, updatedAt: new Date() }
+  });
+}
+</code></pre>
+<h4>Mode 2: Schema-Based (JSON with Merge)</h4>
+<p><strong>Schema:</strong></p>
+<pre><code class="language-typescript">{
+  format: &#x27;json&#x27;,
+  content: {
+    name: &quot;John Doe&quot;,
+    location: &quot;San Francisco&quot;,
+    projects: [&quot;todo app&quot;, &quot;weather app&quot;]
+  }
+}
+</code></pre>
+<p><strong>Update Behavior:</strong> DEEP MERGE - only specified fields change</p>
+<p><strong>Deep Merge Algorithm:</strong></p>
+<pre><code class="language-typescript">/**
+ * Merges two objects with special rules:
+ * - null = delete this property
+ * - arrays = replace entirely (don&#x27;t merge items)
+ * - objects = merge recursively
+ * - other values = overwrite
+ */
+function deepMerge(existing, update) {
+  // Handle empty updates
+  if (!update || typeof update !== &#x27;object&#x27;) {
+    return existing || {};
+  }
+
+  const result = { ...existing };
+
+  for (const key in update) {
+    const updateValue = update[key];
+    const existingValue = result[key];
+
+    // Rule 1: null means delete
+    if (updateValue === null) {
+      delete result[key];
+    }
+    // Rule 2: arrays replace entirely
+    else if (Array.isArray(updateValue)) {
+      result[key] = updateValue;
+    }
+    // Rule 3: objects merge recursively
+    else if (
+      typeof updateValue === &#x27;object&#x27; &amp;&amp;
+      typeof existingValue === &#x27;object&#x27; &amp;&amp;
+      existingValue !== null
+    ) {
+      result[key] = deepMerge(existingValue, updateValue);
+    }
+    // Rule 4: everything else overwrites
+    else {
+      result[key] = updateValue;
+    }
+  }
+
+  return result;
+}
+</code></pre>
+<p><strong>Example Usage:</strong></p>
+<pre><code class="language-typescript">// Existing memory
+const existing = {
+  name: &quot;John&quot;,
+  location: &quot;SF&quot;,
+  projects: [&quot;app1&quot;]
+};
+
+// Update (only change location)
+const update = {
+  location: &quot;NYC&quot;  // Other fields preserved
+};
+
+const merged = deepMerge(existing, update);
+// Result: { name: &quot;John&quot;, location: &quot;NYC&quot;, projects: [&quot;app1&quot;] }
+
+// Update with null (delete)
+const update2 = { location: null };
+const merged2 = deepMerge(existing, update2);
+// Result: { name: &quot;John&quot;, projects: [&quot;app1&quot;] }
+</code></pre>
+<h3>Scope: Thread vs Resource</h3>
+<pre><code class="language-typescript">// Thread-scoped: Each conversation has its own working memory
+const thread = await db.thread.find(threadId);
+const workingMemory = thread.metadata.workingMemory;
+
+// Resource-scoped: Shared across all conversations for one user
+const resource = await db.resource.find(resourceId);
+const workingMemory = resource.workingMemory;
+</code></pre>
+<hr>
+<h2>2. Semantic Recall with Vector Search</h2>
+<h3>What It Is</h3>
+<p>Semantic Recall finds past messages that are similar to what the user just said, even if they use different words.</p>
+<h3>How Vector Search Works (Simplified)</h3>
+<p><strong>Step 1: Convert Text to Numbers</strong></p>
+<p>Every sentence gets converted to a list of numbers (called a "vector"). Similar sentences have similar numbers.</p>
+<pre><code class="language-">&quot;I love coding&quot;     → [0.12, -0.45, 0.78, 0.23, ...]  // 1536 numbers
+&quot;I enjoy programming&quot; → [0.15, -0.42, 0.75, 0.21, ...]  // Very similar!
+&quot;I hate food&quot;       → [-0.67, 0.89, -0.34, -0.12, ...] // Very different
+</code></pre>
+<p><strong>Step 2: Measure Similarity</strong></p>
+<p>Use "cosine similarity" to measure how alike two vectors are:</p>
+<pre><code class="language-typescript">function cosineSimilarity(vecA, vecB) {
+  // Dot product
+  let dotProduct = 0;
+  for (let i = 0; i &lt; vecA.length; i++) {
+    dotProduct += vecA[i] * vecB[i];
+  }
+
+  // Magnitudes
+  const magnitudeA = Math.sqrt(vecA.reduce((sum, val) =&gt; sum + val * val, 0));
+  const magnitudeB = Math.sqrt(vecB.reduce((sum, val) =&gt; sum + val * val, 0));
+
+  // Cosine similarity = dot product / (magnitude A * magnitude B)
+  return dotProduct / (magnitudeA * magnitudeB);
+}
+
+// Result: 1.0 = identical, 0 = unrelated, -1 = opposite
+</code></pre>
+<p><strong>Step 3: Find Most Similar</strong></p>
+<pre><code class="language-typescript">async function findSimilarMessages(query: string, allMessages, topK = 4) {
+  // Step 3a: Convert query to vector
+  const queryVector = await embedder.embed(query);
+
+  // Step 3b: Compare to all stored message vectors
+  const scores = allMessages.map(msg =&gt; ({
+    message: msg,
+    similarity: cosineSimilarity(queryVector, msg.vector)
+  }));
+
+  // Step 3c: Sort by similarity (highest first)
+  scores.sort((a, b) =&gt; b.similarity - a.similarity);
+
+  // Step 3d: Return top K matches
+  return scores.slice(0, topK).map(s =&gt; s.message);
+}
+</code></pre>
+<h3>Complete Implementation</h3>
+<pre><code class="language-typescript">class SemanticRecall {
+  constructor(options: {
+    storage: Storage;       // Message database
+    vector: VectorStore;    // Vector database
+    embedder: Embedder;     // Text → vector converter
+    topK?: number;          // How many results (default: 4)
+    messageRange?: number;  // Context messages (default: 1)
+  }) {
+    this.storage = options.storage;
+    this.vector = options.vector;
+    this.embedder = options.embedder;
+    this.topK = options.topK || 4;
+    this.messageRange = options.messageRange || 1;
+  }
+
+  async processInput(args: {
+    messages: Message[];    // Current conversation
+    threadId: string;
+    resourceId?: string;
+  }): Promise&lt;Message[]&gt; {
+    // Step 1: Extract user&#x27;s query from last message
+    const userQuery = this.extractUserQuery(args.messages);
+    if (!userQuery) return [];  // No query to search
+
+    // Step 2: Convert query to vector
+    const queryVector = await this.embedder.embed(userQuery);
+
+    // Step 3: Search vector store
+    const results = await this.vector.query({
+      queryVector,
+      topK: this.topK,
+      filter: { threadId: args.threadId }  // Or resourceId for cross-thread
+    });
+
+    // Step 4: Get surrounding context for each match
+    const messagesWithContext = [];
+    for (const result of results) {
+      const context = await this.storage.getMessagesWithContext({
+        messageId: result.metadata.message_id,
+        before: this.messageRange,
+        after: this.messageRange
+      });
+      messagesWithContext.push(...context);
+    }
+
+    return messagesWithContext;
+  }
+
+  async processOutput(args: {
+    newMessages: Message[];  // Messages to save
+  }): Promise&lt;void&gt; {
+    // Create embeddings for new messages being saved
+    for (const message of args.newMessages) {
+      const text = this.extractText(message);
+      if (!text) continue;
+
+      const vector = await this.embedder.embed(text);
+
+      await this.vector.upsert({
+        id: message.id,
+        vector,
+        metadata: {
+          message_id: message.id,
+          thread_id: message.threadId,
+          content: text,
+          created_at: message.createdAt.toISOString()
+        }
+      });
+    }
+  }
+
+  extractUserQuery(messages: Message[]): string | null {
+    // Find last user message
+    for (let i = messages.length - 1; i &gt;= 0; i--) {
+      if (messages[i].role === &#x27;user&#x27;) {
+        return this.extractText(messages[i]);
+      }
+    }
+    return null;
+  }
+
+  extractText(message: Message): string {
+    if (typeof message.content === &#x27;string&#x27;) {
+      return message.content;
+    }
+    // Handle complex message formats
+    if (message.content?.parts) {
+      return message.content.parts
+        .filter(p =&gt; p.type === &#x27;text&#x27;)
+        .map(p =&gt; p.text)
+        .join(&#x27;\n&#x27;);
+    }
+    return &#x27;&#x27;;
+  }
+}
+</code></pre>
+<h3>Caching Embeddings</h3>
+<p>To avoid paying for the same embedding twice, cache results:</p>
+<pre><code class="language-typescript">import { LRUCache } from &#x27;lru-cache&#x27;;
+
+// Global cache shared across all instances
+const embeddingCache = new LRUCache({ max: 1000 });
+
+async function embedWithCache(text, indexName) {
+  // Create cache key from content hash + index name
+  const hash = await xxhash(`${indexName}:${text}`);
+  const cached = embeddingCache.get(hash);
+
+  if (cached) return cached;
+
+  // Generate new embedding
+  const embedding = await embedder.embed(text);
+
+  // Store in cache
+  embeddingCache.set(hash, embedding);
+
+  return embedding;
+}
+</code></pre>
+<h3>Index Optimization</h3>
+<p>For large datasets, create indexes to speed up search:</p>
+<pre><code class="language-typescript">// HNSW (Hierarchical Navigable Small World) - Fast, good recall
+await vector.createIndex({
+  indexName: &#x27;memory_messages&#x27;,
+  dimension: 1536,  // OpenAI embedding size
+  metric: &#x27;cosine&#x27;,
+  type: &#x27;hnsw&#x27;,
+  hnsw: {
+    m: 16,              // Connections per node
+    efConstruction: 64  // Index quality (higher = better but slower)
+  }
+});
+
+// IVFFlat (Inverted File) - Good balance
+await vector.createIndex({
+  indexName: &#x27;memory_messages&#x27;,
+  dimension: 1536,
+  metric: &#x27;cosine&#x27;,
+  type: &#x27;ivfflat&#x27;,
+  ivf: {
+    lists: 100  // Number of clusters
+  }
+});
+</code></pre>
+<hr>
+<h2>3. Observational Memory (Observer + Reflector)</h2>
+<h3>What It Is</h3>
+<p>Observational Memory is like having a note-taker (Observer) who summarizes conversations, and an editor (Reflector) who condenses those summaries when they get too long.</p>
+<h3>Architecture</h3>
+<pre><code class="language-">┌─────────────────────────────────────────────────────────────┐
+│                     ACTOR (Main Agent)                       │
+│  Sees: Observations + Recent Unobserved Messages            │
+└─────────────────────────────────────────────────────────────┘
+                              │
+              ┌───────────────┴───────────────┐
+              │                               │
+    ┌─────────▼────────┐           ┌─────────▼────────┐
+    │    OBSERVER      │           │    REFLECTOR     │
+    │ (Extracts facts) │           │ (Condenses info) │
+    │ Trigger: 30k tok │           │ Trigger: 40k tok │
+    └──────────────────┘           └──────────────────┘
+</code></pre>
+<h3>Observer Agent</h3>
+<p><strong>Purpose:</strong> Extract key facts from conversation into structured observations</p>
+<p><strong>Prompt Structure:</strong></p>
+<pre><code class="language-">You are the memory consciousness of an AI assistant.
+Your observations will be the ONLY information the assistant has
+about past interactions with this user.
+
+=== EXTRACTION INSTRUCTIONS ===
+
+1. DISTINGUISH USER ASSERTIONS FROM QUESTIONS:
+   - &quot;I have two kids&quot; → 🔴 User stated has two kids
+   - &quot;How many kids do I have?&quot; → 🔴 User asked about kids
+
+2. TEMPORAL ANCHORING:
+   Each observation gets TWO timestamps:
+   - When it was said (from message timestamp)
+   - When it references (if different)
+
+   Example:
+   (June 15, 9:15 AM) User will visit parents this weekend.
+   (meaning June 17-18, 2025)
+
+3. PRESERVE UNUSUAL PHRASING:
+   BAD: User exercised.
+   GOOD: User did a &quot;movement session&quot; (their term for exercise).
+
+4. USE PRECISE VERBS:
+   BAD: User got something.
+   GOOD: User purchased / received / was given something.
+
+5. PRESERVE DETAILS:
+   - Names, handles, quantities
+   - Sequences and steps
+   - Technical values
+
+=== OUTPUT FORMAT ===
+
+&lt;observations&gt;
+Date: Dec 4, 2025
+* 🔴 (14:30) User prefers direct answers
+* 🟡 (14:31) Working on feature X
+  * -&gt; viewed auth.ts
+  * -&gt; found missing null check
+&lt;/observations&gt;
+
+&lt;current-task&gt;What agent is working on&lt;/current-task&gt;
+&lt;suggested-response&gt;Hint for next message&lt;/suggested-response&gt;
+</code></pre>
+<p><strong>Parsing Output:</strong></p>
+<pre><code class="language-typescript">function parseObserverOutput(output: string) {
+  // Extract &lt;observations&gt; block
+  const obsMatch = output.match(/&lt;observations&gt;([\s\S]*?)&lt;\/observations&gt;/i);
+  const observations = obsMatch ? obsMatch[1].trim() : &#x27;&#x27;;
+
+  // Extract &lt;current-task&gt;
+  const taskMatch = output.match(/&lt;current-task&gt;([\s\S]*?)&lt;\/current-task&gt;/i);
+  const currentTask = taskMatch ? taskMatch[1].trim() : &#x27;&#x27;;
+
+  // Extract &lt;suggested-response&gt;
+  const respMatch = output.match(/&lt;suggested-response&gt;([\s\S]*?)&lt;\/suggested-response&gt;/i);
+  const suggestedResponse = respMatch ? respMatch[1].trim() : &#x27;&#x27;;
+
+  // Clean up observations
+  const sanitized = sanitizeObservationLines(observations);
+
+  return {
+    observations: sanitized,
+    currentTask,
+    suggestedResponse
+  };
+}
+
+function sanitizeObservationLines(text: string): string {
+  const MAX_LINE_LENGTH = 10000;
+  return text.split(&#x27;\n&#x27;).map(line =&gt; {
+    if (line.length &gt; MAX_LINE_LENGTH) {
+      return line.slice(0, MAX_LINE_LENGTH) + &#x27; ... [truncated]&#x27;;
+    }
+    return line;
+  }).join(&#x27;\n&#x27;);
+}
+</code></pre>
+<h3>Reflector Agent</h3>
+<p><strong>Purpose:</strong> Condense observations when they get too large</p>
+<p><strong>Key Insight:</strong> The Reflector's output becomes the ENTIRE memory - anything not included is forgotten.</p>
+<p><strong>Prompt Structure:</strong></p>
+<pre><code class="language-">You are the observation reflector.
+Your reason for existing is to reflect on all observations,
+re-organize and streamline them, and draw connections.
+
+IMPORTANT: Your reflections are THE ENTIRETY of the assistant&#x27;s memory.
+Any information you do not add will be immediately forgotten.
+
+When consolidating:
+- Preserve dates/times when present
+- Combine related items (e.g., &quot;agent called view tool 5 times&quot;)
+- Condense older observations more aggressively
+- Retain more detail for recent observations
+
+=== OUTPUT FORMAT ===
+
+&lt;observations&gt;
+Date: Dec 4, 2025
+* 🔴 (14:30) User prefers direct answers
+* 🟡 (14:30-14:45) Agent debugged auth issue:
+  * Browsed 5 files in src/auth/
+  * Found missing null check at line 47
+  * Applied fix, tests now pass
+&lt;/observations&gt;
+
+&lt;current-task&gt;Current priority task&lt;/current-task&gt;
+&lt;suggested-response&gt;Next response hint&lt;/suggested-response&gt;
+</code></pre>
+<p><strong>Compression Validation:</strong></p>
+<pre><code class="language-typescript">function validateCompression(
+  reflectedTokens: number,
+  targetThreshold: number
+): boolean {
+  // Reflection must actually be smaller than input
+  return reflectedTokens &lt; targetThreshold;
+}
+
+// If validation fails, retry with stronger compression guidance
+const COMPRESSION_GUIDANCE = {
+  0: &#x27;&#x27;,  // No guidance (first attempt)
+  1: `
+## COMPRESSION REQUIRED
+
+Your reflection was the same size or larger than the original.
+Please compress slightly more:
+- Condense early observations into higher-level summaries
+- Retain fine details for recent items
+- Combine related observations
+  `,
+  2: `
+## AGGRESSIVE COMPRESSION REQUIRED
+
+Your reflection is still too large.
+Please compress more aggressively:
+- Heavily condense oldest observations
+- Remove redundant information
+- Keep only key facts, decisions, outcomes
+  `,
+  3: `
+## CRITICAL COMPRESSION REQUIRED
+
+Maximum compression needed:
+- Summarize first 50-70% into brief paragraphs
+- Ruthlessly merge related items
+- Drop procedural details, keep final outcomes
+  `
+};
+</code></pre>
+<h3>Async Buffering System</h3>
+<p><strong>Problem:</strong> Waiting for Observer/Reflector to finish blocks the response.</p>
+<p><strong>Solution:</strong> Run compression in background, activate instantly when needed.</p>
+<p><strong>How It Works:</strong></p>
+<pre><code class="language-typescript">class ObservationalMemory {
+  // Configuration
+  messageTokens = 30000;      // When observation triggers
+  bufferTokens = 0.2;         // Buffer at 20% of threshold (6000 tokens)
+  bufferActivation = 0.8;     // Activate 80% of buffer
+
+  // State
+  bufferedChunks = [];
+  unobservedTokens = 0;
+
+  async processOutput(messages: Message[]) {
+    // Count tokens in new messages
+    const newTokens = countTokens(messages);
+    this.unobservedTokens += newTokens;
+
+    // Check if we should buffer (run in background)
+    const bufferThreshold = this.messageTokens * this.bufferTokens;
+    if (this.unobservedTokens &gt;= bufferThreshold &amp;&amp; !this.isBuffering) {
+      this.startBuffering();  // Runs async, doesn&#x27;t block
+    }
+
+    // Check if we need to activate buffer
+    if (this.unobservedTokens &gt;= this.messageTokens) {
+      if (this.bufferedChunks.length &gt; 0) {
+        // Instant activation - no LLM call needed!
+        this.activateBuffer();
+      } else {
+        // No buffer available - must wait for observation
+        await this.runObservation();  // Blocking
+      }
+    }
+  }
+
+  async startBuffering() {
+    this.isBuffering = true;
+
+    // Call Observer LLM in background
+    const observations = await callObserver(this.getUnobservedMessages());
+
+    // Store result without activating yet
+    this.bufferedChunks.push({
+      observations,
+      messageRange: { start, end },  // Which messages this covers
+      tokens: countTokens(observations)
+    });
+
+    this.isBuffering = false;
+  }
+
+  activateBuffer() {
+    // Take buffered chunks and make them active
+    const chunksToActivate = this.bufferedChunks.slice(
+      0,
+      Math.ceil(this.bufferedChunks.length * this.bufferActivation)
+    );
+
+    // Calculate how many messages this will remove
+    const messagesToRemove = chunksToActivate.reduce(
+      (sum, chunk) =&gt; sum + (chunk.messageRange.end - chunk.messageRange.start),
+      0
+    );
+
+    // Update active observations
+    this.activeObservations = chunksToActivate
+      .map(c =&gt; c.observations)
+      .join(&#x27;\n&#x27;);
+
+    // Update token counts
+    this.unobservedTokens -= messagesToRemove;
+
+    // Keep remaining chunks in buffer
+    this.bufferedChunks = this.bufferedChunks.slice(
+      chunksToActivate.length
+    );
+  }
+}
+</code></pre>
+<h3>Degeneracy Detection</h3>
+<p>LLMs sometimes get stuck in loops, repeating the same content. Detect this:</p>
+<pre><code class="language-typescript">function detectDegenerateRepetition(text: string): boolean {
+  if (!text || text.length &lt; 2000) return false;
+
+  // Strategy 1: Check for repeated windows
+  const windowSize = 200;
+  const step = Math.max(1, Math.floor(text.length / 50));
+  const seen = new Map();
+  let duplicates = 0;
+  let total = 0;
+
+  for (let i = 0; i + windowSize &lt;= text.length; i += step) {
+    const window = text.slice(i, i + windowSize);
+    total++;
+    const count = (seen.get(window) || 0) + 1;
+    seen.set(window, count);
+    if (count &gt; 1) duplicates++;
+  }
+
+  // If &gt;40% of windows are duplicates → degenerate
+  if (total &gt; 5 &amp;&amp; duplicates / total &gt; 0.4) {
+    return true;
+  }
+
+  // Strategy 2: Check for extremely long lines
+  for (const line of text.split(&#x27;\n&#x27;)) {
+    if (line.length &gt; 50000) return true;
+  }
+
+  return false;
+}
+</code></pre>
+<hr>
+<h2>4. Token Estimation</h2>
+<h3>Simple Token Counter</h3>
+<p>For quick estimates without calling the tokenizer API:</p>
+<pre><code class="language-typescript">function estimateTokens(text: string): number {
+  // English words average ~4-5 characters
+  // Add 20% for punctuation, special tokens
+  const words = text.split(/\s+/).length;
+  return Math.ceil(words * 1.3);
+}
+
+// More accurate for code
+function estimateCodeTokens(text: string): number {
+  // Code has more symbols, shorter tokens
+  const chars = text.length;
+  return Math.ceil(chars / 4);  // ~4 chars per token
+}
+</code></pre>
+<h3>Model-Specific Estimation</h3>
+<pre><code class="language-typescript">const MODEL_RATIOS = {
+  &#x27;gpt-4&#x27;: 1.3,      // Words to tokens
+  &#x27;gpt-3.5&#x27;: 1.3,
+  &#x27;claude-3&#x27;: 1.2,
+  &#x27;gemini&#x27;: 1.4,
+};
+
+function estimateForModel(text: string, modelId: string): number {
+  const ratio = MODEL_RATIOS[modelId] || 1.3;
+  const words = text.split(/\s+/).length;
+  return Math.ceil(words * ratio);
+}
+</code></pre>
+<hr>
+<h2>5. Caching Strategies</h2>
+<h3>LRU Cache for Embeddings</h3>
+<pre><code class="language-typescript">import { LRUCache } from &#x27;lru-cache&#x27;;
+
+// Create cache with max size
+const cache = new LRUCache({
+  max: 1000,  // Keep 1000 entries
+  ttl: 1000 * 60 * 60,  // Optional: expire after 1 hour
+});
+
+// Generate cache key
+async function makeCacheKey(text: string, modelId: string): Promise&lt;string&gt; {
+  // Use fast hash (xxhash) instead of storing full text
+  const hash = await xxhash(`${modelId}:${text}`);
+  return hash.toString(16);  // Convert to hex string
+}
+
+// Use cache
+async function embedWithCache(text: string) {
+  const key = await makeCacheKey(text, &#x27;text-embedding-3-small&#x27;);
+  const cached = cache.get(key);
+
+  if (cached) {
+    console.log(&#x27;Cache hit!&#x27;);
+    return cached;
+  }
+
+  // Generate new embedding
+  const embedding = await embedder.embed(text);
+  cache.set(key, embedding);
+
+  return embedding;
+}
+</code></pre>
+<h3>Why LRU?</h3>
+<p>LRU (Least Recently Used) automatically removes old entries when full:</p>
+<pre><code class="language-">Cache: [A, B, C, D, E]  (max 5)
+
+Access A → [B, C, D, E, A]  (A moved to end)
+Add F →   [B, C, D, E, A, F] → [C, D, E, A, F]  (B evicted)
+</code></pre>
+<hr>
+<h2>Implementation Checklist</h2>
+<p>To rebuild this system from scratch:</p>
+<h3>Working Memory</h3>
+<ul><li>[ ] Database schema for working memory (resourceId, content, updatedAt)</li><li>[ ] Deep merge function with null-delete, array-replace semantics</li><li>[ ] Thread vs resource scope handling</li><li>[ ] Template formatting (Markdown/JSON)</li></ul>
+<h3>Semantic Recall</h3>
+<ul><li>[ ] Embedding generation (call embedder API)</li><li>[ ] Vector storage (upsert, query operations)</li><li>[ ] Cosine similarity calculation</li><li>[ ] Context retrieval (get surrounding messages)</li><li>[ ] LRU cache for embeddings</li><li>[ ] Index creation (HNSW/IVFFlat)</li></ul>
+<h3>Observational Memory</h3>
+<ul><li>[ ] Observer prompt construction</li><li>[ ] Reflector prompt construction</li><li>[ ] Output parsing (XML tag extraction)</li><li>[ ] Token counting</li><li>[ ] Async buffering system</li><li>[ ] Degeneracy detection</li><li>[ ] Compression validation</li></ul>
+<h3>Infrastructure</h3>
+<ul><li>[ ] Message storage (save, retrieve, list)</li><li>[ ] Thread management (create, get, delete)</li><li>[ ] Resource tracking</li><li>[ ] Processor pipeline (input/output)</li></ul>
+<hr>
+<h2>Performance Characteristics</h2>
+<table><tr><th>Operation</th><th>Time Complexity</th><th>Notes</th></tr><tr><td>Working Memory Read</td><td>O(1)</td><td>Single DB lookup</td></tr><tr><td>Working Memory Write</td><td>O(1)</td><td>Single DB update</td></tr><tr><td>Semantic Recall Query</td><td>O(log n)</td><td>Vector index lookup</td></tr><tr><td>Embedding Generation</td><td>O(n)</td><td>Proportional to text length</td></tr><tr><td>Observation (Observer)</td><td>O(n)</td><td>LLM call on n tokens</td></tr><tr><td>Reflection (Reflector)</td><td>O(n)</td><td>LLM call on n tokens</td></tr><tr><td>Buffer Activation</td><td>O(1)</td><td>Instant swap</td></tr></table>
+<hr>
+<h2>Common Pitfalls and Solutions</h2>
+<h3>1. Embedding Dimension Mismatch</h3>
+<p><strong>Problem:</strong> Different embedding models produce different dimensions.</p>
+<p><strong>Solution:</strong> Probe embedder on startup:</p>
+<pre><code class="language-typescript">async function getEmbeddingDimension(embedder) {
+  const result = await embedder.embed([&#x27;test&#x27;]);
+  return result[0].length;  // e.g., 1536 for OpenAI
+}
+</code></pre>
+<h3>2. Observation Loop Degeneracy</h3>
+<p><strong>Problem:</strong> LLM gets stuck repeating same observations.</p>
+<p><strong>Solution:</strong> Detect repetition, retry with different model or temperature.</p>
+<h3>3. Memory Leaks from Caching</h3>
+<p><strong>Problem:</strong> Cache grows unbounded.</p>
+<p><strong>Solution:</strong> Use LRU cache with explicit max size.</p>
+<h3>4. Cross-Thread Message Duplication</h3>
+<p><strong>Problem:</strong> Same message appears multiple times from different threads.</p>
+<p><strong>Solution:</strong> Deduplicate by message ID before adding to context.</p>
+<h3>5. Stale Buffer After Crash</h3>
+<p><strong>Problem:</strong> Process crashes mid-buffering, leaving stale state.</p>
+<p><strong>Solution:</strong> Track active operations in DB with heartbeat, clean up stale flags on startup.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

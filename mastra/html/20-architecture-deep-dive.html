@@ -1,0 +1,811 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mastra Architecture Deep Dive -- mastra</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/mastra/docs</span>
+    <div class="nav-actions">
+      <a href="17-examples.html" class="nav-breadcrumb">Mastra -- Examples</a><a href="18-docs.html" class="nav-breadcrumb">Mastra -- Official Documentation Site (docs/)</a><a href="19-memory-algorithms-deep-dive.html" class="nav-breadcrumb">Mastra Memory Algorithms Deep Dive</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="19-memory-algorithms-deep-dive.html" class="nav-btn" title="Previous: Mastra Memory Algorithms Deep Dive">← prev</a>
+      <a href="21-master-workflows-deep-dive.html" class="nav-btn nav-btn-next" title="Next: Mastra Master Workflows Deep Dive">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Mastra Architecture Deep Dive</h1>
+<h2>Overview</h2>
+<p>Mastra is a TypeScript framework for building AI-powered applications, agents, and workflows. It provides a comprehensive toolkit for going from prototypes to production-ready applications with features like model routing, agent orchestration, workflow management, memory systems, and deployment tooling.</p>
+<p>This document provides a deep dive into Mastra's architecture, covering the core packages, execution flows, storage layers, and developer workflows.</p>
+<h2>Repository</h2>
+<ul><li><strong>Location:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.AICoders/src.Mastra/mastra</code></li><li><strong>Remote:</strong> https://github.com/mastra-ai/mastra</li><li><strong>Primary Language:</strong> TypeScript</li><li><strong>License:</strong> Apache 2.0</li><li><strong>Package Manager:</strong> pnpm (v10.18.0+)</li><li><strong>Node Version:</strong> 22.13.0+</li></ul>
+<h2>Project Structure</h2>
+<p>Mastra is organized as a monorepo using pnpm workspaces and Turborepo for build orchestration.</p>
+<pre><code class="language-">mastra/
+├── packages/                    # Core framework packages
+│   ├── core/                    # Core abstractions (Agent, Memory, Workflows, Tools)
+│   ├── cli/                     # CLI for project management
+│   ├── server/                  # HTTP server and handlers
+│   ├── memory/                  # Memory implementation (observational, semantic, working)
+│   ├── agent-builder/           # Agent construction and workflow integration
+│   ├── mcp/                     # Model Context Protocol implementation
+│   ├── mcp-docs-server/         # MCP server for documentation
+│   ├── rag/                     # Retrieval Augmented Generation utilities
+│   ├── evals/                   # Evaluation framework
+│   ├── deployer/                # Deployment adapters
+│   ├── schema-compat/           # Schema compatibility layer
+│   ├── auth/                    # Authentication utilities
+│   ├── playground/              # Development playground
+│   ├── playground-ui/           # UI components for playground
+│   ├── editor/                  # Code editor integration
+│   ├── loggers/                 # Logging implementations
+│   ├── create-mastra/           # Project scaffolding
+│   └── _* /                     # Internal utilities (test-utils, config, etc.)
+├── stores/                      # Storage adapters
+│   ├── libsql/                  # LibSQL/SQLite storage
+│   ├── pg/                      # PostgreSQL storage
+│   ├── cloudflare/              # Cloudflare Workers storage
+│   ├── cloudflare-d1/           # Cloudflare D1 storage
+│   ├── upstash/                 # Upstash Redis storage
+│   ├── astra/                   # DataStax Astra storage
+│   ├── chroma/                  # Chroma vector storage
+│   ├── pinecone/                # Pinecone vector storage
+│   ├── qdrant/                  # Qdrant vector storage
+│   ├── mongodb/                 # MongoDB storage
+│   ├── dynamodb/                # DynamoDB storage
+│   ├── elasticsearch/           # Elasticsearch storage
+│   └── ... (15+ more adapters)
+├── server-adapters/             # HTTP server adapters
+│   ├── hono/                    # Hono adapter
+│   └── express/                 # Express adapter
+├── client-sdks/                 # Client SDKs
+│   ├── client-js/               # JavaScript client
+│   └── react/                   # React client
+├── auth/                        # Auth providers
+│   ├── clerk/                   # Clerk auth provider
+│   └── hanko/                   # Hanko auth provider
+├── examples/                    # Example projects
+├── docs/                        # Documentation
+└── explorations/                # Exploration documents
+</code></pre>
+<h2>Core Architecture</h2>
+<h3>The Mastra Class</h3>
+<p>The <code>Mastra</code> class is the central hub that ties all components together. It acts as a registry and dependency injection container.</p>
+<pre><code class="language-typescript">class Mastra {
+  agents: Record&lt;string, Agent&gt;;
+  workflows: Record&lt;string, Workflow&gt;;
+  storage?: MastraCompositeStore;
+  vectors?: Record&lt;string, MastraVector&gt;;
+  logger?: IMastraLogger;
+  observability?: ObservabilityEntrypoint;
+  deployer?: MastraDeployer;
+  server?: ServerConfig;
+  mcpServers?: Record&lt;string, MCPServerBase&gt;;
+  memory?: Record&lt;string, MastraMemory&gt;;
+  workspace?: AnyWorkspace;
+  // ... and more
+}
+</code></pre>
+<p><strong>Key Responsibilities:</strong></p>
+<ol><li><strong>Component Registry</strong>: Stores and provides access to all registered components</li><li><strong>Dependency Injection</strong>: Provides shared services (storage, logger, observability) to components</li><li><strong>ID Generation</strong>: Centralized unique ID generation with optional context</li><li><strong>Event Handling</strong>: Pub/sub system for cross-component communication</li><li><strong>Hook System</strong>: Lifecycle hooks for scorers and other events</li></ol>
+<h3>Component Registration Pattern</h3>
+<p>Components are registered through the constructor configuration:</p>
+<pre><code class="language-typescript">const mastra = new Mastra({
+  agents: { weatherAgent: new Agent({...}) },
+  workflows: { weatherWorkflow: new Workflow({...}) },
+  storage: new LibSQLStore({ url: &#x27;file:mastra.db&#x27; }),
+  logger: new ConsoleLogger({ name: &#x27;MyApp&#x27; }),
+});
+</code></pre>
+<p><strong>Important Note</strong>: Spreading config objects (<code>{ ...config }</code>) can lose getters and non-enumerable properties. The framework explicitly checks for this and throws errors when null/undefined values are passed to <code>addAgent()</code>, <code>addWorkflow()</code>, etc.</p>
+<h2>Agent Architecture</h2>
+<h3>Agent Class Structure</h3>
+<pre><code class="language-typescript">class Agent&lt;TAgentId, TTools, TOutput, TRequestContext&gt; extends MastraBase {
+  id: TAgentId;
+  name: string;
+  #instructions: DynamicArgument&lt;AgentInstructions&gt;;
+  model: DynamicArgument&lt;MastraModelConfig&gt; | ModelFallbacks;
+  #memory?: DynamicArgument&lt;MastraMemory&gt;;
+  #tools: DynamicArgument&lt;TTools&gt;;
+  #inputProcessors?: DynamicArgument&lt;InputProcessorOrWorkflow[]&gt;;
+  #outputProcessors?: DynamicArgument&lt;OutputProcessorOrWorkflow[]&gt;;
+  #workflows?: DynamicArgument&lt;Record&lt;string, AnyWorkflow&gt;&gt;;
+  #agents?: DynamicArgument&lt;Record&lt;string, Agent&gt;&gt;;
+  #scorers?: DynamicArgument&lt;MastraScorers&gt;;
+  #workspace?: DynamicArgument&lt;AnyWorkspace&gt;;
+}
+</code></pre>
+<h3>Key Agent Features</h3>
+<ol><li><strong>Dynamic Configuration</strong>: Most properties support <code>DynamicArgument<T></code> which allows:</li></ol>
+<ul><li>Static values: <code>{ instructions: "You are helpful" }</code></li><li>Functions: <code>{ instructions: ({ context }) => "Context-aware instructions" }</code></li><li>Async resolution at runtime</li></ul>
+<ol><li><strong>Model Fallbacks</strong>: Agents can configure multiple models with automatic failover:</li></ol>
+<p>   ``<code>typescript    model: [      { id: 'openai/gpt-4', maxRetries: 2, enabled: true },      { id: 'anthropic/claude-3', maxRetries: 2, enabled: true },    ]    </code>``</p>
+<ol><li><strong>Processor Pipeline</strong>: Input/output processors transform messages:</li></ol>
+<ul><li>Input: Working memory injection, message history loading, semantic recall, observations</li><li>Output: Message saving, embedding creation, observation triggering</li></ul>
+<ol><li><strong>Network Mode</strong>: Agents can delegate to other agents in a network:</li></ol>
+<p>   ``<code>typescript    const agent = new Agent({      id: 'supervisor',      agents: { researcher, writer, coder },      delegatorType: 'network' // Uses agent network for task delegation    });    </code>``</p>
+<h3>Agent Execution Flow</h3>
+<pre><code class="language-">┌─────────────────────────────────────────────────────────────────┐
+│                    Agent.generate() / .stream()                  │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  1. Resolve dynamic config (instructions, model, tools, etc.)   │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  2. Build Input Processor Workflow                              │
+│     - Merge configured + memory auto-processors                 │
+│     - Deduplicate by processor ID                               │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  3. Execute Input Processors                                    │
+│     - WorkingMemory: Inject system message with WM data         │
+│     - MessageHistory: Load last N messages                      │
+│     - SemanticRecall: Query vector store for similar messages   │
+│     - ObservationalMemory: Activate observations if threshold   │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  4. Call LLM (MastraLLM.doGenerate() / doStream())              │
+│     - Model routing if multiple models configured               │
+│     - Tool execution loop if tools are called                   │
+│     - Processor intervention handling                           │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  5. Execute Output Processor Workflow                           │
+│     - MessageHistory: Save new messages                         │
+│     - SemanticRecall: Create embeddings for new messages        │
+│     - ObservationalMemory: Check observation/reflection trigger │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  6. Return result (GenerateTextResult / StreamTextResult)       │
+└─────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h3>Model Router</h3>
+<p>The model router (<code>ModelRouterLanguageModel</code>) provides unified access to 40+ LLM providers:</p>
+<pre><code class="language-typescript">// String-based model selection
+model: &#x27;openai/gpt-4&#x27;
+model: &#x27;anthropic/claude-3-5-sonnet&#x27;
+model: &#x27;google/gemini-2.5-flash&#x27;
+
+// Config-based selection
+model: {
+  id: &#x27;custom-model&#x27;,
+  baseURL: &#x27;https://custom-api.com&#x27;,
+  headers: { Authorization: &#x27;Bearer xxx&#x27; }
+}
+</code></pre>
+<p><strong>Supported Providers:</strong></p>
+<ul><li>OpenAI (v5, v6)</li><li>Anthropic</li><li>Google (Gemini)</li><li>Azure OpenAI</li><li>Groq</li><li>Together AI</li><li>XAI (Grok)</li><li>DeepSeek</li><li>Mistral</li><li>OpenRouter</li><li>Custom providers via gateways</li></ul>
+<h2>Workflow Engine</h2>
+<h3>Workflow Class Structure</h3>
+<pre><code class="language-typescript">class Workflow&lt;TSteps, TStepResults, TInput, TOutput, TEngine&gt; {
+  id: string;
+  name: string;
+  #steps: Record&lt;string, Step&gt;;
+  #stepGraph: StepGraph;
+  #stepSubscriberGraph?: Record&lt;string, StepGraph&gt;;
+  #executionEngine: ExecutionEngine;
+  #pubsub?: PubSub;
+
+  // Builder pattern methods
+  step(step: Step): this;
+  then(nextStep: Step): this;
+  branch(condition: ConditionFunction, trueStep: Step, falseStep: Step): this;
+  parallel(steps: Step[]): this;
+  loop(condition: LoopConditionFunction): this;
+}
+</code></pre>
+<h3>Step Definition</h3>
+<p>Steps can be created from:</p>
+<ol><li><strong>Explicit parameters</strong>: <code>createStep({ id, execute, inputSchema, outputSchema })</code></li><li><strong>Agents</strong>: <code>createStep(agent, agentOptions)</code></li><li><strong>Tools</strong>: <code>createStep(tool, toolOptions)</code></li></ol>
+<pre><code class="language-typescript">const weatherStep = createStep({
+  id: &#x27;get-weather&#x27;,
+  description: &#x27;Fetch current weather&#x27;,
+  inputSchema: z.object({ location: z.string() }),
+  outputSchema: z.object({ temp: z.number(), condition: z.string() }),
+  execute: async ({ context }) =&gt; {
+    const { location } = context.input;
+    const weather = await fetchWeather(location);
+    return { temp: weather.temp, condition: weather.condition };
+  }
+});
+</code></pre>
+<h3>Execution Engine</h3>
+<p>Workflows use an execution engine that handles:</p>
+<ol><li><strong>Step Resolution</strong>: Determining which steps to execute based on the graph</li><li><strong>Dependency Management</strong>: Running steps in parallel when no dependencies exist</li><li><strong>Error Handling</strong>: Retry logic, error boundaries, graceful degradation</li><li><strong>State Persistence</strong>: Saving workflow state for suspension/resumption</li><li><strong>Streaming</strong>: Real-time step progress via server-sent events</li></ol>
+<p><strong>Default Engine</strong>: <code>DefaultExecutionEngine</code> - step-by-step execution with support for:</p>
+<ul><li>Sequential chains (<code>.then()</code>)</li><li>Branching (<code>.branch()</code>)</li><li>Parallel execution (<code>.parallel()</code>)</li><li>Loops (<code>.loop()</code>)</li></ul>
+<h3>Workflow Graph Example</h3>
+<pre><code class="language-typescript">const workflow = new Workflow({
+  id: &#x27;content-workflow&#x27;,
+  name: &#x27;Content Generation Workflow&#x27;,
+})
+  // Define initial step
+  .step(&#x27;research&#x27;, researchStep)
+  // Chain sequential steps
+  .then(&#x27;outline&#x27;, outlineStep)
+  // Branch based on content type
+  .branch(
+    ({ context }) =&gt; context.input.type === &#x27;blog&#x27; ? &#x27;blogWriter&#x27; : &#x27;socialWriter&#x27;,
+    { blogWriter: blogWriteStep },
+    { socialWriter: socialWriteStep }
+  )
+  // Parallel execution
+  .parallel([reviewStep, seoCheckStep])
+  // Final step
+  .then(&#x27;publish&#x27;, publishStep);
+</code></pre>
+<h3>Human-in-the-Loop</h3>
+<p>Workflows support suspension for human approval:</p>
+<pre><code class="language-typescript">// Suspend workflow and wait for approval
+const suspended = await workflow.suspend({
+  stepId: &#x27;approval-step&#x27;,
+  context: { requiresApproval: true }
+});
+
+// Resume with approval data
+await workflow.resume({
+  runId: suspended.runId,
+  stepId: &#x27;approval-step&#x27;,
+  context: { approved: true, feedback: &#x27;Looks good!&#x27; }
+});
+</code></pre>
+<h2>Memory System</h2>
+<p>Mastra's memory system has three complementary layers:</p>
+<h3>1. Working Memory</h3>
+<p>Structured persistent storage for user facts and conversation state.</p>
+<p><strong>Two Modes:</strong></p>
+<ul><li><strong>Template-based</strong>: Markdown format with replace semantics</li><li><strong>Schema-based</strong>: JSON format with deep merge semantics (null=delete, arrays=replace, objects=recursive merge)</li></ul>
+<p><strong>Scope Levels:</strong></p>
+<ul><li><code>thread</code>: Per-conversation working memory</li><li><code>resource</code>: Shared across all conversations for one user</li></ul>
+<h3>2. Semantic Recall</h3>
+<p>RAG-based retrieval using vector embeddings and cosine similarity search.</p>
+<p><strong>Key Components:</strong></p>
+<ul><li><strong>Embedding Generation</strong>: Using embedder models (OpenAI, Google, etc.)</li><li><strong>Vector Store</strong>: PgVector, Pinecone, Chroma, etc.</li><li><strong>LRU Caching</strong>: Global embedding cache to avoid redundant API calls</li><li><strong>Context Retrieval</strong>: Fetch surrounding messages for each match</li></ul>
+<p><strong>Configuration:</strong></p>
+<pre><code class="language-typescript">semanticRecall: {
+  topK: 4,              // Number of similar messages
+  messageRange: 2,      // Context messages before/after
+  scope: &#x27;resource&#x27;,    // Search across all user threads
+  threshold: 0.7,       // Minimum similarity score
+  indexConfig: {        // Vector index optimization
+    type: &#x27;hnsw&#x27;,
+    metric: &#x27;cosine&#x27;
+  }
+}
+</code></pre>
+<h3>3. Observational Memory</h3>
+<p>Three-agent system for automatic conversation compression:</p>
+<pre><code class="language-">┌─────────────────────────────────────────────────────────────┐
+│                     ACTOR (Main Agent)                       │
+│  Sees: Observations + Recent Unobserved Messages            │
+└─────────────────────────────────────────────────────────────┘
+                              │
+              ┌───────────────┴───────────────┐
+              │                               │
+    ┌─────────▼────────┐           ┌─────────▼────────┐
+    │    OBSERVER      │           │    REFLECTOR     │
+    │ (Extracts facts) │           │ (Condenses info) │
+    │ Trigger: ~30k tok│           │ Trigger: ~40k tok│
+    └──────────────────┘           └──────────────────┘
+</code></pre>
+<p><strong>Observer Agent:</strong></p>
+<ul><li>Extracts key facts from conversation</li><li>Priority levels: 🔴 High, 🟡 Medium, 🟢 Low</li><li>Temporal anchoring with timestamps</li><li>Degeneracy detection for loop prevention</li></ul>
+<p><strong>Reflector Agent:</strong></p>
+<ul><li>Condenses observations when they exceed threshold</li><li>Multi-level compression with retry logic</li><li>Preserves recent details, summarizes older items</li></ul>
+<p><strong>Async Buffering:</strong></p>
+<ul><li>Background pre-computation prevents blocking</li><li>Buffer triggers at 20% of threshold</li><li>Instant activation when threshold reached</li></ul>
+<h2>Storage Layer</h2>
+<h3>Composite Store Architecture</h3>
+<p>Mastra uses a composite store pattern that allows mixing different storage backends for different domains:</p>
+<pre><code class="language-typescript">const storage = new MastraCompositeStore({
+  id: &#x27;composite&#x27;,
+  default: pgStore,  // Default for unspecified domains
+  domains: {
+    memory: libsqlStore.stores.memory,    // Conversations in SQLite
+    workflows: pgStore.stores.workflows,  // Workflow state in PostgreSQL
+    vectors: pineconeStore,               // Embeddings in Pinecone
+  }
+});
+</code></pre>
+<h3>Storage Domains</h3>
+<p>The storage interface is split into domains:</p>
+<pre><code class="language-typescript">type StorageDomains = {
+  workflows: WorkflowsStorage;
+  scores: ScoresStorage;
+  memory: MemoryStorage;
+  observability?: ObservabilityStorage;
+  agents?: AgentsStorage;
+  datasets?: DatasetsStorage;
+  experiments?: ExperimentsStorage;
+  promptBlocks?: PromptBlocksStorage;
+  scorerDefinitions?: ScorerDefinitionsStorage;
+  mcpClients?: MCPClientsStorage;
+  mcpServers?: MCPServersStorage;
+  workspaces?: WorkspacesStorage;
+  skills?: SkillsStorage;
+  blobs?: BlobStore;
+};
+</code></pre>
+<h3>Domain Interfaces</h3>
+<p>Each domain has a specific interface. For example, <code>MemoryStorage</code>:</p>
+<pre><code class="language-typescript">interface MemoryStorage {
+  // Thread operations
+  getThreadById({ threadId }): Promise&lt;StorageThreadType | null&gt;;
+  listThreads(input: StorageListThreadsInput): Promise&lt;StorageListThreadsOutput&gt;;
+  saveThread({ thread, memoryConfig }): Promise&lt;StorageThreadType&gt;;
+  deleteThread(threadId): Promise&lt;void&gt;;
+  cloneThread(input: StorageCloneThreadInput): Promise&lt;StorageCloneThreadOutput&gt;;
+
+  // Message operations
+  recall(input: StorageListMessagesInput): Promise&lt;{ messages: MastraDBMessage[] }&gt;;
+  saveMessages({ messages, memoryConfig }): Promise&lt;{ messages: MastraDBMessage[] }&gt;;
+  deleteMessages(messageIds: MessageDeleteInput): Promise&lt;void&gt;;
+
+  // Working memory operations
+  getWorkingMemory({ threadId, resourceId, memoryConfig }): Promise&lt;string | null&gt;;
+  updateWorkingMemory({ threadId, resourceId, workingMemory }): Promise&lt;void&gt;;
+}
+</code></pre>
+<h3>Available Storage Adapters</h3>
+<p><strong>SQL Databases:</strong></p>
+<ul><li><code>@mastra/libsql</code> - SQLite/LibSQL</li><li><code>@mastra/pg</code> - PostgreSQL</li><li><code>@mastra/clickhouse</code> - ClickHouse</li><li><code>@mastra/mssql</code> - SQL Server</li><li><code>@mastra/convex</code> - Convex</li><li><code>@mastra/turbopuffer</code> - TurboPuffer</li></ul>
+<p><strong>NoSQL Databases:</strong></p>
+<ul><li><code>@mastra/mongodb</code> - MongoDB</li><li><code>@mastra/dynamodb</code> - DynamoDB</li><li><code>@mastra/couchbase</code> - Couchbase</li><li><code>@mastra/elasticsearch</code> - Elasticsearch</li></ul>
+<p><strong>Vector Stores:</strong></p>
+<ul><li><code>@mastra/pinecone</code> - Pinecone</li><li><code>@mastra/chroma</code> - Chroma</li><li><code>@mastra/qdrant</code> - Qdrant</li><li><code>@mastra/astra</code> - DataStax Astra</li><li><code>@mastra/upstash</code> - Upstash Vector</li><li><code>@mastra/vectorize</code> - Vectorize</li><li><code>@mastra/lance</code> - LanceDB</li></ul>
+<p><strong>Edge/Serverless:</strong></p>
+<ul><li><code>@mastra/cloudflare</code> - Cloudflare Workers KV</li><li><code>@mastra/cloudflare-d1</code> - Cloudflare D1</li><li><code>@mastra/s3vectors</code> - S3 + embeddings</li><li><code>@mastra/duckdb</code> - DuckDB</li></ul>
+<h3>Initialization</h3>
+<p>Storage adapters support explicit initialization for CI/CD workflows:</p>
+<pre><code class="language-typescript">// Runtime (no auto-init)
+const storage = new PostgresStore({
+  url: process.env.DATABASE_URL,
+  disableInit: true  // Tables must already exist
+});
+
+// CI/CD (explicit migration)
+const migrationStorage = new PostgresStore({
+  url: process.env.DATABASE_URL,
+  disableInit: false
+});
+await migrationStorage.init();  // Run migrations
+</code></pre>
+<h2>CLI and Developer Workflows</h2>
+<h3>CLI Commands</h3>
+<p>The Mastra CLI provides commands for the full development lifecycle:</p>
+<pre><code class="language-bash"># Project creation
+mastra create [project-name]    # Create new project from template
+mastra init                     # Initialize Mastra in existing project
+
+# Development
+mastra dev                      # Start development server
+mastra dev --dir ./src          # Custom source directory
+mastra dev --inspect            # Enable Node.js inspector
+mastra dev --https              # Enable local HTTPS
+
+# Build &amp; Deploy
+mastra build                    # Build project for production
+mastra build --studio           # Bundle Studio UI
+mastra start                    # Start built application
+
+# Code Quality
+mastra lint                     # Lint project
+
+# Maintenance
+mastra migrate                  # Run database migrations
+mastra studio                   # Start Mastra Studio UI
+
+# Scorer Management
+mastra scorer add               # Add new scorer
+mastra scorer list              # List available scorers
+</code></pre>
+<h3>CLI Options</h3>
+<p><strong>Create Command:</strong></p>
+<pre><code class="language-bash">mastra create my-app \
+  --template agent-workflow \
+  --components agent,workflow,memory \
+  --llm openai \
+  --llm-api-key $OPENAI_API_KEY \
+  --example \
+  --mcp cursor
+</code></pre>
+<p><strong>Dev Command:</strong></p>
+<pre><code class="language-bash">mastra dev \
+  --dir ./src \
+  --root ./project-root \
+  --tools ./src/tools \
+  --env .env.local \
+  --inspect 9229 \
+  --https
+</code></pre>
+<h3>Development Workflow</h3>
+<p><strong>Standard workflow for local development:</strong></p>
+<ol><li><strong>Make changes</strong> to source files</li><li><strong>Watch build</strong> in one terminal:</li></ol>
+<p>   ``<code>bash    pnpm turbo watch build --filter="@mastra/core"    </code>``</p>
+<ol><li><strong>Run dev server</strong> in another terminal:</li></ol>
+<p>   ``<code>bash    cd examples/agent && pnpm mastra:dev    </code>``</p>
+<ol><li><strong>Restart server</strong> when rebuild completes to see changes</li></ol>
+<p><strong>Testing:</strong></p>
+<pre><code class="language-bash"># Run all tests
+pnpm test
+
+# Run specific package tests
+pnpm test:memory
+pnpm test:core
+pnpm test:evals
+
+# Watch mode
+pnpm test:watch
+</code></pre>
+<h2>Server Architecture</h2>
+<h3>Server Packages</h3>
+<ul><li><code>@mastra/server</code> - Base server with handlers</li><li><code>@mastra/server/handlers</code> - HTTP request handlers</li><li><code>server-adapters/hono</code> - Hono integration</li><li><code>server-adapters/express</code> - Express integration</li></ul>
+<h3>Handler Types</h3>
+<p>The server exposes handlers for:</p>
+<ul><li><strong>Agents</strong>: <code>/api/agents/:id/generate</code>, <code>/api/agents/:id/stream</code></li><li><strong>Workflows</strong>: <code>/api/workflows/:id/run</code>, <code>/api/workflows/:id/resume</code></li><li><strong>Tools</strong>: <code>/api/tools/:id/execute</code></li><li><strong>Threads</strong>: <code>/api/threads</code>, <code>/api/threads/:id/messages</code></li><li><strong>Vectors</strong>: <code>/api/vectors/:index/query</code></li><li><strong>MCP</strong>: <code>/api/mcp/:serverId/*</code></li></ul>
+<h3>Server Configuration</h3>
+<pre><code class="language-typescript">const mastra = new Mastra({
+  server: {
+    host: &#x27;0.0.0.0&#x27;,
+    port: 4111,
+    middleware: [authMiddleware],
+    cors: {
+      origin: [&#x27;https://example.com&#x27;],
+    },
+  },
+});
+</code></pre>
+<h2>MCP (Model Context Protocol)</h2>
+<p>Mastra implements MCP servers for exposing agents, tools, and resources:</p>
+<pre><code class="language-typescript">import { MCPServer } from &#x27;@mastra/mcp&#x27;;
+
+const mcpServer = new MCPServer({
+  id: &#x27;weather-mcp&#x27;,
+  name: &#x27;Weather MCP Server&#x27;,
+  agents: { weatherAgent },
+  tools: { getWeather, getForecast },
+});
+
+const mastra = new Mastra({
+  mcpServers: { weather: mcpServer }
+});
+</code></pre>
+<p><strong>MCP Resources:</strong></p>
+<ul><li>Agents as MCP tools</li><li>Custom tools</li><li>Vector indexes</li><li>Workflow runners</li></ul>
+<h2>Observability</h2>
+<p>Mastra includes built-in observability via OpenTelemetry:</p>
+<pre><code class="language-typescript">import { Observability, DefaultExporter, CloudExporter, SensitiveDataFilter } from &#x27;@mastra/observability&#x27;;
+
+const mastra = new Mastra({
+  observability: new Observability({
+    configs: {
+      default: {
+        serviceName: &#x27;my-mastra-app&#x27;,
+        exporters: [new DefaultExporter(), new CloudExporter()],
+        spanOutputProcessors: [new SensitiveDataFilter()],
+      },
+    },
+  }),
+});
+</code></pre>
+<p><strong>Tracked Operations:</strong></p>
+<ul><li>Agent generate/stream calls</li><li>Tool executions</li><li>Workflow steps</li><li>Memory operations</li><li>Vector queries</li></ul>
+<h2>Evaluation System</h2>
+<p>Mastra's evaluation framework helps assess agent response quality:</p>
+<pre><code class="language-typescript">import { createScorer } from &#x27;@mastra/evals&#x27;;
+
+const relevanceScorer = createScorer({
+  id: &#x27;relevance&#x27;,
+  instructions: &#x27;Rate how relevant the response is to the query&#x27;,
+  outputSchema: z.object({ score: z.number().min(0).max(1) }),
+});
+
+const mastra = new Mastra({
+  scorers: { relevance: relevanceScorer },
+  agents: {
+    assistant: new Agent({
+      id: &#x27;assistant&#x27;,
+      scorers: { relevance: relevanceScorer },
+    })
+  }
+});
+</code></pre>
+<p><strong>Scorer Execution:</strong></p>
+<ul><li>Automatic scoring via hooks</li><li>Sampling configuration (not every response needs scoring)</li><li>Custom scoring criteria</li></ul>
+<h2>Build System</h2>
+<h3>Turborepo Configuration</h3>
+<pre><code class="language-json">{
+  &quot;tasks&quot;: {
+    &quot;build&quot;: {
+      &quot;dependsOn&quot;: [&quot;^build&quot;],
+      &quot;outputs&quot;: [&quot;dist/**&quot;, &quot;.next/**&quot;],
+      &quot;env&quot;: [&quot;RAPID_API_KEY&quot;, &quot;ANTHROPIC_API_KEY&quot;]
+    },
+    &quot;lint&quot;: { &quot;dependsOn&quot;: [] },
+    &quot;dev&quot;: {
+      &quot;dependsOn&quot;: [&quot;^build&quot;],
+      &quot;cache&quot;: false,
+      &quot;persistent&quot;: true
+    }
+  }
+}
+</code></pre>
+<h3>Package Build Process</h3>
+<p>Packages are built using tsup (esbuild-based):</p>
+<pre><code class="language-bash"># Build all packages
+pnpm build
+
+# Build specific package groups
+pnpm build:packages         # Core packages
+pnpm build:combined-stores  # Storage adapters
+pnpm build:deployers        # Deployment adapters
+pnpm build:clients          # Client SDKs
+
+# Build individual packages
+pnpm build:core
+pnpm build:memory
+pnpm build:cli
+</code></pre>
+<h3>CommonJS Compatibility</h3>
+<p>Mastra uses a two-step build process for dual ESM/CJS output:</p>
+<ol><li><code>tsup</code> generates ESM output</li><li>Custom script patches CommonJS compatibility</li></ol>
+<pre><code class="language-json">{
+  &quot;scripts&quot;: {
+    &quot;build:lib&quot;: &quot;tsup --silent --config tsup.config.ts --no-dts&quot;,
+    &quot;build:patch-commonjs&quot;: &quot;node ../../scripts/commonjs-tsc-fixer.js&quot;
+  }
+}
+</code></pre>
+<h2>Key Design Patterns</h2>
+<h3>1. Dynamic Argument Pattern</h3>
+<p>Many agent properties use <code>DynamicArgument<T></code> for runtime resolution:</p>
+<pre><code class="language-typescript">type DynamicArgument&lt;T, TRequestContext = unknown&gt; =
+  | T
+  | (({ context, threadId, resourceId, mastra }: {
+      context: TRequestContext;
+      threadId?: string;
+      resourceId?: string;
+      mastra?: Mastra;
+    }) =&gt; T | Promise&lt;T&gt;);
+</code></pre>
+<p>This enables context-aware configuration:</p>
+<pre><code class="language-typescript">instructions: ({ context, resourceId }) =&gt; {
+  if (context.userRole === &#x27;admin&#x27;) {
+    return &#x27;You are an admin assistant...&#x27;;
+  }
+  return &#x27;You are a helpful assistant...&#x27;;
+}
+</code></pre>
+<h3>2. Processor Pipeline Pattern</h3>
+<p>Processors transform inputs/outputs in a composable pipeline:</p>
+<pre><code class="language-typescript">interface Processor&lt;TInput, TOutput&gt; {
+  id: string;
+  processInput(args: TInput): Promise&lt;TInput&gt;;
+  processOutputResult(args: TOutput): Promise&lt;TOutput&gt;;
+}
+</code></pre>
+<p><strong>Benefits:</strong></p>
+<ul><li>Separation of concerns</li><li>Easy to test in isolation</li><li>Reusable across agents</li><li>Memory provides auto-processors</li></ul>
+<h3>3. Composite Store Pattern</h3>
+<p>Storage is composed from domain-specific implementations:</p>
+<pre><code class="language-typescript">class MastraCompositeStore {
+  stores?: StorageDomains;
+
+  async getStore&lt;T extends keyof StorageDomains&gt;(
+    storeName: T
+  ): Promise&lt;StorageDomains[T] | undefined&gt; {
+    return this.stores?.[storeName];
+  }
+}
+</code></pre>
+<h3>4. Step Graph Pattern</h3>
+<p>Workflows model execution as a directed graph:</p>
+<pre><code class="language-typescript">type StepGraph = {
+  initial: string;
+  steps: Record&lt;string, {
+    stepId: string;
+    nextSteps?: StepNode[];
+  }&gt;;
+};
+</code></pre>
+<h2>Performance Characteristics</h2>
+<table><tr><th>Operation</th><th>Time Complexity</th><th>Notes</th></tr><tr><td>Agent generate (no tools)</td><td>O(n)</td><td>n = context tokens</td></tr><tr><td>Agent with tools</td><td>O(n × t)</td><td>t = tool iterations</td></tr><tr><td>Semantic recall query</td><td>O(log v)</td><td>v = vector count</td></tr><tr><td>Embedding generation</td><td>O(m)</td><td>m = text length</td></tr><tr><td>Working memory read</td><td>O(1)</td><td>Single DB lookup</td></tr><tr><td>Thread clone</td><td>O(m)</td><td>m = message count</td></tr><tr><td>Workflow step</td><td>O(s)</td><td>s = step complexity</td></tr></table>
+<h2>Common Patterns and Best Practices</h2>
+<h3>1. Memory Configuration</h3>
+<pre><code class="language-typescript">const memory = new Memory({
+  storage: new LibSQLStore({ url: &#x27;file:memory.db&#x27; }),
+  vector: new PgVector({ connectionString: process.env.POSTGRES_URL }),
+  embedder: &#x27;openai/text-embedding-3-small&#x27;,
+  options: {
+    lastMessages: 20,
+    semanticRecall: { topK: 4, messageRange: 2 },
+    workingMemory: {
+      enabled: true,
+      template: &#x27;...&#x27;,
+    },
+    observationalMemory: {
+      observation: { messageTokens: 30000 },
+      reflection: { observationTokens: 40000 },
+      shareTokenBudget: true,
+    },
+  },
+});
+</code></pre>
+<h3>2. Agent with Processors</h3>
+<pre><code class="language-typescript">const agent = new Agent({
+  id: &#x27;assistant&#x27;,
+  model: &#x27;openai/gpt-4&#x27;,
+  memory,
+  inputProcessors: [
+    new TokenLimiter(100000),
+    new SafetyFilter(),
+  ],
+  outputProcessors: [
+    new ResponseValidator(),
+  ],
+  tools: {
+    search: searchTool,
+    calculator: calcTool,
+  },
+});
+</code></pre>
+<h3>3. Workflow with Agent Steps</h3>
+<pre><code class="language-typescript">const researchWorkflow = new Workflow({
+  id: &#x27;research&#x27;,
+  name: &#x27;Research Workflow&#x27;,
+})
+  .step(&#x27;search&#x27;, createStep(searchAgent, { maxSteps: 3 }))
+  .then(&#x27;analyze&#x27;, createStep(analysisAgent))
+  .then(&#x27;summarize&#x27;, createStep(summaryAgent));
+</code></pre>
+<h2>Troubleshooting</h2>
+<h3>Common Issues</h3>
+<ol><li><strong>"Worker terminated due to reaching memory limit"</strong></li></ol>
+<ul><li>Solution: <code>NODE_OPTIONS="--max-old-space-size=4096" pnpm build</code></li></ul>
+<ol><li><strong>Storage not persisting</strong></li></ol>
+<ul><li>Ensure storage is registered with Mastra instance</li><li>Check that <code>disableInit</code> is not preventing table creation</li></ul>
+<ol><li><strong>Semantic recall not working</strong></li></ol>
+<ul><li>Verify vector store and embedder are configured</li><li>Check index exists: await memory.createEmbeddingIndex()</li></ul>
+<ol><li><strong>Observational memory not triggering</strong></li></ol>
+<ul><li>Check token thresholds (default 30k for observation)</li><li>Verify buffer tokens setting allows async buffering</li></ul>
+<ol><li><strong>Model routing failures</strong></li></ol>
+<ul><li>Ensure model IDs use correct format: <code>provider/model-name</code></li><li>Check API keys are set in environment</li></ul>
+<h2>Summary</h2>
+<p>Mastra provides a comprehensive TypeScript framework for building AI applications with:</p>
+<ul><li><strong>Unified Agent Interface</strong>: Consistent API across 40+ LLM providers</li><li><strong>Composable Architecture</strong>: Components registered through central Mastra instance</li><li><strong>Three-Layer Memory</strong>: Working memory, semantic recall, and observational memory</li><li><strong>Workflow Engine</strong>: Graph-based orchestration with human-in-the-loop support</li><li><strong>Storage Abstraction</strong>: 20+ storage adapters with domain composition</li><li><strong>Developer Experience</strong>: CLI, playground, and comprehensive tooling</li><li><strong>Production Ready</strong>: Observability, evaluation, and deployment support</li></ul>
+<p>The framework balances flexibility with convention, allowing developers to start simple and scale to complex multi-agent systems with explicit workflow control.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

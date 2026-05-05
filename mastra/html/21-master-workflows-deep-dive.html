@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mastra Master Workflows Deep Dive -- mastra</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/mastra/docs</span>
+    <div class="nav-actions">
+      <a href="18-docs.html" class="nav-breadcrumb">Mastra -- Official Documentation Site (docs/)</a><a href="19-memory-algorithms-deep-dive.html" class="nav-breadcrumb">Mastra Memory Algorithms Deep Dive</a><a href="20-architecture-deep-dive.html" class="nav-breadcrumb">Mastra Architecture Deep Dive</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="20-architecture-deep-dive.html" class="nav-btn" title="Previous: Mastra Architecture Deep Dive">← prev</a>
+      <a href="22-memory-exploration.html" class="nav-btn nav-btn-next" title="Next: Mastra Memory System Exploration">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Mastra Master Workflows Deep Dive</h1>
+<h2>Overview</h2>
+<p>This document explores Mastra's workflow orchestration system, focusing on the "master" patterns that coordinate multiple agents, tools, and workflows. The primary master pattern is the <strong>Agent Network</strong> (implemented in <code>networkLoop</code>), which acts as a supervisory router that delegates tasks to specialized primitives.</p>
+<h2>Repository Context</h2>
+<ul><li><strong>Location:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.AICoders/src.Mastra/mastra</code></li><li><strong>Remote:</strong> https://github.com/mastra-ai/mastra</li><li><strong>Primary Language:</strong> TypeScript</li><li><strong>Package Manager:</strong> pnpm</li></ul>
+<hr>
+<h2>Table of Contents</h2>
+<ol><li><a href="#1-the-master-pattern-agent-network">The Master Pattern: Agent Network</a></li><li><a href="#2-network-loop-architecture">Network Loop Architecture</a></li><li><a href="#3-workflow-engine-deep-dive">Workflow Engine Deep Dive</a></li><li><a href="#4-agent-delegation-patterns">Agent Delegation Patterns</a></li><li><a href="#5-state-management-and-persistence">State Management and Persistence</a></li><li><a href="#6-execution-flow-diagrams">Execution Flow Diagrams</a></li></ol>
+<hr>
+<h2>1. The Master Pattern: Agent Network</h2>
+<h3>What Is The Network?</h3>
+<p>The Agent Network is Mastra's "master" orchestration layer - a routing system that coordinates multiple specialized agents, workflows, and tools to accomplish complex tasks. It implements a <strong>router-delegator pattern</strong> where:</p>
+<ol><li>A <strong>Routing Agent</strong> analyzes incoming tasks</li><li>Routes to the appropriate <strong>primitive</strong> (agent, workflow, or tool)</li><li>Collects results and determines if the task is complete</li><li>Iterates until completion criteria are met</li></ol>
+<h3>Key File</h3>
+<p><strong>Primary Implementation:</strong> <code>packages/core/src/loop/network/index.ts</code></p>
+<h3>Network Components</h3>
+<table><tr><th>Component</th><th>Purpose</th></tr><tr><td>**Routing Agent**</td><td>Analyzes tasks, selects appropriate primitive, determines completion</td></tr><tr><td>**Agent Step**</td><td>Executes sub-agents with specific prompts</td></tr><tr><td>**Workflow Step**</td><td>Executes workflows with JSON inputs</td></tr><tr><td>**Tool Step**</td><td>Executes individual tools</td></tr><tr><td>**Validation Step**</td><td>Runs scorers/checks to verify task completion</td></tr><tr><td>**Finish Step**</td><td>Finalizes execution and returns results</td></tr></table>
+<hr>
+<h2>2. Network Loop Architecture</h2>
+<h3>High-Level Flow</h3>
+<pre><code class="language-">┌─────────────────────────────────────────────────────────────────┐
+│                      USER TASK INPUT                             │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    ROUTING AGENT STEP                            │
+│  - Analyzes task                                                 │
+│  - Selects primitive (agent/workflow/tool)                       │
+│  - Returns: primitiveId, primitiveType, prompt, selectionReason  │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    BRANCH TO PRIMITIVE                           │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐              │
+│  │ Agent Step  │  │Workflow Step│  │  Tool Step  │              │
+│  └─────────────┘  └─────────────┘  └─────────────┘              │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                   VALIDATION STEP                                │
+│  - Runs configured scorers                                      │
+│  - Checks completion criteria                                   │
+│  - Generates feedback if incomplete                             │
+│  - Generates finalResult if complete                            │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                    ┌─────────┴─────────┐
+                    │                   │
+              Complete            Incomplete
+                    │                   │
+                    ▼                   │
+              ┌─────────┐               │
+              │ FINISH  │───────────────┘
+              └─────────┘
+                    │
+                    ▼
+              (Loop continues via .dountil)
+</code></pre>
+<h3>The Workflow Graph</h3>
+<pre><code class="language-typescript">// Main iteration workflow (combines network + validation)
+const iterationWithValidation = createWorkflow({
+  id: &#x27;iteration-with-validation&#x27;,
+})
+  .then(networkWorkflow)      // Routes + executes primitive
+  .then(validationStep)       // Validates completion
+  .commit();
+
+// Main loop with termination condition
+const mainWorkflow = createWorkflow({
+  id: &#x27;agent-loop-main-workflow&#x27;,
+})
+  .dountil(iterationWithValidation, async ({ inputData }) =&gt; {
+    // Complete when:
+    // 1. LLM says complete AND validation passed
+    // 2. OR max iterations reached
+    const llmComplete = inputData.isComplete === true;
+    const validationOk = inputData.validationPassed !== false;
+    const maxReached = Boolean(maxIterations &amp;&amp; inputData.iteration &gt;= maxIterations);
+    return (llmComplete &amp;&amp; validationOk) || maxReached;
+  })
+  .then(finalStep)
+  .commit();
+</code></pre>
+<h3>Routing Agent Implementation</h3>
+<p>The routing agent is dynamically constructed with knowledge of all available primitives:</p>
+<pre><code class="language-typescript">const instructions = `
+  You are a router in a network of specialized AI agents.
+  Your job is to decide which agent should handle each step of a task.
+
+  ## Available Agents in Network
+  ${agentList}
+
+  ## Available Workflows in Network
+  ${workflowList}
+
+  ## Available Tools in Network
+  ${toolList}
+
+  Please select the most appropriate primitive:
+  {
+    &quot;primitiveId&quot;: string,
+    &quot;primitiveType&quot;: &quot;agent&quot; | &quot;workflow&quot; | &quot;tool&quot;,
+    &quot;prompt&quot;: string,
+    &quot;selectionReason&quot;: string
+  }
+`;
+</code></pre>
+<p><strong>Key Routing Rules:</strong></p>
+<ul><li>Agents receive text prompts (chat-style)</li><li>Workflows/tools receive JSON inputs matching their schema</li><li>Must provide <code>selectionReason</code> explaining the choice</li><li>Can return <code>"none"</code> for both id and type to signal completion</li></ul>
+<hr>
+<h2>3. Workflow Engine Deep Dive</h2>
+<h3>Workflow Class Structure</h3>
+<pre><code class="language-typescript">class Workflow&lt;TSteps, TStepResults, TInput, TOutput, TEngine&gt; {
+  id: string;
+  name: string;
+  #steps: Record&lt;string, Step&gt;;
+  #stepGraph: StepGraph;
+  #stepSubscriberGraph?: Record&lt;string, StepGraph&gt;;
+  #executionEngine: ExecutionEngine;
+  #pubsub?: PubSub;
+
+  // Builder pattern methods
+  step(step: Step): this;
+  then(nextStep: Step): this;
+  branch(conditions: BranchCondition[], steps: Step[]): this;
+  parallel(steps: Step[]): this;
+  loop(condition: LoopConditionFunction): this;
+  dountil(workflow: Workflow, condition: ConditionFunction): this;
+  map(variables: DynamicMapping): this;
+  commit(): this;
+}
+</code></pre>
+<h3>Step Definition</h3>
+<p>Steps can be created from multiple sources:</p>
+<pre><code class="language-typescript">// 1. Explicit parameters
+const customStep = createStep({
+  id: &#x27;my-step&#x27;,
+  inputSchema: z.object({ data: z.string() }),
+  outputSchema: z.object({ result: z.string() }),
+  execute: async ({ inputData, writer, suspend, resumeData }) =&gt; {
+    // Step execution logic
+    return { result: &#x27;done&#x27; };
+  }
+});
+
+// 2. From an Agent
+const agentStep = createStep(someAgent, { maxSteps: 3 });
+
+// 3. From a Tool
+const toolStep = createStep(someTool);
+</code></pre>
+<h3>Execution Engine</h3>
+<p>The default execution engine (<code>DefaultExecutionEngine</code>) handles:</p>
+<table><tr><th>Feature</th><th>Description</th></tr><tr><td>**Step Resolution**</td><td>Determines which steps to execute based on graph</td></tr><tr><td>**Dependency Management**</td><td>Runs independent steps in parallel</td></tr><tr><td>**Error Handling**</td><td>Retry logic, error boundaries</td></tr><tr><td>**State Persistence**</td><td>Saves state for suspension/resumption</td></tr><tr><td>**Streaming**</td><td>Real-time progress via events</td></tr></table>
+<h3>Branch Logic</h3>
+<p>The network uses conditional branching to route to the correct primitive:</p>
+<pre><code class="language-typescript">networkWorkflow
+  .then(routingStep)
+  .branch([
+    [
+      async ({ inputData }) =&gt; !inputData.isComplete &amp;&amp; inputData.primitiveType === &#x27;agent&#x27;,
+      agentStep
+    ],
+    [
+      async ({ inputData }) =&gt; !inputData.isComplete &amp;&amp; inputData.primitiveType === &#x27;workflow&#x27;,
+      workflowStep
+    ],
+    [
+      async ({ inputData }) =&gt; !inputData.isComplete &amp;&amp; inputData.primitiveType === &#x27;tool&#x27;,
+      toolStep
+    ],
+    [
+      async ({ inputData }) =&gt; !!inputData.isComplete,
+      finishStep
+    ],
+  ])
+</code></pre>
+<h3>Variable Mapping</h3>
+<p>After branching, variables must be mapped from different step outputs:</p>
+<pre><code class="language-typescript">.map({
+  task: {
+    step: [routingStep, agentStep, workflowStep, toolStep],
+    path: &#x27;task&#x27;,
+  },
+  isComplete: {
+    step: [agentStep, workflowStep, toolStep, finishStep],
+    path: &#x27;isComplete&#x27;,
+  },
+  result: {
+    step: [agentStep, workflowStep, toolStep, finishStep],
+    path: &#x27;result&#x27;,
+  },
+  primitiveId: {
+    step: [routingStep, agentStep, workflowStep, toolStep],
+    path: &#x27;primitiveId&#x27;,
+  },
+})
+</code></pre>
+<hr>
+<h2>4. Agent Delegation Patterns</h2>
+<h3>Network Mode Delegation</h3>
+<p>Agents can be configured with a network of other agents for delegation:</p>
+<pre><code class="language-typescript">const supervisor = new Agent({
+  id: &#x27;supervisor&#x27;,
+  agents: {
+    researcher: researcherAgent,
+    writer: writerAgent,
+    coder: coderAgent,
+  },
+  delegatorType: &#x27;network&#x27;,  // Uses agent network for delegation
+});
+</code></pre>
+<h3>How Delegation Works</h3>
+<ol><li><strong>Agent Detection</strong>: When an agent has <code>agents</code> configured and <code>delegatorType: 'network'</code></li><li><strong>Network Initialization</strong>: The <code>networkLoop</code> function is invoked</li><li><strong>Memory Setup</strong>: A dedicated thread is created for the network execution</li><li><strong>Routing</strong>: The routing agent decides which sub-agent handles each part</li><li><strong>Result Aggregation</strong>: Results are collected and returned to the parent agent</li></ol>
+<h3>Sub-Agent Execution</h3>
+<p>Sub-agents receive filtered conversation context:</p>
+<pre><code class="language-typescript">// Filters out internal network JSON markers
+function filterMessagesForSubAgent(messages: MastraDBMessage[]): MastraDBMessage[] {
+  return messages.filter(msg =&gt; {
+    if (msg.role === &#x27;user&#x27;) return true;
+
+    if (msg.role === &#x27;assistant&#x27;) {
+      // Exclude isNetwork JSON (result markers)
+      // Exclude routing decision JSON
+      // Exclude completion feedback messages
+      const parts = msg.content?.parts ?? [];
+      for (const part of parts) {
+        if (part?.type === &#x27;text&#x27; &amp;&amp; part?.text) {
+          try {
+            const parsed = JSON.parse(part.text);
+            if (parsed.isNetwork) return false;
+            if (parsed.primitiveId &amp;&amp; parsed.selectionReason) return false;
+          } catch {
+            // Not JSON, continue
+          }
+        }
+      }
+      return true;
+    }
+    return false;
+  });
+}
+</code></pre>
+<h3>Tool Approval and Suspension</h3>
+<p>The network supports human-in-the-loop patterns:</p>
+<pre><code class="language-typescript">// Tool can require approval
+const sensitiveTool = createTool({
+  id: &#x27;delete-resource&#x27;,
+  requireApproval: true,  // Blocks for approval
+  execute: async (ctx) =&gt; { ... }
+});
+
+// Or dynamic approval function
+const conditionalApprovalTool = createTool({
+  id: &#x27;expensive-operation&#x27;,
+  needsApprovalFn: async (args) =&gt; {
+    return args.cost &gt; 100;  // Approval for expensive ops
+  },
+  execute: async (ctx) =&gt; { ... }
+});
+</code></pre>
+<p><strong>Approval Flow:</strong></p>
+<ol><li>Tool step detects <code>requireApproval</code> or <code>needsApprovalFn</code></li><li>Emits <code>tool-execution-approval</code> event</li><li>Workflow suspends with <code>resumeSchema</code></li><li>External system provides approval decision</li><li>Workflow resumes with approval result</li></ol>
+<hr>
+<h2>5. State Management and Persistence</h2>
+<h3>Workflow State</h3>
+<p>Workflow state is persisted to enable suspension and resumption:</p>
+<pre><code class="language-typescript">interface WorkflowState {
+  status: &#x27;running&#x27; | &#x27;suspended&#x27; | &#x27;failed&#x27; | &#x27;completed&#x27;;
+  steps: Record&lt;string, StepResult&gt;;
+  suspended?: string[][];  // Paths to suspended steps
+}
+</code></pre>
+<h3>Storage Domains</h3>
+<p>Workflows use specific storage domains:</p>
+<pre><code class="language-typescript">interface StorageDomains {
+  workflows: WorkflowsStorage;  // Workflow state persistence
+  memory: MemoryStorage;        // Conversation threads/messages
+  // ... other domains
+}
+
+interface WorkflowsStorage {
+  getWorkflowSnapshot(params): Promise&lt;WorkflowSnapshot | null&gt;;
+  persistWorkflowSnapshot(params): Promise&lt;void&gt;;
+  deleteWorkflowSnapshot(params): Promise&lt;void&gt;;
+}
+</code></pre>
+<h3>Snapshot Persistence</h3>
+<p>The network workflow configures when to persist:</p>
+<pre><code class="language-typescript">const networkWorkflow = createWorkflow({
+  options: {
+    shouldPersistSnapshot: ({ workflowStatus }) =&gt; {
+      return workflowStatus === &#x27;suspended&#x27;;
+    },
+    validateInputs: false,
+  }
+});
+</code></pre>
+<h3>Memory Integration</h3>
+<p>The network creates and manages its own memory context:</p>
+<pre><code class="language-typescript">const { thread } = await prepareMemoryStep({
+  threadId: threadId || run.runId,
+  resourceId: resourceId || networkName,
+  messages,
+  routingAgent,
+  generateId,
+});
+</code></pre>
+<p><strong>Memory is used for:</strong></p>
+<ul><li>Storing routing decisions</li><li>Storing primitive results (marked with <code>metadata.mode: 'network'</code>)</li><li>Storing validation feedback</li><li>Enabling sub-agents to access conversation history</li><li>Supporting working memory tools</li></ul>
+<hr>
+<h2>6. Execution Flow Diagrams</h2>
+<h3>Complete Network Execution Sequence</h3>
+<pre><code class="language-">┌──────────────────────────────────────────────────────────────────────────┐
+│                         networkLoop() Entry                               │
+│  - Validates memory is configured                                       │
+│  - Prepares memory thread                                               │
+│  - Creates networkWorkflow with steps                                    │
+│  - Creates validationStep                                                │
+│  - Creates mainWorkflow with .dountil loop                              │
+└──────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│                    mainWorkflow.stream()                                  │
+│  - Initializes execution engine                                          │
+│  - Emits &#x27;workflow-start&#x27; event                                         │
+│  - Begins iteration loop                                                 │
+└──────────────────────────────────────────────────────────────────────────┘
+                                      │
+                    ┌─────────────────┴─────────────────┐
+                    │                                   │
+                    ▼                                   ▼
+    ┌───────────────────────────┐       ┌───────────────────────────┐
+    │   ITERATION (Loop Body)   │       │   TERMINATION CHECK       │
+    │                           │       │                           │
+    │  1. routing-agent-step    │◄──────┤  - isComplete &amp;&amp;          │
+    │  2. branch to primitive   │       │    validationPassed       │
+    │  3. validation-step       │       │  - OR maxIterations       │
+    │                           │       │                           │
+    └───────────────────────────┘       └───────────────────────────┘
+                    │                                   │
+                    │ (loop continues)                  │ (exit loop)
+                    │                                   │
+                    ▼                                   ▼
+    ┌───────────────────────────┐       ┌───────────────────────────┐
+    │   Event Stream Output     │       │   final-step              │
+    │                           │       │   - Emit finish event     │
+    │  - routing-agent-start    │       │   - Return final result   │
+    │  - routing-agent-end      │       │   - Close stream          │
+    │  - primitive-start        │       │                           │
+    │  - primitive-event-*      │       └───────────────────────────┘
+    │  - primitive-end          │
+    │  - validation-start       │
+    │  - validation-end         │
+    │  - step-finish            │
+    │                           │
+    └───────────────────────────┘
+</code></pre>
+<h3>Event Types Emitted</h3>
+<table><tr><th>Event Type</th><th>When Emitted</th><th>Payload Contents</th></tr><tr><td>`routing-agent-start`</td><td>Before routing LLM call</td><td>agentId, inputData, runId</td></tr><tr><td>`routing-agent-end`</td><td>After routing decision</td><td>primitiveId, primitiveType, prompt, selectionReason, usage</td></tr><tr><td>`agent-execution-start`</td><td>Before sub-agent call</td><td>agentId, args</td></tr><tr><td>`agent-execution-event-*`</td><td>During sub-agent stream</td><td>text-delta, tool-call, etc.</td></tr><tr><td>`agent-execution-end`</td><td>After sub-agent completes</td><td>result, usage</td></tr><tr><td>`workflow-execution-start`</td><td>Before workflow run</td><td>workflowId, args</td></tr><tr><td>`workflow-execution-event-*`</td><td>During workflow stream</td><td>step-start, step-end, etc.</td></tr><tr><td>`tool-execution-start`</td><td>Before tool execute</td><td>toolName, args</td></tr><tr><td>`tool-execution-approval`</td><td>When approval needed</td><td>resumeSchema, args</td></tr><tr><td>`tool-execution-suspended`</td><td>When tool suspends</td><td>suspendPayload, resumeSchema</td></tr><tr><td>`network-validation-start`</td><td>Before scorers run</td><td>iteration, checksCount</td></tr><tr><td>`network-validation-end`</td><td>After validation</td><td>passed, results, duration</td></tr><tr><td>`network-execution-event-finish`</td><td>When task complete</td><td>final result, object</td></tr></table>
+<hr>
+<h2>7. Validation and Scorers</h2>
+<h3>Validation Step Purpose</h3>
+<p>The validation step runs external checks to verify task completion, preventing the LLM from prematurely ending tasks.</p>
+<h3>Scorer Integration</h3>
+<pre><code class="language-typescript">const validation = {
+  scorers: [
+    { scorer: myCustomScorer, sampleRate: 0.5 },
+  ],
+  maxIterations: 10,
+};
+</code></pre>
+<h3>Scorer Execution</h3>
+<pre><code class="language-typescript">async function runValidation(validation, context) {
+  const results = [];
+
+  for (const { scorer, sampleRate } of validation.scorers) {
+    if (Math.random() &gt; sampleRate) continue;  // Sampling
+
+    const result = await runScorer({
+      scorer,
+      input: {
+        output: context.primitiveResult,
+        input: context.originalTask,
+        context: context.messages,
+      },
+    });
+
+    results.push(result);
+  }
+
+  return {
+    complete: results.every(r =&gt; r.pass),
+    completionReason: results.map(r =&gt; r.reason).join(&#x27;\n&#x27;),
+    scorers: results,
+  };
+}
+</code></pre>
+<h3>Default Completion Check</h3>
+<p>When no scorers are configured, an LLM-based check runs:</p>
+<pre><code class="language-typescript">async function runDefaultCompletionCheck(routingAgent, context) {
+  const result = await routingAgent.generate([
+    { role: &#x27;user&#x27;, content: `
+      Task: ${context.originalTask}
+      Result: ${context.primitiveResult}
+
+      Is this task complete? Respond with:
+      { &quot;passed&quot;: boolean, &quot;reason&quot;: string, &quot;finalResult&quot;: string }
+    `}
+  ], { structuredOutput: {...} });
+
+  return result.object;
+}
+</code></pre>
+<hr>
+<h2>8. Key Design Patterns</h2>
+<h3>1. Workflow-as-Step</h3>
+<p>Workflows can be embedded as steps in other workflows:</p>
+<pre><code class="language-typescript">const innerWorkflow = createWorkflow({...}).commit();
+
+const outerWorkflow = createWorkflow({...})
+  .then(innerWorkflow)  // Workflow as a step
+  .then(nextStep)
+  .commit();
+</code></pre>
+<h3>2. Dynamic Mapping</h3>
+<p>Variables can be mapped from any step's output:</p>
+<pre><code class="language-typescript">.map({
+  task: {
+    step: [routingStep, agentStep, workflowStep, toolStep],
+    path: &#x27;task&#x27;,  // Dot-notation path into output schema
+  },
+})
+</code></pre>
+<h3>3. Suspension/Resumption</h3>
+<p>Steps can suspend execution for external input:</p>
+<pre><code class="language-typescript">execute: async ({ suspend, resumeData }) =&gt; {
+  if (needsApproval) {
+    return await suspend({
+      requireToolApproval: { ... },
+    });
+  }
+
+  // On resume, resumeData contains approval decision
+  if (resumeData?.approved) {
+    // Execute tool
+  }
+}
+</code></pre>
+<h3>4. Streaming Events</h3>
+<p>All steps emit structured events for UI integration:</p>
+<pre><code class="language-typescript">await writer.write({
+  type: &#x27;agent-execution-event-text-delta&#x27;,
+  payload: { delta: &#x27;Hello&#x27; },
+  from: ChunkFrom.NETWORK,
+  runId,
+});
+</code></pre>
+<h3>5. Composite Store Pattern</h3>
+<p>Different storage backends for different domains:</p>
+<pre><code class="language-typescript">const storage = new MastraCompositeStore({
+  default: pgStore,
+  domains: {
+    memory: libsqlStore.stores.memory,
+    workflows: pgStore.stores.workflows,
+    vectors: pineconeStore,
+  }
+});
+</code></pre>
+<hr>
+<h2>9. Performance Characteristics</h2>
+<table><tr><th>Operation</th><th>Time Complexity</th><th>Notes</th></tr><tr><td>Routing decision</td><td>O(1) LLM call</td><td>Depends on prompt size</td></tr><tr><td>Sub-agent execution</td><td>O(n)</td><td>n = context tokens</td></tr><tr><td>Workflow step</td><td>O(s)</td><td>s = step complexity</td></tr><tr><td>Validation (scorers)</td><td>O(k)</td><td>k = number of scorers</td></tr><tr><td>State persistence</td><td>O(1) DB write</td><td>Depends on storage backend</td></tr><tr><td>Event streaming</td><td>O(1) per chunk</td><td>Real-time</td></tr></table>
+<hr>
+<h2>10. Common Patterns and Best Practices</h2>
+<h3>1. Configuring Max Iterations</h3>
+<p>Always set a maximum to prevent infinite loops:</p>
+<pre><code class="language-typescript">const result = agent.network(messages, {
+  maxIterations: 10,  // Hard limit
+  validation: {
+    scorers: [...],
+  },
+});
+</code></pre>
+<h3>2. Using Scorers for Quality</h3>
+<p>Scorers provide objective completion checks:</p>
+<pre><code class="language-typescript">const relevanceScorer = createScorer({
+  id: &#x27;relevance&#x27;,
+  instructions: &#x27;Rate how well the result addresses the task&#x27;,
+  outputSchema: z.object({
+    score: z.number().min(0).max(1),
+    reason: z.string(),
+  }),
+});
+</code></pre>
+<h3>3. Handling Suspended Workflows</h3>
+<pre><code class="language-typescript">// Check for suspension
+if (workflowState.status === &#x27;suspended&#x27;) {
+  const suspendedStep = workflowState.suspended[0][0];
+  const suspendPayload = workflowState.steps[suspendedStep].suspendPayload;
+
+  // Provide resume data
+  await run.resume({
+    resumeData: { approved: true },
+    stepId: suspendedStep,
+  });
+}
+</code></pre>
+<h3>4. Event Stream Processing</h3>
+<pre><code class="language-typescript">for await (const chunk of result.fullStream) {
+  switch (chunk.type) {
+    case &#x27;routing-agent-start&#x27;:
+      console.log(&#x27;Routing began:&#x27;, chunk.payload);
+      break;
+    case &#x27;agent-execution-event-text-delta&#x27;:
+      process.stdout.write(chunk.payload.delta);
+      break;
+    case &#x27;network-execution-event-finish&#x27;:
+      console.log(&#x27;\nTask complete:&#x27;, chunk.payload.result);
+      break;
+  }
+}
+</code></pre>
+<hr>
+<h2>11. Troubleshooting</h2>
+<h3>Network Returns "none" Immediately</h3>
+<p><strong>Cause:</strong> Routing agent thinks task is already complete.</p>
+<p><strong>Solution:</strong></p>
+<ul><li>Check that task is clearly stated</li><li>Verify available agents/workflows/tools are listed correctly</li><li>Add <code>verboseIntrospection: true</code> to see selection reasoning</li></ul>
+<h3>Validation Always Fails</h3>
+<p><strong>Cause:</strong> Scorers too strict or feedback not reaching routing agent.</p>
+<p><strong>Solution:</strong></p>
+<ul><li>Check scorer thresholds</li><li>Verify <code>suppressFeedback: false</code> in validation config</li><li>Ensure feedback messages are being saved to memory</li></ul>
+<h3>Workflow Suspension Not Working</h3>
+<p><strong>Cause:</strong> Missing <code>shouldPersistSnapshot</code> or storage not configured.</p>
+<p><strong>Solution:</strong></p>
+<pre><code class="language-typescript">const workflow = createWorkflow({
+  options: {
+    shouldPersistSnapshot: ({ workflowStatus }) =&gt; {
+      return workflowStatus === &#x27;suspended&#x27;;
+    },
+  }
+});
+</code></pre>
+<h3>Sub-Agents Don't See Context</h3>
+<p><strong>Cause:</strong> Memory not properly configured for network.</p>
+<p><strong>Solution:</strong></p>
+<ul><li>Ensure memory is configured on the routing agent</li><li>Check that <code>threadId</code> and <code>resourceId</code> are passed correctly</li><li>Verify memory processors aren't filtering out needed context</li></ul>
+<hr>
+<h2>Summary</h2>
+<p>Mastra's master workflow pattern (Agent Network) provides:</p>
+<ol><li><strong>Router-Delegator Architecture</strong>: Central routing agent distributes tasks to specialized primitives</li><li><strong>Iterative Execution</strong>: Loops until validation confirms completion or max iterations reached</li><li><strong>Validation Layer</strong>: Configurable scorers provide objective quality checks</li><li><strong>Human-in-the-Loop</strong>: Approval and suspension patterns for sensitive operations</li><li><strong>Streaming Events</strong>: Real-time visibility into execution progress</li><li><strong>State Persistence</strong>: Suspension/resumption support for long-running tasks</li><li><strong>Composable Workflows</strong>: Workflows can embed other workflows as steps</li><li><strong>Memory Integration</strong>: Full conversation history and working memory support</li></ol>
+<p>The network loop is the "master" pattern that orchestrates Mastra's primitives into coordinated multi-agent systems capable of handling complex, multi-step tasks.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
