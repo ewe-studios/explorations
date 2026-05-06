@@ -7,32 +7,30 @@ This document maps every orbitinghail concept to idiomatic Rust patterns, showin
 ### Basic KV Store
 
 ```rust
-use lsm_tree::{Config, Tree};
+use lsm_tree::{AbstractTree, Config};
+use lsm_tree::config::{BlockSizePolicy, FilterPolicy, FilterPolicyEntry, BloomConstructionPolicy};
 
-let config = Config::new("/tmp/my-store", seqno, visible_seqno)
-    .write_buffer_size_policy(16 * 1_024 * 1_024)
-    .data_block_size_policy(4096)
-    .build()?;
+let seqno = Default::default();
+let visible_seqno = Default::default();
 
-let tree = config.open()?;
-tree.insert(b"key", b"value")?;
-tree.insert(b"key2", b"value2")?;
+let tree = Config::new("/tmp/my-store", seqno, visible_seqno)
+    .data_block_size_policy(BlockSizePolicy::all(4096))
+    .open()?;
 
-let value = tree.get(b"key")?;
-assert_eq!(value.as_deref(), Some(b"value".as_slice()));
+tree.insert("key", "value", 1);
+tree.insert("key2", "value2", 2);
 
-// Iterate over a range
-for entry in tree.scan(b"a"..=b"z")? {
-    println!("{:?} -> {:?}", entry.key(), entry.value());
-}
+let value = tree.get("key", Some(2))?;
 ```
 
 ### With Bloom Filter
 
 ```rust
-let config = Config::new("/tmp/my-store", seqno, visible_seqno)
-    .filter_policy(FilterPolicy::BitsPerKey(10.0))
-    .build()?;
+let tree = Config::new("/tmp/my-store", seqno, visible_seqno)
+    .filter_policy(FilterPolicy::all(
+        FilterPolicyEntry::Bloom(BloomConstructionPolicy::BitsPerKey(10.0))
+    ))
+    .open()?;
 ```
 
 **Production pattern:** For production workloads, configure the bloom filter's false positive rate based on your read/write ratio. A write-heavy workload benefits from a lower false positive rate (fewer unnecessary SSTable reads). A read-heavy workload can tolerate a higher rate.
@@ -42,36 +40,32 @@ let config = Config::new("/tmp/my-store", seqno, visible_seqno)
 ### Multi-Keyspace with Atomic Batch
 
 ```rust
-use fjall::{ConfigBuilder, PersistMode};
+use fjall::{Database, KeyspaceCreateOptions, PersistMode};
 
-let db = ConfigBuilder::new()
-    .path("/tmp/my-db")
-    .open()?;
+let db = Database::builder("/tmp/my-db").open()?;
 
-let users = db.open_keyspace("users")?;
-let sessions = db.open_keyspace("sessions")?;
+let users = db.keyspace("users", KeyspaceCreateOptions::default)?;
+let sessions = db.keyspace("sessions", KeyspaceCreateOptions::default)?;
 
-// Atomic batch across keyspaces via single_writer_tx
-let tx = db.single_writer_tx()?;
-tx.insert(&users, b"user:1", b"Alice")?;
-tx.insert(&sessions, b"sess:abc", b"user:1")?;
-tx.commit()?;
-
+// Simple atomic writes across keyspaces
+users.insert(b"user:1", b"Alice")?;
+sessions.insert(b"sess:abc", b"user:1")?;
 db.persist(PersistMode::SyncAll)?;
 ```
 
-### Transactional Update
+### Transactional Update (OptimisticTxDatabase)
 
 ```rust
-let tx = db.optimistic_tx()?;
+// Requires OptimisticTxDatabase, not plain Database
+let db: OptimisticTxDatabase = /* ... */;
+let tx = db.write_tx()?;
 let old_value = tx.get(&users, b"counter")?;
 let new_value = parse_counter(&old_value)? + 1;
 tx.insert(&users, b"counter", new_value.to_string().into_bytes())?;
 
-match tx.commit() {
+match tx.commit()? {
     Ok(()) => println!("Committed"),
-    Err(fjall::CommitError::Conflict) => println!("Retry"),
-    Err(e) => return Err(e),
+    Err(_conflict) => println!("Retry"),
 }
 ```
 

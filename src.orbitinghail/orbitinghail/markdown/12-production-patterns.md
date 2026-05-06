@@ -2,7 +2,7 @@
 
 This document covers production considerations for running the orbitinghail storage ecosystem: durability, recovery, monitoring, scaling, and operational concerns.
 
-**Aha:** The single most important production consideration for LSM-tree databases is configuring the right write buffer size. Too small (4MB) and you generate too many SSTables, triggering excessive compaction. Too large (256MB) and you risk losing more data on crash (more data in the memtable) and have longer pause times during flush. The default is 16 MiB — enough to amortize the flush cost, small enough to recover quickly after a crash.
+**Aha:** The single most important production consideration for LSM-tree databases is configuring the right memtable size. Too small (4MB) and you generate too many SSTables, triggering excessive compaction. Too large (256MB) and you risk losing more data on crash (more data in the memtable) and have longer pause times during flush. The fjall default is 64 MiB (`max_memtable_size` in `KeyspaceCreateOptions`) — enough to amortize the flush cost, small enough to recover quickly after a crash.
 
 ## Durability Guarantees
 
