@@ -175,40 +175,38 @@ gatewaySocket.invoke(&#x27;tools.invoke&#x27;, {
 <h2>Client-Side Web Client</h2>
 <h3>GatewaySocket</h3>
 <p>Source: <code>openclaw-ui/packages/claw-client/src/lib/gateway/socket.ts</code></p>
-<p>WebSocket client with:</p>
+<p>WebSocket client with challenge-response auth and exponential backoff:</p>
 <pre><code class="language-typescript">class GatewaySocket {
-  // Connect with challenge handshake
-  async connect() {
-    const ws = new WebSocket(this.url);
-    ws.onmessage = (event) =&gt; {
-      const msg = JSON.parse(event.data);
-      if (msg.type === &#x27;challenge&#x27;) {
-        // Respond with device token
-        this.send({ type: &#x27;auth&#x27;, token: this.deviceToken });
-      } else if (msg.type === &#x27;response&#x27;) {
-        // Resolve pending RPC request
-        const pending = this.pendingRequests.get(msg.id);
-        pending.resolve(msg.result);
-      }
-    };
-  }
+  private pendingRpcs = new Map&lt;string, {
+    resolve: (v: unknown) =&gt; void;
+    reject: (e: Error) =&gt; void;
+    method: string;
+  }&gt;();
+  private rpcCounter = 0;
 
-  // RPC with pending map
-  async invoke(method: string, params: any): Promise&lt;any&gt; {
-    const id = generateId();
-    const promise = new Promise((resolve, reject) =&gt; {
-      this.pendingRequests.set(id, { resolve, reject });
+  async request&lt;T&gt;(method: string, params?: unknown): Promise&lt;T&gt; {
+    const id = `rpc-${++this.rpcCounter}`;
+    const frame: GatewayFrame = { type: &quot;req&quot;, id, method, params };
+    return new Promise&lt;T&gt;((resolve, reject) =&gt; {
+      this.pendingRpcs.set(id, { resolve, reject, method });
+      this.ws!.send(JSON.stringify(frame));
     });
-    this.send({ type: &#x27;request&#x27;, id, method, params });
-    return promise;
   }
 
-  // Exponential backoff reconnect
-  // 1s → 2s → 4s → 8s → 16s → 30s (max, 6 attempts)
+  handleMessage(raw: string): void {
+    const frame = JSON.parse(raw) as GatewayFrame;
+    if (frame.type === &quot;event&quot; &amp;&amp; frame.event === &quot;connect.challenge&quot;) {
+      // Respond with nonce via RPC connect call
+    } else if (frame.type === &quot;res&quot;) {
+      const pending = this.pendingRpcs.get(frame.id);
+      if (frame.ok) pending.resolve(frame.payload);
+      else pending.reject(new Error(frame.error));
+    }
+  }
 }
 </code></pre>
 <h3>Auth Flow</h3>
-<ol><li>Connect to WebSocket</li><li>Receive <code>challenge</code> message with nonce</li><li>Respond with device token</li><li>If auth fails, close with code 4001, 4003, or 4401 (fatal — don't reconnect)</li></ol>
+<ol><li>Connect to WebSocket</li><li>Server sends <code>{ event: "connect.challenge", nonce: "..." }</code></li><li>Client responds with RPC <code>connect</code> call including device token</li><li>Server replies with <code>hello-ok</code> handshake response</li><li>If auth fails, server closes with code 4001, 4003, or 4401 (fatal — don't reconnect)</li></ol>
 <h3>OpenClawEngine</h3>
 <p>Source: <code>openclaw-ui/packages/claw-client/src/lib/engines/openclaw/OpenClawEngine.ts</code></p>
 <p>High-level engine over GatewaySocket:</p>
