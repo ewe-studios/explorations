@@ -120,35 +120,46 @@ class ElementErrorBoundary extends React.Component {
 
 ## Action Execution
 
+When a component triggers an action, the renderer dispatches an `ActionEvent` which the host application handles:
+
 ```typescript
-async function triggerAction(plan: ActionPlan) {
-  for (const step of plan.steps) {
-    switch (step.type) {
-      case 'Set':
-        store.set(step.target, step.value);
-        break;
-      case 'Reset':
-        store.reset(step.target);
-        break;
-      case 'ToAssistant':
-        await onMessage(step.value);
-        break;
-      case 'OpenUrl':
-        window.open(step.value, '_blank');
-        break;
-      case 'Run':
-        await executeSteps(step.steps);
-        break;
-    }
-    // Mutation failures halt the action plan
-    if (step.type === 'Mutation' && step.failed) {
-      break;  // Halt on mutation failure
-    }
+// ActionEvent is produced by the evaluator from ActionStep nodes
+interface ActionEvent {
+  type: "run" | "continue_conversation" | "open_url" | "set" | "reset";
+  // Fields vary by type:
+  // run: { statementId, refType }
+  // continue_conversation: { message, context? }
+  // open_url: { url }
+  // set: { target, value }
+  // reset: { targets: string[] }
+}
+```
+
+The host receives the event via `onAction` and decides how to handle it:
+
+```typescript
+function handleAction(event: ActionEvent) {
+  switch (event.type) {
+    case "set":
+      store.set(event.target, event.value);
+      break;
+    case "reset":
+      store.reset(event.target);
+      break;
+    case "continue_conversation":
+      onMessage(event.message);
+      break;
+    case "open_url":
+      window.open(event.url, "_blank");
+      break;
+    case "run":
+      await executeToolCall(event.statementId, event.refType);
+      break;
   }
 }
 ```
 
-Actions execute sequentially. If a mutation step fails (e.g., a query mutation returns an error), the plan halts — remaining steps are not executed.
+Actions execute sequentially. The renderer dispatches one event at a time from the evaluated action expression.
 
 ## QueryManager
 

@@ -15,7 +15,7 @@ sequenceDiagram
     participant Cache
     participant Renderer
 
-    LLM->>Parser: push('root = Stack(header, table)\nheader = Text')
+    LLM->>Parser: push('root = Card([header, table])\nheader = Text')
     Parser->>Parser: Scan from watermark, find depth-0 newline
     Parser->>Cache: Cache completed: "root" statement
     Parser-->>Renderer: Completed: root + Pending: "header" (incomplete)
@@ -40,7 +40,7 @@ sequenceDiagram
 
 ```
 Source buffer:
-"root = Stack(header, table)\nheader = TextContent("Title")\ntable = Table($items"
+"root = Card([header, table])\nheader = TextContent("Title")\ntable = Table($items"
                                                             ↑
                                                       completedEnd (watermark)
 

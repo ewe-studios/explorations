@@ -23,8 +23,8 @@ Source: `openui/packages/react-lang/src/` — React renderer
 │  └─────────────┘                    └──────┬─────┘ │
 │                                            │       │
 │  ┌──────────────────────────────────────┐  │       │
-│  │ Component Library (60+ components)   │←←┘       │
-│  │ Stack, Table, Form, Chart, Button... │          │
+│  │ Component Library (53 components)    │←←┘       │
+│  │ Card, Table, Form, Chart, Button...  │          │
 │  └──────────────────────────────────────┘          │
 ├────────────────────────────────────────────────────┤
 │                Server (OpenClaw)                    │

@@ -10,13 +10,14 @@ Source: `openui/packages/react-ui/src/` — component library
 
 | Category | Components | Purpose |
 |----------|-----------|---------|
-| **Layout** | Stack, Root, Grid, Tabs, SectionBlock, Accordion, BottomTray | Arrange child components |
-| **Data Display** | Table, BarChart, BarChartCondensed, AreaChart, AreaChartCondensed, Charts, Carousel, Card, CardHeader, Tag, TagBlock, CodeBlock, ImageBlock, ImageGallery, ListBlock, ListItem | Visualize data |
+| **Layout** | Card, Root, Grid, Tabs, SectionBlock, Accordion, BottomTray, Modal | Arrange child components |
+| **Data Display** | Table, BarChart, BarChartCondensed, AreaChart, AreaChartCondensed, Charts, ChartsV2, Carousel, CardHeader, Tag, TagBlock, CodeBlock, Image, ImageBlock, ImageGallery, ListBlock, ListItem, Separator, Steps | Visualize data |
 | **Forms** | Form, FormControl, Input, TextArea, Select, Slider, DatePicker, Calendar, RadioGroup, RadioItem, CheckBoxGroup, CheckBoxItem, SwitchGroup, SwitchItem | User input |
 | **Actions** | Button, Buttons, IconButton, FollowUpBlock, FollowUpItem | Trigger actions |
 | **Content** | TextContent, TextCallout, Callout, Label, MarkDownRenderer | Display text |
-| **System** | MessageLoading, ToolCall, ToolResult, Artifact, ThemeProvider | Framework internals |
+| **System** | MessageLoading, ToolCall, ToolResult, Artifact, ThemeProvider, OpenUIChat | Framework internals |
 | **Shell** | CopilotShell, Shell | Layout context providers |
+| **Toggles** | ToggleGroup, ToggleItem | Toggle controls |
 
 ## Component Schema Example
 
@@ -47,31 +48,42 @@ Source: `openui/packages/react-ui/src/` — component library
 ## Component Implementation Pattern
 
 ```tsx
-// Table.tsx
-interface TableProps {
-  data: any[];
-  columns: ColumnDef[];
-  striped?: boolean;
-}
+// Table.tsx — actual implementation from source
+import { createComponent } from "../defineComponent";
+import { z } from "zod";
 
-export function Table({ data, columns, striped = false }: TableProps) {
-  return (
-    <table>
-      <thead>
-        <tr>
-          {columns.map(col => <th key={col.header}>{col.header}</th>)}
-        </tr>
-      </thead>
-      <tbody>
-        {data.map((row, i) => (
-          <tr key={i} className={striped && i % 2 === 1 ? 'striped' : ''}>
-            {columns.map(col => <td key={col.accessor}>{row[col.accessor]}</td>)}
+export const Table = createComponent({
+  name: "Table",
+  props: z.object({
+    columns: z.array(
+      z.object({ header: z.string(), accessor: z.string() })
+    ),
+    data: z.array(z.record(z.unknown())),
+    striped: z.boolean().default(false),
+  }),
+  component: ({ props }) => {
+    return (
+      <table>
+        <thead>
+          <tr>
+            {props.columns.map(col => (
+              <th key={col.header}>{col.header}</th>
+            ))}
           </tr>
-        ))}
-      </tbody>
-    </table>
-  );
-}
+        </thead>
+        <tbody>
+          {props.data.map((row, i) => (
+            <tr key={i} className={props.striped && i % 2 === 1 ? "striped" : ""}>
+              {props.columns.map(col => (
+                <td key={col.accessor}>{row[col.accessor]}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    );
+  },
+});
 ```
 
 ## Form Field Handling
@@ -115,7 +127,7 @@ The ToolProvider can be:
 - A simple function map: `{ tools: { search: (q) => ... } }`
 - An MCP client: connects to a Model Context Protocol server
 
-When the LLM generates `<Button onClick={@Run(search, $query)}>`, the renderer invokes `toolProvider.callTool('search', { query: ... })`.
+When the LLM generates `Button("Search", Action([@Run("search", $query)]))`, the renderer invokes `toolProvider.callTool('search', { query: ... })`.
 
 ## Component Groups
 

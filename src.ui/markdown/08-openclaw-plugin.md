@@ -79,47 +79,46 @@ The server validates the SQL (read-only for `db_query`) and executes against the
 
 Source: `openclaw-ui/packages/claw-client/src/lib/gateway/socket.ts`
 
-WebSocket client with:
+WebSocket client with challenge-response auth and exponential backoff:
 
 ```typescript
 class GatewaySocket {
-  // Connect with challenge handshake
-  async connect() {
-    const ws = new WebSocket(this.url);
-    ws.onmessage = (event) => {
-      const msg = JSON.parse(event.data);
-      if (msg.type === 'challenge') {
-        // Respond with device token
-        this.send({ type: 'auth', token: this.deviceToken });
-      } else if (msg.type === 'response') {
-        // Resolve pending RPC request
-        const pending = this.pendingRequests.get(msg.id);
-        pending.resolve(msg.result);
-      }
-    };
-  }
+  private pendingRpcs = new Map<string, {
+    resolve: (v: unknown) => void;
+    reject: (e: Error) => void;
+    method: string;
+  }>();
+  private rpcCounter = 0;
 
-  // RPC with pending map
-  async invoke(method: string, params: any): Promise<any> {
-    const id = generateId();
-    const promise = new Promise((resolve, reject) => {
-      this.pendingRequests.set(id, { resolve, reject });
+  async request<T>(method: string, params?: unknown): Promise<T> {
+    const id = `rpc-${++this.rpcCounter}`;
+    const frame: GatewayFrame = { type: "req", id, method, params };
+    return new Promise<T>((resolve, reject) => {
+      this.pendingRpcs.set(id, { resolve, reject, method });
+      this.ws!.send(JSON.stringify(frame));
     });
-    this.send({ type: 'request', id, method, params });
-    return promise;
   }
 
-  // Exponential backoff reconnect
-  // 1s → 2s → 4s → 8s → 16s → 30s (max, 6 attempts)
+  handleMessage(raw: string): void {
+    const frame = JSON.parse(raw) as GatewayFrame;
+    if (frame.type === "event" && frame.event === "connect.challenge") {
+      // Respond with nonce via RPC connect call
+    } else if (frame.type === "res") {
+      const pending = this.pendingRpcs.get(frame.id);
+      if (frame.ok) pending.resolve(frame.payload);
+      else pending.reject(new Error(frame.error));
+    }
+  }
 }
 ```
 
 ### Auth Flow
 
 1. Connect to WebSocket
-2. Receive `challenge` message with nonce
-3. Respond with device token
-4. If auth fails, close with code 4001, 4003, or 4401 (fatal — don't reconnect)
+2. Server sends `{ event: "connect.challenge", nonce: "..." }`
+3. Client responds with RPC `connect` call including device token
+4. Server replies with `hello-ok` handshake response
+5. If auth fails, server closes with code 4001, 4003, or 4401 (fatal — don't reconnect)
 
 ### OpenClawEngine
 

@@ -161,7 +161,7 @@ Classification rules (determined in `classifyStatement`):
 During streaming, the parser may encounter references to identifiers not yet defined:
 
 ```
-root = Stack(header, table)
+root = Card([header, table])
 header = TextContent("Title")
 // table not yet streamed...
 ```

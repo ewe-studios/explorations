@@ -170,9 +170,9 @@ OpenUI's component library could be exposed as Web Components:
 ```html
 <openui-renderer>
   <template openui-lang>
-    Stack
-      Button(label="Save")
-      Text(content="Hello")
+root = Card([btn, txt])
+btn = Button("Save")
+txt = TextContent("Hello")
   </template>
 </openui-renderer>
 ```
