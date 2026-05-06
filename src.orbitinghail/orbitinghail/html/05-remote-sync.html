@@ -168,18 +168,24 @@ fn cbe64(n: u64) -&gt; [u8; 8] {
 <p><strong>Frame properties:</strong></p>
 <ul><li>Each frame contains up to 64 pages (256 KB uncompressed max)</li><li>Pages within a frame are strictly increasing by PageIdx</li><li>ZStd checksum flag enabled — each frame has an integrity check</li><li>Content size flag disabled — frames are stream-chunked</li></ul>
 <h3>Streaming Segment Builder</h3>
-<pre><code class="language-rust">// Reusable ZStd compression context from zstd_safe
-use zstd::zstd_safe::{CCtx, CParameter};
+<p>Source: <code>graft/crates/graft/src/remote/segment.rs</code></p>
+<pre><code class="language-rust">pub struct SegmentBuilder {
+    frames: ThinVec&lt;SegmentFrameIdx&gt;,
+    chunks: Vec&lt;Bytes&gt;,
+    cctx: CCtx&lt;&#x27;static&gt;,
+    last_pageidx: Option&lt;PageIdx&gt;,
+    current_frame_pages: PageCount,
+    current_frame_bytes: u64,
+    chunk: Vec&lt;u8&gt;,
+}
 
-let mut cctx = CCtx::create();
-cctx.set_parameter(CParameter::ChecksumFlag(true))?;
-
-// Push pages in order
-builder.push(PageIdx::new(1)?, page_data_1)?;
-builder.push(PageIdx::new(2)?, page_data_2)?;
-// ... auto-flush when 64 pages reached
+impl SegmentBuilder {
+    pub fn new() -&gt; Self { /* sets ContentSizeFlag(false), ChecksumFlag(true), CompressionLevel(3) */ }
+    pub fn write(&amp;mut self, pageidx: PageIdx, page: &amp;Page) { /* panics if out of order */ }
+    pub fn finish(mut self) -&gt; (ThinVec&lt;SegmentFrameIdx&gt;, Vec&lt;Bytes&gt;) { /* flushes last frame */ }
+}
 </code></pre>
-<p>The builder uses a reusable <code>CCtx</code> to avoid allocation overhead. Output is chunked for memory efficiency — frames are emitted as they fill, not buffered entirely in memory.</p>
+<p>The builder uses a reusable <code>CCtx</code> to avoid allocation overhead. Output is chunked for memory efficiency — chunks are flushed to a Vec as the compression output buffer fills, not buffered entirely in memory. The <code>finish()</code> method returns both the frame index (for the commit record) and the compressed chunks (for upload).</p>
 <h2>Remote Commit Process</h2>
 <div class="mermaid">
 sequenceDiagram
@@ -213,48 +219,96 @@ sequenceDiagram
 
 </div>
 <h3>Step-by-Step</h3>
-<ol><li><strong>Plan</strong>: Compare local sync point with remote log. Determine which local LSNs need syncing.</li><li><strong>Build segment</strong>: Collect pages from local commits, compress into ZStd segment, compute BLAKE3 commit hash.</li><li><strong>Upload segment</strong>: Push to remote with <code>if_not_exists: true</code> — if the segment already exists, skip (deduplication).</li><li><strong>Prepare</strong>: Set <code>pending_commit</code> on the volume. This is the crash recovery point — if the process dies here, the next sync knows an upload was in progress.</li><li><strong>Upload commit</strong>: Atomically write commit to remote with <code>if_not_exists: true</code>. This is the actual durability point — the commit record is the authoritative reference.</li><li><strong>Success</strong>: Clear <code>pending_commit</code>, update the local sync point.</li><li><strong>Recovery</strong>: If the precondition failed (commit already exists), fetch the remote log and check if our commit landed. If it did (matching hash), the sync succeeded. If not, the sync was a no-op (another process synced the same data).</li></ol>
-<p><strong>Aha:</strong> The <code>if_not_exists</code> precondition check makes the commit upload idempotent. Two processes syncing the same data concurrently won't corrupt each other — the second one's upload will fail the precondition check, and it will verify that the first one's commit is correct. This eliminates the need for distributed locking.</p>
+<p>Source: <code>graft/crates/graft/src/rt/action/remote_commit.rs</code></p>
+<ol><li><strong>Recovery check</strong>: Call <code>attempt_recovery()</code> — if a <code>pending_commit</code> exists from a prior crash, fetch the remote log and verify whether the commit landed.</li><li><strong>Plan</strong>: <code>plan_commit()</code> compares local sync point with remote. Determines which local LSNs need syncing. Detects divergence (remote has commits we don't know about).</li><li><strong>Build segment</strong>: <code>build_segment()</code> runs in a blocking thread. Collects pages from local commits (newest first, deduplicating by PageIdx), compresses via <code>SegmentBuilder</code>, computes <code>CommitHash</code> via <code>CommitHashBuilder</code>. Also caches segment pages in local storage.</li><li><strong>Upload segment</strong>: <code>remote.put_segment(sid, chunks)</code> — streaming upload via <code>writer_with().concurrent(5)</code>. No precondition — segments are content-addressed by SegmentId, so duplicates are harmless.</li><li><strong>Prepare</strong>: <code>remote_commit_prepare()</code> sets <code>PendingCommit { local, commit, commit_hash }</code> on the Volume. This is the crash recovery point. Uses <code>precept::sometimes_fault!</code> for deterministic crash testing.</li><li><strong>Upload commit</strong>: <code>remote.put_commit(&commit)</code> with <code>if_not_exists: true</code>. This is the linearization point — the commit is the authoritative durability record.</li><li><strong>Success</strong>: <code>remote_commit_success()</code> clears <code>pending_commit</code>, updates the local sync point, writes the commit to the remote log locally.</li><li><strong>Conflict handling</strong>: If <code>put_commit</code> returns <code>precondition_failed()</code>, call <code>attempt_recovery()</code> which runs <code>FetchLog</code> to pull the remote log and then <code>recover_pending_commit()</code> to check if our commit hash matches.</li></ol>
+<p><strong>Aha:</strong> The <code>if_not_exists</code> precondition check makes the commit upload idempotent. Two processes syncing the same data concurrently won't corrupt each other — the second one's upload will fail the precondition check, and recovery will verify the first one's commit is correct. This eliminates the need for distributed locking. The <code>precept</code> fault injection framework enables deterministic testing of every crash point.</p>
+<h3>Crash Recovery (PendingCommit)</h3>
+<pre><code class="language-rust">pub struct PendingCommit {
+    pub local: LSN,          // latest local LSN included in the commit
+    pub commit: LSN,         // the remote LSN we&#x27;re writing to
+    pub commit_hash: CommitHash,  // expected hash of the commit
+}
+</code></pre>
+<p>Recovery flow when <code>pending_commit</code> exists:</p>
+<ol><li><code>FetchLog { log: volume.remote }</code> — fetch all commits from the remote log</li><li><code>recover_pending_commit(vid)</code> — check if the commit at <code>pending_commit.commit</code> LSN has a matching <code>commit_hash</code></li><li>If match: the commit succeeded before the crash — clear <code>pending_commit</code> and update sync point</li><li>If no match or not found: the commit failed — clear <code>pending_commit</code> (segment upload is idempotent, so the orphaned segment is harmless)</li></ol>
 <h2>S3 Optimizations</h2>
 <p>Source: <code>graft/crates/graft/src/remote.rs</code> — <code>RemoteConfig</code> and client setup</p>
-<table><tr><th>Optimization</th><th>Implementation</th><th>Effect</th></tr><tr><td>**HTTP/1 only**</td><td>`hyper::client::HttpConnector` with HTTP/1</td><td>Avoids HTTP/2 head-of-line blocking for concurrent object uploads</td></tr><tr><td>**DNS caching**</td><td>Hickory DNS resolver</td><td>Reduces DNS lookup latency for repeated S3 requests</td></tr><tr><td>**Connect timeout**</td><td>5 seconds</td><td>Fast failure when S3 endpoint is unreachable</td></tr><tr><td>**TCP user timeout**</td><td>60 seconds</td><td>Detects dead connections quickly</td></tr><tr><td>**RetryLayer**</td><td>OpenDAL `RetryLayer::new()`</td><td>Automatic retry on transient errors</td></tr><tr><td>**Concurrency**</td><td>`REMOTE_CONCURRENCY = 5`</td><td>Parallel reads/writes for throughput</td></tr></table>
+<table><tr><th>Optimization</th><th>Implementation</th><th>Effect</th></tr><tr><td>**HTTP/1 only**</td><td>`reqwest::ClientBuilder::new().http1_only()`</td><td>Avoids HTTP/2 head-of-line blocking for concurrent object uploads</td></tr><tr><td>**DNS caching**</td><td>`reqwest::ClientBuilder::hickory_dns(true)`</td><td>Reduces DNS lookup latency for repeated S3 requests</td></tr><tr><td>**Connect timeout**</td><td>`.connect_timeout(Duration::from_secs(5))`</td><td>Fast failure when S3 endpoint is unreachable</td></tr><tr><td>**TCP user timeout**</td><td>`.tcp_user_timeout(Duration::from_secs(60))`</td><td>Detects dead connections quickly</td></tr><tr><td>**RetryLayer**</td><td>`Operator::new(builder)?.layer(RetryLayer::new())`</td><td>Automatic retry on transient errors</td></tr><tr><td>**Concurrency**</td><td>`REMOTE_CONCURRENCY = 5`</td><td>Parallel reads/writes for throughput</td></tr></table>
 <p><strong>Aha:</strong> HTTP/1 is faster than HTTP/2 for object storage workloads. HTTP/2 multiplexes requests over a single connection, which means a slow request blocks all others (head-of-line blocking). For S3, where each request is independent and the bottleneck is network latency, multiple HTTP/1 connections give better throughput.</p>
 <h2>Byte-Range Reads</h2>
 <p>To read a single page from a remote segment:</p>
 <ol><li>Read the commit to find the <code>segment_idx</code></li><li>Read the segment's frame index (small, typically <1KB)</li><li>Find which frame contains the target PageIdx</li><li>Make an S3 <code>Range</code> request for just that frame's byte range</li><li>Decompress the frame and extract the page</li></ol>
 <p>This means reading one 4KB page from a 100MB segment only downloads the frame containing that page (typically 32-256KB), not the entire segment.</p>
 <p><strong>Aha:</strong> The frame index is the key to efficient random access. Without it, you'd need to download and decompress the entire segment to find one page. With it, you make a targeted <code>Range</code> request for just the bytes you need. The frame index is small because there are at most <code>ceil(total_pages / 64)</code> entries.</p>
-<h2>Autosync Task</h2>
-<p>The <code>AutosyncTask</code> runs periodically in the background:</p>
-<pre><code class="language-rust">async fn autosync(&amp;self, volume: &amp;Volume) {
-    loop {
-        tokio::time::sleep(interval).await;
-        // Push local changes to remote
-        self.push_pending(volume).await;
-        // Pull remote changes to local
-        self.pull_remote(volume).await;
-    }
+<h2>Remote Struct and Methods</h2>
+<p>Source: <code>graft/crates/graft/src/remote.rs</code></p>
+<pre><code class="language-rust">#[derive(Debug, Clone)]
+pub struct Remote {
+    store: Operator,  // OpenDAL operator
+}
+
+#[derive(Debug, Deserialize, Serialize, Default, Clone)]
+#[serde(tag = &quot;type&quot;, rename_all = &quot;snake_case&quot;)]
+pub enum RemoteConfig {
+    Memory,
+    Fs { root: String },
+    S3Compatible { bucket: String, prefix: Option&lt;String&gt; },
 }
 </code></pre>
-<p>Push and pull are independent — a client can work offline, accumulate local commits, and sync when connectivity is restored. Remote commits are pulled into the local log automatically.</p>
+<p>Key methods on <code>Remote</code>:</p>
+<pre><code class="language-rust">impl Remote {
+    pub fn with_config(config: RemoteConfig) -&gt; Result&lt;Self&gt;;
+
+    // Atomic commit write — returns precondition_failed on collision
+    pub async fn put_commit(&amp;self, commit: &amp;Commit) -&gt; Result&lt;()&gt;;
+
+    // Streaming segment upload via writer_with().concurrent(5)
+    pub async fn put_segment&lt;I: IntoIterator&lt;Item = Bytes&gt;&gt;(&amp;self, sid: &amp;SegmentId, chunks: I) -&gt; Result&lt;()&gt;;
+
+    // Byte-range read of a segment
+    pub async fn get_segment_range(&amp;self, sid: &amp;SegmentId, bytes: Range&lt;u64&gt;) -&gt; Result&lt;Bytes&gt;;
+
+    // Fetch a commit (returns None if not found)
+    pub async fn get_commit(&amp;self, log: &amp;LogId, lsn: LSN) -&gt; Result&lt;Option&lt;Commit&gt;&gt;;
+
+    // Stream commits in order, stopping at first NotFound
+    pub fn stream_commits_ordered&lt;I&gt;(&amp;self, log: &amp;LogId, lsns: I) -&gt; impl Stream&lt;Item = Result&lt;Commit&gt;&gt;;
+}
+</code></pre>
+<p><strong>Aha:</strong> <code>stream_commits_ordered</code> uses <code>FuturesOrdered</code> with chunked concurrency — the first LSN is fetched alone (fast failure if log is empty), then subsequent LSNs are fetched in batches of <code>REMOTE_CONCURRENCY</code>. It stops as soon as any fetch returns NotFound, avoiding scanning past the end of the log.</p>
+<h2>Sync Lifecycle</h2>
+<p>Push and pull are independent — a client can work offline, accumulate local commits, and sync when connectivity is restored. Remote commits are pulled into the local log via the <code>FetchLog</code> action.</p>
 <h2>Replicating in Rust</h2>
 <p>For a simpler S3 sync without the full graft stack:</p>
-<pre><code class="language-rust">use opendal::{Operator, Scheme};
+<pre><code class="language-rust">use opendal::{Operator, layers::RetryLayer, options::{WriteOptions, ReadOptions}};
 
-let op = Operator::via_env(Scheme::S3)?;
+// Atomic write with precondition (graft uses write_options)
+op.write_options(
+    &amp;path,
+    data,
+    WriteOptions {
+        if_not_exists: true,
+        concurrent: 5,
+        ..WriteOptions::default()
+    },
+).await?;
 
-// Atomic write with precondition
-let mut writer = op.writer_with(&quot;path/to/object&quot;)
-    .if_not_exists(true)
-    .await?;
-writer.write(data).await?;
-writer.close().await?;
+// Streaming write (graft uses writer_with for segments)
+let mut w = op.writer_with(&amp;path).concurrent(5).await?;
+for chunk in chunks {
+    w.write(chunk).await?;
+}
+w.close().await?;
 
-// Range read
-let reader = op.reader_with(&quot;path/to/object&quot;)
-    .range(100..200)  // Bytes 100-199
-    .await?;
-let chunk = reader.read().await?;
+// Range read (graft uses read_options)
+let buffer = op.read_options(
+    &amp;path,
+    ReadOptions {
+        range: (100..200).into(),
+        concurrent: 5,
+        ..ReadOptions::default()
+    },
+).await?;
 </code></pre>
 <p>See <a href="04-graft-storage.md">Graft Storage</a> for the core data model. See <a href="10-s3-remote-optimizations.md">S3 Remote Optimizations</a> for detailed S3 patterns. See <a href="09-checksums-validation.md">Checksums and Validation</a> for commit hash verification.</p>
   </article>

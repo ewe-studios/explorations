@@ -33,10 +33,11 @@ XXH3 is the fastest non-cryptographic hash for block-level integrity checks. It 
 **Used by:** graft commit hashes
 
 ```
-┌────────────────────┬──────────────────────────┐
-│ 4-byte magic       │ BLAKE3 hash (28 bytes)   │
-│ [0x68,0xA4,0x19,0x30]                        │
-└────────────────────┴──────────────────────────┘
+┌────────────────���────┬────────────────────���─────┐
+│ prefix (1 byte)     │ truncated BLAKE3 (31b)   │
+│ b'C' (0x43)         │                          │
+└──��──────────────────┴──────────────────��───────┘
+Total: 32 bytes (COMMIT_HASH_SIZE), Base58 encoded = 44 chars
 ```
 
 ```rust
@@ -47,32 +48,33 @@ const COMMIT_HASH_MAGIC: [u8; 4] = [0x68, 0xA4, 0x19, 0x30];
 let mut hasher = Hasher::new();
 hasher.update(&COMMIT_HASH_MAGIC);
 hasher.update(log_id.as_bytes());
-hasher.update(CBE64::from(lsn).as_bytes());  // CBE64-encoded, not LE
-hasher.update(&vol_page_count.to_le_bytes());
-hasher.update(&commit_page_count.to_le_bytes());
+hasher.update(CBE64::from(lsn).as_bytes());         // CBE64-encoded
+hasher.update(&vol_page_count.to_u32().to_be_bytes());   // big-endian
+hasher.update(&commit_page_count.to_u32().to_be_bytes()); // big-endian
 for (pageidx, page_data) in ordered_pages {
-    hasher.update(&pageidx.to_le_bytes());
-    hasher.update(page_data);
+    hasher.update(&pageidx.to_u32().to_be_bytes());  // big-endian
+    hasher.update(page_data.as_ref());
 }
 let hash = hasher.finalize();
+// bytes[0] = b'C';  // overwrite first byte with CommitHashPrefix
 ```
 
 | Property | Value |
 |----------|-------|
-| Output size | 256 bits (truncated to 248 bits + 32-bit magic) |
+| Output size | 32 bytes (1-byte prefix `b'C'` + 31-byte truncated BLAKE3) |
 | Speed | ~5 GB/s |
-| Collision resistance | Cryptographic (2^128 birthday bound) |
+| Collision resistance | Cryptographic (2^124 birthday bound on 31 bytes) |
 | Use case | Commit integrity, tamper detection |
 
 The hash covers:
-- Magic 4-byte prefix `[0x68, 0xA4, 0x19, 0x30]` (type safety)
-- Log ID (which log this commit belongs to)
-- LSN in CBE64 encoding (ordering)
-- Volume page count (snapshot size)
-- Commit page count (this commit's scope)
-- Ordered (pageidx, page_data) pairs (actual data)
+- Magic 4-byte prefix `[0x68, 0xA4, 0x19, 0x30]` (domain separation in hash input)
+- Log ID (16 bytes, which log this commit belongs to)
+- LSN in CBE64 encoding (8 bytes)
+- Volume page count in big-endian u32 (snapshot size)
+- Commit page count in big-endian u32 (this commit's scope)
+- Ordered (pageidx BE u32, page_data) pairs (actual data, must be in ascending PageIdx order)
 
-**Aha:** Including the 4-byte magic prefix in the hash input means a BLAKE3 hash of a commit can never equal a BLAKE3 hash of non-commit data. Even if someone computes BLAKE3 of the exact same bytes without the magic prefix, the result is different. This is a form of domain separation — the same hash function produces distinguishable outputs for different data types.
+**Aha:** The commit hash uses two layers of type safety: (1) the 4-byte `COMMIT_HASH_MAGIC` fed into the hasher provides domain separation — a BLAKE3 hash of commit data can never collide with a BLAKE3 hash of non-commit data because the inputs differ; (2) the first byte of the output is overwritten with `b'C'` (the `CommitHashPrefix`), making it visually distinguishable and parseable — if byte[0] != 0x43, it's not a valid CommitHash.
 
 ## ZStd Frame Checksums
 
@@ -94,31 +96,40 @@ The checksum covers the uncompressed frame content. On decompression, ZStd verif
 Source: `graft/crates/graft/src/core/checksum.rs`
 
 ```rust
-// Uses ChecksumBuilder struct with add()/build()/pretty() methods
+#[repr(C)]
+pub struct Checksum {
+    sum: u128,    // wrapping sum of xxh3_128 digests
+    xor: u128,    // XOR of xxh3_128 digests
+    count: u128,  // number of elements added
+    bytes: u128,  // total byte length of all elements
+}
+
 pub struct ChecksumBuilder {
-    sum: u128,
-    count: u64,
-    total_bytes: u64,
+    checksum: Checksum,
 }
 
 impl ChecksumBuilder {
-    pub fn add(&mut self, item: &[u8]) {
-        let hash = xxh3_128(item);
-        self.sum = self.sum.wrapping_add(hash);
-        self.sum ^= hash;
-        self.count += 1;
-        self.total_bytes += item.len() as u64;
+    pub const fn new() -> Self { /* ... */ }
+
+    pub fn write<B: AsRef<[u8]>>(&mut self, data: &B) {
+        let hash = xxh3_128(data.as_ref());
+        self.checksum.sum = self.checksum.sum.wrapping_add(hash);
+        self.checksum.xor ^= hash;
+        self.checksum.count = self.checksum.count.wrapping_add(1);
+        self.checksum.bytes = self.checksum.bytes.wrapping_add(data.as_ref().len() as u128);
     }
 
-    pub fn build(&self) -> u128 {
-        self.sum ^ (self.count as u128) ^ (self.total_bytes as u128)
-    }
+    pub const fn merge(self, b: Self) -> Self { /* combines two builders */ }
+    pub const fn build(self) -> Checksum { self.checksum }
 }
 ```
 
-This checksum has the property: `checksum([a, b]) == checksum([b, a])`. The XOR operation is commutative, and the wrapping sum is also commutative. The count and total_bytes are included to detect:
-- Duplicate items (count changes)
-- Items with same hash but different content (total_bytes changes)
+This checksum has the property: `checksum([a, b]) == checksum([b, a])`. Both wrapping addition and XOR are commutative. The four fields together detect:
+- Duplicate items (XOR cancels for pairs, but sum and count differ)
+- Items with same hash but different content (bytes differs)
+- Missing or extra items (count differs)
+
+Display uses `blake3::hash` of the raw `Checksum` bytes, then Base58, for human-readable comparison.
 
 **Aha:** The order-independent checksum is used when the set of items matters but not their order. This is common in distributed systems where two nodes may process the same items in different orders but need to verify they have the same set. Without this property, every comparison would require sorting first.
 
@@ -153,14 +164,14 @@ if expected_checksum != actual_checksum {
     return Err(Error::Corruption);
 }
 
-// Commit-level integrity with BLAKE3
-use blake3::Hasher;
+// Commit-level integrity with BLAKE3 (use CommitHashBuilder in practice)
+use graft::core::commit_hash::CommitHashBuilder;
 
-const MAGIC: [u8; 4] = [0x68, 0xA4, 0x19, 0x30];
-let mut hasher = Hasher::new();
-hasher.update(&MAGIC);  // 4-byte magic prefix
-hasher.update(&commit_data);
-let hash = hasher.finalize();
+let mut builder = CommitHashBuilder::new(log_id, lsn, vol_pages, commit_pages);
+for (pageidx, page) in pages_in_ascending_order {
+    builder.write_page(pageidx, &page);  // panics if out of order
+}
+let commit_hash = builder.build();  // CommitHash with b'C' prefix
 ```
 
 See [Storage Formats](08-storage-formats.md) for the formats that use these checksums.

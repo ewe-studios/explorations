@@ -8,19 +8,21 @@ Source: `splinter-rs/src/lib.rs` — compressed bitmap operations
 
 ## Bitmap Structure
 
-The library exposes `Splinter` (owned) and `CowSplinter<B>` (backed by any `AsRef<[u8]>`):
+The library exposes `Splinter` (owned) and `CowSplinter<B>` (copy-on-write enum):
 
 ```rust
-pub struct Splinter {
-    data: Vec<u8>,           // Compressed bitmap data
-    cardinality: u32,        // Number of set bits
-}
+// splinter-rs/src/splinter.rs
+#[derive(Clone, PartialEq, Eq, Default)]
+pub struct Splinter(Partition<High>);  // 40 bytes, newtype over Partition
 
-pub struct CowSplinter<B> {
-    data: B,                 // Backing byte slice (zero-copy)
-    cardinality: u32,
+// splinter-rs/src/cow.rs
+pub enum CowSplinter<B> {
+    Ref(SplinterRef<B>),  // Zero-copy reference to serialized data
+    Owned(Splinter),       // Owned, mutable splinter
 }
 ```
+
+`Splinter` is a newtype over `Partition<High>` (the top-level segment). `CowSplinter` provides the zero-copy story — `CowSplinter::Ref` reads directly from a byte slice without deserialization, while `CowSplinter::Owned` holds a fully materialized bitmap. Mutations on a `Ref` transparently promote to `Owned`.
 
 ## Operations
 

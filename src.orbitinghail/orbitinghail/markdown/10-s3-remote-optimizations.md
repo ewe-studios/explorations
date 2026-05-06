@@ -42,22 +42,22 @@ flowchart LR
 ## DNS Caching with Hickory
 
 ```rust
-use hickory_resolver::TokioAsyncResolver;
-
-let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
-let connector = HttpConnector::new_with_dns_resolver(resolver);
+let client = reqwest::ClientBuilder::new()
+    .hickory_dns(true)  // enables hickory-resolver for DNS caching
+    .build()?;
 ```
 
-S3 requests resolve `bucket.s3.region.amazonaws.com` on every new connection. Without DNS caching, each connection adds ~10-50ms for DNS resolution. Hickory caches DNS responses according to their TTL, reducing resolution to ~0ms for cached entries.
+S3 requests resolve `bucket.s3.region.amazonaws.com` on every new connection. Without DNS caching, each connection adds ~10-50ms for DNS resolution. Hickory (via reqwest's `hickory_dns` feature) caches DNS responses according to their TTL, reducing resolution to ~0ms for cached entries.
 
 ## Connection Timeouts
 
 ```rust
-// 5s connect timeout — fail fast when S3 is unreachable
-connector.set_connect_timeout(Some(Duration::from_secs(5)));
-
-// 60s TCP user timeout — detect dead connections
-socket.set_tcp_user_timeout(Some(Duration::from_secs(60)));
+let client = reqwest::ClientBuilder::new()
+    .http1_only()
+    .hickory_dns(true)
+    .connect_timeout(Duration::from_secs(5))     // fail fast when S3 is unreachable
+    .tcp_user_timeout(Duration::from_secs(60))   // detect dead connections
+    .build()?;
 ```
 
 The connect timeout prevents hanging on network issues. The TCP user timeout (Linux-specific) detects connections that have stopped responding — the kernel sends a RST after 60 seconds of unacked data.
@@ -77,40 +77,54 @@ The `RetryLayer::new()` applies OpenDAL's default retry strategy with exponentia
 ## Concurrent Operations
 
 ```rust
-// REMOTE_CONCURRENCY = 5 concurrent operations for reads/writes
 const REMOTE_CONCURRENCY: usize = 5;
 
-// Upload segment with concurrency
-let mut futures = Vec::new();
-for chunk in segment.chunks() {
-    futures.push(op.write(chunk.path(), chunk.data()));
+// Commits: write_options with concurrent
+self.store.write_options(&path, data, WriteOptions {
+    if_not_exists: true,
+    concurrent: REMOTE_CONCURRENCY,
+    ..WriteOptions::default()
+}).await?;
+
+// Segments: streaming writer with concurrent
+let mut w = self.store.writer_with(&path).concurrent(REMOTE_CONCURRENCY).await?;
+for chunk in chunks {
+    w.write(chunk).await?;
 }
-let results = futures::stream::iter(futures)
-    .buffer_unordered(concurrency)
-    .collect::<Vec<_>>()
-    .await;
+w.close().await?;
+
+// Reads: read_options with concurrent
+self.store.read_options(&path, ReadOptions {
+    range: bytes.into(),
+    concurrent: REMOTE_CONCURRENCY,
+    ..ReadOptions::default()
+}).await?;
 ```
 
-5 concurrent operations provide a good balance between throughput and connection count. Too few (1-2) and the pipeline is underutilized. Too many (20+) and you risk overwhelming the S3 endpoint or hitting connection limits.
+5 concurrent operations provide a good balance between throughput and connection count. The concurrency is set per-operation via OpenDAL's `WriteOptions`/`ReadOptions`, not via a global connection pool.
 
 ## Atomic Writes with Preconditions
 
 ```rust
-// Atomically write only if the object doesn't exist
-let result = op.write_with(path, data)
-    .if_not_exists(true)
-    .await;
+// graft uses write_options with if_not_exists
+let result = op.write_options(
+    &path,
+    data,
+    WriteOptions { if_not_exists: true, ..WriteOptions::default() },
+).await;
 
 match result {
-    Ok(()) => println!("Created new object"),
-    Err(e) if e.is_condition_not_met() => println!("Object already exists"),
-    Err(e) => return Err(e),
+    Ok(()) => { /* Created new object */ },
+    Err(err) if err.kind() == ErrorKind::ConditionNotMatch => {
+        /* Object already exists — check via RemoteErr::precondition_failed() */
+    },
+    Err(err) => return Err(err.into()),
 }
 ```
 
-S3 supports conditional writes via `If-None-Match: *`. OpenDAL abstracts this as `if_not_exists(true)`. This is used for:
-- Commit records: prevent duplicate commits
-- Segment files: deduplicate uploads
+S3 supports conditional writes via `If-None-Match: *`. OpenDAL abstracts this as `if_not_exists: true` in `WriteOptions`. This is used for:
+- Commit records: prevent duplicate commits (only point of contention)
+- Segments are written without precondition (content-addressed by SegmentId)
 
 **Aha:** The `if_not_exists` precondition replaces distributed locking. Instead of acquiring a lock before writing, two processes simply attempt to write with `if_not_exists(true)`. One succeeds, the other gets a condition-not-met error. This is lock-free idempotency — the same pattern used in distributed databases with compare-and-swap operations.
 
@@ -126,14 +140,18 @@ CBE encoding ensures that listing objects in reverse order gives the newest comm
 ## Byte-Range Reads
 
 ```rust
-// Read only bytes 1000-2000 of a 100MB object
-let reader = op.reader_with("segments/sid-123")
-    .range(1000..2000)
-    .await?;
-let chunk = reader.read().await?;
+// graft uses get_segment_range with ReadOptions
+let bytes = remote.get_segment_range(&sid, 1000..2000).await?;
+
+// Internally calls:
+let buffer = self.store.read_options(&path, ReadOptions {
+    range: (1000..2000u64).into(),
+    concurrent: REMOTE_CONCURRENCY,
+    ..ReadOptions::default()
+}).await?;
 ```
 
-S3 supports HTTP Range headers for partial object reads. The graft segment format leverages this by storing a frame index that maps PageIdx to byte ranges. Reading one page requires downloading only the frame containing that page.
+S3 supports HTTP Range headers for partial object reads. The graft segment format leverages this by storing a frame index (`SegmentFrameIdx { frame_size, last_pageidx }`) that maps PageIdx to byte ranges. Reading one page requires downloading only the frame containing that page — the `SegmentIdx::frame_for_pageidx` method computes the byte range from the frame index.
 
 ## Cost Considerations
 
@@ -147,31 +165,36 @@ S3 supports HTTP Range headers for partial object reads. The graft segment forma
 ## Replicating in Rust
 
 ```rust
-use opendal::{Operator, Scheme, layers::RetryLayer};
+use opendal::{Operator, layers::{HttpClientLayer, RetryLayer}, raw::HttpClient, services::S3};
+use opendal::options::{WriteOptions, ReadOptions};
 
-let op = Operator::via_builder(
-    Scheme::S3,
-    S3Config::builder()
-        .bucket("my-bucket")
-        .region("us-east-1")
-        .access_key_id("...")
-        .secret_access_key("...")
-        .http_client(HttpClient::http1_only())
-        .dns_resolver(HickoryResolver::default())
-        .build()
-)?
-.layer(RetryLayer::new())
-.finish();
+// Build the S3 operator with graft's optimizations
+let mut builder = S3::default().bucket("my-bucket");
+let client = reqwest::ClientBuilder::new()
+    .http1_only()
+    .hickory_dns(true)
+    .connect_timeout(Duration::from_secs(5))
+    .tcp_user_timeout(Duration::from_secs(60))
+    .build()?;
 
-// Atomic write
-op.write_with("path/to/object", data)
-    .if_not_exists(true)
-    .await?;
+let op = Operator::new(builder)?
+    .layer(HttpClientLayer::new(HttpClient::with(client)))
+    .layer(RetryLayer::new())
+    .finish();
+
+// Atomic commit write
+op.write_options("path/to/commit", data, WriteOptions {
+    if_not_exists: true,
+    concurrent: 5,
+    ..WriteOptions::default()
+}).await?;
 
 // Range read
-let chunk = op.read_with("path/to/object")
-    .range(1000..2000)
-    .await?;
+let buffer = op.read_options("path/to/segment", ReadOptions {
+    range: (1000..2000u64).into(),
+    concurrent: 5,
+    ..ReadOptions::default()
+}).await?;
 ```
 
 See [Remote Sync](05-remote-sync.md) for the full sync process.

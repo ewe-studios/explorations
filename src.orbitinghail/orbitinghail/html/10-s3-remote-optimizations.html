@@ -162,18 +162,18 @@ flowchart LR
 </div>
 <table><tr><th>Aspect</th><th>HTTP/2</th><th>HTTP/1 (multi-conn)</th></tr><tr><td>Connection count</td><td>1</td><td>5</td></tr><tr><td>Head-of-line blocking</td><td>Yes (TCP level)</td><td>No</td></tr><tr><td>TLS handshake</td><td>1</td><td>5</td></tr><tr><td>Memory per connection</td><td>Higher</td><td>Lower</td></tr><tr><td>Throughput for independent requests</td><td>Lower</td><td>Higher</td></tr></table>
 <h2>DNS Caching with Hickory</h2>
-<pre><code class="language-rust">use hickory_resolver::TokioAsyncResolver;
-
-let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
-let connector = HttpConnector::new_with_dns_resolver(resolver);
+<pre><code class="language-rust">let client = reqwest::ClientBuilder::new()
+    .hickory_dns(true)  // enables hickory-resolver for DNS caching
+    .build()?;
 </code></pre>
-<p>S3 requests resolve <code>bucket.s3.region.amazonaws.com</code> on every new connection. Without DNS caching, each connection adds ~10-50ms for DNS resolution. Hickory caches DNS responses according to their TTL, reducing resolution to ~0ms for cached entries.</p>
+<p>S3 requests resolve <code>bucket.s3.region.amazonaws.com</code> on every new connection. Without DNS caching, each connection adds ~10-50ms for DNS resolution. Hickory (via reqwest's <code>hickory_dns</code> feature) caches DNS responses according to their TTL, reducing resolution to ~0ms for cached entries.</p>
 <h2>Connection Timeouts</h2>
-<pre><code class="language-rust">// 5s connect timeout — fail fast when S3 is unreachable
-connector.set_connect_timeout(Some(Duration::from_secs(5)));
-
-// 60s TCP user timeout — detect dead connections
-socket.set_tcp_user_timeout(Some(Duration::from_secs(60)));
+<pre><code class="language-rust">let client = reqwest::ClientBuilder::new()
+    .http1_only()
+    .hickory_dns(true)
+    .connect_timeout(Duration::from_secs(5))     // fail fast when S3 is unreachable
+    .tcp_user_timeout(Duration::from_secs(60))   // detect dead connections
+    .build()?;
 </code></pre>
 <p>The connect timeout prevents hanging on network issues. The TCP user timeout (Linux-specific) detects connections that have stopped responding — the kernel sends a RST after 60 seconds of unacked data.</p>
 <h2>Retry Strategy</h2>
@@ -185,34 +185,48 @@ let op = Operator::new(backend)?
 </code></pre>
 <p>The <code>RetryLayer::new()</code> applies OpenDAL's default retry strategy with exponential backoff and jitter for transient S3 errors.</p>
 <h2>Concurrent Operations</h2>
-<pre><code class="language-rust">// REMOTE_CONCURRENCY = 5 concurrent operations for reads/writes
-const REMOTE_CONCURRENCY: usize = 5;
+<pre><code class="language-rust">const REMOTE_CONCURRENCY: usize = 5;
 
-// Upload segment with concurrency
-let mut futures = Vec::new();
-for chunk in segment.chunks() {
-    futures.push(op.write(chunk.path(), chunk.data()));
+// Commits: write_options with concurrent
+self.store.write_options(&amp;path, data, WriteOptions {
+    if_not_exists: true,
+    concurrent: REMOTE_CONCURRENCY,
+    ..WriteOptions::default()
+}).await?;
+
+// Segments: streaming writer with concurrent
+let mut w = self.store.writer_with(&amp;path).concurrent(REMOTE_CONCURRENCY).await?;
+for chunk in chunks {
+    w.write(chunk).await?;
 }
-let results = futures::stream::iter(futures)
-    .buffer_unordered(concurrency)
-    .collect::&lt;Vec&lt;_&gt;&gt;()
-    .await;
+w.close().await?;
+
+// Reads: read_options with concurrent
+self.store.read_options(&amp;path, ReadOptions {
+    range: bytes.into(),
+    concurrent: REMOTE_CONCURRENCY,
+    ..ReadOptions::default()
+}).await?;
 </code></pre>
-<p>5 concurrent operations provide a good balance between throughput and connection count. Too few (1-2) and the pipeline is underutilized. Too many (20+) and you risk overwhelming the S3 endpoint or hitting connection limits.</p>
+<p>5 concurrent operations provide a good balance between throughput and connection count. The concurrency is set per-operation via OpenDAL's <code>WriteOptions</code>/<code>ReadOptions</code>, not via a global connection pool.</p>
 <h2>Atomic Writes with Preconditions</h2>
-<pre><code class="language-rust">// Atomically write only if the object doesn&#x27;t exist
-let result = op.write_with(path, data)
-    .if_not_exists(true)
-    .await;
+<pre><code class="language-rust">// graft uses write_options with if_not_exists
+let result = op.write_options(
+    &amp;path,
+    data,
+    WriteOptions { if_not_exists: true, ..WriteOptions::default() },
+).await;
 
 match result {
-    Ok(()) =&gt; println!(&quot;Created new object&quot;),
-    Err(e) if e.is_condition_not_met() =&gt; println!(&quot;Object already exists&quot;),
-    Err(e) =&gt; return Err(e),
+    Ok(()) =&gt; { /* Created new object */ },
+    Err(err) if err.kind() == ErrorKind::ConditionNotMatch =&gt; {
+        /* Object already exists — check via RemoteErr::precondition_failed() */
+    },
+    Err(err) =&gt; return Err(err.into()),
 }
 </code></pre>
-<p>S3 supports conditional writes via <code>If-None-Match: *</code>. OpenDAL abstracts this as <code>if_not_exists(true)</code>. This is used for:</p>
-<ul><li>Commit records: prevent duplicate commits</li><li>Segment files: deduplicate uploads</li></ul>
+<p>S3 supports conditional writes via <code>If-None-Match: *</code>. OpenDAL abstracts this as <code>if_not_exists: true</code> in <code>WriteOptions</code>. This is used for:</p>
+<ul><li>Commit records: prevent duplicate commits (only point of contention)</li><li>Segments are written without precondition (content-addressed by SegmentId)</li></ul>
 <p><strong>Aha:</strong> The <code>if_not_exists</code> precondition replaces distributed locking. Instead of acquiring a lock before writing, two processes simply attempt to write with <code>if_not_exists(true)</code>. One succeeds, the other gets a condition-not-met error. This is lock-free idempotency — the same pattern used in distributed databases with compare-and-swap operations.</p>
 <h2>Object Path Design</h2>
 <pre><code class="language-">/logs/{logid}/commits/{CBE64-hex-LSN}    # CBE encoding for descending order
@@ -220,41 +234,50 @@ match result {
 </code></pre>
 <p>CBE encoding ensures that listing objects in reverse order gives the newest commits first. This eliminates the need to list all objects and sort them.</p>
 <h2>Byte-Range Reads</h2>
-<pre><code class="language-rust">// Read only bytes 1000-2000 of a 100MB object
-let reader = op.reader_with(&quot;segments/sid-123&quot;)
-    .range(1000..2000)
-    .await?;
-let chunk = reader.read().await?;
+<pre><code class="language-rust">// graft uses get_segment_range with ReadOptions
+let bytes = remote.get_segment_range(&amp;sid, 1000..2000).await?;
+
+// Internally calls:
+let buffer = self.store.read_options(&amp;path, ReadOptions {
+    range: (1000..2000u64).into(),
+    concurrent: REMOTE_CONCURRENCY,
+    ..ReadOptions::default()
+}).await?;
 </code></pre>
-<p>S3 supports HTTP Range headers for partial object reads. The graft segment format leverages this by storing a frame index that maps PageIdx to byte ranges. Reading one page requires downloading only the frame containing that page.</p>
+<p>S3 supports HTTP Range headers for partial object reads. The graft segment format leverages this by storing a frame index (<code>SegmentFrameIdx { frame_size, last_pageidx }</code>) that maps PageIdx to byte ranges. Reading one page requires downloading only the frame containing that page — the <code>SegmentIdx::frame_for_pageidx</code> method computes the byte range from the frame index.</p>
 <h2>Cost Considerations</h2>
 <table><tr><th>Operation</th><th>S3 Cost</th><th>Optimization</th></tr><tr><td>PUT request</td><td>$0.005 per 1000</td><td>Batch pages into segments to reduce PUT count</td></tr><tr><td>GET request</td><td>$0.0004 per 1000</td><td>Use Range requests to get only needed frames</td></tr><tr><td>LIST request</td><td>$0.005 per 1000</td><td>Use CBE encoding to avoid listing all objects</td></tr><tr><td>Data transfer out</td><td>$0.09/GB</td><td>Compress pages with ZStd (typically 2-3x ratio)</td></tr></table>
 <h2>Replicating in Rust</h2>
-<pre><code class="language-rust">use opendal::{Operator, Scheme, layers::RetryLayer};
+<pre><code class="language-rust">use opendal::{Operator, layers::{HttpClientLayer, RetryLayer}, raw::HttpClient, services::S3};
+use opendal::options::{WriteOptions, ReadOptions};
 
-let op = Operator::via_builder(
-    Scheme::S3,
-    S3Config::builder()
-        .bucket(&quot;my-bucket&quot;)
-        .region(&quot;us-east-1&quot;)
-        .access_key_id(&quot;...&quot;)
-        .secret_access_key(&quot;...&quot;)
-        .http_client(HttpClient::http1_only())
-        .dns_resolver(HickoryResolver::default())
-        .build()
-)?
-.layer(RetryLayer::new())
-.finish();
+// Build the S3 operator with graft&#x27;s optimizations
+let mut builder = S3::default().bucket(&quot;my-bucket&quot;);
+let client = reqwest::ClientBuilder::new()
+    .http1_only()
+    .hickory_dns(true)
+    .connect_timeout(Duration::from_secs(5))
+    .tcp_user_timeout(Duration::from_secs(60))
+    .build()?;
 
-// Atomic write
-op.write_with(&quot;path/to/object&quot;, data)
-    .if_not_exists(true)
-    .await?;
+let op = Operator::new(builder)?
+    .layer(HttpClientLayer::new(HttpClient::with(client)))
+    .layer(RetryLayer::new())
+    .finish();
+
+// Atomic commit write
+op.write_options(&quot;path/to/commit&quot;, data, WriteOptions {
+    if_not_exists: true,
+    concurrent: 5,
+    ..WriteOptions::default()
+}).await?;
 
 // Range read
-let chunk = op.read_with(&quot;path/to/object&quot;)
-    .range(1000..2000)
-    .await?;
+let buffer = op.read_options(&quot;path/to/segment&quot;, ReadOptions {
+    range: (1000..2000u64).into(),
+    concurrent: 5,
+    ..ReadOptions::default()
+}).await?;
 </code></pre>
 <p>See <a href="05-remote-sync.md">Remote Sync</a> for the full sync process. See <a href="04-graft-storage.md">Graft Storage</a> for segment format. See <a href="12-production-patterns.md">Production Patterns</a> for broader production considerations.</p>
   </article>

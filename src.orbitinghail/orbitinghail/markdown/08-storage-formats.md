@@ -133,7 +133,7 @@ let config = reader.read_section("config")?;
 
 ## WAL Journal Format (fjall)
 
-Source: `fjall/src/journal/`
+Source: `fjall/src/journal/entry.rs`
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -141,10 +141,21 @@ Source: `fjall/src/journal/`
 ├─────────────────────────────────────────────────────────────┤
 │ Batch 1                                                     │
 │ ┌─────────────────────────────────────────────────────────┐ │
-│ │ Header: {batch_id, timestamp, num_ops, checksum}        │ │
+│ │ Entry::Start                                            │ │
+│ │   - item_count: u32                                     │ │
+│ │   - seqno: SeqNo (u64)                                  │ │
 │ ├─────────────────────────────────────────────────────────┤ │
-│ │ Op 1: {keyspace_id, op_type, key_len, key, val_len?, val?}│ │
-│ │ Op 2: ...                                               │ │
+│ │ Entry::Item (repeated item_count times)                 │ │
+│ │   - value_type: u8                                      │ │
+│ │   - compression: CompressionType                        │ │
+│ │   - keyspace_id: u64                                    │ │
+│ │   - key_len: u16                                        │ │
+│ │   - uncompressed_len: u32                               │ │
+│ │   - compressed_len: u32                                 │ │
+│ │   - key: bytes                                          │ │
+│ │   - value: bytes (compressed)                           │ │
+│ ├─────────────────────────────────────────────────────────┤ │
+│ │ Entry::End(checksum: u64) + TRAILER_MAGIC               │ │
 │ └─────────────────────────────────────────────────────────┘ │
 ├─────────────────────────────────────────────────────────────┤
 │ Batch 2 ...                                                 │
@@ -153,7 +164,7 @@ Source: `fjall/src/journal/`
 └─────────────────────────────────────────────────────────────┘
 ```
 
-During recovery, the WAL is read from the beginning. Each batch header's checksum is verified. If a batch's checksum fails, the batch and all subsequent data are discarded (they were partially written during a crash).
+During recovery, the WAL is read from the beginning. Each batch ends with `Entry::End(checksum)` + `TRAILER_MAGIC` bytes. If the checksum doesn't match or `TRAILER_MAGIC` is absent, the batch was partially written during a crash and is discarded along with all subsequent data.
 
 ## Graft Segment Format
 
@@ -173,9 +184,11 @@ Source: `graft/crates/graft/src/remote/segment.rs`
 ├─────────────────────────────────────────────────────────────┤
 │ ...                                                         │
 ├─────────────────────────────────────────────────────────────┤
-│ Frame Index (in memory, not on disk)                        │
+│ Frame Index (stored in Commit's SegmentIdx, not in segment file) │
 │ ┌─────────────────────────────────────────────────────────┐ │
-│ │ [(compressed_size, last_pageidx), ...]                  │ │
+│ │ ThinVec<SegmentFrameIdx>:                               │ │
+│ │   frame_size: u64 (compressed bytes)                    │ │
+│ │   last_pageidx: PageIdx (last page in this frame)       │ │
 │ └─────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────┘
 ```

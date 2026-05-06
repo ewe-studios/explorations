@@ -63,7 +63,8 @@ Serialized as Base58 for alphanumeric sorting (filesystem-friendly).
 
 ```rust
 // graft/crates/graft/src/core/commit.rs
-// Protobuf-like message using bilrost
+// Serialized using bilrost (protobuf-like binary encoding)
+#[derive(Message)]
 pub struct Commit {
     pub log: LogId,
     pub lsn: LSN,
@@ -71,52 +72,119 @@ pub struct Commit {
     pub commit_hash: Option<CommitHash>,
     pub segment_idx: Option<SegmentIdx>,
     pub checkpoints: ThinVec<LSN>,
-    // SegmentIdx contains a pageset: PageSet field
+}
+
+pub struct SegmentIdx {
+    pub sid: SegmentId,
+    pub pageset: PageSet,
+    pub frames: ThinVec<SegmentFrameIdx>,
+}
+
+pub struct SegmentFrameIdx {
+    frame_size: u64,       // compressed byte length of this frame
+    last_pageidx: PageIdx, // last page in this frame
 }
 ```
 
-A commit records that `page_count` pages were written at `lsn` in `log_id`. The `commit_hash` provides integrity verification. The `segment_idx` points to the segment file containing the actual page data.
+A commit records that `page_count` pages were written at `lsn` in `log`. The `commit_hash` provides integrity verification. The `segment_idx` points to the segment file and includes a frame index for byte-range reads. The `checkpoints` field tracks which LSNs have been upgraded to full-volume checkpoints — if this commit's own LSN is in `checkpoints`, it is a checkpoint commit.
 
 ### CommitHash
 
-```
-┌────────────────────────────────────┐
-│ 4-byte magic │ BLAKE3 hash (28b)   │
-│ [0x68,0xA4,0x19,0x30]             │
-└────────────────────────────────────┘
+```rust
+// graft/crates/graft/src/core/commit_hash.rs
+const COMMIT_HASH_SIZE: usize = 32;
+const HASH_SIZE: usize = 31;
+const COMMIT_HASH_MAGIC: [u8; 4] = [0x68, 0xA4, 0x19, 0x30];
+
+#[repr(u8)]
+pub enum CommitHashPrefix {
+    Value = b'C',
+}
+
+#[repr(C)]
+pub struct CommitHash {
+    prefix: CommitHashPrefix,  // 1 byte, always b'C'
+    hash: [u8; HASH_SIZE],    // 31 bytes, truncated BLAKE3
+}
 ```
 
-Hash covers: magic + log + lsn + page_count + commit_page_count + ordered (pageidx, page_data) pairs. Total 32 bytes (`COMMIT_HASH_SIZE`). Base58 encoded (44 chars).
+```
+┌──────────────────────────────────────┐
+│ prefix (1 byte) │ BLAKE3 hash (31b)  │
+│ b'C' (0x43)     │                    │
+└──────────────────────────────────────┘
+```
 
-**Aha:** The 4-byte magic prefix `[0x68, 0xA4, 0x19, 0x30]` in the commit hash serves as a type tag. This prevents confusion with other hash types — if the first 4 bytes don't match the magic, it's not a commit hash. This is a lightweight form of tagged typing without a full schema system.
+Total 32 bytes (`COMMIT_HASH_SIZE`). Base58 encoded (44 chars). The `COMMIT_HASH_MAGIC` `[0x68, 0xA4, 0x19, 0x30]` is fed into the hash *input* (domain separation), not stored in the struct. The struct's prefix byte `b'C'` overwrites the first byte of the BLAKE3 output to create a type-safe tag.
+
+### CommitHashBuilder
+
+```rust
+pub struct CommitHashBuilder {
+    hasher: blake3::Hasher,
+    last_pageidx: Option<PageIdx>,
+}
+
+impl CommitHashBuilder {
+    pub fn new(log: LogId, lsn: LSN, vol_pages: PageCount, commit_pages: PageCount) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&COMMIT_HASH_MAGIC);
+        hasher.update(log.as_bytes());
+        hasher.update(CBE64::from(lsn).as_bytes());
+        hasher.update(&vol_pages.to_u32().to_be_bytes());
+        hasher.update(&commit_pages.to_u32().to_be_bytes());
+        Self { hasher, last_pageidx: None }
+    }
+
+    /// Panics if pages are written out of order
+    pub fn write_page(&mut self, pageidx: PageIdx, page: &Page) { /* ... */ }
+
+    pub fn build(self) -> CommitHash {
+        let hash = self.hasher.finalize();
+        let mut bytes = *hash.as_bytes();
+        bytes[0] = CommitHashPrefix::Value as u8;  // overwrite first byte with prefix
+        // transmute to CommitHash
+    }
+}
+```
+
+**Aha:** The CommitHashBuilder enforces strict page ordering — `write_page` panics if a page is written with a lower PageIdx than the previous one. This guarantees that the same set of pages always produces the same hash regardless of the order they were collected. The 4-byte `COMMIT_HASH_MAGIC` fed into the hasher provides domain separation: a BLAKE3 hash of commit data can never collide with a BLAKE3 hash of non-commit data.
 
 ### Checksum (Order-Independent)
 
+Source: `graft/crates/graft/src/core/checksum.rs`
+
 ```rust
-// Order-independent checksum for unordered sets
-// Uses ChecksumBuilder struct with add()/build()/pretty() methods
+#[repr(C)]
+pub struct Checksum {
+    sum: u128,    // wrapping sum of 128-bit digests
+    xor: u128,    // xor of 128-bit digests
+    count: u128,  // number of elements
+    bytes: u128,  // total byte length
+}
+
+#[repr(C)]
 pub struct ChecksumBuilder {
-    sum: u128,
-    count: u64,
-    total_bytes: u64,
+    checksum: Checksum,
 }
 
 impl ChecksumBuilder {
-    pub fn add(&mut self, item: &[u8]) {
-        let hash = xxhash_rust::xxh3::xxh3_128(item);
-        self.sum = self.sum.wrapping_add(hash);
-        self.sum ^= hash;  // XOR for order independence
-        self.count += 1;
-        self.total_bytes += item.len() as u64;
+    pub const fn new() -> Self { /* ... */ }
+
+    pub fn write<B: AsRef<[u8]>>(&mut self, data: &B) {
+        let hash = xxhash_rust::xxh3::xxh3_128(data.as_ref());
+        self.checksum.sum = self.checksum.sum.wrapping_add(hash);
+        self.checksum.xor ^= hash;
+        self.checksum.count = self.checksum.count.wrapping_add(1);
+        self.checksum.bytes = self.checksum.bytes.wrapping_add(data.as_ref().len() as u128);
     }
 
-    pub fn build(&self) -> u128 {
-        self.sum ^ (self.count as u128) ^ (self.total_bytes as u128)
-    }
+    pub const fn merge(self, b: Self) -> Self { /* combines two builders */ }
+    pub const fn build(self) -> Checksum { self.checksum }
 }
 ```
 
-The checksum is order-independent: `checksum([a, b]) == checksum([b, a])`. The `LeapOracle` (in `oracle.rs`) is a separate component for prefetch prediction using Boyer-Moore majority voting — it is unrelated to checksum computation.
+The checksum is order-independent: `checksum([a, b]) == checksum([b, a])`. Both wrapping addition and XOR are commutative. The four fields (`sum`, `xor`, `count`, `bytes`) together detect duplicates, permutations, and length mismatches. Display uses `blake3::hash` of the raw bytes then Base58 for human-readable comparison.
 
 ## FjallStorage Layout
 
@@ -196,27 +264,32 @@ The oracle tracks recent page access deltas in a 32-entry circular buffer. It us
 ## Replicating in Rust
 
 ```rust
-use graft::{Runtime, Volume, GraftConfig, RemoteConfig, Page, PageIdx};
+use graft::core::{PageIdx, page::Page, commit_hash::CommitHashBuilder, lsn::LSN};
+use graft::remote::{Remote, RemoteConfig, segment::SegmentBuilder};
 
-// fjall database
-let db = ConfigBuilder::new().path("/tmp/my-db").open()?;
-let storage = FjallStorage::new(&db)?;
-
-// remote config
+// Remote configuration
 let remote = RemoteConfig::S3Compatible {
     bucket: "my-bucket".to_string(),
-    region: "us-east-1".to_string(),
-    // ... credentials
-};
+    prefix: Some("data/".to_string()),
+}.build()?;
 
-// autosync configured in GraftConfig
-let config = GraftConfig::new(storage, remote).autosync(true);
-let runtime = Runtime::new(tokio_handle, remote, storage, config)?;
+// Build a segment from pages
+let mut segment = SegmentBuilder::new();
+segment.write(pageidx!(1), &page1);
+segment.write(pageidx!(2), &page2);
+let (frames, chunks) = segment.finish();
 
-// Write pages
-let volume = runtime.volume("my-data")?;
-volume.write_page(PageIdx::new(1)?, page_data)?;
-// Background sync runs automatically when autosync is enabled
+// Upload segment
+remote.put_segment(&sid, chunks).await?;
+
+// Compute commit hash
+let mut hash_builder = CommitHashBuilder::new(log_id, lsn, vol_pages, commit_pages);
+hash_builder.write_page(pageidx!(1), &page1);
+hash_builder.write_page(pageidx!(2), &page2);
+let commit_hash = hash_builder.build();
+
+// Upload commit (atomic, idempotent)
+remote.put_commit(&commit).await?;
 ```
 
 See [Architecture](01-architecture.md) for the layer diagram.
