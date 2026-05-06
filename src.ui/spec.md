@@ -6,7 +6,7 @@
 - **Language:** TypeScript/JavaScript (monorepo)
 - **Author:** OpenUI contributors
 - **License:** MIT
-- **Sub-projects:** 12 sub-projects including openui core framework, openclaw-ui integration, examples, voice agent, analytics, and CLI tooling
+- **Sub-projects:** 12+ sub-projects including openui core framework, openclaw-ui integration, examples, voice agent, analytics, CLI tooling, plus src.nexuio (agent platforms) and src.OrvaStudios (creative tools)
 
 ## What This Project Is
 
@@ -76,6 +76,8 @@ src.ui/
 | 16 | Write README.md (index) | DONE |
 | 17 | Generate HTML with build.py | DONE |
 | 18 | Grandfather Review | DONE |
+| 19 | Write 14-nexuio-ecosystem.md | DONE |
+| 20 | Write 15-orvastudios-ecosystem.md | DONE |
 
 ## Build System
 

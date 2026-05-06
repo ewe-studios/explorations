@@ -12,10 +12,15 @@
 ## Deep Dives
 
 - [React Renderer](06-react-renderer.md) — Renderer component, useOpenUIState, error boundary
-- [Component Library](07-component-library.md) — 60+ components, form handling, tool provider
+- [Component Library](07-component-library.md) — 53 components, form handling, tool provider
 - [OpenClaw Plugin](08-openclaw-plugin.md) — Server plugin, tool registration, stores
 - [Gateway Socket](09-gateway-socket.md) — WebSocket RPC, challenge auth, reconnection
 - [Storage Patterns](10-storage-patterns.md) — JSON files, SQLite, localStorage, atomic writes
 - [Rust Equivalents](11-rust-equivalents.md) — Parser/materializer/evaluator in Rust, production alternatives
 - [Production Patterns](12-production-patterns.md) — Streaming reliability, LLM error handling, scaling
 - [WASM and Web Patterns](13-wasm-web-patterns.md) — Stream adapters, edge deployment, WASM candidates
+
+## Extended Ecosystem
+
+- [Nexuio Ecosystem](14-nexuio-ecosystem.md) — Agent platforms: nexu (IM agents), multica (managed agents), open-codesign, open-design
+- [OrvaStudios Ecosystem](15-orvastudios-ecosystem.md) — Creative tools: hance (GPU video), impeccable (design lint), radiant (94 shaders), lite-query
