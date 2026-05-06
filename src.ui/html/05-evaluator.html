@@ -135,93 +135,101 @@
 <h1>OpenUI -- Evaluator (AST Interpreter)</h1>
 <p>The evaluator is a framework-agnostic AST interpreter that executes OpenUI Lang expressions. It handles literals, references, operators, ternary conditionals, member/index access, built-in functions, and action expressions. It is not a compiler — it walks the AST at runtime and evaluates each node.</p>
 <p><strong>Aha:</strong> The <code>Each</code> builtin is lazy — it controls its own evaluation. Unlike <code>Sum($items)</code> which eagerly evaluates all items then computes, <code>Each($items, "item", <Text>{item.name}</Text>)</code> evaluates the template once per item with a scoped variable substitution. This is analogous to how <code>if</code> is a special form in Lisp — it doesn't evaluate all branches, only the one that's taken. The evaluator has a special case for lazy builtins that bypasses the normal eager evaluation of all arguments.</p>
-<p>Source: <code>openui/packages/lang-core/src/evaluator.ts</code> — AST interpreter Source: <code>openui/packages/lang-core/src/builtins.ts</code> — 13 data functions + 5 action steps</p>
+<p>Source: <code>openui/packages/lang-core/src/runtime/evaluator.ts</code> — AST interpreter Source: <code>openui/packages/lang-core/src/parser/builtins.ts</code> — 13 data functions + 5 action steps</p>
 <h2>Evaluation Model</h2>
-<pre><code class="language-typescript">function evaluate(node: ElementNode, ctx: EvalContext): Value {
+<pre><code class="language-typescript">interface EvaluationContext {
+  getState(name: string): unknown;         // Read $variable from the store
+  resolveRef(name: string): unknown;       // Resolve a reference to another declaration
+  extraScope?: Record&lt;string, unknown&gt;;    // Scoped variables (e.g. Each iterator)
+}
+
+function evaluate(node: ASTNode, context: EvaluationContext, schemaCtx?: SchemaContext): unknown {
   switch (node.k) {
-    case &#x27;Str&#x27;: return node.value;
-    case &#x27;Num&#x27;: return node.value;
-    case &#x27;Bool&#x27;: return node.value;
-    case &#x27;Null&#x27;: return null;
-    case &#x27;StateRef&#x27;: return ctx.store.get(node.name)();
-    case &#x27;Ref&#x27;: return evaluate(resolveRef(node), ctx);
-    case &#x27;BinOp&#x27;: return evalBinOp(node.op, evaluate(node.left, ctx), evaluate(node.right, ctx));
-    case &#x27;Ternary&#x27;: return evaluate(node.cond, ctx) ? evaluate(node.then, ctx) : evaluate(node.else, ctx);
-    // ... etc
+    case &quot;Str&quot;: return node.v;
+    case &quot;Num&quot;: return node.v;
+    case &quot;Bool&quot;: return node.v;
+    case &quot;Null&quot;: case &quot;Ph&quot;: return null;
+    case &quot;StateRef&quot;: return context.extraScope?.[node.n] ?? context.getState(node.n);
+    case &quot;Ref&quot;: case &quot;RuntimeRef&quot;: return context.resolveRef(node.n);
+    case &quot;Arr&quot;: return node.els.map(el =&gt; evaluate(el, context));
+    case &quot;Obj&quot;: return Object.fromEntries(node.entries.map(([k, v]) =&gt; [k, evaluate(v, context)]));
+    case &quot;BinOp&quot;: /* short-circuit for &amp;&amp; and ||, then operator dispatch */
+    case &quot;Ternary&quot;: return evaluate(node.cond, context) ? evaluate(node.then, context) : evaluate(node.else, context);
+    case &quot;Comp&quot;: /* dispatch to LAZY_BUILTINS, BUILTINS, ACTION_NAMES, or mappedProps */
   }
 }
 </code></pre>
-<p>The evaluator is a recursive function that pattern-matches on the AST node type and evaluates accordingly.</p>
+<p>The evaluator is a recursive function that pattern-matches on the AST <code>k</code> discriminant. Division by zero returns 0 (not Infinity). String <code>+</code> concatenation treats null as <code>""</code>. Loose equality (<code>==</code>) is used for <code>==</code>/<code>!=</code> operators.</p>
 <h2>Built-in Functions (Data)</h2>
-<p>Source: <code>openui/packages/lang-core/src/builtins.ts</code></p>
-<table><tr><th>Builtin</th><th>Arguments</th><th>Returns</th><th>Purpose</th></tr><tr><td>`Count(arr)`</td><td>Array</td><td>number</td><td>Length of array</td></tr><tr><td>`First(arr)`</td><td>Array</td><td>any</td><td>First element</td></tr><tr><td>`Last(arr)`</td><td>Array</td><td>any</td><td>Last element</td></tr><tr><td>`Sum(arr)`</td><td>Array<number></td><td>number</td><td>Sum of values</td></tr><tr><td>`Avg(arr)`</td><td>Array<number></td><td>number</td><td>Average of values</td></tr><tr><td>`Min(arr)`</td><td>Array<number></td><td>number</td><td>Minimum value</td></tr><tr><td>`Max(arr)`</td><td>Array<number></td><td>number</td><td>Maximum value</td></tr><tr><td>`Sort(arr, field?)`</td><td>Array, string?</td><td>Array</td><td>Sort by field or value</td></tr><tr><td>`Filter(arr, pred)`</td><td>Array, predicate</td><td>Array</td><td>Filter elements</td></tr><tr><td>`Round(n, digits?)`</td><td>number, number?</td><td>number</td><td>Round to digits</td></tr><tr><td>`Abs(n)`</td><td>number</td><td>number</td><td>Absolute value</td></tr><tr><td>`Floor(n)`</td><td>number</td><td>number</td><td>Floor</td></tr><tr><td>`Ceil(n)`</td><td>number</td><td>number</td><td>Ceiling</td></tr></table>
+<p>Source: <code>openui/packages/lang-core/src/parser/builtins.ts</code></p>
+<table><tr><th>Builtin</th><th>Signature</th><th>Purpose</th></tr><tr><td>`Count`</td><td>`Count(array) → number`</td><td>Array length</td></tr><tr><td>`First`</td><td>`First(array) → element`</td><td>First element</td></tr><tr><td>`Last`</td><td>`Last(array) → element`</td><td>Last element</td></tr><tr><td>`Sum`</td><td>`Sum(numbers[]) → number`</td><td>Sum of numeric array</td></tr><tr><td>`Avg`</td><td>`Avg(numbers[]) → number`</td><td>Average of numeric array</td></tr><tr><td>`Min`</td><td>`Min(numbers[]) → number`</td><td>Minimum value</td></tr><tr><td>`Max`</td><td>`Max(numbers[]) → number`</td><td>Maximum value</td></tr><tr><td>`Sort`</td><td>`Sort(array, field, direction?) → sorted array`</td><td>Sort by field ("asc" or "desc")</td></tr><tr><td>`Filter`</td><td>`Filter(array, field, operator, value) → filtered array`</td><td>Filter by field + operator ("==", "!=", ">", "<", ">=", "<=", "contains")</td></tr><tr><td>`Round`</td><td>`Round(number, decimals?) → number`</td><td>Round to N decimal places</td></tr><tr><td>`Abs`</td><td>`Abs(number) → number`</td><td>Absolute value</td></tr><tr><td>`Floor`</td><td>`Floor(number) → number`</td><td>Round down</td></tr><tr><td>`Ceil`</td><td>`Ceil(number) → number`</td><td>Round up</td></tr></table>
+<p>All builtins are defined in <code>BUILTINS: Record<string, BuiltinDef></code> with a <code>fn</code> field that the evaluator calls eagerly after evaluating arguments.</p>
 <h2>Lazy Builtin: Each</h2>
-<pre><code class="language-">Each($items, &quot;item&quot;, &lt;Card title={item.name} /&gt;)
+<pre><code class="language-">Each($items, &quot;item&quot;, Card(item.name, item.description))
 </code></pre>
-<p>The <code>Each</code> builtin:</p>
-<ol><li>Evaluates the array expression (<code>$items</code>)</li><li>For each item, creates a scoped variable binding (<code>item → current value</code>)</li><li>Evaluates the template with the scoped binding</li><li>Returns an array of evaluated template results</li></ol>
-<pre><code class="language-typescript">function evalEach(node: BuiltinCall, ctx: EvalContext): Value[] {
-  const [arrExpr, varName, template] = node.args;
-  const arr = evaluate(arrExpr, ctx);
-  return arr.map((item: Value) =&gt; {
-    const scopedCtx = { ...ctx, scope: { [varName]: item } };
-    return evaluate(template, scopedCtx);
-  });
+<p><code>Each</code> is the only lazy builtin (<code>LAZY_BUILTINS: Set<string> = new Set(["Each"])</code>). It receives AST nodes directly instead of pre-evaluated values:</p>
+<ol><li>Evaluates the first arg (the array expression)</li><li>For each element, creates a scoped <code>extraScope</code> binding (<code>varName → current element</code>)</li><li>Evaluates the template AST with the scoped binding</li><li>Returns an array of results</li></ol>
+<pre><code class="language-typescript">// From evaluator.ts — evaluateLazyBuiltin (simplified)
+function evaluateLazyBuiltin(name: string, args: ASTNode[], context: EvaluationContext): unknown {
+  if (name === &quot;Each&quot;) {
+    const arr = evaluate(args[0], context);  // Evaluate the array
+    const varName = /* extract from args[1] */;
+    const template = args[2];                 // NOT evaluated yet
+    return arr.map((item) =&gt; {
+      const scopedCtx = { ...context, extraScope: { ...context.extraScope, [varName]: item } };
+      return evaluate(template, scopedCtx);  // Evaluate template per item
+    });
+  }
 }
 </code></pre>
-<p><strong>Aha:</strong> The template in <code>Each</code> is evaluated with a scoped variable binding that shadows any outer variable of the same name. This is lexical scoping — the inner <code>item</code> shadows the outer <code>item</code> for the duration of the template evaluation, then the outer <code>item</code> is restored. The <code>substituteRef()</code> function handles this variable capture.</p>
+<p><strong>Aha:</strong> The <code>Each</code> template uses <code>extraScope</code> to inject the loop variable. The evaluator's <code>StateRef</code> case checks <code>context.extraScope?.[node.n]</code> before <code>context.getState(node.n)</code>, so the loop variable shadows any same-named state variable for the duration of that iteration. The materializer also handles <code>Each</code> specially — it scopes the iterator variable during materialization so template refs resolve correctly.</p>
 <h2>Action Expressions</h2>
-<table><tr><th>Action</th><th>Purpose</th></tr><tr><td>`Run`</td><td>Execute a sequence of action steps</td></tr><tr><td>`ToAssistant`</td><td>Send a message to the LLM</td></tr><tr><td>`OpenUrl`</td><td>Open a URL in the browser</td></tr><tr><td>`Set`</td><td>Set a state variable</td></tr><tr><td>`Reset`</td><td>Reset a state variable to its initial value</td></tr></table>
-<p>Actions are executed by the <code>triggerAction()</code> function in the React renderer, not by the evaluator. The evaluator produces an <code>ActionPlan</code> — a list of steps to execute:</p>
-<pre><code class="language-typescript">interface ActionPlan {
-  steps: ActionStep[];
-}
+<p>Source: <code>openui/packages/lang-core/src/parser/builtins.ts</code> — <code>ACTION_STEPS</code></p>
+<table><tr><th>Action</th><th>Runtime Type</th><th>Purpose</th></tr><tr><td>`Action`</td><td>(container)</td><td>Wraps a sequence of action steps</td></tr><tr><td>`Run`</td><td>`"run"`</td><td>Execute a query or mutation by reference</td></tr><tr><td>`ToAssistant`</td><td>`"continue_conversation"`</td><td>Send a message to the LLM</td></tr><tr><td>`OpenUrl`</td><td>`"open_url"`</td><td>Open a URL in the browser</td></tr><tr><td>`Set`</td><td>`"set"`</td><td>Set a state variable to a new value</td></tr><tr><td>`Reset`</td><td>`"reset"`</td><td>Reset state variables to initial values</td></tr></table>
+<p>The evaluator produces an <code>ActionPlan</code> — an ordered list of typed steps:</p>
+<pre><code class="language-typescript">interface ActionPlan { steps: ActionStep[] }
 
-interface ActionStep {
-  type: &#x27;Set&#x27; | &#x27;Reset&#x27; | &#x27;ToAssistant&#x27; | &#x27;OpenUrl&#x27;;
-  target?: string;
-  value?: Value;
-}
+type ActionStep =
+  | { type: &quot;run&quot;; statementId: string; refType: &quot;query&quot; | &quot;mutation&quot; }
+  | { type: &quot;continue_conversation&quot;; message: string; context?: string }
+  | { type: &quot;open_url&quot;; url: string }
+  | { type: &quot;set&quot;; target: string; valueAST: ASTNode }
+  | { type: &quot;reset&quot;; targets: string[] };
 </code></pre>
+<p><code>ACTION_NAMES</code> includes all step names plus <code>"Action"</code> itself. The React renderer's <code>triggerAction()</code> function interprets the plan.</p>
 <h2>ReactiveAssign Marker</h2>
-<p>The evaluator marks state variable assignments for two-way binding:</p>
+<p>The evaluator emits <code>ReactiveAssign</code> markers for two-way bindings when a <code>StateRef</code> is passed to a component prop that has a reactive schema:</p>
 <pre><code class="language-typescript">interface ReactiveAssign {
-  target: string;
-  value: Value;
-  __openui_reactive: true;
+  __reactive: &quot;assign&quot;;     // Discriminant (not __openui_reactive)
+  target: string;           // State variable name (e.g. &quot;count&quot;)
+  expr: ASTNode;            // Expression to evaluate with $value (the new value from the component)
 }
 </code></pre>
-<p>When the renderer encounters a <code>ReactiveAssign</code>, it updates the store and triggers re-rendering of all expressions that depend on that variable.</p>
+<p>This only fires when the evaluator has a <code>SchemaContext</code> and the prop's schema is marked reactive (<code>isReactiveSchema()</code>). The renderer handles the marker by creating a two-way binding: component writes → store update → re-render.</p>
 <h2>Store Integration</h2>
-<p>Source: <code>openui/packages/lang-core/src/store.ts</code></p>
-<p>The evaluator reads state from a reactive store:</p>
-<pre><code class="language-typescript">class Store {
-  private data = new Map&lt;string, any&gt;();
-  private listeners = new Map&lt;string, Set&lt;() =&gt; void&gt;&gt;();
-
-  get(name: string) {
-    // Returns a signal-like function that tracks dependencies
-    return () =&gt; this.data.get(name);
-  }
-
-  set(name: string, value: any) {
-    if (this.data.get(name) !== value) {
-      this.data.set(name, value);
-      this.notify(name);
-    }
-  }
-
-  subscribe(name: string, listener: () =&gt; void) {
-    this.listeners.get(name)?.add(listener);
-  }
-
-  private notify(name: string) {
-    this.listeners.get(name)?.forEach(l =&gt; l());
-  }
+<p>Source: <code>openui/packages/lang-core/src/runtime/store.ts</code></p>
+<p>The store is a factory function (<code>createStore()</code>) returning a <code>Store</code> interface:</p>
+<pre><code class="language-typescript">interface Store {
+  get(name: string): unknown;
+  set(name: string, value: unknown): void;
+  subscribe(listener: () =&gt; void): () =&gt; void;  // Global listener, not per-key
+  getSnapshot(): Record&lt;string, unknown&gt;;        // Snapshot for React useSyncExternalStore
+  initialize(defaults: Record&lt;string, unknown&gt;, persisted: Record&lt;string, unknown&gt;): void;
+  dispose(): void;
 }
 </code></pre>
-<p>The store uses shallow comparison for objects — if <code>newVal !== oldVal</code> (reference comparison), listeners are notified. This avoids unnecessary re-renders when the object reference hasn't changed.</p>
-<p><strong>Aha:</strong> The store's safe initialization preserves user state during streaming. When the LLM is still generating, the store might have partial state. The initializer only sets a signal if it hasn't been set by the user — it doesn't overwrite user-provided initial state with LLM-generated defaults.</p>
+<p>Internally, it uses <code>Object.is()</code> for primitives and shallow key-by-key comparison for plain objects (form data). This prevents unnecessary re-renders when form state objects have the same shape and values but a new reference.</p>
+<p>The <code>initialize()</code> method applies persisted values first, then defaults for new keys only — never overwriting existing user-modified state:</p>
+<pre><code class="language-typescript">function initialize(defaults: Record&lt;string, unknown&gt;, persisted: Record&lt;string, unknown&gt;): void {
+  for (const key of Object.keys(persisted)) state.set(key, persisted[key]);
+  for (const key of Object.keys(defaults)) {
+    if (!state.has(key)) state.set(key, defaults[key]);  // Only new keys
+  }
+  rebuildSnapshot();
+  notify();
+}
+</code></pre>
+<p><strong>Aha:</strong> The store's safe initialization preserves user state during streaming. When the LLM is still generating and the parser re-runs, <code>initialize()</code> is called again with possibly-changed defaults. But existing user-modified values are never overwritten — the <code>!state.has(key)</code> guard protects them. This prevents the jarring UX of a user typing into a form field and having their input replaced by a re-parsed default.</p>
 <p>See <a href="04-materializer.md">Materializer</a> for how expressions reach the evaluator. See <a href="06-react-renderer.md">React Renderer</a> for how the evaluator integrates with React. See <a href="02-lang-core.md">Lang Core</a> for the AST structure.</p>
   </article>
   <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>

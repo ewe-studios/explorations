@@ -2,7 +2,7 @@
 
 The `react-ui` package provides 53 prebuilt React components organized into categories: layout, data display, forms, actions, content, and system. Two built-in libraries are exported: `openuiLibrary` (standalone) and `openuiChatLibrary` (chat-focused with component groups).
 
-**Aha:** Components are registered in the library by their exported name, and the materializer uses JSON Schema for each component's props. The schema serves three purposes: (1) validation — unknown props are dropped with errors, (2) default values — missing props get schema defaults, (3) positional mapping — the LLM can write `<Button "Save" true>` instead of `<Button label="Save" primary={true}>` because the schema defines parameter order. The schema is the single source of truth for component interface.
+**Aha:** Components are defined with Zod v4 schemas via `defineComponent({ name, props, description, component })`. The schema serves three purposes: (1) validation — missing required props are dropped with errors, (2) default values — missing props get schema defaults, (3) positional mapping — the LLM can write `Button("Save", true)` instead of verbose named props because the schema property order defines positional argument order. The Zod schema is compiled to JSON Schema (`library.toJSONSchema()`) which the parser uses as a `ParamMap`.
 
 Source: `openui/packages/react-ui/src/` — component library
 

@@ -233,39 +233,59 @@ fn parse_streaming(input: &amp;mut impl ReplayableStream) -&gt; PResult&lt;Vec&l
 </code></pre>
 <h2>AST</h2>
 <pre><code class="language-rust">#[derive(Debug, Clone)]
-enum ElementNode {
-    Comp { name: String, props: Vec&lt;Prop&gt;, children: Vec&lt;ElementNode&gt; },
+enum ASTNode {
+    Comp { name: String, args: Vec&lt;ASTNode&gt;, mapped_props: Option&lt;HashMap&lt;String, ASTNode&gt;&gt; },
     Str(String),
     Num(f64),
     Bool(bool),
     Null,
-    Arr(Vec&lt;ElementNode&gt;),
-    Obj(Vec&lt;(String, ElementNode)&gt;),
+    Arr(Vec&lt;ASTNode&gt;),
+    Obj(Vec&lt;(String, ASTNode)&gt;),         // Tuple pairs, not struct entries
     Ref(String),
-    Placeholder,
-    StateRef(String),
-    BinOp { op: String, left: Box&lt;ElementNode&gt;, right: Box&lt;ElementNode&gt; },
-    // ...
-}
-</code></pre>
-<h2>Materializer</h2>
-<pre><code class="language-rust">struct Materializer&lt;&#x27;a&gt; {
-    symbols: HashMap&lt;String, &amp;&#x27;a ElementNode&gt;,
-    library: &amp;&#x27;a ComponentLibrary,
+    Placeholder(String),                  // Ph — unresolvable reference
+    StateRef(String),                     // $variable
+    RuntimeRef { name: String, ref_type: RefType },  // Query/Mutation result reference
+    BinOp { op: String, left: Box&lt;ASTNode&gt;, right: Box&lt;ASTNode&gt; },
+    UnaryOp { op: String, operand: Box&lt;ASTNode&gt; },
+    Ternary { cond: Box&lt;ASTNode&gt;, then: Box&lt;ASTNode&gt;, else_: Box&lt;ASTNode&gt; },
+    Member { obj: Box&lt;ASTNode&gt;, field: String },
+    Index { obj: Box&lt;ASTNode&gt;, index: Box&lt;ASTNode&gt; },
+    Assign { target: String, value: Box&lt;ASTNode&gt; },
 }
 
-impl&lt;&#x27;a&gt; Materializer&lt;&#x27;a&gt; {
-    fn materialize(&amp;mut self, node: &amp;&#x27;a ElementNode) -&gt; Result&lt;ResolvedNode, Error&gt; {
+#[derive(Debug, Clone)]
+enum RefType { Query, Mutation }
+</code></pre>
+<h2>Materializer</h2>
+<pre><code class="language-rust">struct MaterializeCtx&lt;&#x27;a&gt; {
+    syms: HashMap&lt;String, &amp;&#x27;a ASTNode&gt;,  // Statement id → AST
+    cat: &amp;&#x27;a ParamMap,                    // Component param definitions
+    errors: Vec&lt;ValidationError&gt;,
+    unresolved: Vec&lt;String&gt;,
+    visited: HashSet&lt;String&gt;,             // Cycle detection
+}
+
+impl&lt;&#x27;a&gt; MaterializeCtx&lt;&#x27;a&gt; {
+    fn resolve_ref(&amp;mut self, name: &amp;str) -&gt; Option&lt;ElementNode&gt; {
+        if self.visited.contains(name) {
+            self.unresolved.push(name.to_string());
+            return None;  // Cycle → placeholder
+        }
+        let target = self.syms.get(name)?;
+        self.visited.insert(name.to_string());
+        let result = self.materialize_value(target);
+        self.visited.remove(name);
+        result
+    }
+
+    fn materialize_value(&amp;mut self, node: &amp;&#x27;a ASTNode) -&gt; Option&lt;ElementNode&gt; {
         match node {
-            ElementNode::Comp { name, props, .. } =&gt; {
-                let schema = self.library.get(name).ok_or(Error::UnknownComponent(name.clone()))?;
-                let resolved_props = self.map_props(props, schema)?;
-                Ok(ResolvedNode::Comp { name: name.clone(), props: resolved_props })
+            ASTNode::Comp { name, args, .. } =&gt; {
+                let def = self.cat.get(name)?;
+                let props = self.map_positional_to_named(args, &amp;def.params);
+                Some(ElementNode { type_name: name.clone(), props, partial: false })
             }
-            ElementNode::Ref(name) =&gt; {
-                let target = self.symbols.get(name).ok_or(Error::UnresolvedRef(name.clone()))?;
-                self.materialize(target)
-            }
+            ASTNode::Ref(name) =&gt; self.resolve_ref(name),
             // ... other cases
         }
     }

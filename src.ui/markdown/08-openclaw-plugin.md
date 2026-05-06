@@ -12,18 +12,25 @@ Source: `openclaw-ui/packages/claw-client/src/` — Next.js web client
 ### Plugin Detection
 
 ```typescript
-// Check if session is UI-enabled
-if (sessionKey.endsWith(':openclaw-ui')) {
-  // Prepend CLAW_PREAMBLE to system prompt
-  hooks.before_prompt_build((prompt) => {
-    return CLAW_PREAMBLE + prompt;
-  });
+// Defined via definePluginEntry({ id, name, description, configSchema, register })
+export default definePluginEntry({
+  id: "openclaw-ui-plugin",
+  name: "Claw — OpenUI for OpenClaw",
+  configSchema: emptyPluginConfigSchema,
 
-  // Register tools
-  registerTool('create_markdown_artifact', ...);
-  registerTool('db_query', ...);
-  registerTool('app_create', ...);
-}
+  register(api) {
+    // Only activate for sessions from the Claw client
+    api.on("before_prompt_build", (_event, ctx) => {
+      if (!ctx.sessionKey?.endsWith(":openclaw-ui")) return;
+      return { prependSystemContext: CLAW_PREAMBLE };
+    });
+
+    // Register tools (artifacts, apps, SQLite, notifications, uploads)
+    api.registerTool('create_markdown_artifact', ...);
+    api.registerTool('db_query', ...);
+    api.registerTool('app_create', ...);
+  }
+});
 ```
 
 ### Tool Registration

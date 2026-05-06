@@ -11,15 +11,15 @@ This document covers production considerations for running the OpenUI ecosystem:
 LLM responses arrive as SSE chunks. Each chunk may contain partial OpenUI Lang:
 
 ```
-Chunk 1: "Stack\n  <Button label=\"S"
-Chunk 2: "ave\" />\n  <Text>"
-Chunk 3: "Hello</Text>\n"
+Chunk 1: "root = Stack(header, btn)\nheader = TextCon"
+Chunk 2: "tent(\"Hello\")\nbtn = Button(\"S"
+Chunk 3: "ave\")\n"
 ```
 
 The streaming parser handles this correctly:
-1. Chunk 1 arrives → buffer = `Stack\n  <Button label="S` → no complete boundary → pending state
-2. Chunk 2 arrives → buffer += `\n  <Text>` → found newline after Button → complete Button, pending Text
-3. Chunk 3 arrives → buffer += `Hello</Text>\n` → found newline → complete Text
+1. Chunk 1 arrives → found depth-0 newline after `Stack(header, btn)` → complete root, pending header
+2. Chunk 2 arrives → found depth-0 newline after `TextContent("Hello")` → complete header, pending btn
+3. Chunk 3 arrives → found depth-0 newline after `Button("Save")` → complete btn
 
 ### Backpressure
 
@@ -44,18 +44,20 @@ function scheduleParse() {
 
 ### Parser Errors
 
-Parser errors are structured for LLM correction:
+Parser errors are structured for LLM correction (see `OpenUIError` type):
 
 ```typescript
 {
-  source: 'parser',
-  code: 'UNCLOSED_PAREN',
-  message: 'Expected `)` at position 15',
-  hint: 'Close the parenthesis in the Button component props'
+  source: "parser",
+  code: "unknown-component",       // lowercase-kebab codes
+  message: 'Unknown component "Foo" — not found in catalog or builtins',
+  statementId: "chart",            // Which statement to fix
+  component: "Foo",
+  hint: "Available components: Table, BarChart, Card, ..."
 }
 ```
 
-The hint is included in the LLM's next system prompt, allowing automatic correction.
+The `onError` callback fires with all current errors. The consumer includes them in the LLM's next system prompt for automatic correction.
 
 ### Runtime Errors
 

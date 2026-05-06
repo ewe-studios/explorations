@@ -10,142 +10,158 @@ Source: `openui/packages/lang-core/src/parser/builtins.ts` — 13 data functions
 ## Evaluation Model
 
 ```typescript
-function evaluate(node: ElementNode, ctx: EvalContext): Value {
+interface EvaluationContext {
+  getState(name: string): unknown;         // Read $variable from the store
+  resolveRef(name: string): unknown;       // Resolve a reference to another declaration
+  extraScope?: Record<string, unknown>;    // Scoped variables (e.g. Each iterator)
+}
+
+function evaluate(node: ASTNode, context: EvaluationContext, schemaCtx?: SchemaContext): unknown {
   switch (node.k) {
-    case 'Str': return node.value;
-    case 'Num': return node.value;
-    case 'Bool': return node.value;
-    case 'Null': return null;
-    case 'StateRef': return ctx.store.get(node.name)();
-    case 'Ref': return evaluate(resolveRef(node), ctx);
-    case 'BinOp': return evalBinOp(node.op, evaluate(node.left, ctx), evaluate(node.right, ctx));
-    case 'Ternary': return evaluate(node.cond, ctx) ? evaluate(node.then, ctx) : evaluate(node.else, ctx);
-    // ... etc
+    case "Str": return node.v;
+    case "Num": return node.v;
+    case "Bool": return node.v;
+    case "Null": case "Ph": return null;
+    case "StateRef": return context.extraScope?.[node.n] ?? context.getState(node.n);
+    case "Ref": case "RuntimeRef": return context.resolveRef(node.n);
+    case "Arr": return node.els.map(el => evaluate(el, context));
+    case "Obj": return Object.fromEntries(node.entries.map(([k, v]) => [k, evaluate(v, context)]));
+    case "BinOp": /* short-circuit for && and ||, then operator dispatch */
+    case "Ternary": return evaluate(node.cond, context) ? evaluate(node.then, context) : evaluate(node.else, context);
+    case "Comp": /* dispatch to LAZY_BUILTINS, BUILTINS, ACTION_NAMES, or mappedProps */
   }
 }
 ```
 
-The evaluator is a recursive function that pattern-matches on the AST node type and evaluates accordingly.
+The evaluator is a recursive function that pattern-matches on the AST `k` discriminant. Division by zero returns 0 (not Infinity). String `+` concatenation treats null as `""`. Loose equality (`==`) is used for `==`/`!=` operators.
 
 ## Built-in Functions (Data)
 
-Source: `openui/packages/lang-core/src/builtins.ts`
+Source: `openui/packages/lang-core/src/parser/builtins.ts`
 
-| Builtin | Arguments | Returns | Purpose |
-|---------|-----------|---------|---------|
-| `Count(arr)` | Array | number | Length of array |
-| `First(arr)` | Array | any | First element |
-| `Last(arr)` | Array | any | Last element |
-| `Sum(arr)` | Array<number> | number | Sum of values |
-| `Avg(arr)` | Array<number> | number | Average of values |
-| `Min(arr)` | Array<number> | number | Minimum value |
-| `Max(arr)` | Array<number> | number | Maximum value |
-| `Sort(arr, field?)` | Array, string? | Array | Sort by field or value |
-| `Filter(arr, pred)` | Array, predicate | Array | Filter elements |
-| `Round(n, digits?)` | number, number? | number | Round to digits |
-| `Abs(n)` | number | number | Absolute value |
-| `Floor(n)` | number | number | Floor |
-| `Ceil(n)` | number | number | Ceiling |
+| Builtin | Signature | Purpose |
+|---------|-----------|---------|
+| `Count` | `Count(array) → number` | Array length |
+| `First` | `First(array) → element` | First element |
+| `Last` | `Last(array) → element` | Last element |
+| `Sum` | `Sum(numbers[]) → number` | Sum of numeric array |
+| `Avg` | `Avg(numbers[]) → number` | Average of numeric array |
+| `Min` | `Min(numbers[]) → number` | Minimum value |
+| `Max` | `Max(numbers[]) → number` | Maximum value |
+| `Sort` | `Sort(array, field, direction?) → sorted array` | Sort by field ("asc" or "desc") |
+| `Filter` | `Filter(array, field, operator, value) → filtered array` | Filter by field + operator ("==", "!=", ">", "<", ">=", "<=", "contains") |
+| `Round` | `Round(number, decimals?) → number` | Round to N decimal places |
+| `Abs` | `Abs(number) → number` | Absolute value |
+| `Floor` | `Floor(number) → number` | Round down |
+| `Ceil` | `Ceil(number) → number` | Round up |
+
+All builtins are defined in `BUILTINS: Record<string, BuiltinDef>` with a `fn` field that the evaluator calls eagerly after evaluating arguments.
 
 ## Lazy Builtin: Each
 
 ```
-Each($items, "item", <Card title={item.name} />)
+Each($items, "item", Card(item.name, item.description))
 ```
 
-The `Each` builtin:
-1. Evaluates the array expression (`$items`)
-2. For each item, creates a scoped variable binding (`item → current value`)
-3. Evaluates the template with the scoped binding
-4. Returns an array of evaluated template results
+`Each` is the only lazy builtin (`LAZY_BUILTINS: Set<string> = new Set(["Each"])`). It receives AST nodes directly instead of pre-evaluated values:
+
+1. Evaluates the first arg (the array expression)
+2. For each element, creates a scoped `extraScope` binding (`varName → current element`)
+3. Evaluates the template AST with the scoped binding
+4. Returns an array of results
 
 ```typescript
-function evalEach(node: BuiltinCall, ctx: EvalContext): Value[] {
-  const [arrExpr, varName, template] = node.args;
-  const arr = evaluate(arrExpr, ctx);
-  return arr.map((item: Value) => {
-    const scopedCtx = { ...ctx, scope: { [varName]: item } };
-    return evaluate(template, scopedCtx);
-  });
+// From evaluator.ts — evaluateLazyBuiltin (simplified)
+function evaluateLazyBuiltin(name: string, args: ASTNode[], context: EvaluationContext): unknown {
+  if (name === "Each") {
+    const arr = evaluate(args[0], context);  // Evaluate the array
+    const varName = /* extract from args[1] */;
+    const template = args[2];                 // NOT evaluated yet
+    return arr.map((item) => {
+      const scopedCtx = { ...context, extraScope: { ...context.extraScope, [varName]: item } };
+      return evaluate(template, scopedCtx);  // Evaluate template per item
+    });
+  }
 }
 ```
 
-**Aha:** The template in `Each` is evaluated with a scoped variable binding that shadows any outer variable of the same name. This is lexical scoping — the inner `item` shadows the outer `item` for the duration of the template evaluation, then the outer `item` is restored. The `substituteRef()` function handles this variable capture.
+**Aha:** The `Each` template uses `extraScope` to inject the loop variable. The evaluator's `StateRef` case checks `context.extraScope?.[node.n]` before `context.getState(node.n)`, so the loop variable shadows any same-named state variable for the duration of that iteration. The materializer also handles `Each` specially — it scopes the iterator variable during materialization so template refs resolve correctly.
 
 ## Action Expressions
 
-| Action | Purpose |
-|--------|---------|
-| `Run` | Execute a sequence of action steps |
-| `ToAssistant` | Send a message to the LLM |
-| `OpenUrl` | Open a URL in the browser |
-| `Set` | Set a state variable |
-| `Reset` | Reset a state variable to its initial value |
+Source: `openui/packages/lang-core/src/parser/builtins.ts` — `ACTION_STEPS`
 
-Actions are executed by the `triggerAction()` function in the React renderer, not by the evaluator. The evaluator produces an `ActionPlan` — a list of steps to execute:
+| Action | Runtime Type | Purpose |
+|--------|-------------|---------|
+| `Action` | (container) | Wraps a sequence of action steps |
+| `Run` | `"run"` | Execute a query or mutation by reference |
+| `ToAssistant` | `"continue_conversation"` | Send a message to the LLM |
+| `OpenUrl` | `"open_url"` | Open a URL in the browser |
+| `Set` | `"set"` | Set a state variable to a new value |
+| `Reset` | `"reset"` | Reset state variables to initial values |
+
+The evaluator produces an `ActionPlan` — an ordered list of typed steps:
 
 ```typescript
-interface ActionPlan {
-  steps: ActionStep[];
-}
+interface ActionPlan { steps: ActionStep[] }
 
-interface ActionStep {
-  type: 'Set' | 'Reset' | 'ToAssistant' | 'OpenUrl';
-  target?: string;
-  value?: Value;
-}
+type ActionStep =
+  | { type: "run"; statementId: string; refType: "query" | "mutation" }
+  | { type: "continue_conversation"; message: string; context?: string }
+  | { type: "open_url"; url: string }
+  | { type: "set"; target: string; valueAST: ASTNode }
+  | { type: "reset"; targets: string[] };
 ```
+
+`ACTION_NAMES` includes all step names plus `"Action"` itself. The React renderer's `triggerAction()` function interprets the plan.
 
 ## ReactiveAssign Marker
 
-The evaluator marks state variable assignments for two-way binding:
+The evaluator emits `ReactiveAssign` markers for two-way bindings when a `StateRef` is passed to a component prop that has a reactive schema:
 
 ```typescript
 interface ReactiveAssign {
-  target: string;
-  value: Value;
-  __openui_reactive: true;
+  __reactive: "assign";     // Discriminant (not __openui_reactive)
+  target: string;           // State variable name (e.g. "count")
+  expr: ASTNode;            // Expression to evaluate with $value (the new value from the component)
 }
 ```
 
-When the renderer encounters a `ReactiveAssign`, it updates the store and triggers re-rendering of all expressions that depend on that variable.
+This only fires when the evaluator has a `SchemaContext` and the prop's schema is marked reactive (`isReactiveSchema()`). The renderer handles the marker by creating a two-way binding: component writes → store update → re-render.
 
 ## Store Integration
 
-Source: `openui/packages/lang-core/src/store.ts`
+Source: `openui/packages/lang-core/src/runtime/store.ts`
 
-The evaluator reads state from a reactive store:
+The store is a factory function (`createStore()`) returning a `Store` interface:
 
 ```typescript
-class Store {
-  private data = new Map<string, any>();
-  private listeners = new Map<string, Set<() => void>>();
-
-  get(name: string) {
-    // Returns a signal-like function that tracks dependencies
-    return () => this.data.get(name);
-  }
-
-  set(name: string, value: any) {
-    if (this.data.get(name) !== value) {
-      this.data.set(name, value);
-      this.notify(name);
-    }
-  }
-
-  subscribe(name: string, listener: () => void) {
-    this.listeners.get(name)?.add(listener);
-  }
-
-  private notify(name: string) {
-    this.listeners.get(name)?.forEach(l => l());
-  }
+interface Store {
+  get(name: string): unknown;
+  set(name: string, value: unknown): void;
+  subscribe(listener: () => void): () => void;  // Global listener, not per-key
+  getSnapshot(): Record<string, unknown>;        // Snapshot for React useSyncExternalStore
+  initialize(defaults: Record<string, unknown>, persisted: Record<string, unknown>): void;
+  dispose(): void;
 }
 ```
 
-The store uses shallow comparison for objects — if `newVal !== oldVal` (reference comparison), listeners are notified. This avoids unnecessary re-renders when the object reference hasn't changed.
+Internally, it uses `Object.is()` for primitives and shallow key-by-key comparison for plain objects (form data). This prevents unnecessary re-renders when form state objects have the same shape and values but a new reference.
 
-**Aha:** The store's safe initialization preserves user state during streaming. When the LLM is still generating, the store might have partial state. The initializer only sets a signal if it hasn't been set by the user — it doesn't overwrite user-provided initial state with LLM-generated defaults.
+The `initialize()` method applies persisted values first, then defaults for new keys only — never overwriting existing user-modified state:
+
+```typescript
+function initialize(defaults: Record<string, unknown>, persisted: Record<string, unknown>): void {
+  for (const key of Object.keys(persisted)) state.set(key, persisted[key]);
+  for (const key of Object.keys(defaults)) {
+    if (!state.has(key)) state.set(key, defaults[key]);  // Only new keys
+  }
+  rebuildSnapshot();
+  notify();
+}
+```
+
+**Aha:** The store's safe initialization preserves user state during streaming. When the LLM is still generating and the parser re-runs, `initialize()` is called again with possibly-changed defaults. But existing user-modified values are never overwritten — the `!state.has(key)` guard protects them. This prevents the jarring UX of a user typing into a form field and having their input replaced by a re-parsed default.
 
 See [Materializer](04-materializer.md) for how expressions reach the evaluator.
 See [React Renderer](06-react-renderer.md) for how the evaluator integrates with React.

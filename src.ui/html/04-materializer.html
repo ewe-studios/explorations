@@ -134,8 +134,8 @@
   <article class="prose">
 <h1>OpenUI -- Materializer (Schema-Aware Lowering)</h1>
 <p>The materializer is a single-pass, schema-aware lowering pass that transforms the parsed AST into resolved element nodes. It resolves references, maps positional arguments to named properties via JSON Schema, validates required props, applies defaults, and drops unknown components.</p>
-<p><strong>Aha:</strong> The materializer maps positional arguments to named props using the component's JSON Schema <code>parameters</code> definition. When the LLM writes <code><Button "Save" primary></code>, the materializer looks up Button's schema, sees that the first parameter is <code>label</code> and the second is <code>primary</code> (boolean), and maps them accordingly. This means the LLM can use positional syntax for common components while the materializer normalizes everything to named props. Without this mapping, the LLM would need to write <code><Button label="Save" primary={true}></code> every time.</p>
-<p>Source: <code>openui/packages/lang-core/src/materialize.ts</code> — materialization pass</p>
+<p><strong>Aha:</strong> The materializer maps positional arguments to named props using the library's <code>ParamMap</code>. When the LLM writes <code>Button("Save", true)</code>, the materializer looks up Button's parameter order from the <code>ParamMap</code>, sees that the first parameter is <code>label</code> and the second is <code>primary</code>, and maps them to <code>{ label: "Save", primary: true }</code>. This means the LLM can use compact positional syntax while the materializer normalizes everything to named props for the renderer.</p>
+<p>Source: <code>openui/packages/lang-core/src/parser/materialize.ts</code> — materialization pass</p>
 <h2>Materialization Process</h2>
 <div class="mermaid">
 flowchart TD
@@ -154,50 +154,58 @@ flowchart TD
 
 </div>
 <h2>Symbol Table and Reference Resolution</h2>
-<p>The materializer first builds a symbol table from statement names:</p>
-<pre><code class="language-typescript">// Input statements:
-// 1. name: &quot;header&quot;, element: Comp(&quot;Stack&quot;, [...])
-// 2. name: null, element: Comp(&quot;Button&quot;, [Ref(&quot;header&quot;)])
-
-const symbols = new Map([
-  [&#x27;header&#x27;, statement1.element],
-]);
-
-// Resolve Ref(&quot;header&quot;) → statement1.element
+<p>The materializer builds a symbol table from classified statements:</p>
+<pre><code class="language-typescript">// From buildResult() in parser.ts:
+const syms = new Map&lt;string, ASTNode&gt;();
+for (const [id, stmt] of stmtMap) {
+  syms.set(id, stmt.kind === &quot;state&quot; ? stmt.init : stmt.expr);
+}
 </code></pre>
-<p>Circular references are detected during resolution:</p>
-<pre><code class="language-typescript">function resolveRef(ref: RefNode, symbols: Map&lt;string, ElementNode&gt;, resolving: Set&lt;string&gt;): ElementNode {
-  if (resolving.has(ref.name)) {
-    return { k: &#x27;Ph&#x27; };  // Cycle → placeholder
+<p>The <code>MaterializeCtx</code> carries this symbol table along with error tracking and cycle detection:</p>
+<pre><code class="language-typescript">interface MaterializeCtx {
+  syms: Map&lt;string, ASTNode&gt;;      // Symbol table (statement id → AST)
+  cat: ParamMap | undefined;        // Component parameter definitions
+  errors: ValidationError[];        // Accumulated errors
+  unres: string[];                  // Unresolved reference names
+  visited: Set&lt;string&gt;;             // Cycle detection (currently resolving)
+  partial: boolean;                 // True if streaming/incomplete
+  currentStatementId?: string;      // For error attribution
+  unreached?: Set&lt;string&gt;;          // Track orphaned statements
+}
+</code></pre>
+<p>Circular references are detected by the <code>visited</code> set:</p>
+<pre><code class="language-typescript">function resolveRef(name: string, ctx: MaterializeCtx, mode: &quot;value&quot; | &quot;expr&quot;): unknown {
+  if (ctx.visited.has(name)) {
+    ctx.unres.push(name);
+    return mode === &quot;expr&quot; ? { k: &quot;Ph&quot;, n: name } : null;  // Cycle → placeholder
   }
-  resolving.add(ref.name);
-  const target = symbols.get(ref.name);
-  const resolved = resolve(target, symbols, resolving);
-  resolving.delete(ref.name);
-  return resolved;
+  if (!ctx.syms.has(name)) {
+    ctx.unres.push(name);
+    return mode === &quot;expr&quot; ? { k: &quot;Ph&quot;, n: name } : null;  // Missing → placeholder
+  }
+  ctx.visited.add(name);
+  const result = mode === &quot;value&quot; ? materializeValue(target, ctx) : materializeExpr(target, ctx);
+  ctx.visited.delete(name);
+  return result;
 }
 </code></pre>
 <h2>Positional-to-Named Prop Mapping</h2>
-<p>Source: <code>openui/packages/lang-core/src/materialize.ts</code></p>
-<p>Each component has a JSON Schema defining its parameters:</p>
-<pre><code class="language-json">{
-  &quot;name&quot;: &quot;Button&quot;,
-  &quot;parameters&quot;: {
-    &quot;properties&quot;: {
-      &quot;label&quot;: { &quot;type&quot;: &quot;string&quot; },
-      &quot;primary&quot;: { &quot;type&quot;: &quot;boolean&quot; },
-      &quot;disabled&quot;: { &quot;type&quot;: &quot;boolean&quot; }
-    },
-    &quot;required&quot;: [&quot;label&quot;]
-  }
+<p>Source: <code>openui/packages/lang-core/src/parser/materialize.ts</code></p>
+<p>The library provides a <code>ParamMap</code> — a <code>Map<string, { params: ParamDef[] }></code> where each entry defines the parameter list for a component:</p>
+<pre><code class="language-typescript">interface ParamDef {
+  name: string;          // Parameter name, e.g. &quot;title&quot;, &quot;columns&quot;
+  required: boolean;     // Whether the parameter is required
+  defaultValue?: unknown; // Default from JSON Schema
 }
+
+type ParamMap = Map&lt;string, { params: ParamDef[] }&gt;;
 </code></pre>
 <p>Positional arguments are mapped by order:</p>
-<pre><code class="language-">&lt;Button &quot;Save&quot; true&gt;  →  { label: &quot;Save&quot;, primary: true }
+<pre><code class="language-">Button(&quot;Save&quot;, true)  →  { label: &quot;Save&quot;, primary: true }
 </code></pre>
-<p>The materializer:</p>
-<ol><li>Gets the parameter order from the schema (<code>["label", "primary", "disabled"]</code>)</li><li>Maps the Nth positional argument to the Nth parameter name</li><li>Named props (from <code>key=value</code> syntax) are matched directly</li><li>Unknown props are dropped with a warning</li><li>Missing required props generate an error</li></ol>
-<p><strong>Aha:</strong> The parameter order is determined by the JSON Schema <code>properties</code> object. In JavaScript, object property order is preserved for string keys, so the schema author controls the positional argument order. This is a clever use of JSON Schema's implicit ordering — no separate <code>parameterOrder</code> array is needed.</p>
+<p>The materializer (during <code>materializeValue</code> for Comp nodes):</p>
+<ol><li>Looks up the component name in <code>ctx.cat</code> (the <code>ParamMap</code>)</li><li>Maps the Nth positional argument to the Nth parameter's <code>name</code></li><li>Produces an <code>ElementNode</code> with named <code>props</code></li><li>Validates required props — drops the node if any required prop is <code>null</code> or missing</li><li>Emits <code>excess-args</code> error if more args provided than params defined</li></ol>
+<p><strong>Aha:</strong> The <code>ParamMap</code> is compiled from the library's JSON Schema definitions (<code>compileSchema()</code> in parser.ts). The property order in the JSON Schema <code>properties</code> object determines positional argument order. This is a clever use of JavaScript's guaranteed string-key property ordering — no separate <code>parameterOrder</code> array is needed.</p>
 <h2>Default Value Application</h2>
 <p>If a prop is not provided by the LLM, the materializer applies the schema default:</p>
 <pre><code class="language-json">{
@@ -208,31 +216,33 @@ const symbols = new Map([
 </code></pre>
 <p>If the LLM didn't specify <code>disabled</code>, the materializer sets it to <code>false</code>.</p>
 <h2>Unknown Component Handling</h2>
-<p>Components not found in the library are dropped:</p>
-<pre><code class="language-typescript">if (!componentLibrary.has(comp.name)) {
-  errors.push({
-    source: &#x27;runtime&#x27;,
-    code: &#x27;UNKNOWN_COMPONENT&#x27;,
-    message: `Component &quot;${comp.name}&quot; not found`,
-    hint: `Available components: ${componentLibrary.keys().join(&#x27;, &#x27;)}`
-  });
-  return null;  // Dropped from output
-}
+<p>Components not found in the library's <code>ParamMap</code> emit a validation error:</p>
+<pre><code class="language-typescript">// From materializeExprInternal and materializeValue:
+ctx.errors.push({
+  code: &quot;unknown-component&quot;,        // lowercase-kebab, not uppercase
+  component: node.name,
+  path: &quot;&quot;,
+  message: `Unknown component &quot;${node.name}&quot; — not found in catalog or builtins`,
+  statementId: ctx.currentStatementId,
+});
 </code></pre>
-<p>This is a safety mechanism — the LLM might hallucinate component names. Dropping them prevents rendering errors.</p>
+<p>In the value path (<code>materializeValue</code>), unknown components are dropped from the output tree. In the expression path (<code>materializeExprInternal</code>), the Comp node is preserved with recursed args — it may still be useful at runtime.</p>
 <h2>Runtime Expression Preservation</h2>
-<p>Expressions like <code>$count + 1</code> or <code>@fetch(...)</code> are preserved as AST nodes:</p>
-<pre><code class="language-typescript">// After materialization:
+<p>Expressions containing <code>StateRef</code>, <code>BinOp</code>, <code>Ternary</code>, <code>RuntimeRef</code>, etc. are preserved as AST nodes inside the <code>ElementNode.props</code>:</p>
+<pre><code class="language-typescript">// After materialization, Comp nodes become ElementNode:
 {
-  k: &#x27;Comp&#x27;,
-  name: &#x27;Button&#x27;,
+  type: &quot;element&quot;,
+  typeName: &quot;Button&quot;,
+  statementId: &quot;myButton&quot;,
+  partial: false,
+  hasDynamicProps: true,     // Contains runtime expressions
   props: {
-    label: { k: &#x27;StateRef&#x27;, name: &#x27;count&#x27; },
-    onClick: { k: &#x27;BuiltinCall&#x27;, name: &#x27;fetch&#x27;, args: [...] }
+    label: { k: &quot;BinOp&quot;, op: &quot;+&quot;, left: { k: &quot;Str&quot;, v: &quot;Count: &quot; }, right: { k: &quot;StateRef&quot;, n: &quot;count&quot; } },
+    onClick: { k: &quot;Comp&quot;, name: &quot;Action&quot;, args: [...] }
   }
 }
 </code></pre>
-<p>The evaluator interprets these expressions at render time. The materializer doesn't evaluate them — it only validates that the component accepts them as prop values.</p>
+<p>The <code>hasDynamicProps</code> flag is set when any prop value contains AST nodes (detected by <code>containsDynamicValue()</code>). The evaluator interprets these expressions at render time. When <code>hasDynamicProps</code> is false, all props are plain values and evaluation can be skipped entirely.</p>
 <p>See <a href="03-streaming-parser.md">Streaming Parser</a> for how statements are parsed. See <a href="05-evaluator.md">Evaluator</a> for how expressions are interpreted. See <a href="06-react-renderer.md">React Renderer</a> for how materialized nodes are rendered.</p>
   </article>
   <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>

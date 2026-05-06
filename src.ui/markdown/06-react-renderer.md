@@ -12,14 +12,18 @@ Source: `openui/packages/react-lang/src/hooks/useOpenUIState.ts` — state manag
 ```tsx
 // Renderer.tsx
 interface RendererProps {
-  response: string | null;       // OpenUI Lang string (streaming), can be null
-  library: ComponentLibrary;     // Available components
-  isStreaming: boolean;          // Whether LLM is still generating
-  onAction?: (plan: ActionPlan) => void;
-  onStateUpdate?: (state: Record<string, any>) => void;
-  initialState?: Record<string, any>;
-  toolProvider?: Record<string, any> | McpClientLike | null;  // MCP client or function map
-  queryLoader?: React.ReactNode;  // Data fetching component
+  response: string | null;       // OpenUI Lang string (streaming)
+  library: Library;              // From createLibrary() in react-lang
+  isStreaming?: boolean;         // Whether LLM is still generating
+  onAction?: (event: ActionEvent) => void;  // ActionEvent, not ActionPlan
+  onStateUpdate?: (state: Record<string, unknown>) => void;
+  initialState?: Record<string, any>;       // $-prefixed = bindings, others = form state
+  onParseResult?: (result: ParseResult | null) => void;
+  toolProvider?:
+    | Record<string, (args: Record<string, unknown>) => Promise<unknown>>  // Function map
+    | McpClientLike                          // MCP client (callTool({ name, arguments }))
+    | null;
+  queryLoader?: React.ReactNode;  // Custom loading indicator
   onError?: (errors: OpenUIError[]) => void;
 }
 ```
@@ -46,37 +50,33 @@ flowchart TD
 
 ## useOpenUIState Hook
 
+Source: `openui/packages/react-lang/src/hooks/useOpenUIState.ts`
+
 The hook manages the streaming parser, store, and query manager:
 
 ```typescript
-function useOpenUIState(
-  config: {
-    response: string | null;
-    library: ComponentLibrary;
-    isStreaming: boolean;
-    initialState?: Record<string, any>;
-  },
-  renderDeep: boolean
-): RenderState {
-  // Create streaming parser
-  const parserRef = useRef(createStreamParser());
-  parserRef.current.push(response);
-  const result = parserRef.current.buildResult();
+function useOpenUIState(options: UseOpenUIStateOptions, renderDeep: (value: unknown) => React.ReactNode): OpenUIState {
+  // Create streaming parser — memoized on library, uses sp.set() to diff against buffer
+  const sp = useMemo(() => createStreamingParser(library.toJSONSchema(), library.root), [library]);
 
-  // Create store
-  const storeRef = useRef(new Store());
-  if (initialState) {
-    storeRef.current.initSafe(initialState);
-  }
+  // Parse — uses sp.set(response) which auto-resets if text was replaced (not appended)
+  const result = useMemo(() => response ? sp.set(response) : null, [sp, response]);
 
-  // Create query manager
-  const queryManagerRef = useRef(new QueryManager(queryLoader));
+  // Store — factory function, not class
+  const store = useMemo<Store>(() => createStore(), []);
 
-  // Subscribe to store and query changes
-  const storeSnapshot = useSyncExternalStore(
-    storeRef.current.subscribe,
-    () => storeRef.current.getAll()
-  );
+  // QueryManager — handles Query()/Mutation() tool calls
+  const queryManager = useMemo<QueryManager>(() => createQueryManager(toolProvider ?? null), [toolProvider]);
+
+  // Subscribe via useSyncExternalStore (store.subscribe + store.getSnapshot)
+  const storeSnapshot = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
+  const querySnapshot = useSyncExternalStore(queryManager.subscribe, queryManager.getSnapshot, queryManager.getSnapshot);
+
+  // Build EvaluationContext
+  const evaluationContext: EvaluationContext = {
+    getState: (name) => unwrapFieldValue(store.get(name)),
+    resolveRef: (name) => queryManager.getMutationResult(name) ?? queryManager.getResult(name),
+  };
 
   const querySnapshot = useSyncExternalStore(
     queryManagerRef.current.subscribe,

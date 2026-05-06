@@ -135,18 +135,22 @@
 <h1>OpenUI -- React Renderer</h1>
 <p>The React renderer is a <code>Renderer</code> component that takes an OpenUI Lang string, a component library, and streams the progressive parse results as React nodes. It uses <code>useSyncExternalStore</code> to subscribe to the internal Store and QueryManager, re-rendering automatically when signals change or queries resolve.</p>
 <p><strong>Aha:</strong> The renderer intentionally shows the "last good state" during streaming errors. If the LLM produces malformed markup mid-stream, the renderer doesn't crash or show a blank screen — it shows the last successfully parsed version. This is critical for the streaming experience where the LLM is still generating and the markup is temporarily incomplete. The <code>ElementErrorBoundary</code> catches render errors and falls back to the previous render.</p>
-<p>Source: <code>openui/packages/react-lang/src/Renderer.tsx</code> — main React component Source: <code>openui/packages/react-lang/src/useOpenUIState.ts</code> — state management hook</p>
+<p>Source: <code>openui/packages/react-lang/src/Renderer.tsx</code> — main React component Source: <code>openui/packages/react-lang/src/hooks/useOpenUIState.ts</code> — state management hook</p>
 <h2>Renderer Component</h2>
 <pre><code class="language-tsx">// Renderer.tsx
 interface RendererProps {
-  response: string;              // OpenUI Lang string (streaming)
-  library: ComponentLibrary;     // Available components
-  isStreaming: boolean;          // Whether LLM is still generating
-  onAction?: (plan: ActionPlan) =&gt; void;
-  onStateUpdate?: (state: Record&lt;string, any&gt;) =&gt; void;
-  initialState?: Record&lt;string, any&gt;;
-  toolProvider?: ToolProvider;   // MCP client or function map
-  queryLoader?: QueryLoader;     // Data fetching function
+  response: string | null;       // OpenUI Lang string (streaming)
+  library: Library;              // From createLibrary() in react-lang
+  isStreaming?: boolean;         // Whether LLM is still generating
+  onAction?: (event: ActionEvent) =&gt; void;  // ActionEvent, not ActionPlan
+  onStateUpdate?: (state: Record&lt;string, unknown&gt;) =&gt; void;
+  initialState?: Record&lt;string, any&gt;;       // $-prefixed = bindings, others = form state
+  onParseResult?: (result: ParseResult | null) =&gt; void;
+  toolProvider?:
+    | Record&lt;string, (args: Record&lt;string, unknown&gt;) =&gt; Promise&lt;unknown&gt;&gt;  // Function map
+    | McpClientLike                          // MCP client (callTool({ name, arguments }))
+    | null;
+  queryLoader?: React.ReactNode;  // Custom loading indicator
   onError?: (errors: OpenUIError[]) =&gt; void;
 }
 </code></pre>
@@ -170,32 +174,30 @@ flowchart TD
 
 </div>
 <h2>useOpenUIState Hook</h2>
+<p>Source: <code>openui/packages/react-lang/src/hooks/useOpenUIState.ts</code></p>
 <p>The hook manages the streaming parser, store, and query manager:</p>
-<pre><code class="language-typescript">function useOpenUIState(
-  response: string,
-  library: ComponentLibrary,
-  isStreaming: boolean,
-  initialState?: Record&lt;string, any&gt;
-): RenderState {
-  // Create streaming parser
-  const parserRef = useRef(createStreamParser());
-  parserRef.current.push(response);
-  const result = parserRef.current.buildResult();
+<pre><code class="language-typescript">function useOpenUIState(options: UseOpenUIStateOptions, renderDeep: (value: unknown) =&gt; React.ReactNode): OpenUIState {
+  // Create streaming parser — memoized on library, uses sp.set() to diff against buffer
+  const sp = useMemo(() =&gt; createStreamingParser(library.toJSONSchema(), library.root), [library]);
 
-  // Create store
-  const storeRef = useRef(new Store());
-  if (initialState) {
-    storeRef.current.initSafe(initialState);
-  }
+  // Parse — uses sp.set(response) which auto-resets if text was replaced (not appended)
+  const result = useMemo(() =&gt; response ? sp.set(response) : null, [sp, response]);
 
-  // Create query manager
-  const queryManagerRef = useRef(new QueryManager(queryLoader));
+  // Store — factory function, not class
+  const store = useMemo&lt;Store&gt;(() =&gt; createStore(), []);
 
-  // Subscribe to store and query changes
-  const storeSnapshot = useSyncExternalStore(
-    storeRef.current.subscribe,
-    () =&gt; storeRef.current.getAll()
-  );
+  // QueryManager — handles Query()/Mutation() tool calls
+  const queryManager = useMemo&lt;QueryManager&gt;(() =&gt; createQueryManager(toolProvider ?? null), [toolProvider]);
+
+  // Subscribe via useSyncExternalStore (store.subscribe + store.getSnapshot)
+  const storeSnapshot = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
+  const querySnapshot = useSyncExternalStore(queryManager.subscribe, queryManager.getSnapshot, queryManager.getSnapshot);
+
+  // Build EvaluationContext
+  const evaluationContext: EvaluationContext = {
+    getState: (name) =&gt; unwrapFieldValue(store.get(name)),
+    resolveRef: (name) =&gt; queryManager.getMutationResult(name) ?? queryManager.getResult(name),
+  };
 
   const querySnapshot = useSyncExternalStore(
     queryManagerRef.current.subscribe,

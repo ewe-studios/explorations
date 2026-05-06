@@ -134,129 +134,161 @@
   <article class="prose">
 <h1>OpenUI -- Lang Core (Lexer and AST)</h1>
 <p>OpenUI Lang is a custom DSL with its own lexer, parser, AST, and evaluator. The lexer produces 36 token types from source text, the parser builds an AST, and the evaluator interprets it. The DSL is designed for LLM output — compact, streaming-friendly, and unambiguous.</p>
-<p><strong>Aha:</strong> The lexer uses a <code>const enum</code> for token types — this is erased at compile time to literal numbers in JavaScript, so there is zero runtime cost for token type comparison. <code>T.Ident</code> becomes just <code>3</code> in the output. This matters because the lexer runs on every character of streamed input, and token type comparisons happen thousands of times per second during active streaming.</p>
-<p>Source: <code>openui/packages/lang-core/src/lexer.ts</code> — hand-written tokenizer Source: <code>openui/packages/lang-core/src/ast.ts</code> — AST types</p>
+<p><strong>Aha:</strong> The lexer uses a <code>const enum</code> for token types — this is erased at compile time to literal numbers in JavaScript, so there is zero runtime cost for token type comparison. <code>T.Ident</code> becomes just <code>16</code> in the output. This matters because the lexer runs on every character of streamed input, and token type comparisons happen thousands of times per second during active streaming.</p>
+<p>Source: <code>openui/packages/lang-core/src/parser/lexer.ts</code> — hand-written tokenizer Source: <code>openui/packages/lang-core/src/parser/tokens.ts</code> — token type enum Source: <code>openui/packages/lang-core/src/parser/ast.ts</code> — AST types</p>
 <h2>Lexer</h2>
 <p>The lexer is a hand-written recursive scanner that processes source text character by character:</p>
 <pre><code class="language-typescript">const enum T {
   Newline = 0,
-  LParen = 1,
-  RParen = 2,
-  Ident = 3,
-  Type = 4,
-  StateVar = 5,       // $name
-  BuiltinCall = 6,    // @function
-  // ... 36 token types total
+  LParen = 1,   // (
+  RParen = 2,   // )
+  LBrack = 3,   // [
+  RBrack = 4,   // ]
+  LBrace = 5,   // {
+  RBrace = 6,   // }
+  Comma = 7,    // ,
+  Colon = 8,    // :
+  Equals = 9,   // =
+  True = 10,
+  False = 11,
+  Null = 12,
+  EOF = 13,
+  Str = 14,     // string literal
+  Num = 15,     // numeric literal
+  Ident = 16,   // lowercase identifier → reference
+  Type = 17,    // PascalCase identifier → component name
+  StateVar = 18, // $identifier → reactive state
+  // ... operators 19-34
+  BuiltinCall = 35, // @identifier → builtin function
 }
+
+type Token = { t: T; v?: string | number };
 </code></pre>
 <h3>Token Types (Key Categories)</h3>
-<table><tr><th>Token Type</th><th>Example</th><th>Purpose</th></tr><tr><td>`Ident`</td><td>`Button`, `label`</td><td>Component and prop names</td></tr><tr><td>`Type`</td><td>`string`, `number`</td><td>Type annotations</td></tr><tr><td>`StateVar`</td><td>`$count`</td><td>Reactive state variable references</td></tr><tr><td>`BuiltinCall`</td><td>`@Count($items)`</td><td>Built-in function calls</td></tr><tr><td>`String`</td><td>`"hello"`</td><td>String literals with escape sequences</td></tr><tr><td>`Number`</td><td>`42`, `-3.14`</td><td>Numeric literals</td></tr><tr><td>`Bool`</td><td>`true`, `false`</td><td>Boolean literals</td></tr><tr><td>`Null`</td><td>`null`</td><td>Null literal</td></tr><tr><td>`LParen`/`RParen`</td><td>`(`, `)`</td><td>Expression grouping</td></tr><tr><td>`LBang`/`RBang`</td><td>`[`, `]`</td><td>Array literals</td></tr><tr><td>`LCurly`/`RCurly`</td><td>`{`, `}`</td><td>Object literals</td></tr><tr><td>`BinOp`</td><td>`+`, `-`, `*`, `/`, `==`, `&&`</td><td>Binary operators</td></tr></table>
+<table><tr><th>Token Type</th><th>Example</th><th>Purpose</th></tr><tr><td>`Type`</td><td>`Button`, `Stack`</td><td>PascalCase identifier — component name or type reference</td></tr><tr><td>`Ident`</td><td>`label`, `myTable`</td><td>Lowercase identifier — variable reference</td></tr><tr><td>`StateVar`</td><td>`$count`</td><td>Reactive state variable reference (`$` prefix)</td></tr><tr><td>`BuiltinCall`</td><td>`@Count`</td><td>Built-in function call (`@` prefix)</td></tr><tr><td>`Str`</td><td>`"hello"`</td><td>String literal (both `"` and `'` quotes)</td></tr><tr><td>`Num`</td><td>`42`, `-3.14`</td><td>Numeric literal (integers, floats, exponents)</td></tr><tr><td>`True`/`False`</td><td>`true`, `false`</td><td>Boolean literals</td></tr><tr><td>`Null`</td><td>`null`</td><td>Null literal</td></tr><tr><td>`LParen`/`RParen`</td><td>`(`, `)`</td><td>Component arguments / grouping</td></tr><tr><td>`LBrack`/`RBrack`</td><td>`[`, `]`</td><td>Array literals</td></tr><tr><td>`LBrace`/`RBrace`</td><td>`{`, `}`</td><td>Object literals</td></tr><tr><td>Operators</td><td>`+`, `-`, `*`, `/`, `==`, `!=`, `&&`, `</td><td>`, `?`</td><td>Binary/unary/ternary operators</td></tr></table>
 <h3>Lexer Implementation</h3>
-<pre><code class="language-typescript">// lexer.ts — simplified
-function tokenize(source: string): Token[] {
+<pre><code class="language-typescript">// lexer.ts — simplified from actual implementation
+function tokenize(src: string): Token[] {
   const tokens: Token[] = [];
-  let pos = 0;
+  let i = 0;
 
-  while (pos &lt; source.length) {
-    const ch = source[pos];
+  while (i &lt; src.length) {
+    const c = src[i];
 
-    if (ch === &#x27;$&#x27;) {
-      tokens.push({ type: T.StateVar, value: scanStateVar() });
-    } else if (ch === &#x27;@&#x27;) {
-      tokens.push({ type: BuiltinCall, value: scanBuiltin() });
-    } else if (ch === &#x27;&quot;&#x27;) {
-      tokens.push({ type: String, value: scanString() });
-    } else if (isDigit(ch) || (ch === &#x27;-&#x27; &amp;&amp; isDigit(source[pos + 1]))) {
-      tokens.push({ type: Number, value: scanNumber() });
-    } else if (isAlpha(ch)) {
-      const word = scanIdent();
-      tokens.push({ type: isKeyword(word) ? Type : Ident, value: word });
-    } else if (ch === &#x27;\n&#x27;) {
-      tokens.push({ type: Newline });
-      pos++;
-    } else {
-      // Single-character tokens: ( ) [ ] { } + - * == &amp;&amp; ...
-      tokens.push({ type: singleCharToken(ch) });
-      pos++;
+    // Skip horizontal whitespace (not newlines — they&#x27;re statement separators)
+    if (c === &#x27; &#x27; || c === &#x27;\t&#x27; || c === &#x27;\r&#x27;) { i++; continue; }
+
+    if (c === &#x27;\n&#x27;) { tokens.push({ t: T.Newline }); i++; continue; }
+
+    // Single-char punctuation
+    if (c === &#x27;(&#x27;) { tokens.push({ t: T.LParen }); i++; continue; }
+    // ... same for ), [, ], {, }, &#x27;,&#x27;
+
+    // State variable: $identifier
+    if (c === &#x27;$&#x27;) { tokens.push({ t: T.StateVar, v: scanStateVar() }); continue; }
+
+    // Builtin call: @identifier
+    if (c === &#x27;@&#x27;) { tokens.push({ t: T.BuiltinCall, v: scanBuiltin() }); continue; }
+
+    // Strings: &quot;...&quot; (JSON.parse for unescaping) and &#x27;...&#x27; (manual unescape)
+    if (c === &#x27;&quot;&#x27; || c === &quot;&#x27;&quot;) { tokens.push({ t: T.Str, v: scanString() }); continue; }
+
+    // Identifier or keyword
+    if (isAlpha(c)) {
+      const word = scanWord();
+      if (word === &#x27;true&#x27;) tokens.push({ t: T.True });
+      else if (word === &#x27;false&#x27;) tokens.push({ t: T.False });
+      else if (word === &#x27;null&#x27;) tokens.push({ t: T.Null });
+      // PascalCase → Type (component), lowercase → Ident (reference)
+      else tokens.push({ t: c &gt;= &#x27;A&#x27; &amp;&amp; c &lt;= &#x27;Z&#x27; ? T.Type : T.Ident, v: word });
+      continue;
+    }
+
+    // Number: 42, -3.14, 1e10
+    if (isDigit(c) || (c === &#x27;-&#x27; &amp;&amp; isNegativeNumber())) {
+      tokens.push({ t: T.Num, v: scanNumber() });
+      continue;
     }
   }
-
   return tokens;
 }
 </code></pre>
-<p><strong>Aha:</strong> The lexer handles negative number disambiguation: <code>-3</code> is a single Number token, but <code>x - 3</code> is an Ident <code>x</code> followed by a BinOp <code>-</code> and a Number <code>3</code>. The lexer checks if the preceding token could be the left-hand side of a binary operation — if not, the <code>-</code> is part of the number.</p>
+<p><strong>Aha:</strong> The lexer handles negative number disambiguation: <code>-3</code> is a single Num token, but <code>x - 3</code> is an Ident <code>x</code> followed by a Minus and a Num <code>3</code>. The lexer checks if the preceding token could be the right-hand side of a binary operation (<code>Num</code>, <code>Str</code>, <code>Ident</code>, <code>Type</code>, <code>RParen</code>, <code>RBrack</code>, <code>True</code>, <code>False</code>, <code>Null</code>, <code>StateVar</code>, <code>BuiltinCall</code>) — if so, <code>-</code> is a subtraction operator; otherwise, it's part of a negative number literal.</p>
 <h2>AST</h2>
-<p>Source: <code>openui/packages/lang-core/src/ast.ts</code></p>
+<p>Source: <code>openui/packages/lang-core/src/parser/ast.ts</code></p>
 <p>The AST is a discriminated union with the <code>k</code> field as the discriminator:</p>
-<pre><code class="language-typescript">type ElementNode =
-  | { k: &#x27;Comp&#x27;; name: string; props: Prop[]; children: ElementNode[] }
-  | { k: &#x27;Str&#x27;; value: string }
-  | { k: &#x27;Num&#x27;; value: number }
-  | { k: &#x27;Bool&#x27;; value: boolean }
-  | { k: &#x27;Null&#x27; }
-  | { k: &#x27;Arr&#x27;; items: ElementNode[] }
-  | { k: &#x27;Obj&#x27;; entries: { key: string; value: ElementNode }[] }
-  | { k: &#x27;Ref&#x27;; name: string }
-  | { k: &#x27;Ph&#x27; }  // Placeholder (unresolved during streaming)
-  | { k: &#x27;StateRef&#x27;; name: string }
-  | { k: &#x27;RuntimeRef&#x27;; kind: &#x27;Query&#x27; | &#x27;Mutation&#x27;; name: string }
-  | { k: &#x27;BinOp&#x27;; op: string; left: ElementNode; right: ElementNode }
-  | { k: &#x27;UnaryOp&#x27;; op: string; operand: ElementNode }
-  | { k: &#x27;Ternary&#x27;; cond: ElementNode; then: ElementNode; else: ElementNode }
-  | { k: &#x27;Member&#x27;; object: ElementNode; prop: string }
-  | { k: &#x27;Index&#x27;; object: ElementNode; index: ElementNode }
-  | { k: &#x27;Assign&#x27;; target: string; value: ElementNode };
+<pre><code class="language-typescript">type ASTNode =
+  | { k: &quot;Comp&quot;; name: string; args: ASTNode[]; mappedProps?: Record&lt;string, ASTNode&gt; }
+  | { k: &quot;Str&quot;; v: string }
+  | { k: &quot;Num&quot;; v: number }
+  | { k: &quot;Bool&quot;; v: boolean }
+  | { k: &quot;Null&quot; }
+  | { k: &quot;Arr&quot;; els: ASTNode[] }
+  | { k: &quot;Obj&quot;; entries: [string, ASTNode][] }
+  | { k: &quot;Ref&quot;; n: string }
+  | { k: &quot;Ph&quot;; n: string }       // Placeholder (unresolved during streaming)
+  | { k: &quot;StateRef&quot;; n: string }
+  | { k: &quot;RuntimeRef&quot;; n: string; refType: &quot;query&quot; | &quot;mutation&quot; }
+  | { k: &quot;BinOp&quot;; op: string; left: ASTNode; right: ASTNode }
+  | { k: &quot;UnaryOp&quot;; op: string; operand: ASTNode }
+  | { k: &quot;Ternary&quot;; cond: ASTNode; then: ASTNode; else: ASTNode }
+  | { k: &quot;Member&quot;; obj: ASTNode; field: string }
+  | { k: &quot;Index&quot;; obj: ASTNode; index: ASTNode }
+  | { k: &quot;Assign&quot;; target: string; value: ASTNode };
 </code></pre>
 <h3>Expression vs Statement Nodes</h3>
-<p>Statements are top-level constructs:</p>
-<pre><code class="language-typescript">type Statement = {
-  name: string;          // Component name or null for expressions
-  element: ElementNode;  // The AST node
-  deps: string[];        // Dependencies (signal names, query names)
-};
+<p>Statements are a typed union classified at parse time from token type and expression shape:</p>
+<pre><code class="language-typescript">interface CallNode { callee: string; args: ASTNode[] }
+
+type Statement =
+  | { kind: &quot;value&quot;; id: string; expr: ASTNode }
+  | { kind: &quot;state&quot;; id: string; init: ASTNode }
+  | { kind: &quot;query&quot;; id: string; call: CallNode; expr: ASTNode; deps?: string[] }
+  | { kind: &quot;mutation&quot;; id: string; call: CallNode; expr: ASTNode };
 </code></pre>
-<p>A statement is a component call or a top-level expression. Component calls have a <code>name</code>; expressions don't.</p>
+<p>Classification rules (determined in <code>classifyStatement</code>):</p>
+<ul><li>If the expression is <code>Comp</code> with <code>name === "Query"</code> → <code>query</code> (extracts <code>CallNode</code>, pre-computes <code>$var</code> deps)</li><li>If the expression is <code>Comp</code> with <code>name === "Mutation"</code> → <code>mutation</code> (extracts <code>CallNode</code>)</li><li>If the identifier token was <code>$variable</code> → <code>state</code> (field is <code>init</code>, not <code>expr</code>)</li><li>Everything else → <code>value</code></li></ul>
 <h3>Placeholder Nodes</h3>
-<p>During streaming, the parser may encounter incomplete expressions:</p>
-<pre><code class="language-">&lt;Button label=$cou
+<p>During streaming, the parser may encounter references to identifiers not yet defined:</p>
+<pre><code class="language-">root = Stack(header, table)
+header = TextContent(&quot;Title&quot;)
+// table not yet streamed...
 </code></pre>
-<p>The parser can't resolve <code>$cou</code> to a complete state variable (it might be <code>$count</code> or <code>$course</code>). Instead of failing, it creates a <code>Ph</code> (placeholder) node:</p>
-<pre><code class="language-typescript">{ k: &#x27;Comp&#x27;, name: &#x27;Button&#x27;, props: [{ name: &#x27;label&#x27;, value: { k: &#x27;Ph&#x27; } }] }
+<p>The materializer can't resolve <code>table</code> because it doesn't exist yet. Instead of failing, it creates a <code>Ph</code> (placeholder) node:</p>
+<pre><code class="language-typescript">{ k: &quot;Ph&quot;, n: &quot;table&quot; }
 </code></pre>
-<p>Placeholders are re-parsed on the next push when more characters arrive.</p>
-<p><strong>Aha:</strong> The streaming parser never produces invalid ASTs. When it encounters incomplete input, it creates placeholder nodes instead of failing. This means the renderer always has a valid (possibly incomplete) tree to display. The renderer handles placeholders by rendering nothing or a loading indicator for that prop.</p>
+<p>Placeholders also arise when a <code>Ref</code> node points to an identifier that creates a cycle (detected by the <code>visited</code> set in the materializer). They are replaced with real nodes on subsequent pushes when more text arrives.</p>
+<p><strong>Aha:</strong> The streaming parser never produces invalid ASTs. When the materializer encounters an unresolvable reference, it creates a placeholder node and records it in <code>meta.unresolved</code>. This means the renderer always has a valid (possibly incomplete) tree to display. The <code>Ph</code> nodes render as nothing — they're invisible gaps that fill in as the stream progresses.</p>
 <h2>Parser</h2>
-<p>Source: <code>openui/packages/lang-core/src/parser.ts</code>, <code>expressions.ts</code>, <code>statements.ts</code></p>
-<p>The parser is a recursive descent parser with two modes:</p>
+<p>Source: <code>openui/packages/lang-core/src/parser/parser.ts</code>, <code>parser/expressions.ts</code>, <code>parser/statements.ts</code></p>
+<p>The parser has two modes: one-shot and streaming.</p>
 <h3>Full Parse</h3>
-<pre><code class="language-typescript">function parse(source: string): ParseResult {
-  const tokens = tokenize(source);
-  return parseStatements(tokens);
+<pre><code class="language-typescript">// parse() preprocesses (strips markdown fences, comments), autoclosing incomplete brackets,
+// then splits into statements, parses expressions, classifies, and materializes.
+function parse(input: string, cat: ParamMap, rootName?: string): ParseResult {
+  const trimmed = preprocess(input);         // stripFences + stripComments
+  const { text, wasIncomplete } = autoClose(trimmed);  // balance brackets
+  const stmts = split(tokenize(text));       // split on depth-0 newlines
+  // classifyStatement → buildResult → materializeValue → return
 }
 </code></pre>
 <h3>Streaming Parse</h3>
-<pre><code class="language-typescript">function createStreamParser(): StreamParser {
-  let buffer = &#x27;&#x27;;
-  let completedEnd = 0;  // Watermark
-  let completedStatements: Statement[] = [];
-  let pending: Statement[] = [];
+<pre><code class="language-typescript">interface StreamParser {
+  push(chunk: string): ParseResult;   // Append chunk, return latest result
+  set(fullText: string): ParseResult; // Set full text (resets if not prefix-compatible)
+  getResult(): ParseResult;           // Get latest result without new data
+}
 
-  return {
-    push(text: string) {
-      buffer += text;
-      // Scan from watermark for complete statements
-      const { completed, pending } = scanFromWatermark(buffer, completedEnd);
-      completedStatements = completed;
-      this.pending = pending;
-      completedEnd = buffer.length - pendingSource.length;
-    },
-    buildResult(): ParseResult {
-      return mergeStatements(completedStatements, pending);
-    }
-  };
+function createStreamParser(cat: ParamMap, rootName?: string): StreamParser {
+  let buf = &quot;&quot;;
+  let completedEnd = 0;                        // Watermark
+  const completedStmtMap = new Map&lt;string, Statement&gt;();
+
+  // On each push: append to buffer, scan from watermark for depth-0 newlines,
+  // parse completed statements into cache, re-parse only the pending tail.
 }
 </code></pre>
-<p>The streaming parser caches completed statements and only re-parses the pending (incomplete) portion on each push.</p>
+<p>The streaming parser caches completed statements in a <code>Map<string, Statement></code> and only re-parses the pending (incomplete) tail on each push. The <code>set()</code> method auto-detects when text was replaced (not appended) and resets the cache.</p>
 <p>See <a href="03-streaming-parser.md">Streaming Parser</a> for the detailed streaming algorithm. See <a href="04-materializer.md">Materializer</a> for how the AST is resolved and validated. See <a href="05-evaluator.md">Evaluator</a> for how expressions are interpreted.</p>
   </article>
   <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>

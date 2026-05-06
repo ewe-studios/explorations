@@ -134,7 +134,7 @@
   <article class="prose">
 <h1>OpenUI -- Gateway Socket Protocol</h1>
 <p>The GatewaySocket is a WebSocket-based RPC client that connects the OpenClaw web client to the server. It implements a challenge-response auth handshake, RPC request/response with deduplication, exponential backoff reconnect, and device identity/pairing.</p>
-<p><strong>Aha:</strong> The GatewaySocket doesn't use a standard JSON-RPC format — it uses a custom message protocol with <code>type</code> field routing. The <code>challenge</code>/<code>auth</code> flow happens once per connection, then <code>request</code>/<code>response</code> messages handle RPC. Error responses include <code>fatal: true</code> for errors that should stop reconnection (auth failures) vs <code>fatal: false</code> for transient errors that should retry. This separation prevents infinite reconnect loops when the credentials are wrong.</p>
+<p><strong>Aha:</strong> The GatewaySocket uses a custom frame-based protocol where messages are distinguished by <code>frame.event</code> (for events like <code>connect.challenge</code>) and <code>frame.type</code> (for <code>req</code>/<code>res</code>). The auth handshake happens via an RPC <code>connect</code> call after receiving the <code>connect.challenge</code> event. The response uses a <code>hello-ok</code> pattern for the initial handshake. This separation prevents infinite reconnect loops when the credentials are wrong.</p>
 <p>Source: <code>openclaw-ui/packages/claw-client/src/lib/gateway/socket.ts</code> — WebSocket client</p>
 <h2>Message Protocol</h2>
 <h3>Connection Flow</h3>
@@ -144,20 +144,20 @@ sequenceDiagram
     participant Server as Gateway Server
 
     Client-&gt;&gt;Server: WebSocket connect
-    Server-&gt;&gt;Client: { type: &quot;challenge&quot;, nonce: &quot;...&quot; }
-    Client-&gt;&gt;Server: { type: &quot;auth&quot;, token: &quot;deviceToken&quot; }
+    Server-&gt;&gt;Client: { event: &quot;connect.challenge&quot;, nonce: &quot;...&quot; }
+    Client-&gt;&gt;Server: RPC call: { method: &quot;connect&quot;, token: &quot;deviceToken&quot; }
     alt Auth success
-        Server-&gt;&gt;Client: { type: &quot;ready&quot; }
+        Server-&gt;&gt;Client: hello-ok handshake response
     else Auth failure
         Server-&gt;&gt;Client: Close (code 4001)
     end
 
-    Client-&gt;&gt;Server: { type: &quot;request&quot;, id: 1, method: &quot;tools.invoke&quot;, params: {...} }
-    Server-&gt;&gt;Client: { type: &quot;response&quot;, id: 1, result: {...} }
+    Client-&gt;&gt;Server: { type: &quot;req&quot;, id: 1, method: &quot;tools.invoke&quot;, params: {...} }
+    Server-&gt;&gt;Client: { type: &quot;res&quot;, id: 1, payload: {...} }
 
 </div>
 <h3>Message Types</h3>
-<table><tr><th>Type</th><th>Direction</th><th>Purpose</th></tr><tr><td>`challenge`</td><td>Server → Client</td><td>Auth challenge with nonce</td></tr><tr><td>`auth`</td><td>Client → Server</td><td>Auth response with device token</td></tr><tr><td>`ready`</td><td>Server → Client</td><td>Connection authenticated</td></tr><tr><td>`request`</td><td>Client → Server</td><td>RPC request with unique ID</td></tr><tr><td>`response`</td><td>Server → Client</td><td>RPC response matching request ID</td></tr><tr><td>`event`</td><td>Server → Server</td><td>Server-initiated event (session updates, etc.)</td></tr></table>
+<table><tr><th>Type/Event</th><th>Direction</th><th>Purpose</th></tr><tr><td>`connect.challenge` (event)</td><td>Server → Client</td><td>Auth challenge with nonce</td></tr><tr><td>`connect` (RPC method)</td><td>Client → Server</td><td>Auth response with device token</td></tr><tr><td>`hello-ok`</td><td>Server → Client</td><td>Connection authenticated</td></tr><tr><td>`req`</td><td>Client → Server</td><td>RPC request with unique ID</td></tr><tr><td>`res`</td><td>Server → Client</td><td>RPC response matching request ID</td></tr><tr><td>`agent`/`chat` (events)</td><td>Server → Client</td><td>Server-initiated events (session updates, etc.)</td></tr></table>
 <h2>RPC Implementation</h2>
 <pre><code class="language-typescript">class GatewaySocket {
   private pendingRequests = new Map&lt;string, {

@@ -135,7 +135,7 @@
 <h1>OpenUI -- Streaming Parser Algorithm</h1>
 <p>The streaming parser is the most innovative component of OpenUI. It parses OpenUI Lang incrementally as tokens arrive from the LLM, caching completed statements and re-parsing only the incomplete portion on each push.</p>
 <p><strong>Aha:</strong> The streaming parser uses a watermark (<code>completedEnd</code>) to avoid re-processing already-completed statements. When new text arrives, it scans from the watermark for the next newline-at-depth-0. Everything before that newline is guaranteed complete — it was parsed on a previous push and hasn't changed. Only the text after the watermark (the "pending" portion) is re-parsed. This means parsing cost grows with the pending statement size, not the total document size.</p>
-<p>Source: <code>openui/packages/lang-core/src/parser.ts</code> — streaming parser implementation</p>
+<p>Source: <code>openui/packages/lang-core/src/parser/parser.ts</code> — streaming parser implementation</p>
 <h2>Streaming Algorithm</h2>
 <div class="mermaid">
 sequenceDiagram
@@ -144,63 +144,75 @@ sequenceDiagram
     participant Cache
     participant Renderer
 
-    LLM-&gt;&gt;Parser: push(&quot;Stack\n  &lt;Button &quot;)
-    Parser-&gt;&gt;Cache: No complete statements yet
-    Parser--&gt;&gt;Renderer: Pending: Button (incomplete)
+    LLM-&gt;&gt;Parser: push(&#x27;root = Stack(header, table)\nheader = Text&#x27;)
+    Parser-&gt;&gt;Parser: Scan from watermark, find depth-0 newline
+    Parser-&gt;&gt;Cache: Cache completed: &quot;root&quot; statement
+    Parser--&gt;&gt;Renderer: Completed: root + Pending: &quot;header&quot; (incomplete)
 
-    LLM-&gt;&gt;Parser: push(&#x27;label=&quot;Save&quot; /&gt;\n&#x27;)
+    LLM-&gt;&gt;Parser: push(&#x27;Content(&quot;Title&quot;)\n&#x27;)
     Parser-&gt;&gt;Parser: Scan from watermark, find newline
-    Parser-&gt;&gt;Cache: Cache completed: Button statement
+    Parser-&gt;&gt;Cache: Cache completed: &quot;header&quot; statement
     Parser-&gt;&gt;Parser: Update watermark
-    Parser--&gt;&gt;Renderer: Completed: Button + pending
+    Parser--&gt;&gt;Renderer: Completed: root + header
 
-    LLM-&gt;&gt;Parser: push(&quot;  &lt;Table data=$items&quot;)
-    Parser-&gt;&gt;Parser: Scan from watermark, no newline
-    Parser--&gt;&gt;Renderer: Pending: Table (incomplete)
+    LLM-&gt;&gt;Parser: push(&#x27;table = Table($items&#x27;)
+    Parser-&gt;&gt;Parser: Scan from watermark, no depth-0 newline (inside parens)
+    Parser--&gt;&gt;Renderer: Completed: root + header + Pending: table (incomplete)
 
-    LLM-&gt;&gt;Parser: push(&quot; /&gt;\n&quot;)
-    Parser-&gt;&gt;Cache: Cache completed: Table statement
+    LLM-&gt;&gt;Parser: push(&#x27;)\n&#x27;)
+    Parser-&gt;&gt;Cache: Cache completed: &quot;table&quot; statement
     Parser-&gt;&gt;Parser: Update watermark
-    Parser--&gt;&gt;Renderer: Completed: Button + Table
+    Parser--&gt;&gt;Renderer: Completed: root + header + table
 
 </div>
 <h2>Watermark Mechanism</h2>
 <pre><code class="language-">Source buffer:
-&quot;Stack\n  &lt;Button label=\&quot;Save\&quot; /&gt;\n  &lt;Table data=$items /&gt;&quot;
-                                     ↑
-                               completedEnd (watermark)
+&quot;root = Stack(header, table)\nheader = TextContent(&quot;Title&quot;)\ntable = Table($items&quot;
+                                                            ↑
+                                                      completedEnd (watermark)
 
-Before watermark: 2 complete statements (Stack, Button)
-After watermark: 1 pending statement (Table, incomplete)
+Before watermark: 2 complete statements (root, header) → cached in completedStmtMap
+After watermark: 1 pending statement (table, incomplete) → re-parsed every push
 </code></pre>
 <p>The watermark marks the boundary between completed and pending content. On each push:</p>
-<ol><li>New text is appended to the buffer</li><li>Scan from watermark for <code>newline-at-depth-0</code> (top-level newline not inside parentheses)</li><li>Parse the completed portion (watermark to found newline)</li><li>Cache the parsed statements</li><li>Update watermark to the found newline position</li><li>Re-parse the pending portion (watermark to end of buffer)</li></ol>
+<ol><li>New text is appended to <code>buf</code></li><li><code>scanNewCompleted()</code> scans from watermark tracking bracket depth and string context</li><li>Each depth-0 newline marks a statement boundary — text between boundaries is parsed and cached</li><li>Cached statements are stored in <code>completedStmtMap</code> (a <code>Map<string, Statement></code>)</li><li>Watermark (<code>completedEnd</code>) advances to the end of the last completed statement</li><li>Pending tail (watermark to end of buffer) is autoclosed and re-parsed fresh each push</li><li>Completed + pending maps are merged — pending cannot overwrite completed entries</li></ol>
 <h2>Depth Tracking</h2>
-<p>The scanner tracks parenthesis depth to identify top-level newlines:</p>
-<pre><code class="language-typescript">function findCompleteStatements(buffer: string, from: number): { completed: string, pending: string } {
-  let depth = 0;
-  for (let i = from; i &lt; buffer.length; i++) {
-    const ch = buffer[i];
-    if (ch === &#x27;(&#x27; || ch === &#x27;[&#x27; || ch === &#x27;{&#x27;) depth++;
-    if (ch === &#x27;)&#x27; || ch === &#x27;]&#x27; || ch === &#x27;}&#x27;) depth--;
-    if (ch === &#x27;\n&#x27; &amp;&amp; depth === 0) {
-      // Found a complete statement boundary
-      return {
-        completed: buffer.slice(from, i + 1),
-        pending: buffer.slice(i + 1)
-      };
+<p>The scanner (<code>scanNewCompleted</code>) tracks bracket depth, ternary depth, and string context to identify top-level newlines:</p>
+<pre><code class="language-typescript">// From parser.ts — scanNewCompleted (simplified)
+function scanNewCompleted(): number {
+  let depth = 0, ternaryDepth = 0;
+  let inStr: false | &#x27;&quot;&#x27; | &quot;&#x27;&quot; = false, esc = false;
+  let stmtStart = completedEnd;
+
+  for (let i = completedEnd; i &lt; buf.length; i++) {
+    const c = buf[i];
+    if (esc) { esc = false; continue; }
+    if (c === &#x27;\\&#x27; &amp;&amp; inStr) { esc = true; continue; }
+    if (inStr) { if (c === inStr) inStr = false; continue; }
+    if (c === &#x27;&quot;&#x27; || c === &quot;&#x27;&quot;) { inStr = c; continue; }
+
+    if (c === &#x27;(&#x27; || c === &#x27;[&#x27; || c === &#x27;{&#x27;) depth++;
+    else if (c === &#x27;)&#x27; || c === &#x27;]&#x27; || c === &#x27;}&#x27;) depth = Math.max(0, depth - 1);
+    else if (c === &#x27;?&#x27; &amp;&amp; depth === 0) ternaryDepth++;
+    else if (c === &#x27;:&#x27; &amp;&amp; depth === 0 &amp;&amp; ternaryDepth &gt; 0) ternaryDepth--;
+    else if (c === &#x27;\n&#x27; &amp;&amp; depth &lt;= 0 &amp;&amp; ternaryDepth &lt;= 0) {
+      // Look-ahead: skip if next meaningful char is ? or : (ternary continuation)
+      const t = buf.slice(stmtStart, i).trim();
+      if (t) addStmt(t);      // Parse and cache the completed statement
+      stmtStart = i + 1;
+      completedEnd = i + 1;   // Advance watermark
     }
   }
-  return { completed: &#x27;&#x27;, pending: &#x27;&#x27; };  // No complete boundary found
+  return stmtStart;
 }
 </code></pre>
-<p><strong>Aha:</strong> The depth check is critical. A newline inside a prop value or child component is not a statement boundary:</p>
+<p><strong>Aha:</strong> The depth check is critical. A newline inside a component call is not a statement boundary:</p>
 <pre><code class="language-">Text(
-  Line 1
-  Line 2
+  &quot;Line 1&quot;
+  &quot;Line 2&quot;
 )
 </code></pre>
-<p>The newlines after "Line 1" and "Line 2" are at depth 1 (inside the Text call). Only the newline after <code>)</code> is at depth 0 and marks a statement boundary.</p>
+<p>The newlines inside are at depth 1 (inside the parens). Only the newline after <code>)</code> is at depth 0 and marks a statement boundary. The ternary tracking ensures multi-line ternaries like <code>$x ? A("yes")\n  : B("no")</code> aren't split prematurely.</p>
 <h2>Statement Merge (Edit Mode)</h2>
 <p>When the user edits the generated UI, the patch overrides the existing statements:</p>
 <div class="mermaid">
@@ -232,15 +244,19 @@ flowchart TD
 <h2>Parse Errors</h2>
 <p>Errors are structured for LLM correction:</p>
 <pre><code class="language-typescript">interface OpenUIError {
-  source: &#x27;parser&#x27; | &#x27;runtime&#x27; | &#x27;query&#x27; | &#x27;mutation&#x27;;
-  code: string;
+  source: &quot;parser&quot; | &quot;runtime&quot; | &quot;query&quot; | &quot;mutation&quot;;
+  code: OpenUIErrorCode;  // &quot;unknown-component&quot; | &quot;missing-required&quot; | &quot;null-required&quot; | ...
   message: string;
-  hint?: string;  // LLM-friendly correction hint
+  statementId?: string;   // Which statement to patch (e.g. &quot;header&quot;, &quot;metrics&quot;)
+  component?: string;     // Component type (e.g. &quot;BarChart&quot;, &quot;Table&quot;)
+  path?: string;          // JSON Pointer path within props (e.g. &quot;/title&quot;)
+  toolName?: string;      // For query/mutation errors
+  hint?: string;          // Actionable fix context for the LLM
 }
 </code></pre>
 <p>The parser produces errors like:</p>
-<ul><li><code>UNCLOSED_PAREN</code>: "Expected <code>)</code> at position 15"</li><li><code>UNKNOWN_COMPONENT</code>: "Component <code>Foo</code> not found in library"</li><li><code>MISSING_REQUIRED_PROP</code>: "Component <code>Table</code> requires prop <code>data</code>"</li></ul>
-<p><strong>Aha:</strong> Error hints are designed for the LLM, not the human. A hint like "Component <code>Table</code> requires prop <code>data</code> of type <code>array</code>" gives the LLM enough information to regenerate the correct markup on the next turn. The human sees the error in the UI, but the LLM sees the hint in the system prompt.</p>
+<ul><li><code>unknown-component</code>: <code>"Unknown component "Foo" — not found in catalog or builtins"</code></li><li><code>missing-required</code>: <code>"Component "Table" requires prop "data""</code></li><li><code>excess-args</code>: <code>"Component "Button" received 5 arguments but only accepts 3"</code></li></ul>
+<p><strong>Aha:</strong> Error hints are designed for the LLM, not the human. A hint like available component names or correct signatures gives the LLM enough information to generate a correcting patch. The <code>statementId</code> tells the LLM exactly which statement to rewrite — enabling targeted surgical patches rather than full regeneration.</p>
 <p>See <a href="02-lang-core.md">Lang Core</a> for the lexer and AST. See <a href="04-materializer.md">Materializer</a> for how parsed statements are resolved. See <a href="05-evaluator.md">Evaluator</a> for how expressions are interpreted.</p>
   </article>
   <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>

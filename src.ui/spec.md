@@ -75,7 +75,7 @@ src.ui/
 | 15 | Write 13-wasm-web-patterns.md | DONE |
 | 16 | Write README.md (index) | DONE |
 | 17 | Generate HTML with build.py | DONE |
-| 18 | Grandfather Review | TODO |
+| 18 | Grandfather Review | DONE |
 
 ## Build System
 

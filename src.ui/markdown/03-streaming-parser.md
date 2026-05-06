@@ -15,80 +15,93 @@ sequenceDiagram
     participant Cache
     participant Renderer
 
-    LLM->>Parser: push("Stack\n  <Button ")
-    Parser->>Cache: No complete statements yet
-    Parser-->>Renderer: Pending: Button (incomplete)
+    LLM->>Parser: push('root = Stack(header, table)\nheader = Text')
+    Parser->>Parser: Scan from watermark, find depth-0 newline
+    Parser->>Cache: Cache completed: "root" statement
+    Parser-->>Renderer: Completed: root + Pending: "header" (incomplete)
 
-    LLM->>Parser: push('label="Save" />\n')
+    LLM->>Parser: push('Content("Title")\n')
     Parser->>Parser: Scan from watermark, find newline
-    Parser->>Cache: Cache completed: Button statement
+    Parser->>Cache: Cache completed: "header" statement
     Parser->>Parser: Update watermark
-    Parser-->>Renderer: Completed: Button + pending
+    Parser-->>Renderer: Completed: root + header
 
-    LLM->>Parser: push("  <Table data=$items")
-    Parser->>Parser: Scan from watermark, no newline
-    Parser-->>Renderer: Pending: Table (incomplete)
+    LLM->>Parser: push('table = Table($items')
+    Parser->>Parser: Scan from watermark, no depth-0 newline (inside parens)
+    Parser-->>Renderer: Completed: root + header + Pending: table (incomplete)
 
-    LLM->>Parser: push(" />\n")
-    Parser->>Cache: Cache completed: Table statement
+    LLM->>Parser: push(')\n')
+    Parser->>Cache: Cache completed: "table" statement
     Parser->>Parser: Update watermark
-    Parser-->>Renderer: Completed: Button + Table
+    Parser-->>Renderer: Completed: root + header + table
 ```
 
 ## Watermark Mechanism
 
 ```
 Source buffer:
-"Stack\n  <Button label=\"Save\" />\n  <Table data=$items />"
-                                     ↑
-                               completedEnd (watermark)
+"root = Stack(header, table)\nheader = TextContent("Title")\ntable = Table($items"
+                                                            ↑
+                                                      completedEnd (watermark)
 
-Before watermark: 2 complete statements (Stack, Button)
-After watermark: 1 pending statement (Table, incomplete)
+Before watermark: 2 complete statements (root, header) → cached in completedStmtMap
+After watermark: 1 pending statement (table, incomplete) → re-parsed every push
 ```
 
 The watermark marks the boundary between completed and pending content. On each push:
 
-1. New text is appended to the buffer
-2. Scan from watermark for `newline-at-depth-0` (top-level newline not inside parentheses)
-3. Parse the completed portion (watermark to found newline)
-4. Cache the parsed statements
-5. Update watermark to the found newline position
-6. Re-parse the pending portion (watermark to end of buffer)
+1. New text is appended to `buf`
+2. `scanNewCompleted()` scans from watermark tracking bracket depth and string context
+3. Each depth-0 newline marks a statement boundary — text between boundaries is parsed and cached
+4. Cached statements are stored in `completedStmtMap` (a `Map<string, Statement>`)
+5. Watermark (`completedEnd`) advances to the end of the last completed statement
+6. Pending tail (watermark to end of buffer) is autoclosed and re-parsed fresh each push
+7. Completed + pending maps are merged — pending cannot overwrite completed entries
 
 ## Depth Tracking
 
-The scanner tracks parenthesis depth to identify top-level newlines:
+The scanner (`scanNewCompleted`) tracks bracket depth, ternary depth, and string context to identify top-level newlines:
 
 ```typescript
-function findCompleteStatements(buffer: string, from: number): { completed: string, pending: string } {
-  let depth = 0;
-  for (let i = from; i < buffer.length; i++) {
-    const ch = buffer[i];
-    if (ch === '(' || ch === '[' || ch === '{') depth++;
-    if (ch === ')' || ch === ']' || ch === '}') depth--;
-    if (ch === '\n' && depth === 0) {
-      // Found a complete statement boundary
-      return {
-        completed: buffer.slice(from, i + 1),
-        pending: buffer.slice(i + 1)
-      };
+// From parser.ts — scanNewCompleted (simplified)
+function scanNewCompleted(): number {
+  let depth = 0, ternaryDepth = 0;
+  let inStr: false | '"' | "'" = false, esc = false;
+  let stmtStart = completedEnd;
+
+  for (let i = completedEnd; i < buf.length; i++) {
+    const c = buf[i];
+    if (esc) { esc = false; continue; }
+    if (c === '\\' && inStr) { esc = true; continue; }
+    if (inStr) { if (c === inStr) inStr = false; continue; }
+    if (c === '"' || c === "'") { inStr = c; continue; }
+
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') depth = Math.max(0, depth - 1);
+    else if (c === '?' && depth === 0) ternaryDepth++;
+    else if (c === ':' && depth === 0 && ternaryDepth > 0) ternaryDepth--;
+    else if (c === '\n' && depth <= 0 && ternaryDepth <= 0) {
+      // Look-ahead: skip if next meaningful char is ? or : (ternary continuation)
+      const t = buf.slice(stmtStart, i).trim();
+      if (t) addStmt(t);      // Parse and cache the completed statement
+      stmtStart = i + 1;
+      completedEnd = i + 1;   // Advance watermark
     }
   }
-  return { completed: '', pending: '' };  // No complete boundary found
+  return stmtStart;
 }
 ```
 
-**Aha:** The depth check is critical. A newline inside a prop value or child component is not a statement boundary:
+**Aha:** The depth check is critical. A newline inside a component call is not a statement boundary:
 
 ```
 Text(
-  Line 1
-  Line 2
+  "Line 1"
+  "Line 2"
 )
 ```
 
-The newlines after "Line 1" and "Line 2" are at depth 1 (inside the Text call). Only the newline after `)` is at depth 0 and marks a statement boundary.
+The newlines inside are at depth 1 (inside the parens). Only the newline after `)` is at depth 0 and marks a statement boundary. The ternary tracking ensures multi-line ternaries like `$x ? A("yes")\n  : B("no")` aren't split prematurely.
 
 ## Statement Merge (Edit Mode)
 
@@ -136,19 +149,23 @@ Errors are structured for LLM correction:
 
 ```typescript
 interface OpenUIError {
-  source: 'parser' | 'runtime' | 'query' | 'mutation';
-  code: string;
+  source: "parser" | "runtime" | "query" | "mutation";
+  code: OpenUIErrorCode;  // "unknown-component" | "missing-required" | "null-required" | ...
   message: string;
-  hint?: string;  // LLM-friendly correction hint
+  statementId?: string;   // Which statement to patch (e.g. "header", "metrics")
+  component?: string;     // Component type (e.g. "BarChart", "Table")
+  path?: string;          // JSON Pointer path within props (e.g. "/title")
+  toolName?: string;      // For query/mutation errors
+  hint?: string;          // Actionable fix context for the LLM
 }
 ```
 
 The parser produces errors like:
-- `UNCLOSED_PAREN`: "Expected `)` at position 15"
-- `UNKNOWN_COMPONENT`: "Component `Foo` not found in library"
-- `MISSING_REQUIRED_PROP`: "Component `Table` requires prop `data`"
+- `unknown-component`: `"Unknown component "Foo" — not found in catalog or builtins"`
+- `missing-required`: `"Component "Table" requires prop "data""`
+- `excess-args`: `"Component "Button" received 5 arguments but only accepts 3"`
 
-**Aha:** Error hints are designed for the LLM, not the human. A hint like "Component `Table` requires prop `data` of type `array`" gives the LLM enough information to regenerate the correct markup on the next turn. The human sees the error in the UI, but the LLM sees the hint in the system prompt.
+**Aha:** Error hints are designed for the LLM, not the human. A hint like available component names or correct signatures gives the LLM enough information to generate a correcting patch. The `statementId` tells the LLM exactly which statement to rewrite — enabling targeted surgical patches rather than full regeneration.
 
 See [Lang Core](02-lang-core.md) for the lexer and AST.
 See [Materializer](04-materializer.md) for how parsed statements are resolved.
