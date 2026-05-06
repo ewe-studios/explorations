@@ -43,37 +43,39 @@ sequenceDiagram
 
 ```typescript
 class GatewaySocket {
-  private pendingRequests = new Map<string, {
-    resolve: (value: any) => void;
-    reject: (error: Error) => void;
-    timer: ReturnType<typeof setTimeout>;
+  private pendingRpcs = new Map<string, {
+    resolve: (v: unknown) => void;
+    reject: (e: Error) => void;
+    method: string;
   }>();
+  private rpcCounter = 0;
 
-  async invoke(method: string, params: any, timeout = 30000): Promise<any> {
-    const id = crypto.randomUUID();
-    const promise = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingRequests.delete(id);
-        reject(new Error(`RPC timeout: ${method}`));
-      }, timeout);
-      this.pendingRequests.set(id, { resolve, reject, timer });
+  async request<T>(method: string, params?: unknown): Promise<T> {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      throw new Error("Not connected");
+    }
+    const id = `rpc-${++this.rpcCounter}`;
+    const frame: GatewayFrame = { type: "req", id, method, params };
+    return new Promise<T>((resolve, reject) => {
+      this.pendingRpcs.set(id, { resolve, reject, method });
+      this.ws!.send(JSON.stringify(frame));
     });
-
-    this.send({ type: 'request', id, method, params });
-    return promise;
   }
 
-  handleMessage(msg: GatewayMessage) {
-    if (msg.type === 'response') {
-      const pending = this.pendingRequests.get(msg.id);
-      if (pending) {
-        clearTimeout(pending.timer);
-        this.pendingRequests.delete(msg.id);
-        if (msg.error) {
-          pending.reject(new Error(msg.error));
-        } else {
-          pending.resolve(msg.result);
-        }
+  handleMessage(raw: string): void {
+    const frame = JSON.parse(raw) as GatewayFrame;
+
+    if (frame.type === "res") {
+      const pending = this.pendingRpcs.get(frame.id);
+      if (!pending) return;
+      this.pendingRpcs.delete(frame.id);
+      if (frame.ok) {
+        pending.resolve(frame.payload);
+      } else {
+        const error = this.parseError(frame.error);
+        const rejection = new Error(error.message ?? "RPC error");
+        rejection.cause = error;
+        pending.reject(rejection);
       }
     }
   }

@@ -98,7 +98,7 @@ Source: `openui/packages/lang-core/src/`
 import { createStreamParser } from './parser/parser';
 
 const parser = createStreamParser();
-parser.push('<Button label="Click me" />');
+parser.push('root = Card([header, content])\nheader = CardHeader("Title")\n');
 const result = parser.buildResult();  // { statements, errors }
 ```
 

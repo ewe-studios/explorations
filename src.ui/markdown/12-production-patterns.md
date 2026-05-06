@@ -11,15 +11,15 @@ This document covers production considerations for running the OpenUI ecosystem:
 LLM responses arrive as SSE chunks. Each chunk may contain partial OpenUI Lang:
 
 ```
-Chunk 1: "root = Stack(header, btn)\nheader = TextCon"
+Chunk 1: "root = Card([header, btn])\nheader = TextCon"
 Chunk 2: "tent(\"Hello\")\nbtn = Button(\"S"
 Chunk 3: "ave\")\n"
 ```
 
 The streaming parser handles this correctly:
-1. Chunk 1 arrives → found depth-0 newline after `Stack(header, btn)` → complete root, pending header
-2. Chunk 2 arrives → found depth-0 newline after `TextContent("Hello")` → complete header, pending btn
-3. Chunk 3 arrives → found depth-0 newline after `Button("Save")` → complete btn
+1. Chunk 1 arrives → found depth-0 newline after `Card([header, btn])` → root complete, pending header
+2. Chunk 2 arrives → found depth-0 newline after `TextContent("Hello")` → header complete, pending btn
+3. Chunk 3 arrives → found depth-0 newline after `Button("Save")` → btn complete
 
 ### Backpressure
 

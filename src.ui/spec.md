@@ -6,11 +6,11 @@
 - **Language:** TypeScript/JavaScript (monorepo)
 - **Author:** OpenUI contributors
 - **License:** MIT
-- **Sub-projects:** 12+ sub-projects including openui core framework, openclaw-ui integration, examples, voice agent, analytics, CLI tooling, plus src.nexuio (agent platforms) and src.OrvaStudios (creative tools)
+- **Sub-projects:** 14+ sub-projects including openui core framework, openclaw-ui integration, examples, voice agent, C1 demo apps (analytics, canvas, search), analytics, CLI tooling, plus src.nexuio (agent platforms) and src.OrvaStudios (creative tools)
 
 ## What This Project Is
 
-OpenUI is a full-stack Generative UI framework for building AI-powered chat and copilot interfaces. The core innovation is **OpenUI Lang** — a compact, streaming-first DSL that LLMs emit as structured UI markup. The markup is progressively parsed, schema-aware materialized, and rendered as React components. The ecosystem includes an OpenClaw agent integration (server-side plugin + Next.js client), 20+ example apps, and voice/streamlit integrations.
+OpenUI is a full-stack Generative UI framework for building AI-powered chat and copilot interfaces. The core innovation is **OpenUI Lang** — a compact, streaming-first DSL that LLMs emit as structured UI markup. The markup is progressively parsed, schema-aware materialized, and rendered as React components. The ecosystem includes an OpenClaw agent integration (server-side plugin + Next.js client), 14 example apps across multiple frameworks, C1/Thesys demo apps, voice/streamlit integrations, and the src.nexuio and src.OrvaStudios project collections.
 
 ## Documentation Goal
 
@@ -78,6 +78,9 @@ src.ui/
 | 18 | Grandfather Review | DONE |
 | 19 | Write 14-nexuio-ecosystem.md | DONE |
 | 20 | Write 15-orvastudios-ecosystem.md | DONE |
+| 21 | Write 16-c1-thesys-demos.md | DONE |
+| 22 | Write 17-tools-plugins-examples.md | DONE |
+| 23 | Grandfather Review (all docs) | DONE |
 
 ## Build System
 

@@ -160,37 +160,39 @@ sequenceDiagram
 <table><tr><th>Type/Event</th><th>Direction</th><th>Purpose</th></tr><tr><td>`connect.challenge` (event)</td><td>Server → Client</td><td>Auth challenge with nonce</td></tr><tr><td>`connect` (RPC method)</td><td>Client → Server</td><td>Auth response with device token</td></tr><tr><td>`hello-ok`</td><td>Server → Client</td><td>Connection authenticated</td></tr><tr><td>`req`</td><td>Client → Server</td><td>RPC request with unique ID</td></tr><tr><td>`res`</td><td>Server → Client</td><td>RPC response matching request ID</td></tr><tr><td>`agent`/`chat` (events)</td><td>Server → Client</td><td>Server-initiated events (session updates, etc.)</td></tr></table>
 <h2>RPC Implementation</h2>
 <pre><code class="language-typescript">class GatewaySocket {
-  private pendingRequests = new Map&lt;string, {
-    resolve: (value: any) =&gt; void;
-    reject: (error: Error) =&gt; void;
-    timer: ReturnType&lt;typeof setTimeout&gt;;
+  private pendingRpcs = new Map&lt;string, {
+    resolve: (v: unknown) =&gt; void;
+    reject: (e: Error) =&gt; void;
+    method: string;
   }&gt;();
+  private rpcCounter = 0;
 
-  async invoke(method: string, params: any, timeout = 30000): Promise&lt;any&gt; {
-    const id = crypto.randomUUID();
-    const promise = new Promise((resolve, reject) =&gt; {
-      const timer = setTimeout(() =&gt; {
-        this.pendingRequests.delete(id);
-        reject(new Error(`RPC timeout: ${method}`));
-      }, timeout);
-      this.pendingRequests.set(id, { resolve, reject, timer });
+  async request&lt;T&gt;(method: string, params?: unknown): Promise&lt;T&gt; {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      throw new Error(&quot;Not connected&quot;);
+    }
+    const id = `rpc-${++this.rpcCounter}`;
+    const frame: GatewayFrame = { type: &quot;req&quot;, id, method, params };
+    return new Promise&lt;T&gt;((resolve, reject) =&gt; {
+      this.pendingRpcs.set(id, { resolve, reject, method });
+      this.ws!.send(JSON.stringify(frame));
     });
-
-    this.send({ type: &#x27;request&#x27;, id, method, params });
-    return promise;
   }
 
-  handleMessage(msg: GatewayMessage) {
-    if (msg.type === &#x27;response&#x27;) {
-      const pending = this.pendingRequests.get(msg.id);
-      if (pending) {
-        clearTimeout(pending.timer);
-        this.pendingRequests.delete(msg.id);
-        if (msg.error) {
-          pending.reject(new Error(msg.error));
-        } else {
-          pending.resolve(msg.result);
-        }
+  handleMessage(raw: string): void {
+    const frame = JSON.parse(raw) as GatewayFrame;
+
+    if (frame.type === &quot;res&quot;) {
+      const pending = this.pendingRpcs.get(frame.id);
+      if (!pending) return;
+      this.pendingRpcs.delete(frame.id);
+      if (frame.ok) {
+        pending.resolve(frame.payload);
+      } else {
+        const error = this.parseError(frame.error);
+        const rejection = new Error(error.message ?? &quot;RPC error&quot;);
+        rejection.cause = error;
+        pending.reject(rejection);
       }
     }
   }

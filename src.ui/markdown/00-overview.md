@@ -44,10 +44,12 @@ Source: `openui/packages/react-lang/src/` — React renderer
 | `openui/` | Core framework: lang-core parser, react-lang renderer, react-ui components, react-headless chat state |
 | `openclaw-ui/` | OpenClaw agent integration: claw-plugin (server) + claw-client (Next.js) |
 | `openwebui-plugin/` | Python plugin for OpenWebUI integration |
-| `examples/` | 20+ example apps (Next.js, LangChain, LangGraph, CrewAI, etc.) |
+| `examples/` | 14 example apps (Next.js, Svelte, Vue, React Native, Mastra, Vercel AI SDK) |
 | `voice-agent-generativeui/` | Voice agent with LiveKit integration |
-| `create-c1-app/` | CLI scaffolding tool for new apps |
-| `streamlit-thesys-genui/` | Python Streamlit component |
+| `create-c1-app/` | CLI scaffolding tool for C1 apps |
+| `streamlit-thesys-genui/` | Python Streamlit component for AI charts |
 
+See [C1/Thesys Demos](16-c1-thesys-demos.md) for analytics, canvas, search, and voice agent demos.
+See [Tools, Plugins, Examples](17-tools-plugins-examples.md) for OpenWebUI plugin, CLI tooling, and 14 example apps.
 See [Architecture](01-architecture.md) for the full dependency graph.
 See [Lang Core](02-lang-core.md) for the DSL deep dive.

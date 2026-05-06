@@ -24,3 +24,8 @@
 
 - [Nexuio Ecosystem](14-nexuio-ecosystem.md) — Agent platforms: nexu (IM agents), multica (managed agents), open-codesign, open-design
 - [OrvaStudios Ecosystem](15-orvastudios-ecosystem.md) — Creative tools: hance (GPU video), impeccable (design lint), radiant (94 shaders), lite-query
+
+## C1/Thesys Demos
+
+- [C1/Thesys Demo Apps](16-c1-thesys-demos.md) — Analytics, canvas, search, voice agent, Streamlit — Thesys C1 ecosystem integrations
+- [Tools, Plugins, Examples](17-tools-plugins-examples.md) — OpenWebUI plugin, create-c1-app CLI, make-no-mistakes skill, 14 example apps
