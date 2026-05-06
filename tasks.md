@@ -1,4 +1,4 @@
-# Todo - Remaining Exploration Tasks
+# Todo - Exploration Tasks Status
 
 ## CRITICAL: Depth Requirement
 
@@ -6,58 +6,66 @@
 
 ## Sequential Task List
 
-Complete these in order. Do NOT skip grandfather review. Do NOT produce shallow summaries.
+### Phase 0: mastra — COMPLETE
 
-### Phase 0: mastra  (./mastra)
+- [x] Read every source file, document every agent, tool, memory system, and model router
+- [x] Write 22 markdown docs covering agent core, agent loop, tool system, model router, memory system, processors, multi-model routing, data flow, context compression, async patterns, RL training traces, plugin ecosystem, examples
+- [x] Grandfather review — verified names, flows, component interactions against source
+- [x] Apply grandfather review fixes
+- [x] Rebuild HTML with build.py, all pages render
+- [x] Commit
 
-- [ ] Expand exploration of mastra's context memory system - observations, reflections 
-- [ ] Pull the prompts it runs and the overall logic of the process in how it interleaves the 
-- [ ] agents (what model it uses, what services it uses, prompts for each step) to create memories, observations, working memory and reflections that help remember and pull up hold interactions with the users without hitting context limits.
+### Phase 1: src.datastar (datastar core) — COMPLETE
 
-### Phase 1: src.datastar — Rewrite from scratch
+- [x] Read every source file, document engine, signals, genRx compiler, all plugin types, DOM morphing, SSE streaming
+- [x] Write 20 markdown docs covering all aspects of datastar core
+- [x] Grandfather review — verified names, numbers, flows
+- [x] Applied grandfather review fixes (line counts, missing flags)
+- [x] Rebuilt HTML with build.py
+- [x] Commit
 
-- [x] Initial exploration (shallow — needs full rewrite)
-- [x] **1.1:** Read every source file in `/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.datastar/datastar/` — document every package, every type, every function, every algorithm
-- [x] **1.2:** Rewrite `./src.datastar/datastar/` documentation — 15 documents covering engine, signals, genRx compiler, 3 plugin types, all 23 plugins, DOM morphing, SSE streaming, utilities, Rust equivalents, production patterns, web tooling
-- [x] **1.3:** Grandfather review — verified names, numbers (line counts, fetch defaults, plugin counts, event names), flows, coverage
-- [x] **1.4:** Applied grandfather review fixes (line counts off-by-1, missing None=0 in ReactiveFlags)
-- [x] **1.5:** Rebuilt HTML with build.py, all 16 pages render
-- [ ] create a index.html for all the projects in ./src.datastar so users can navigate from root to 
-- [ ] all the others.
-- [ ] **1.6:** Commit
+### Phase 2: src.orbitinghail — COMPLETE
 
-### Phase 2: src.orbitinghail — Rewrite from scratch
+- [x] Read every source file — LSM tree, fjall database, graft storage, splinter bitmap, SQLSync, S3/remote sync
+- [x] Write 14 markdown docs covering architecture, all storage engines, protocols, validation, Rust equivalents, production patterns, WASM/web patterns
+- [x] Grandfather review — verified struct fields, API names, file counts, stdlib commands
+- [x] Applied grandfather review fixes (S3/verification/LSM corrections)
+- [x] Rebuilt HTML with build.py
+- [x] Commit
 
-- [x] Initial exploration (shallow — needs full rewrite)
-- [ ] **2.1:** Read every source file in `/home/darkvoid/Boxxed/@formulas/src.rust/src.orbitinghail/` — document every crate, every type, every algorithm
-- [ ] **2.2:** Rewrite `./src.orbitinghail/orbitinghail/` documentation — as many documents and as much content as needed. Output goes inside `./src.orbitinghail/orbitinghail/` with its own `spec.md`, `markdown/`, `html/`.
-- [ ] **2.3:** Grandfather review — verify every name, number, and flow against source
-- [ ] create a index.html for all the projects in ./src.datastar so users can navigate from root to 
-- [ ] all the others.
-- [ ] **2.4:** Apply all grandfather review fixes
-- [ ] **2.5:** Rebuild HTML with build.py, verify all pages render
-- [ ] **2.6:** Commit
+### Phase 3: src.ui — COMPLETE
 
-### Phase 3: src.ui — Rewrite from scratch + cover all 11 sub-projects
+- [x] Read every source file across all 12 sub-projects (openui, openclaw-ui, react-lang, react-ui, react-headless, lang-core, thesys C1, etc.)
+- [x] Write 18 markdown docs covering OpenUI Lang, streaming parser, materializer, evaluator, React renderer, component library (53 components), OpenClaw plugin, gateway socket, storage patterns, Rust equivalents, production patterns, WASM/web patterns, nexuio ecosystem, OrvaStudios ecosystem, C1/Thesys demos, tools/plugins/examples
+- [x] Grandfather review — verified component counts, action types, gateway socket protocol, syntax across all docs
+- [x] Applied grandfather review fixes (component count 60+→53, Stack→Card, ActionEvent types, GatewaySocket pseudo-code, missing components, function-call syntax)
+- [x] Rebuilt HTML with build.py
+- [x] Commit
 
-- [x] Initial exploration (shallow — needs full rewrite)
-- [ ] **3.1:** Read every source file in `/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.ui/` — all 12 sub-projects
-- [ ] **3.2:** Rewrite `./src.ui/ui/` documentation — as many documents and as much content as needed. Output goes inside `./src.ui/ui/` with its own `spec.md`, `markdown/`, `html/`.
-- [ ] **3.3:** Grandfather review — verify every name, number, and flow against source
-- [ ] create a index.html for all the projects in ./src.datastar so users can navigate from root to 
-- [ ] all the others.
-- [ ] **3.4:** Apply all grandfather review fixes
-- [ ] **3.5:** Rebuild HTML with build.py, verify all pages render
-- [ ] **3.6:** Commit
+### Phase 4: src.datastar (other projects) — COMPLETE
 
+- [x] **xs:** 11 markdown docs covering storage engine, frame model, scru128 IDs, indexing, API transport, processor system, nushell integration, CLI commands
+- [x] **yoke:** 9 markdown docs covering JSONL protocol, agent loop, providers, tools, context management, nushell tool
+- [x] **http-nu:** 4 markdown docs covering architecture, scripting, features
+- [x] **ecosystem:** 3 markdown docs covering utilities, nushell ecosystem, network apps
+- [x] All projects grandfather reviewed, HTML rebuilt, committed
 
-### Phase 4: src.datstar — Rewrite other directories projects in datastar
+### Phase 5: Index pages — COMPLETE
 
-- [ ] **1.1:** Read each project and create an exploration for it from `/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.datastar` (excluding data-star and data-star-rust  - already done) — document every package, every type, every function, every algorithm
-- [ ] **1.2:** Write to `./src.datastar/[projectdir_name]/` documentation — as many documents and as much content as needed to fully teach the project. Output goes inside `./src.datastar/[projectdir_name]/` with its own `spec.md`, `markdown/`, `html/`.
-- [ ] create a index.html for all the projects in ./src.datastar so users can navigate from root to 
-- [ ] all the others.
-- [ ] **1.3:** Grandfather review — verify every name, number, and flow against source
-- [ ] **1.4:** Apply all grandfather review fixes
-- [ ] **1.5:** Rebuild HTML with build.py, verify all pages render
-- [ ] **1.6:** Commit
+- [x] Created index.html for src.datastar (root navigation to all sub-projects)
+- [x] Created index.html for src.orbitinghail
+- [x] Created index.html for src.ui
+
+## Summary
+
+| Phase | Markdown Docs | Status |
+|-------|---------------|--------|
+| mastra | 22 | COMPLETE |
+| datastar (core) | 20 | COMPLETE |
+| orbitinghail | 14 | COMPLETE |
+| ui | 18 | COMPLETE |
+| xs | 11 | COMPLETE |
+| yoke | 9 | COMPLETE |
+| http-nu | 4 | COMPLETE |
+| ecosystem | 3 | COMPLETE |
+| **Total** | **101** | **All complete** |
