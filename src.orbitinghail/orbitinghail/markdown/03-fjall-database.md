@@ -171,6 +171,27 @@ flowchart TD
 
 The flush worker runs when the memtable is full. The compaction worker runs when the number of SSTables exceeds a threshold. Both run in the background — writes and reads continue during maintenance.
 
+### Flush Worker Detail
+
+Source: `fjall/src/flush/worker.rs`
+
+```rust
+pub fn run(task: &Task, write_buffer_manager: &WriteBufferManager, snapshot_tracker: &SnapshotTracker) {
+    let gc_watermark = snapshot_tracker.get_seqno_safe_to_gc();
+    let flush_lock = task.keyspace.tree.get_flush_lock();
+    let flushed_bytes = task.keyspace.tree.flush(&flush_lock, gc_watermark)?;
+    write_buffer_manager.free(flushed_bytes);
+}
+```
+
+The flush worker:
+1. Gets the GC watermark from the `SnapshotTracker` — items below this seqno can have old versions removed
+2. Acquires the per-keyspace flush lock (prevents concurrent flushes of the same keyspace)
+3. Calls `tree.flush()` which collects all sealed memtables, creates a sort-merge iterator over them, and writes them to SSTable(s) via the `Writer` pipeline (see [LSM-Tree: SSTable Write Path](02-lsm-tree.md#sstable-write-path-deep-dive))
+4. Frees the flushed bytes from the `WriteBufferManager` — this tracks total memory used across all keyspaces
+
+**Aha:** The `WriteBufferManager` enforces a global memory budget across all keyspaces. Even though each keyspace has its own `max_memtable_size`, the total memory used by all memtables (active + sealed awaiting flush) is bounded. When the global budget is exhausted, new writes block until the flush worker frees space. This prevents OOM in multi-keyspace scenarios where all keyspaces fill simultaneously.
+
 ## Configuration
 
 ```rust

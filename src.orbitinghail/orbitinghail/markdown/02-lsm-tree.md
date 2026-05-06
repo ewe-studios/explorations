@@ -227,6 +227,185 @@ pub struct Cache {
 
 Uses `quick_cache` with `FxBuildHasher` for LRU caching of data blocks and blob values. Hot blocks stay in memory, avoiding disk reads. The cache key is a 4-tuple `(tag, root_id, table_id, offset)` where the tag distinguishes block vs blob entries.
 
+## SSTable Write Path (Deep Dive)
+
+Source: `lsm-tree/src/table/writer/mod.rs`
+Source: `lsm-tree/src/table/block/mod.rs`
+Source: `lsm-tree/src/abstract_tree.rs` — flush orchestration
+
+The SSTable write path is triggered when a frozen memtable needs to be persisted to disk. This is the most important write operation in the system — every piece of durable data passes through this path.
+
+### Flush Trigger
+
+```mermaid
+sequenceDiagram
+    participant Fjall as Fjall Flush Worker
+    participant LSM as lsm-tree AbstractTree
+    participant Merger as Merger (sort merge)
+    participant Writer as SSTable Writer
+    participant Disk as Filesystem
+
+    Fjall->>LSM: flush(&flush_lock, gc_watermark)
+    LSM->>LSM: Collect sealed memtables
+    LSM->>Merger: Create merge iterator over all sealed memtables
+    LSM->>Writer: MultiWriter::new(folder, table_id_counter, 64MiB limit, level=0)
+    loop For each item in sorted merge stream
+        Merger-->>Writer: InternalValue (key + value + seqno + type)
+        Writer->>Writer: Buffer in chunk until chunk_size >= data_block_size
+        Writer->>Writer: spill_block() — encode, compress, write to disk
+    end
+    Writer->>Disk: finish() — write index, filter, meta, fsync
+    LSM->>LSM: register_tables() — add to version history
+```
+
+### Writer Pipeline
+
+The `Writer` struct orchestrates the entire SSTable file creation:
+
+```rust
+// lsm-tree/src/table/writer/mod.rs
+pub struct Writer {
+    file_writer: sfa::Writer<ChecksummedWriter<BufWriter<File>>>,
+    index_writer: Box<dyn BlockIndexWriter>,
+    filter_writer: Box<dyn FilterWriter>,
+    chunk: Vec<InternalValue>,      // buffered items for current block
+    chunk_size: usize,              // byte size of buffered items
+    data_block_size: u32,           // target block size (default 4096)
+    data_block_restart_interval: u8, // prefix compression restart (default 16)
+    data_block_compression: CompressionType,
+    meta: Metadata,                 // accumulates table statistics
+    // ...
+}
+```
+
+**Key insight:** The SSTable file is written as an **SFA archive** (Simple File-based Archive). Each section (data blocks, index, filter, metadata) is a named section in the archive. The `sfa::Writer` tracks section boundaries and writes a Table of Contents at the end. This means the SSTable reader can seek directly to any section by name.
+
+### Block Spilling
+
+When `chunk_size >= data_block_size`, the Writer calls `spill_block()`:
+
+```rust
+fn spill_block(&mut self) -> Result<()> {
+    // 1. Encode items into a data block with prefix compression
+    DataBlock::encode_into(
+        &mut self.block_buffer,
+        &self.chunk,
+        self.data_block_restart_interval,  // full key stored every N items
+        self.data_block_hash_ratio,        // optional hash index
+    )?;
+
+    // 2. Compress and write the block (header + data)
+    let header = Block::write_into(
+        &mut self.file_writer,
+        &self.block_buffer,
+        BlockType::Data,
+        self.data_block_compression,  // None or Lz4
+    )?;
+
+    // 3. Register block in the index writer
+    self.index_writer.register_data_block(KeyedBlockHandle::new(
+        last_key, last_seqno, BlockHandle::new(file_pos, bytes_written)
+    ))?;
+
+    // 4. Update metadata (file_pos, item_count, data_block_count)
+    self.chunk.clear();
+}
+```
+
+### Block Encoding (on-disk format)
+
+Each block is written as `Header + compressed_data`:
+
+```
+┌─────────────────────────────────────────┐
+│ Header (fixed size)                     │
+│  - block_type: BlockType (u8)           │
+│  - checksum: XXH3-128 of compressed data│
+│  - data_length: u32 (compressed size)   │
+│  - uncompressed_length: u32             │
+├─────────────────────────────────────────┤
+│ Compressed Data (LZ4 or raw)            │
+│  - Prefix-compressed key-value pairs    │
+│  - Binary index (restart points)        │
+│  - Hash index (optional)                │
+│  - Trailer (block metadata)             │
+└─────────────────────────────────────────┘
+```
+
+The checksum is computed over the **compressed** data — this means corruption in compressed bytes is caught before decompression.
+
+### Finish Sequence
+
+When all items have been written, `Writer::finish()` runs:
+
+```
+1. spill_block()           — flush remaining buffered items
+2. index_writer.finish()   — write index blocks (binary search over data blocks)
+3. filter_writer.finish()  — write bloom filter blocks
+4. write linked_blob_files — if BlobTree, record associated blob file IDs
+5. write "table_version"   — version byte (currently 0x3)
+6. write "meta" section    — all metadata as a DataBlock:
+     block_count#data, block_count#filter, block_count#index,
+     checksum_type, compression#data, compression#index,
+     crate_version, created_at, data_block_hash_ratio,
+     file_size, filter_hash_type, initial_level,
+     item_count, key#max, key#min, key_count,
+     prefix_truncation#data, prefix_truncation#index,
+     restart_interval#data, restart_interval#index,
+     seqno#max, seqno#min, table_id, table_version,
+     tombstone_count, user_data_size,
+     weak_tombstone_count, weak_tombstone_reclaimable
+7. file.sync_all()         — fsync the SSTable file
+8. fsync_directory(parent)  — fsync the parent directory (ensures file entry is durable)
+```
+
+**Aha:** The fsync of the parent directory (step 8) is critical on Unix systems. `sync_all()` on the file ensures the file's data and metadata are on disk, but the *directory entry* pointing to the file might still be in the page cache. Without `fsync_directory`, a crash could leave the file's bytes on disk but no directory entry pointing to them — the file would be lost. This is a subtle durability requirement that many implementations miss.
+
+### Running Checksum (ChecksummedWriter)
+
+```rust
+pub struct ChecksummedWriter<W: Write> {
+    inner: W,
+    hasher: xxhash_rust::xxh3::Xxh3Default,
+}
+
+impl<W: Write> Write for ChecksummedWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.hasher.update(buf);   // hash every byte written
+        self.inner.write(buf)
+    }
+}
+```
+
+The `ChecksummedWriter` wraps the file writer and computes a running XXH3-128 hash of every byte written to the SSTable. After `finish()`, this whole-file checksum is returned alongside the TableId. It can detect any corruption of the SSTable file at load time without reading every block individually.
+
+### MultiWriter (Table Size Limit)
+
+For large memtables, `MultiWriter` splits output across multiple SSTable files:
+
+```rust
+let table_writer = MultiWriter::new(
+    folder,
+    table_id_counter,
+    64 * 1_024 * 1_024,  // max 64 MiB per SSTable file
+    level,               // initial level (0 for flush)
+)?;
+```
+
+If a single flush would produce a table larger than 64 MiB, the MultiWriter starts a new SSTable file. This prevents individual SSTables from growing too large (which would make compaction take too long and use too much memory).
+
+### Graft's Write Path to S3
+
+For comparison, graft's remote write path follows a different pattern. Instead of flushing individual blocks to disk, graft:
+
+1. **Collects pages** from local fjall keyspaces (the `pages` keyspace holds 4KB pages)
+2. **Builds a segment** using `SegmentBuilder` — pages are ZStd-compressed in frames of 64 pages
+3. **Computes CommitHash** via `CommitHashBuilder` — BLAKE3 hash of all page data in order
+4. **Uploads segment** — streaming upload via `put_segment` with 5 concurrent connections
+5. **Uploads commit** — atomic `put_commit` with `if_not_exists: true`
+
+The key difference: fjall/lsm-tree writes many small blocks to a local file with prefix compression and bloom filters (optimized for random reads). Graft writes large compressed segments to S3 with a frame index (optimized for bulk transfer and byte-range reads).
+
 ## Replicating in Rust
 
 The `lsm-tree` crate is already a Rust implementation. For building on top of it:

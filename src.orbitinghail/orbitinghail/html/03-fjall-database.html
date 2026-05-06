@@ -265,6 +265,18 @@ flowchart TD
 
 </div>
 <p>The flush worker runs when the memtable is full. The compaction worker runs when the number of SSTables exceeds a threshold. Both run in the background — writes and reads continue during maintenance.</p>
+<h3>Flush Worker Detail</h3>
+<p>Source: <code>fjall/src/flush/worker.rs</code></p>
+<pre><code class="language-rust">pub fn run(task: &amp;Task, write_buffer_manager: &amp;WriteBufferManager, snapshot_tracker: &amp;SnapshotTracker) {
+    let gc_watermark = snapshot_tracker.get_seqno_safe_to_gc();
+    let flush_lock = task.keyspace.tree.get_flush_lock();
+    let flushed_bytes = task.keyspace.tree.flush(&amp;flush_lock, gc_watermark)?;
+    write_buffer_manager.free(flushed_bytes);
+}
+</code></pre>
+<p>The flush worker:</p>
+<ol><li>Gets the GC watermark from the <code>SnapshotTracker</code> — items below this seqno can have old versions removed</li><li>Acquires the per-keyspace flush lock (prevents concurrent flushes of the same keyspace)</li><li>Calls <code>tree.flush()</code> which collects all sealed memtables, creates a sort-merge iterator over them, and writes them to SSTable(s) via the <code>Writer</code> pipeline (see <a href="02-lsm-tree.md#sstable-write-path-deep-dive">LSM-Tree: SSTable Write Path</a>)</li><li>Frees the flushed bytes from the <code>WriteBufferManager</code> — this tracks total memory used across all keyspaces</li></ol>
+<p><strong>Aha:</strong> The <code>WriteBufferManager</code> enforces a global memory budget across all keyspaces. Even though each keyspace has its own <code>max_memtable_size</code>, the total memory used by all memtables (active + sealed awaiting flush) is bounded. When the global budget is exhausted, new writes block until the flush worker frees space. This prevents OOM in multi-keyspace scenarios where all keyspaces fill simultaneously.</p>
 <h2>Configuration</h2>
 <pre><code class="language-rust">// Database-level configuration
 let db = Database::builder(&quot;/tmp/my-db&quot;)
