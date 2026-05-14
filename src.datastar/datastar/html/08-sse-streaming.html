@@ -170,24 +170,62 @@ flowchart LR
   }
 }
 </code></pre>
-<h3>Stage 2: getLines</h3>
+<h3>Stage 2: getLines — Byte-Level Line Parser (Lines 309-371)</h3>
 <p>Converts byte chunks into lines, handling the SSE line-splitting protocol:</p>
 <pre><code class="language-typescript">const getLines = (onLine) =&gt; {
-  let buffer, position, fieldLength, discardTrailingNewline
+  let buffer: Uint8Array | undefined
+  let position = 0
+  let fieldLength = -1
+  let discardTrailingNewline = false
 
-  return (arr) =&gt; {
-    // Append new bytes to buffer
-    // Scan for \r\n or \n line endings
-    // For each complete line, call onLine(line, fieldLength)
-    // fieldLength = position of first &quot;:&quot; in line (for &quot;field: value&quot; parsing)
+  return (arr: Uint8Array) =&gt; {
+    if (!buffer) {
+      buffer = arr; position = 0; fieldLength = -1
+    } else {
+      buffer = concat(buffer, arr)  // Append new bytes
+    }
+
+    const bufLength = buffer.length
+    let lineStart = 0
+
+    while (position &lt; bufLength) {
+      if (discardTrailingNewline) {
+        if (buffer[position] === 10) lineStart = ++position  // Skip \n after \r
+        discardTrailingNewline = false
+      }
+
+      for (; position &lt; bufLength &amp;&amp; lineEnd === -1; ++position) {
+        switch (buffer[position]) {
+          case 58:  // &#x27;:&#x27; — first colon marks field separator
+            if (fieldLength === -1) fieldLength = position - lineStart
+            break
+          case 13:  // &#x27;\r&#x27; — CR, set flag and fallthrough to LF
+            discardTrailingNewline = true
+          case 10:  // &#x27;\n&#x27; — LF, line complete
+            lineEnd = position
+            break
+        }
+      }
+
+      if (lineEnd === -1) break  // Incomplete line, wait for more bytes
+
+      onLine(buffer.subarray(lineStart, lineEnd), fieldLength)
+      lineStart = position
+      fieldLength = -1
+    }
+
+    // Compact buffer: remove processed bytes
+    if (lineStart === bufLength) buffer = undefined
+    else if (lineStart) { buffer = buffer.subarray(lineStart); position -= lineStart }
   }
 }
 </code></pre>
-<p>Key SSE detail: A colon (<code>:</code>) in the stream marks the field/value separator. The parser records the field length when it sees the first colon, then passes it to <code>onLine</code> so the value can be extracted without re-scanning.</p>
-<h3>Stage 3: getMessages</h3>
-<p>Assembles lines into SSE messages:</p>
+<p><strong>Key SSE detail:</strong> The parser uses raw byte values (58 = <code>:</code>, 13 = <code>\r</code>, 10 = <code>\n</code>) rather than string comparison for performance. The <code>discardTrailingNewline</code> flag handles the <code>\r\n</code> sequence — when <code>\r</code> is seen, the flag is set and control falls through to the <code>\n</code> case, but the flag ensures the <code>\n</code> is consumed as part of the line ending rather than starting a new line.</p>
+<p><strong>Partial chunk handling:</strong> A single SSE line might span multiple <code>Uint8Array</code> chunks. The <code>buffer</code> accumulates bytes across calls, and <code>subarray</code> compacts processed bytes without copying. This is critical for streaming — the server might send one byte at a time over a slow connection.</p>
+<h3>Stage 3: getMessages — SSE Message Assembler (Lines 373-416)</h3>
 <pre><code class="language-typescript">const getMessages = (onId, onRetry, onMessage) =&gt; {
-  let message = { data: &#x27;&#x27;, event: &#x27;&#x27;, id: &#x27;&#x27;, retry: undefined }
+  let message = newMessage()  // { data: &#x27;&#x27;, event: &#x27;&#x27;, id: &#x27;&#x27;, retry: undefined }
+  const decoder = new TextDecoder()
 
   return (line, fieldLength) =&gt; {
     if (!line.length) {
@@ -196,18 +234,22 @@ flowchart LR
       message = newMessage()
     } else if (fieldLength &gt; 0) {
       const field = decoder.decode(line.subarray(0, fieldLength))
+      // Skip optional leading space after colon
+      const valueOffset = fieldLength + (line[fieldLength + 1] === 32 ? 2 : 1)
       const value = decoder.decode(line.subarray(valueOffset))
+
       switch (field) {
         case &#x27;data&#x27;: message.data = message.data ? `${message.data}\n${value}` : value; break
         case &#x27;event&#x27;: message.event = value; break
         case &#x27;id&#x27;: onId(message.id = value); break
-        case &#x27;retry&#x27;: onRetry(message.retry = +value); break
+        case &#x27;retry&#x27;: { const retry = +value; if (!Number.isNaN(retry)) onRetry(retry); break }
       }
     }
   }
 }
 </code></pre>
-<p>Multiple <code>data:</code> lines are joined with <code>\n</code> per the SSE spec.</p>
+<p>The value offset calculation (<code>line[fieldLength + 1] === 32 ? 2 : 1</code>) handles both <code>field: value</code> (with space) and <code>field:value</code> (without space) formats per the SSE spec.</p>
+<p><strong>Aha:</strong> The <code>newMessage()</code> function initializes all fields to empty strings (not undefined), which is required by the SSE spec. The <code>retry</code> field is initialized to <code>undefined</code> to maintain consistent shape for the JS engine's hidden class optimization — this is a micro-optimization noted in the source comment.</p>
 <h2>Response Content-Type Handling</h2>
 <p>After the response arrives, the fetch plugin checks the Content-Type header:</p>
 <div class="mermaid">

@@ -39,148 +39,185 @@ flowchart TD
     EXEC --> DONE[Done]
 ```
 
-## The Morph Algorithm
+## The Morph Algorithm — Full Source Walkthrough
 
-The morph algorithm has three phases:
+Source: `plugins/watchers/patchElements.ts` — 729 lines
 
-### Phase 1: ID Collection
+### onPatchElements Entry (lines 82-177)
 
 ```typescript
-// Collect all IDs in old content
-const oldIdElements = oldElt.querySelectorAll('[id]')
+const onPatchElements = ({ error }, { selector, mode, namespace, elements }) => {
+  let newContent = document.createDocumentFragment()
+  let consume = typeof elements !== 'string' && !!elements
+```
+
+**What:** `consume` tracks whether the `newContent` can be moved (not cloned). If elements come from a DocumentFragment or Element directly, they can be consumed. If from an HTML string, they must be cloned for multiple targets.
+
+### HTML Parsing Strategy (lines 89-136)
+
+```typescript
+if (typeof elements === 'string') {
+  // Remove SVGs before detecting full HTML (SVG contains <title> which looks like </head>)
+  const elementsWithSvgsRemoved = elements.replace(/<svg(\s[^>]*>|>)([\s\S]*?)<\/svg>/gim, '')
+  const hasHtml = /<\/html>/.test(elementsWithSvgsRemoved)
+  const hasHead = /<\/head>/.test(elementsWithSvgsRemoved)
+  const hasBody = /<\/body>/.test(elementsWithSvgsRemoved)
+
+  const wrapperTag = namespace === 'svg' ? 'svg' : namespace === 'mathml' ? 'math' : ''
+  const wrappedEls = wrapperTag ? `<${wrapperTag}>${elements}</${wrapperTag}>` : elements
+
+  const newDocument = new DOMParser().parseFromString(
+    hasHtml || hasHead || hasBody
+      ? elements
+      : `<body><template>${wrappedEls}</template></body>`,
+    'text/html',
+  )
+```
+
+**Aha:** SVG content is stripped before detection because `<svg><title>...</title></svg>` can falsely match `</head>` regex. The `<template>` wrapper is used because `DOMParser` strips whitespace and restructures HTML — wrapping in a template preserves the exact content.
+
+### Target Resolution (lines 138-176)
+
+When no selector and mode is `outer` or `replace`, targets are found by ID:
+
+```typescript
+if (!selector && (mode === 'outer' || mode === 'replace')) {
+  const children = Array.from(newContent.children)
+  for (const child of children) {
+    let target: Element
+    if (child instanceof HTMLHtmlElement) target = document.documentElement
+    else if (child instanceof HTMLBodyElement) target = document.body
+    else if (child instanceof HTMLHeadElement) target = document.head
+    else target = document.getElementById(child.id)!
+
+    // Consume prevents cloning — move the new content directly
+    applyToTargets(mode, child, [target], true)
+  }
+}
+```
+
+When a selector exists, `querySelectorAll` finds targets:
+
+```typescript
+const targets = document.querySelectorAll(selector)
+// Single target can consume (no cloning needed)
+const targetList = consume && mode !== 'remove' ? [targets[0]!] : targets
+if (targetList.length === 1) consume = true
+applyToTargets(mode, newContent, targetList, consume)
+```
+
+**Aha:** When there's only one target, `consume = true` — the new content is moved rather than cloned. This preserves element identity and state (e.g., input focus, canvas state) for single-target morphs.
+
+### applyToTargets — Mode Dispatch (lines 221-265)
+
+```typescript
+const applyToTargets = (mode, element, targets, consume) => {
+  switch (mode) {
+    case 'remove':
+      for (const target of targets) { target.remove() }
+      break
+    case 'outer':
+    case 'inner':
+      for (const target of targets) {
+        if (consume && used) break
+        const nextNode = consume ? element : element.cloneNode(true)
+        morph(target, nextNode, mode)
+        execute(target)  // Run new scripts
+        // Dispatch scope-children event if marker present
+        const scopeHost = target.closest('[data-scope-children]')
+        if (scopeHost) scopeHost.dispatchEvent(...)
+        used = true
+      }
+      break
+    case 'replace':
+      applyPatchMode(targets, element, 'replaceWith', consume)
+      break
+    case 'prepend': case 'append': case 'before': case 'after':
+      applyPatchMode(targets, element, mode, consume)
+  }
+}
+```
+
+For `outer`/`inner` modes, the `morph()` function does the ID-set matching. For other modes, `applyPatchMode` calls the native DOM method directly (`replaceWith`, `prepend`, `append`, `before`, `after`).
+
+### Phase 1: ID Collection (lines 267-328)
+
+```typescript
+const ctxIdMap = new Map<Node, Set<string>>()        // Node → set of descendant IDs
+const ctxPersistentIds = new Set<string>()            // IDs in both old and new
+const oldIdTagNameMap = new Map<string, string>()     // id → tagName (for matching)
+const duplicateIds = new Set<string>()                // Duplicate IDs (excluded)
+const ctxPantry = document.createElement('div')       // Hidden scratchpad
+ctxPantry.hidden = true
+```
+
+Module-level context variables — these are reused across morph calls and cleared each time.
+
+**Duplicate detection:**
+```typescript
 for (const { id, tagName } of oldIdElements) {
-  oldIdTagNameMap.set(id, tagName)
+  if (oldIdTagNameMap.has(id)) { duplicateIds.add(id) }
+  else { oldIdTagNameMap.set(id, tagName) }
 }
+```
 
-// Collect all persistent IDs (exist in both old and new with same tag)
-const newIdElements = normalizedElt.querySelectorAll('[id]')
+If the same ID appears twice in old content, it's flagged as duplicate and excluded from persistent IDs. This prevents ambiguous matching.
+
+**Persistent ID computation:**
+```typescript
 for (const { id, tagName } of newIdElements) {
-  if (oldIdTagNameMap.get(id) === tagName) {
-    ctxPersistentIds.add(id)
+  if (ctxPersistentIds.has(id)) { duplicateIds.add(id) }
+  else if (oldIdTagNameMap.get(id) === tagName) {
+    ctxPersistentIds.add(id)  // Same ID, same tag → persistent
   }
 }
 ```
 
-A "persistent ID" is one that exists in both old and new content with the same tag name. These are the IDs that should be preserved across the morph.
+Only IDs that exist in BOTH old and new content with the SAME tag name are persistent. If the tag changed (e.g., `<div id="foo">` → `<span id="foo">`), it's not persistent — the old element will be replaced.
 
-### Phase 2: ID-Set Map Construction
+### morphChildren — Core Algorithm (lines 348-441)
 
 ```typescript
-// populateIdMapWithTree: bottom-up algorithm
-for (const elt of elements) {
-  if (ctxPersistentIds.has(elt.id)) {
-    let current = elt
-    while (current && current !== root) {
-      let idSet = ctxIdMap.get(current)
-      if (!idSet) { idSet = new Set(); ctxIdMap.set(current, idSet) }
-      idSet.add(elt.id)
-      current = current.parentElement
-    }
+const morphChildren = (oldParent, newParent, insertionPoint, endPoint) => {
+  // Normalize template elements
+  if (oldParent instanceof HTMLTemplateElement && newParent instanceof HTMLTemplateElement) {
+    oldParent = oldParent.content as unknown as Element
+    newParent = newParent.content as unknown as Element
   }
-}
-```
+  insertionPoint ??= oldParent.firstChild
 
-This walks up from each persistent-ID element to the root, adding the ID to every ancestor's set. The result is a map where each element knows "which persistent IDs live under me."
-
-### Phase 3: Morph Children
-
-```mermaid
-sequenceDiagram
-    participant OLD as Old Parent
-    participant NEW as New Parent
-    participant MAP as ctxIdMap
-
-    NEW->>OLD: For each newChild:
-    OLD->>OLD: findBestMatch(newChild, insertionPoint)
-    alt Best match found (ID-set match)
-        OLD->>OLD: morphNode(bestMatch, newChild)
-    else Persistent ID, but elsewhere
-        OLD->>OLD: Move element via getElementById
-        OLD->>OLD: morphNode(movedChild, newChild)
-    else Children have persistent IDs
-        OLD->>OLD: Create empty wrapper, full morph
-    else No persistent IDs
-        OLD->>OLD: Clone and insert directly
-    end
-
-    OLD->>OLD: Remove remaining old nodes
-```
-
-### findBestMatch — The Core Matching Logic
-
-```typescript
-const findBestMatch = (node, startPoint, endPoint) => {
-  let bestMatch = null
-  let softMatchCount = 0
-  let displaceMatchCount = 0
-  const nodeMatchCount = ctxIdMap.get(node)?.size || 0
-
-  for (let cursor = startPoint; cursor && cursor !== endPoint; cursor = cursor.nextSibling) {
-    if (isSoftMatch(cursor, node)) {
-      // Check for ID-set match
-      const oldSet = ctxIdMap.get(cursor)
-      const newSet = ctxIdMap.get(node)
-      if (newSet && oldSet) {
-        for (const id of oldSet) {
-          if (newSet.has(id)) return cursor  // ID-set match!
+  for (const newChild of newParent.childNodes) {
+    if (insertionPoint && insertionPoint !== endPoint) {
+      const bestMatch = findBestMatch(newChild, insertionPoint, endPoint)
+      if (bestMatch) {
+        // Remove nodes between insertionPoint and bestMatch
+        if (bestMatch !== insertionPoint) {
+          let cursor = insertionPoint
+          while (cursor && cursor !== bestMatch) {
+            const tempNode = cursor
+            cursor = cursor.nextSibling
+            removeNode(tempNode)
+          }
         }
-      }
-
-      // Save soft match as fallback
-      if (!bestMatch && !ctxIdMap.has(cursor)) {
-        if (!nodeMatchCount) return cursor  // Can't ID-match, return soft match
-        bestMatch = cursor
+        morphNode(bestMatch, newChild)
+        insertionPoint = bestMatch.nextSibling
+        continue
       }
     }
-
-    // Don't displace more IDs than the node contains
-    displaceMatchCount += ctxIdMap.get(cursor)?.size || 0
-    if (displaceMatchCount > nodeMatchCount) break
-
-    // Block soft matching after 2 future soft matches
-    if (bestMatch === null && nextSibling && isSoftMatch(cursor, nextSibling)) {
-      siblingSoftMatchCount++
-      if (siblingSoftMatchCount >= 2) bestMatch = undefined
-    }
-  }
-
-  return bestMatch || null
-}
 ```
 
-**Aha:** The displacement guard (`displaceMatchCount > nodeMatchCount`) prevents the algorithm from greedily matching nodes at the cost of displacing more important matches downstream. If matching this node would push 3 persistent-ID elements out of position but the node itself only contains 1 persistent ID, it's better to skip and let the downstream elements match first.
+For each new child, try to find a matching old node. If found, remove intervening nodes (they're no longer needed), morph the match, and advance the insertion point.
 
-### morphNode — Attribute Syncing
-
-Once a match is found, `morphNode` syncs the old node to the new:
-
-1. **Attribute comparison**: Every attribute from the new node is compared and applied to the old
-2. **Attribute removal**: Attributes on the old node but not the new are removed
-3. **Special element handling**: input values, textarea values, option selected state — synced via DOM properties, not attributes
-4. **Recursive morph**: If children differ, `morphChildren` recurses
-
-### Special Element Handling
-
-The morph algorithm has special cases for form elements:
+### isSoftMatch (lines 525-532)
 
 ```typescript
-// HTMLInputElement (non-file)
-if (oldElt.value !== newElt.getAttribute('value')) {
-  oldElt.value = newValue ?? ''  // Sync via property, not attribute
-}
-oldElt.checked = newElt.hasAttribute('checked')
-oldElt.disabled = newElt.hasAttribute('disabled')
-
-// HTMLTextAreaElement
-if (oldElt.defaultValue !== newElt.value) {
-  oldElt.value = newValue
-}
-
-// HTMLOptionElement
-oldElt.selected = newElt.hasAttribute('selected')
+const isSoftMatch = (oldNode, newNode) =>
+  oldNode.nodeType === newNode.nodeType &&
+  (oldNode as Element).tagName === (newNode as Element).tagName &&
+  (!(oldNode as Element).id || (oldNode as Element).id === (newNode as Element).id)
 ```
 
-**Aha:** For `<input>` elements, the morph sets `.value` directly rather than the `value` attribute. This matters because the browser tracks the current input value separately from the attribute — setting the attribute alone wouldn't update what the user sees in the input field.
+A soft match requires: same node type, same tag name, and either no ID on the old node OR matching IDs. An old node with an ID that doesn't match the new node's ID is NOT a soft match — it has state we shouldn't overwrite.
 
 ### Script Execution
 

@@ -137,43 +137,48 @@
 <p><strong>Aha:</strong> The signal system is the easiest part to translate — ReactiveNode is essentially a struct with version tracking and a propagation algorithm that maps cleanly to Rust. The hardest parts are the DOM morphing (requires a DOM abstraction) and the expression compiler (requires a JS runtime or a custom expression parser).</p>
 <h2>Signal System → Rust</h2>
 <p>The ReactiveNode/Link architecture translates almost directly:</p>
+<h3>ReactiveNode Struct</h3>
 <pre><code class="language-rust">use std::cell::Cell;
 use std::rc::Rc;
+use std::collections::HashMap;
 
-#[derive(Clone)]
+bitflags::bitflags! {
+    #[derive(Clone, Copy, Debug)]
+    struct ReactiveFlags: u8 {
+        const Mutable       = 1 &lt;&lt; 0;  // Can be written (signals, computeds)
+        const Watching      = 1 &lt;&lt; 1;  // Is an effect (needs re-execution)
+        const RecursedCheck = 1 &lt;&lt; 2;  // Currently being checked for recursion
+        const Recursed      = 1 &lt;&lt; 3;  // Detected as recursed
+        const Dirty         = 1 &lt;&lt; 4;  // Value has changed, needs re-evaluation
+        const Pending       = 1 &lt;&lt; 5;  // A dependency might have changed
+        const Queued        = 1 &lt;&lt; 6;  // Effect is in the queue
+    }
+}
+
 struct Link {
     node: Option&lt;Rc&lt;ReactiveNode&gt;&gt;,
     source: Option&lt;Rc&lt;ReactiveNode&gt;&gt;,
-    next_sub: Option&lt;Link&gt;,
-    prev_sub: Option&lt;Link&gt;,
-    next_rt: Option&lt;Link&gt;,
-    prev_rt: Option&lt;Link&gt;,
+    next_sub: Option&lt;Rc&lt;Link&gt;&gt;,
+    prev_sub: Option&lt;Rc&lt;Link&gt;&gt;,
+    next_rt: Option&lt;Rc&lt;Link&gt;&gt;,
+    prev_rt: Option&lt;Rc&lt;Link&gt;&gt;,
 }
 
 struct ReactiveNode {
     links: Option&lt;Vec&lt;Link&gt;&gt;,
-    flags: ReactiveFlags,
-    version: u64,
-    last_checked_version: u64,
+    flags: Cell&lt;ReactiveFlags&gt;,
+    version: Cell&lt;u64&gt;,
+    last_checked_version: Cell&lt;u64&gt;,
     value: serde_json::Value,
     computed: Option&lt;Box&lt;dyn Fn() -&gt; serde_json::Value&gt;&gt;,
     effect: Option&lt;Box&lt;dyn Fn()&gt;&gt;,
 }
-
-bitflags::bitflags! {
-    struct ReactiveFlags: u8 {
-        const Mutable = 1 &lt;&lt; 0;
-        const Watching = 1 &lt;&lt; 1;
-        const RecursedCheck = 1 &lt;&lt; 2;
-        const Recursed = 1 &lt;&lt; 3;
-        const Dirty = 1 &lt;&lt; 4;
-        const Pending = 1 &lt;&lt; 5;
-    }
-}
-
-fn signal&lt;T: Into&lt;serde_json::Value&gt;&gt;(value: T) -&gt; Rc&lt;ReactiveNode&gt; {
+</code></pre>
+<p><strong>Key difference:</strong> TypeScript's <code>Link</code> is a plain object with circular references (a linked list). Rust needs <code>Rc<Link></code> for shared ownership of link nodes. The <code>Cell</code> wrappers provide interior mutability without <code>Mutex</code> — since signal updates are single-threaded in the browser model, <code>Cell</code> is the correct choice.</p>
+<h3>Signal Get/Set</h3>
+<pre><code class="language-rust">fn signal&lt;T: Into&lt;serde_json::Value&gt;&gt;(value: T) -&gt; Rc&lt;ReactiveNode&gt; {
     Rc::new(ReactiveNode {
-        flags: ReactiveFlags::Mutable,
+        flags: Cell::new(ReactiveFlags::Mutable),
         value: value.into(),
         ..Default::default()
     })
@@ -181,23 +186,121 @@ fn signal&lt;T: Into&lt;serde_json::Value&gt;&gt;(value: T) -&gt; Rc&lt;Reactive
 
 fn get(node: &amp;Rc&lt;ReactiveNode&gt;) -&gt; serde_json::Value {
     // Create dependency link if in tracking scope
-    // Return node.value.clone()
+    // Equivalent to TypeScript: if (linkStack.length) link()
+    if !tracking_context::is_active() {
+        return node.value.clone();
+    }
+    tracking_context::link_to(node);  // Creates Link in doubly-linked list
+    node.value.clone()
 }
 
-fn set(node: &amp;Rc&lt;ReactiveNode&gt;, value: serde_json::Value) {
-    node.value.set(value);
+fn set(node: &amp;Rc&lt;ReactiveNode&gt;, value: serde_json::Value) -&gt; bool {
+    if node.value == value {
+        return false;  // Skip if same value
+    }
+    node.previous_value.set(node.value.replace(value));
+    node.flags.set(node.flags.get() | ReactiveFlags::Dirty);
     propagate(node);
+    if batch_depth() == 0 {
+        flush();
+        dispatch();
+    }
+    true
 }
 </code></pre>
-<p>Key differences from TypeScript:</p>
-<table><tr><th>TypeScript</th><th>Rust</th><th>Why</th></tr><tr><td>`class ReactiveNode`</td><td>`struct ReactiveNode` + `Rc<RefCell<>>`</td><td>Shared ownership + interior mutability</td></tr><tr><td>`Link.unlink()` method</td><td>`fn unlink(link: &mut Link)`</td><td>Free function or trait impl</td></tr><tr><td>`Map<string, Signal>`</td><td>`HashMap<String, Rc<ReactiveNode>>`</td><td>Same semantics</td></tr><tr><td>Lazy `checkDirty()`</td><td>Same algorithm</td><td>Pure algorithm, no runtime difference</td></tr></table>
+<h3>Propagation Algorithm</h3>
+<p>The TypeScript <code>propagate()</code> function (signals.ts lines 358-446) uses an explicit stack to avoid recursion:</p>
+<pre><code class="language-rust">fn propagate(node: &amp;Rc&lt;ReactiveNode&gt;) {
+    let mut cursor = node.subs.as_ref();
+    let mut stack = Vec::new();
+
+    while cursor.is_some() || !stack.is_empty() {
+        if let Some(link) = cursor.take() {
+            let sub = link.sub.as_ref().unwrap();
+
+            if !sub.flags.get().intersects(ReactiveFlags::Pending | ReactiveFlags::Dirty) {
+                if sub.flags.get().contains(ReactiveFlags::Watching) {
+                    notify(sub);  // Push to queuedEffects
+                } else {
+                    sub.flags.set(sub.flags.get() | ReactiveFlags::Pending);
+                    // Push to stack for later traversal
+                    stack.push(sub);
+                }
+            }
+
+            cursor = link.next_sub.as_ref();
+        } else {
+            // Walk stack
+            let node = stack.pop().unwrap();
+            cursor = node.subs.as_ref();
+        }
+    }
+}
+</code></pre>
+<p>The explicit stack replaces the TypeScript version's manual cursor manipulation. The algorithm is identical — it walks the subscriber chain, marks nodes as Pending/Dirty, and pushes effects to the queue.</p>
+<h3>Computed Lazy Evaluation</h3>
+<pre><code class="language-rust">fn computed_get(node: &amp;Rc&lt;ReactiveNode&gt;) -&gt; serde_json::Value {
+    if node.flags.get().contains(ReactiveFlags::Dirty) {
+        // Clear old dependency links
+        unlink_all(node.deps.borrow_mut());
+        // Re-evaluate with tracking
+        tracking_context::begin(node);
+        let value = (node.computed.as_ref().unwrap())();
+        tracking_context::end();
+        // Update version for lazy checking
+        node.version.set(node.version.get() + 1);
+        node.value.set(value.clone());
+        node.flags.set(node.flags.get() &amp; !ReactiveFlags::Dirty);
+        value
+    } else if node.flags.get().contains(ReactiveFlags::Pending) {
+        if check_dirty(node) {  // Walk dependency chain
+            return computed_get(node);  // Re-evaluate
+        }
+        node.flags.set(node.flags.get() &amp; !ReactiveFlags::Pending);
+        node.value.clone()
+    } else {
+        node.value.clone()  // Cached value, no re-eval needed
+    }
+}
+</code></pre>
+<h3>Deep Proxy → Rust</h3>
+<p>TypeScript uses ES6 <code>Proxy</code> for deep reactivity. In Rust, the closest equivalent depends on the use case:</p>
+<p><strong>For WASM targets:</strong> Use <code>js_sys</code> and <code>wasm_bindgen</code> to create JavaScript Proxies:</p>
+<pre><code class="language-rust">use wasm_bindgen::prelude::*;
+use js_sys::{Object, Proxy, Reflect};
+
+fn create_deep_proxy(store: &amp;SignalStore) -&gt; Result&lt;Proxy, JsValue&gt; {
+    let handler = deep_handler()?;  // JS object with get/set/deleteProperty traps
+    Proxy::new(&amp;store.to_js_object()?, &amp;handler)
+}
+</code></pre>
+<p><strong>For native Rust:</strong> Use a path-based approach instead of Proxy:</p>
+<pre><code class="language-rust">struct SignalStore {
+    signals: HashMap&lt;String, Rc&lt;ReactiveNode&gt;&gt;,
+}
+
+impl SignalStore {
+    fn get(&amp;self, path: &amp;str) -&gt; Option&lt;serde_json::Value&gt; {
+        self.signals.get(path).map(|n| n.value.get())
+    }
+
+    fn set(&amp;mut self, path: &amp;str, value: serde_json::Value) {
+        if let Some(node) = self.signals.get(path) {
+            set(node, value);
+        } else {
+            let node = signal(value);
+            self.signals.insert(path.to_string(), node);
+        }
+    }
+}
+</code></pre>
 <h2>Expression Compiler → Rust</h2>
 <p>This is the hardest part. TypeScript's <code>new Function()</code> has no direct Rust equivalent. Options:</p>
 <h3>Option A: Embed a JS runtime (quickjs-rs, deno_core)</h3>
 <pre><code class="language-rust">use quickjs_rust::JSRuntime;
 
 fn compile_expression(expr: &amp;str) -&gt; impl Fn(&amp;SignalStore) -&gt; serde_json::Value {
-    let rewritten = rewrite_signal_refs(expr);  // $count → $[&#x27;count&#x27;]
+    let rewritten = rewrite_signal_refs(expr);  // $count → store[&quot;count&quot;]
     move |store: &amp;SignalStore| {
         let mut ctx = runtime.create_context();
         ctx.set(&quot;$&quot;, store.to_js_value());
@@ -212,32 +315,57 @@ fn compile_expression(expr: &amp;str) -&gt; impl Fn(&amp;SignalStore) -&gt; serd
     Literal(serde_json::Value),
     BinaryOp(Box&lt;Expr&gt;, Operator, Box&lt;Expr&gt;),
     MemberAccess(Box&lt;Expr&gt;, String),
+    ArrayIndex(Box&lt;Expr&gt;, Box&lt;Expr&gt;),
     Call(String, Vec&lt;Expr&gt;),
     Template(Vec&lt;Expr&gt;),
+    Conditional(Box&lt;Expr&gt;, Box&lt;Expr&gt;, Box&lt;Expr&gt;),
 }
 
 fn parse(expr: &amp;str) -&gt; Result&lt;Expr, ParseError&gt; {
-    // Hand-written or tree-sitter parser
+    // Hand-written recursive descent parser or tree-sitter grammar
+    // Must handle: $foo.bar, $arr[$idx], $a + $b, $x &gt; 0 ? &quot;yes&quot; : &quot;no&quot;
 }
 
 fn eval(expr: &amp;Expr, store: &amp;SignalStore) -&gt; serde_json::Value {
     match expr {
-        Expr::SignalRef(name) =&gt; store.get(name),
+        Expr::SignalRef(name) =&gt; store.get(name).unwrap_or(serde_json::Value::Null),
         Expr::BinaryOp(left, op, right) =&gt; {
             let l = eval(left, store);
             let r = eval(right, store);
             apply_op(&amp;l, op, &amp;r)
         }
+        Expr::MemberAccess(obj, field) =&gt; {
+            let obj = eval(obj, store);
+            obj.get(field).cloned().unwrap_or(serde_json::Value::Null)
+        }
         // ...
     }
 }
 </code></pre>
-<p><strong>Pros:</strong> No JS runtime, fast, WASM-compatible, safe. <strong>Cons:</strong> Limited to a subset of JS expressions, needs a parser.</p>
-<h3>Option C: Compile to WASM at build time</h3>
-<pre><code class="language-rust">// Build step: parse expressions, compile to WASM bytecode
-// Runtime: load and execute WASM bytecode
+<p><strong>Pros:</strong> No JS runtime, fast, WASM-compatible, safe (sandboxed expressions). <strong>Cons:</strong> Limited to a subset of JS expressions, needs a parser.</p>
+<h3>Signal Reference Rewriting → Rust</h3>
+<p>The TypeScript regex-based approach:</p>
+<pre><code class="language-typescript">// $foo.bar → $[&#x27;foo&#x27;][&#x27;bar&#x27;]
+expr.replace(/\$([a-zA-Z_\d]\w*(?:[.-]\w+)*)/g,
+  (m, name) =&gt; name.split(&#x27;.&#x27;).reduce((acc, p) =&gt; `${acc}[&#x27;${p}&#x27;]`, &#x27;$&#x27;))
 </code></pre>
-<p><strong>Pros:</strong> Maximum performance, sandboxed. <strong>Cons:</strong> Complex build pipeline, requires WASM runtime.</p>
+<p>In Rust, the same transformation:</p>
+<pre><code class="language-rust">fn rewrite_signal_refs(expr: &amp;str) -&gt; String {
+    let re = regex::Regex::new(
+        r#&quot;\$([a-zA-Z_\d]\w*(?:[.-]\w+)*)&quot;#
+    ).unwrap();
+
+    re.replace_all(expr, |caps: &amp;regex::Captures| {
+        let name = &amp;caps[1];
+        let parts: Vec&lt;&amp;str&gt; = name.split(&#x27;.&#x27;).collect();
+        let mut result = String::from(&quot;$&quot;);
+        for part in parts {
+            result.push_str(&amp;format!(&quot;[\&quot;{}\&quot;]&quot;, part));
+        }
+        result
+    }).to_string()
+}
+</code></pre>
 <h2>DOM Morphing → Rust (Web/WASM)</h2>
 <p>For WASM targets (web-sys):</p>
 <pre><code class="language-rust">use wasm_bindgen::JsCast;
@@ -266,6 +394,48 @@ fn morph_tree(old: &amp;mut HtmlNode, new: &amp;HtmlNode) {
     // But operates on in-memory tree, not browser DOM
 }
 </code></pre>
+<p>The key Datastar morph concepts translate directly:</p>
+<table><tr><th>TypeScript</th><th>Rust</th><th>Notes</th></tr><tr><td>`ctxIdMap: Map<Node, Set<string>>`</td><td>`HashMap<*const HtmlNode, HashSet<String>>`</td><td>Raw pointers or arena indices</td></tr><tr><td>`ctxPersistentIds: Set<string>`</td><td>`HashSet<String>`</td><td>Same semantics</td></tr><tr><td>`ctxPantry: HTMLDivElement`</td><td>`Vec<HtmlNode>`</td><td>In-memory buffer</td></tr><tr><td>`querySelectorAll('[id]')`</td><td>`node.descendants().filter(</td><td>n</td><td>n.id.is_some())`</td><td>Tree traversal</td></tr><tr><td>`moveBefore(parent, node, after)`</td><td>`parent.children.insert(idx, node)`</td><td>Vector insert</td></tr></table>
+<h3>ID-Set Matching in Rust</h3>
+<pre><code class="language-rust">fn find_best_match&lt;&#x27;a&gt;(
+    node: &amp;&#x27;a HtmlNode,
+    start: &amp;&#x27;a HtmlNode,
+    end: Option&lt;&amp;&#x27;a HtmlNode&gt;,
+    id_map: &amp;HashMap&lt;usize, HashSet&lt;String&gt;&gt;,
+    persistent_ids: &amp;HashSet&lt;String&gt;,
+) -&gt; Option&lt;&amp;&#x27;a HtmlNode&gt; {
+    let node_match_count = id_map.get(&amp;node.ptr()).map(|s| s.len()).unwrap_or(0);
+    let mut best_match = None;
+    let mut displace_count = 0;
+
+    for cursor in start.siblings_until(end) {
+        if is_soft_match(cursor, node) {
+            let old_set = id_map.get(&amp;cursor.ptr());
+            let new_set = id_map.get(&amp;node.ptr());
+
+            if let (Some(old), Some(new)) = (old_set, new_set) {
+                if old.iter().any(|id| new.contains(id)) {
+                    return Some(cursor);  // ID set match
+                }
+            }
+
+            if best_match.is_none() &amp;&amp; !id_map.contains_key(&amp;cursor.ptr()) {
+                if node_match_count == 0 {
+                    return Some(cursor);  // No ID match possible, soft match immediately
+                }
+                best_match = Some(cursor);
+            }
+        }
+
+        displace_count += id_map.get(&amp;cursor.ptr()).map(|s| s.len()).unwrap_or(0);
+        if displace_count &gt; node_match_count {
+            break;  // Would displace more IDs than we&#x27;d gain
+        }
+    }
+
+    best_match
+}
+</code></pre>
 <h2>Plugin System → Rust</h2>
 <pre><code class="language-rust">use std::collections::HashMap;
 
@@ -274,6 +444,8 @@ type ApplyFn = Box&lt;dyn Fn(PluginContext) -&gt; Box&lt;dyn FnOnce()&gt;&gt;;
 struct AttributePlugin {
     name: String,
     requirement: Requirement,
+    returns_value: bool,
+    arg_names: Vec&lt;String&gt;,
     apply: ApplyFn,
 }
 
@@ -288,9 +460,36 @@ struct PluginRegistry {
     registry.register_attribute(AttributePlugin {
         name: &quot;bind&quot;.into(),
         requirement: Requirement::Exclusive,
+        returns_value: true,
+        arg_names: vec![],
         apply: Box::new(bind_apply),
     });
     // ...
+}
+</code></pre>
+<h3>DOM Scanning → Tree Traversal</h3>
+<p>TypeScript's MutationObserver has no direct Rust equivalent. For a server-side HTML processor:</p>
+<pre><code class="language-rust">fn scan_and_apply(root: &amp;mut HtmlNode, registry: &amp;PluginRegistry) {
+    // Pre-order tree traversal
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if should_ignore(node) { continue; }
+
+        for attr in &amp;node.attributes {
+            if attr.name.starts_with(&quot;data-&quot;) {
+                let key = &amp;attr.name[5..];
+                if let Some(plugin) = registry.attribute_plugins.get(key) {
+                    let cleanup = (plugin.apply)(build_context(node, attr));
+                    // Store cleanup for later
+                }
+            }
+        }
+
+        // Push children in reverse order (stack processes last-first)
+        for child in node.children.iter().rev() {
+            stack.push(child);
+        }
+    }
 }
 </code></pre>
 <h2>SSE Streaming → Rust</h2>
@@ -310,30 +509,135 @@ use futures::stream;
 
 async fn sse_handler() -&gt; Sse&lt;impl Stream&lt;Item = Result&lt;Event, Infallible&gt;&gt;&gt; {
     Sse::new(stream::iter(vec![
-        Ok(Event::default().event(&quot;datastar-patch-elements&quot;).data(&quot;&lt;div&gt;Hello&lt;/div&gt;&quot;)),
+        Ok(Event::default()
+            .event(&quot;datastar-patch-elements&quot;)
+            .data(&quot;&lt;div&gt;Hello&lt;/div&gt;&quot;)),
     ]))
 }
 </code></pre>
-<h2>Batched Updates → Rust</h2>
-<pre><code class="language-rust">struct Batch {
-    pending: Vec&lt;Rc&lt;ReactiveNode&gt;&gt;,
-    in_progress: bool,
+<h3>SSE Parser in Rust</h3>
+<p>The TypeScript byte-level parser (<code>getLines</code> with raw byte values) translates directly:</p>
+<pre><code class="language-rust">struct SseLineParser {
+    buffer: Vec&lt;u8&gt;,
+    position: usize,
+    field_length: i64,
 }
 
-fn begin_batch() { /* increment counter */ }
+impl SseLineParser {
+    fn feed(&amp;mut self, chunk: &amp;[u8]) -&gt; Vec&lt;SseLine&gt; {
+        self.buffer.extend_from_slice(chunk);
+        let mut lines = Vec::new();
 
-fn end_batch() {
-    // Process all pending nodes in order
-    while let Some(node) = batch.pending.pop() {
-        if node.flags.contains(Dirty) {
-            update_node(&amp;node);
+        while self.position &lt; self.buffer.len() {
+            // Handle \r\n
+            if self.buffer[self.position] == b&#x27;\r&#x27; {
+                self.position += 1;
+                if self.position &lt; self.buffer.len() &amp;&amp; self.buffer[self.position] == b&#x27;\n&#x27; {
+                    self.position += 1;
+                }
+                continue;
+            }
+
+            if self.buffer[self.position] == b&#x27;\n&#x27; {
+                self.position += 1;
+                // Process accumulated buffer up to position
+                if let Some(line) = self.process_line() {
+                    lines.push(line);
+                }
+                self.buffer.drain(..self.position);
+                self.position = 0;
+                self.field_length = -1;
+                continue;
+            }
+
+            // Track first colon position
+            if self.buffer[self.position] == b&#x27;:&#x27; &amp;&amp; self.field_length == -1 {
+                self.field_length = self.position as i64;
+            }
+
+            self.position += 1;
         }
+
+        lines
     }
 }
 </code></pre>
+<h2>Batched Updates → Rust</h2>
+<pre><code class="language-rust">thread_local! {
+    static BATCH_DEPTH: Cell&lt;u32&gt; = Cell::new(0);
+    static QUEUED_EFFECTS: RefCell&lt;Vec&lt;Rc&lt;ReactiveNode&gt;&gt;&gt; = RefCell::new(Vec::new());
+}
+
+fn begin_batch() {
+    BATCH_DEPTH.with(|d| d.set(d.get() + 1));
+}
+
+fn end_batch() {
+    BATCH_DEPTH.with(|d| {
+        let depth = d.get() - 1;
+        d.set(depth);
+        if depth == 0 {
+            flush_effects();
+            dispatch_signal_patch();
+        }
+    });
+}
+</code></pre>
+<p>Using <code>thread_local!</code> with <code>Cell</code> avoids <code>Mutex</code> overhead for single-threaded signal updates. The <code>RefCell</code> for the queue provides interior mutability without runtime borrow checking conflicts.</p>
 <h2>Key Challenges</h2>
-<table><tr><th>Challenge</th><th>TypeScript Solution</th><th>Rust Challenge</th></tr><tr><td>Shared mutable state</td><td>Closures capture by reference</td><td>`Rc<RefCell<>>` or `Arc<Mutex<>>`</td></tr><tr><td>Dynamic function compilation</td><td>`new Function()`</td><td>Requires parser or embedded JS runtime</td></tr><tr><td>DOM mutation</td><td>MutationObserver</td><td>`web_sys` for WASM, no equivalent for native</td></tr><tr><td>Event dispatch</td><td>CustomEvent on document</td><td>Event system needed (tokio::sync::broadcast?)</td></tr><tr><td>Garbage collection</td><td>Automatic</td><td>Manual cleanup via Drop trait</td></tr><tr><td>Async/await</td><td>Native</td><td>tokio or async-std runtime needed</td></tr></table>
-<p>See <a href="12-production-patterns.md">Production Patterns</a> for production-grade considerations. See <a href="13-web-tooling.md">Web Tooling</a> for the IDE integration story.</p>
+<table><tr><th>Challenge</th><th>TypeScript Solution</th><th>Rust Challenge</th></tr><tr><td>Shared mutable state</td><td>Closures capture by reference</td><td>`Rc<RefCell<>>` or `Arc<Mutex<>>`</td></tr><tr><td>Dynamic function compilation</td><td>`new Function()`</td><td>Requires parser or embedded JS runtime</td></tr><tr><td>DOM mutation</td><td>MutationObserver</td><td>`web_sys` for WASM, no equivalent for native</td></tr><tr><td>Event dispatch</td><td>CustomEvent on document</td><td>Event system needed (tokio::sync::broadcast?)</td></tr><tr><td>Garbage collection</td><td>Automatic</td><td>Manual cleanup via Drop trait</td></tr><tr><td>Async/await</td><td>Native</td><td>tokio or async-std runtime needed</td></tr><tr><td>Proxy traps</td><td>ES6 Proxy</td><td>`js_sys::Proxy` for WASM, manual for native</td></tr><tr><td>Bitfield flags</td><td>`node.flags</td><td>= Dirty`</td><td>`bitflags` crate or `Cell<u8>`</td></tr><tr><td>Linked list links</td><td>Object references</td><td>`Rc<Link>` or arena indices</td></tr></table>
+<p>See <a href="12-production-patterns.md">Production Patterns</a> for production-grade considerations. See <a href="13-web-tooling.md">Web Tooling</a> for the IDE integration story. See <a href="14-datastar-rust-sdk.md">Rust SDK</a> for the official Rust server SDK.</p>
+<h2>TypeScript → Rust Architecture Mapping</h2>
+<div class="mermaid">
+flowchart TB
+    subgraph &quot;TypeScript (Browser)&quot;
+        TS_SIG[&quot;signals.ts&lt;br/&gt;ReactiveNode, Link,&lt;br/&gt;propagate, mergePatch&quot;]
+        TS_ENG[&quot;engine.ts&lt;br/&gt;genRx, apply,&lt;br/&gt;MutationObserver&quot;]
+        TS_PLG[&quot;Plugins&lt;br/&gt;17 attribute, 4 action,&lt;br/&gt;2 watcher&quot;]
+        TS_DOM[&quot;DOM API&lt;br/&gt;document, Element,&lt;br/&gt;querySelectorAll&quot;]
+        TS_SSE[&quot;fetch + ReadableStream&lt;br/&gt;getBytes, getLines,&lt;br/&gt;getMessages&quot;]
+    end
+
+    subgraph &quot;Rust (Native / WASM)&quot;
+        RS_SIG[&quot;ReactiveNode struct&lt;br/&gt;Cell&lt;ReactiveFlags&gt;,&lt;br/&gt;Rc&lt;Link&gt;, propagate&quot;]
+        RS_ENG[&quot;PluginRegistry&lt;br/&gt;HashMap&lt;String, Plugin&gt;,&lt;br/&gt;scan_and_apply&quot;]
+        RS_EXPR[&quot;Expr AST + eval&lt;br/&gt;or quickjs-rs&lt;br/&gt;embed runtime&quot;]
+        RS_DOM[&quot;web_sys DOM&lt;br/&gt;Element, Document&lt;br/&gt;or HtmlNode tree&quot;]
+        RS_SSE[&quot;axum::response::sse&lt;br/&gt;or tokio::stream&lt;br/&gt;for server&quot;]
+    end
+
+    TS_SIG --&gt; RS_SIG
+    TS_ENG --&gt; RS_ENG
+    TS_PLG --&gt; RS_ENG
+    TS_DOM --&gt; RS_DOM
+    TS_SSE --&gt; RS_SSE
+
+</div>
+<h2>Propagation Algorithm — TypeScript vs Rust</h2>
+<div class="mermaid">
+flowchart TD
+    SET[&quot;set(node, value)&quot;] --&gt; EQUAL{value == old?}
+    EQUAL --&gt;|yes| SKIP[&quot;return false&quot;]
+    EQUAL --&gt;|no| FLAG[&quot;node.flags |= Dirty&quot;]
+    FLAG --&gt; PROP[&quot;propagate(node)&quot;]
+
+    PROP --&gt; SUBS[&quot;Walk subscriber chain&quot;]
+    SUBS --&gt; CURSOR[&quot;cursor = link.next_sub&quot;]
+
+    CURSOR --&gt; FLAGS{sub.flags?}
+    FLAGS --&gt;|Watching| NOTIFY[&quot;notify(sub)&lt;br/&gt;push to queuedEffects&quot;]
+    FLAGS --&gt;|Mutable| PENDING[&quot;sub.flags |= Pending&lt;br/&gt;push to stack&quot;]
+    FLAGS --&gt;|Pending| CHECK[&quot;check_dirty(sub)&lt;br/&gt;lazy eval&quot;]
+
+    NOTIFY --&gt; NEXT[&quot;cursor = link.next_sub&quot;]
+    PENDING --&gt; NEXT
+    CHECK --&gt; NEXT
+
+    NEXT --&gt; DONE{cursor == null?}
+    DONE --&gt;|no| CURSOR
+    DONE --&gt;|yes| FLUSH[&quot;flush()&lt;br/&gt;drain queuedEffects&quot;]
+
+</div>
   </article>
   <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
 </body>

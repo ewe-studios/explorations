@@ -133,89 +133,472 @@
   </nav>
   <article class="prose">
 <h1>Datastar -- Watchers</h1>
-<p>Watcher plugins listen for custom events dispatched on the <code>document</code>. Two watchers ship with Datastar: <code>datastar-patch-elements</code> and <code>datastar-patch-signals</code>.</p>
-<p>Source: <code>library/src/plugins/watchers/patchElements.ts</code>, <code>library/src/plugins/watchers/patchSignals.ts</code></p>
-<h2>How Watchers Work</h2>
-<p>Watcher plugins register themselves with a name and an <code>apply</code> function:</p>
-<pre><code class="language-typescript">// engine/engine.ts
-export const watcher = (plugin: WatcherPlugin) =&gt; watcherPlugins.set(plugin.name, plugin)
+<p>Watcher plugins listen for custom events dispatched on the <code>document</code> via the <code>datastar-fetch</code> event. Two watchers ship with Datastar: <code>datastar-patch-elements</code> and <code>datastar-patch-signals</code>.</p>
+<p><strong>Aha:</strong> Unlike attribute plugins which are bound to DOM elements and live as long as the element exists, watchers are one-shot event handlers. They fire when the fetch plugin dispatches a <code>datastar-fetch</code> event with a matching <code>type</code>, process their work, and return. There is no cleanup function — watchers are stateless.</p>
+<p>Source: <code>library/src/engine/engine.ts</code> (lines 93-115 — event routing), <code>library/src/plugins/watchers/patchElements.ts</code> (729 lines), <code>library/src/plugins/watchers/patchSignals.ts</code> (20 lines)</p>
+<h2>How Watchers Work — Engine-Level Event Routing</h2>
+<h3>Single Event Listener (Lines 93-111)</h3>
+<pre><code class="language-typescript">// engine/engine.ts:93-111
+document.addEventListener(DATASTAR_FETCH_EVENT, ((
+  evt: CustomEvent&lt;DatastarFetchEvent&gt;,
+) =&gt; {
+  const plugin = watcherPlugins.get(evt.detail.type)
+  if (plugin) {
+    plugin.apply(
+      {
+        error: error.bind(0, {
+          plugin: { type: &#x27;watcher&#x27;, name: plugin.name },
+          element: {
+            id: (evt.target as Element).id,
+            tag: (evt.target as Element).tagName,
+          },
+        }),
+      },
+      evt.detail.argsRaw,
+    )
+  }
+}) as EventListener)
 </code></pre>
-<p>When code dispatches an event matching the watcher's name, the engine finds the watcher and calls <code>apply()</code>:</p>
-<pre><code class="language-typescript">// Somewhere in the engine:
-document.addEventListener(watcherName, (event) =&gt; {
-  watcherPlugins.get(watcherName)?.apply({ error }, event.detail)
-})
+<p><strong>Aha:</strong> There is only ONE event listener for ALL watchers. When the fetch plugin dispatches a <code>datastar-fetch</code> event, the engine looks up the watcher by <code>evt.detail.type</code> and calls its <code>apply</code>. The error factory is bound with the watcher type and the triggering element's ID/tag, so any watcher error includes full context.</p>
+<h3>Watcher Registration (Lines 113-115)</h3>
+<pre><code class="language-typescript">// engine/engine.ts:113-115
+export const watcher = (plugin: WatcherPlugin): void =&gt; {
+  watcherPlugins.set(plugin.name, plugin)
+}
 </code></pre>
-<h2>1. datastar-patch-elements</h2>
-<p>The DOM patching watcher. Receives HTML content and patches it into the DOM.</p>
-<pre><code class="language-typescript">// plugins/watchers/patchElements.ts
+<p>Watchers register immediately at module load time. No queuing is needed — they're discovered via Map lookup, not DOM scanning.</p>
+<h3>Event Dispatch from Fetch Plugin</h3>
+<p>When the fetch plugin receives an SSE event, it dispatches to watchers:</p>
+<pre><code class="language-typescript">// From fetch action plugin SSE handler:
+document.dispatchEvent(new CustomEvent(DATASTAR_FETCH_EVENT, {
+  detail: {
+    type: &#x27;datastar-patch-elements&#x27;,
+    argsRaw: { selector: &#x27;#main&#x27;, mode: &#x27;inner&#x27;, elements: &#x27;&lt;p&gt;Hello&lt;/p&gt;&#x27; },
+  },
+}))
+</code></pre>
+<p>The engine's single listener receives this, looks up <code>watcherPlugins.get('datastar-patch-elements')</code>, and calls its <code>apply</code> with <code>argsRaw</code>.</p>
+<h2>1. datastar-patch-elements — Full Source Walkthrough</h2>
+<p>Source: <code>plugins/watchers/patchElements.ts</code> — 729 lines</p>
+<h3>Imports and Constants (Lines 1-13)</h3>
+<pre><code class="language-typescript">import { watcher } from &#x27;@engine&#x27;
+import {
+  DATASTAR_PROP_CHANGE_EVENT,
+  DATASTAR_SCOPE_CHILDREN_EVENT,
+} from &#x27;@engine/consts&#x27;
+import type { WatcherArgsValue, WatcherContext } from &#x27;@engine/types&#x27;
+import { isHTMLOrSVG } from &#x27;@utils/dom&#x27;
+import { aliasify } from &#x27;@utils/text&#x27;
+import { supportsViewTransitions } from &#x27;@utils/view-transitions&#x27;
+</code></pre>
+<h3>Type Guards (Lines 15-33)</h3>
+<pre><code class="language-typescript">// patchElements.ts:15-18
+const isValidType = &lt;T extends readonly string[]&gt;(
+  arr: T,
+  value: string,
+): value is T[number] =&gt; (arr as readonly string[]).includes(value)
+
+// patchElements.ts:20-33
+const PATCH_MODES = [
+  &#x27;remove&#x27;, &#x27;outer&#x27;, &#x27;inner&#x27;, &#x27;replace&#x27;,
+  &#x27;prepend&#x27;, &#x27;append&#x27;, &#x27;before&#x27;, &#x27;after&#x27;,
+] as const
+type PatchElementsMode = (typeof PATCH_MODES)[number]
+
+const NAMESPACES = [&#x27;html&#x27;, &#x27;svg&#x27;, &#x27;mathml&#x27;] as const
+type Namespace = (typeof NAMESPACES)[number]
+</code></pre>
+<p>The <code>isValidType</code> function is a TypeScript type guard — it narrows <code>value</code> to <code>T[number]</code> at compile time. This is used to validate that user-provided mode/namespace strings are one of the allowed values.</p>
+<h3>Watcher Entry (Lines 43-80)</h3>
+<pre><code class="language-typescript">// patchElements.ts:43-80
 watcher({
   name: &#x27;datastar-patch-elements&#x27;,
   apply(ctx, args) {
+    // Step 1: Extract and validate arguments
     const selector = typeof args.selector === &#x27;string&#x27; ? args.selector : &#x27;&#x27;
     const mode = typeof args.mode === &#x27;string&#x27; ? args.mode : &#x27;outer&#x27;
-    const namespace = typeof args.namespace === &#x27;string&#x27; ? args.namespace : &#x27;html&#x27;
-    const useViewTransition = args.useViewTransition?.trim() === &#x27;true&#x27;
+    const namespace =
+      typeof args.namespace === &#x27;string&#x27; ? args.namespace : &#x27;html&#x27;
+    const useViewTransitionRaw =
+      typeof args.useViewTransition === &#x27;string&#x27; ? args.useViewTransition : &#x27;&#x27;
     const elements = args.elements
 
-    if (supportsViewTransitions &amp;&amp; useViewTransition) {
-      document.startViewTransition(() =&gt; onPatchElements(ctx, args))
+    // Step 2: Validate mode
+    if (!isValidType(PATCH_MODES, mode)) {
+      throw ctx.error(&#x27;PatchElementsInvalidMode&#x27;, { mode })
+    }
+
+    // Step 3: Require selector for non-outer/replace modes
+    if (!selector &amp;&amp; mode !== &#x27;outer&#x27; &amp;&amp; mode !== &#x27;replace&#x27;) {
+      throw ctx.error(&#x27;PatchElementsExpectedSelector&#x27;)
+    }
+
+    // Step 4: Validate namespace
+    if (!isValidType(NAMESPACES, namespace)) {
+      throw ctx.error(&#x27;PatchElementsInvalidNamespace&#x27;, { namespace })
+    }
+
+    const args2: PatchElementsArgs = {
+      selector,
+      mode,
+      namespace,
+      useViewTransition: useViewTransitionRaw.trim() === &#x27;true&#x27;,
+      elements,
+    }
+
+    // Step 5: View Transitions wrapper
+    if (supportsViewTransitions &amp;&amp; args2.useViewTransition) {
+      document.startViewTransition(() =&gt; onPatchElements(ctx, args2))
     } else {
-      onPatchElements(ctx, args)
+      onPatchElements(ctx, args2)
     }
   },
 })
 </code></pre>
-<p>This watcher receives:</p>
-<table><tr><th>Argument</th><th>Type</th><th>Purpose</th></tr><tr><td>`selector`</td><td>`string`</td><td>CSS selector for target elements</td></tr><tr><td>`mode`</td><td>`string`</td><td>One of 8 patch modes (see [DOM Morphing](07-dom-morphing.md))</td></tr><tr><td>`namespace`</td><td>`string`</td><td>`html`, `svg`, or `mathml`</td></tr><tr><td>`useViewTransition`</td><td>`string`</td><td>`"true"` to use View Transitions API</td></tr><tr><td>`elements`</td><td>`string \</td><td>Element \</td><td>DocumentFragment`</td><td>HTML content to patch</td></tr></table>
-<p>The watcher validates the mode and namespace, then calls <code>onPatchElements</code> which parses the HTML and runs the morph algorithm.</p>
-<h2>2. datastar-patch-signals</h2>
-<p>The signal patching watcher. Receives JSON and merges it into the global signal store.</p>
-<pre><code class="language-typescript">// plugins/watchers/patchSignals.ts
+<p>The watcher validates inputs then delegates to <code>onPatchElements</code>. The View Transitions API wrapper uses <code>document.startViewTransition</code> — this creates a CSS transition between the old and new DOM state, automatically animating differences.</p>
+<h3>Script Tracking (Lines 179-182)</h3>
+<pre><code class="language-typescript">// patchElements.ts:179-182
+const scripts = new WeakSet&lt;HTMLScriptElement&gt;()
+for (const script of document.querySelectorAll(&#x27;script&#x27;)) {
+  scripts.add(script)
+}
+</code></pre>
+<p><strong>Aha:</strong> At module load time, all existing <code><script></code> elements are recorded in a <code>WeakSet</code>. This allows the morph algorithm to distinguish between scripts that were already on the page (don't re-execute) and new scripts added by the server (execute them). The <code>WeakSet</code> ensures that when a script is removed from the DOM, it's automatically garbage collected — no memory leak.</p>
+<h3>Script Execution (Lines 184-200)</h3>
+<pre><code class="language-typescript">// patchElements.ts:184-200
+const execute = (target: Element): void =&gt; {
+  const elScripts =
+    target instanceof HTMLScriptElement
+      ? [target]
+      : target.querySelectorAll(&#x27;script&#x27;)
+  for (const old of elScripts) {
+    if (!scripts.has(old)) {
+      const script = document.createElement(&#x27;script&#x27;)
+      for (const { name, value } of old.attributes) {
+        script.setAttribute(name, value)
+      }
+      script.text = old.text
+      old.replaceWith(script)
+      scripts.add(script)
+    }
+  }
+}
+</code></pre>
+<p>New scripts are executed by creating a fresh <code><script></code> element, copying all attributes, setting the text content, and replacing the original. The replacement triggers execution. The new script is added to the <code>WeakSet</code> so it's never executed again even if morphed multiple times.</p>
+<h3>onPatchElements Entry (Lines 82-177)</h3>
+<pre><code class="language-typescript">// patchElements.ts:82-177
+const onPatchElements = (
+  { error }: WatcherContext,
+  { selector, mode, namespace, elements }: PatchElementsArgs,
+) =&gt; {
+  let newContent = document.createDocumentFragment()
+  let consume = typeof elements !== &#x27;string&#x27; &amp;&amp; !!elements
+</code></pre>
+<p>The <code>consume</code> flag tracks whether <code>newContent</code> can be moved rather than cloned. If elements come from a <code>DocumentFragment</code> or <code>Element</code>, they can be consumed. If from an HTML string, they must be cloned for multiple targets.</p>
+<h3>HTML Parsing Strategy (Lines 89-136)</h3>
+<pre><code class="language-typescript">// patchElements.ts:89-136
+if (typeof elements === &#x27;string&#x27;) {
+  // Remove SVGs before detection — SVG &lt;title&gt; looks like &lt;/head&gt;
+  const elementsWithSvgsRemoved = elements.replace(
+    /&lt;svg(\s[^&gt;]*&gt;|&gt;)([\s\S]*?)&lt;\/svg&gt;/gim,
+    &#x27;&#x27;,
+  )
+  const hasHtml = /&lt;\/html&gt;/.test(elementsWithSvgsRemoved)
+  const hasHead = /&lt;\/head&gt;/.test(elementsWithSvgsRemoved)
+  const hasBody = /&lt;\/body&gt;/.test(elementsWithSvgsRemoved)
+
+  const wrapperTag =
+    namespace === &#x27;svg&#x27; ? &#x27;svg&#x27; : namespace === &#x27;mathml&#x27; ? &#x27;math&#x27; : &#x27;&#x27;
+  const wrappedEls = wrapperTag
+    ? `&lt;${wrapperTag}&gt;${elements}&lt;/${wrapperTag}&gt;`
+    : elements
+
+  const newDocument = new DOMParser().parseFromString(
+    hasHtml || hasHead || hasBody
+      ? elements
+      : `&lt;body&gt;&lt;template&gt;${wrappedEls}&lt;/template&gt;&lt;/body&gt;`,
+    &#x27;text/html&#x27;,
+  )
+</code></pre>
+<p><strong>Aha:</strong> SVG content is stripped before HTML detection because <code><svg><title>...</title></svg></code> can falsely match the <code></head></code> regex. The <code><template></code> wrapper is used because <code>DOMParser</code> strips whitespace and restructures HTML — wrapping in a template preserves the exact content.</p>
+<p>After parsing, the content is extracted based on what was found:</p>
+<pre><code class="language-typescript">  if (hasHtml) {
+    newContent.appendChild(newDocument.documentElement)
+  } else if (hasHead &amp;&amp; hasBody) {
+    newContent.appendChild(newDocument.head)
+    newContent.appendChild(newDocument.body)
+  } else if (hasHead) {
+    newContent.appendChild(newDocument.head)
+  } else if (hasBody) {
+    newContent.appendChild(newDocument.body)
+  } else if (wrapperTag) {
+    // For SVG/MathML: extract from template wrapper
+    const wrapperEl = newDocument
+      .querySelector(&#x27;template&#x27;)!
+      .content.querySelector(wrapperTag)!
+    for (const child of wrapperEl.childNodes) {
+      newContent.appendChild(child)
+    }
+  } else {
+    newContent = newDocument.querySelector(&#x27;template&#x27;)!.content
+  }
+} else if (elements) {
+  // Elements came from a DocumentFragment or Element
+  if (elements instanceof DocumentFragment) {
+    newContent = elements
+  } else if (elements instanceof Element) {
+    newContent.appendChild(elements)
+  }
+}
+</code></pre>
+<h3>Target Resolution (Lines 138-176)</h3>
+<p><strong>Case 1: No selector, outer/replace mode</strong> — targets found by ID:</p>
+<pre><code class="language-typescript">// patchElements.ts:138-160
+if (!selector &amp;&amp; (mode === &#x27;outer&#x27; || mode === &#x27;replace&#x27;)) {
+  const children = Array.from(newContent.children)
+  for (const child of children) {
+    let target: Element
+    if (child instanceof HTMLHtmlElement) {
+      target = document.documentElement
+    } else if (child instanceof HTMLBodyElement) {
+      target = document.body
+    } else if (child instanceof HTMLHeadElement) {
+      target = document.head
+    } else {
+      target = document.getElementById(child.id)!
+      if (!target) {
+        console.warn(error(&#x27;PatchElementsNoTargetsFound&#x27;), {
+          element: { id: child.id },
+        })
+        continue
+      }
+    }
+    // Consume prevents cloning for single targets
+    applyToTargets(mode as PatchElementsMode, child, [target], true)
+  }
+}
+</code></pre>
+<p><strong>Case 2: Selector present</strong> — targets found by querySelectorAll:</p>
+<pre><code class="language-typescript">// patchElements.ts:161-176
+else {
+  const targets = document.querySelectorAll(selector)
+  if (!targets.length) {
+    console.warn(error(&#x27;PatchElementsNoTargetsFound&#x27;), { selector })
+    return
+  }
+
+  const targetList = consume &amp;&amp; mode !== &#x27;remove&#x27; ? [targets[0]!] : targets
+
+  // Single target optimization: consume instead of clone
+  if (targetList.length === 1) {
+    consume = true
+  }
+
+  applyToTargets(mode as PatchElementsMode, newContent, targetList, consume)
+}
+</code></pre>
+<p><strong>Aha:</strong> When there's only one target, <code>consume = true</code> — the new content is moved rather than cloned. This preserves element identity and state (e.g., input focus, canvas state) for single-target patches. This optimization was added specifically to address <a href="https://github.com/starfederation/datastar/issues/1155">issue #1155</a>.</p>
+<h3>applyToTargets — Mode Dispatch (Lines 221-265)</h3>
+<pre><code class="language-typescript">// patchElements.ts:221-265
+const applyToTargets = (
+  mode: PatchElementsMode,
+  element: DocumentFragment | Element,
+  targets: Iterable&lt;Element&gt;,
+  consume: boolean,
+) =&gt; {
+  switch (mode) {
+    case &#x27;remove&#x27;:
+      for (const target of targets) {
+        target.remove()
+      }
+      break
+    case &#x27;outer&#x27;:
+    case &#x27;inner&#x27;:
+      {
+        let used = false
+        for (const target of targets) {
+          if (consume &amp;&amp; used) break
+          const nextNode = consume ? element : (element.cloneNode(true) as Element)
+          morph(target, nextNode, mode)
+          execute(target)  // Run new &lt;script&gt; tags
+          const scopeHost = target.closest(&#x27;[data-scope-children]&#x27;)
+          if (scopeHost) {
+            scopeHost.dispatchEvent(
+              new CustomEvent(DATASTAR_SCOPE_CHILDREN_EVENT, { bubbles: false })
+            )
+          }
+          used = true
+        }
+      }
+      break
+    case &#x27;replace&#x27;:
+      applyPatchMode(targets, element, &#x27;replaceWith&#x27;, consume)
+      break
+    case &#x27;prepend&#x27;:
+    case &#x27;append&#x27;:
+    case &#x27;before&#x27;:
+    case &#x27;after&#x27;:
+      applyPatchMode(targets, element, mode, consume)
+  }
+}
+</code></pre>
+<p>For <code>outer</code>/<code>inner</code> modes, the <code>morph()</code> function does the ID-set matching. For other modes, <code>applyPatchMode</code> calls the native DOM method directly.</p>
+<h3>applyPatchMode — Non-Morph Insertion (Lines 202-219)</h3>
+<pre><code class="language-typescript">// patchElements.ts:202-219
+const applyPatchMode = (
+  targets: Iterable&lt;Element&gt;,
+  element: DocumentFragment | Element,
+  action: string,
+  consume: boolean,
+) =&gt; {
+  let used = false
+  for (const target of targets) {
+    if (consume &amp;&amp; used) break
+    const nextNode = consume ? element : (element.cloneNode(true) as Element)
+    execute(nextNode as Element)  // Run new scripts
+    target[action](nextNode)       // replaceWith, prepend, append, before, after
+    used = true
+  }
+}
+</code></pre>
+<h3>morph — The DOM Morph Algorithm (Lines 276-342)</h3>
+<p>The full morph algorithm is covered in <a href="07-dom-morphing.md">DOM Morphing</a>. Here's the entry point:</p>
+<pre><code class="language-typescript">// patchElements.ts:276-342
+export const morph = (
+  oldElt: Element | ShadowRoot,
+  newContent: DocumentFragment | Element,
+  mode: &#x27;outer&#x27; | &#x27;inner&#x27; = &#x27;outer&#x27;,
+): void =&gt; {
+  // Check data-ignore-morph
+  if (/* ... */) return
+
+  // Normalize content into a wrapper div
+  const normalizedElt = document.createElement(&#x27;div&#x27;)
+  normalizedElt.append(newContent)
+
+  // Position pantry
+  document.body.insertAdjacentElement(&#x27;afterend&#x27;, ctxPantry)
+
+  // Phase 1: Collect old IDs, detect duplicates
+  const oldIdElements = oldElt.querySelectorAll(&#x27;[id]&#x27;)
+  for (const { id, tagName } of oldIdElements) {
+    if (oldIdTagNameMap.has(id)) duplicateIds.add(id)
+    else oldIdTagNameMap.set(id, tagName)
+  }
+
+  // Phase 2: Compute persistent IDs (in both old and new, same tag)
+  const newIdElements = normalizedElt.querySelectorAll(&#x27;[id]&#x27;)
+  for (const { id, tagName } of newIdElements) {
+    if (ctxPersistentIds.has(id)) duplicateIds.add(id)
+    else if (oldIdTagNameMap.get(id) === tagName) ctxPersistentIds.add(id)
+  }
+
+  // Clean up and populate ID map with tree
+  for (const id of duplicateIds) ctxPersistentIds.delete(id)
+  oldIdTagNameMap.clear()
+  duplicateIds.clear()
+  ctxIdMap.clear()
+
+  const parent = mode === &#x27;outer&#x27; ? oldElt.parentElement! : oldElt
+  populateIdMapWithTree(parent, oldIdElements)
+  populateIdMapWithTree(normalizedElt, newIdElements)
+
+  // Phase 3: morphChildren — the core algorithm
+  morphChildren(parent, normalizedElt,
+    mode === &#x27;outer&#x27; ? oldElt : null,
+    oldElt.nextSibling,
+  )
+
+  ctxPantry.remove()
+}
+</code></pre>
+<p>See <a href="07-dom-morphing.md">DOM Morphing</a> for the full morphChildren, findBestMatch, morphNode, and populateIdMapWithTree walkthroughs.</p>
+<h2>2. datastar-patch-signals — Full Source Walkthrough</h2>
+<p>Source: <code>plugins/watchers/patchSignals.ts</code> — 20 lines</p>
+<pre><code class="language-typescript">// patchSignals.ts:1-20
+import { watcher } from &#x27;@engine&#x27;
+import { mergePatch } from &#x27;@engine/signals&#x27;
+import { jsStrToObject } from &#x27;@utils/text&#x27;
+
 watcher({
   name: &#x27;datastar-patch-signals&#x27;,
   apply({ error }, { signals, onlyIfMissing }) {
     if (typeof signals !== &#x27;string&#x27;) {
       throw error(&#x27;PatchSignalsExpectedSignals&#x27;)
     }
-    const ifMissing = typeof onlyIfMissing === &#x27;string&#x27; &amp;&amp; onlyIfMissing.trim() === &#x27;true&#x27;
+
+    const ifMissing =
+      typeof onlyIfMissing === &#x27;string&#x27; &amp;&amp; onlyIfMissing.trim() === &#x27;true&#x27;
     mergePatch(jsStrToObject(signals), { ifMissing })
   },
 })
 </code></pre>
-<p>Receives:</p>
-<table><tr><th>Argument</th><th>Type</th><th>Purpose</th></tr><tr><td>`signals`</td><td>`string`</td><td>JSON string of signal values</td></tr><tr><td>`onlyIfMissing`</td><td>`string`</td><td>`"true"` to only create non-existing signals</td></tr></table>
-<h2>Event Dispatch Sources</h2>
-<p>Both watchers are triggered by events dispatched via the fetch plugin's SSE handling:</p>
-<pre><code class="language-typescript">// From SSE event handler:
-dispatchFetch(&#x27;datastar-patch-elements&#x27;, el, {
-  selector: &#x27;#main&#x27;,
-  mode: &#x27;inner&#x27;,
-  elements: &#x27;&lt;p&gt;Hello&lt;/p&gt;&#x27;,
-})
-
-// From non-SSE JSON response:
-dispatchFetch(&#x27;datastar-patch-signals&#x27;, el, {
-  signals: &#x27;{&quot;count&quot;: 42, &quot;message&quot;: &quot;Hello&quot;}&#x27;,
-})
-</code></pre>
-<h2>Watcher Registration in Engine</h2>
-<p>The engine listens for watcher events in a centralized dispatch:</p>
-<pre><code class="language-typescript">// engine/engine.ts — simplified
-for (const [name, watcher] of watcherPlugins) {
-  document.addEventListener(name, (event) =&gt; {
-    try {
-      watcher.apply({ error: createErrorFactory(watcher.name) }, event.detail)
-    } catch (e) {
-      console.error(`Watcher ${name} error:`, e)
-    }
+<p>This is the simplest watcher — only 20 lines. It:</p>
+<ol><li><strong>Validates</strong> that <code>signals</code> is a string (the JSON payload from the server)</li><li><strong>Parses</strong> the JSON string to an object via <code>jsStrToObject</code> (which supports function revival)</li><li><strong>Merges</strong> into the global signal store via <code>mergePatch</code> with the <code>ifMissing</code> option</li></ol>
+<h3>mergePatch — JSON Merge Patch (from signals.ts)</h3>
+<pre><code class="language-typescript">// engine/signals.ts
+const mergePatch = (obj: Record&lt;string, any&gt;, { ifMissing = false } = {}) =&gt; {
+  beginBatch()
+  updateLeaves(obj, (value) =&gt; {
+    // ... merge logic
   })
+  endBatch()
 }
 </code></pre>
+<p>The <code>mergePatch</code> function wraps updates in <code>beginBatch()</code>/<code>endBatch()</code> so all signal changes propagate in a single pass. The <code>ifMissing</code> option only creates signals that don't already exist — useful for servers that want to initialize client state without overwriting user edits.</p>
+<h3>jsStrToObject — JSON with Function Revival (from text.ts)</h3>
+<pre><code class="language-typescript">// utils/text.ts:30-53
+export const jsStrToObject = (raw: string, options: JsStrToObjectOptions = {}) =&gt; {
+  const { reviveFunctionStrings = false } = options
+  try {
+    if (!reviveFunctionStrings) return JSON.parse(raw)
+    return JSON.parse(raw, (_k, value) =&gt; {
+      if (typeof value !== &#x27;string&#x27;) return value
+      const trimmed = value.trim()
+      if (!RE_FUNCTION_LITERAL.test(trimmed)) return value
+      try {
+        const revived = Function(`return (${trimmed})`)()
+        return typeof revived === &#x27;function&#x27; ? revived : value
+      } catch { return value }
+    })
+  } catch {
+    // If JSON parsing fails, try to evaluate as a JavaScript object
+    return Function(`return (${raw})`)()
+  }
+}
+</code></pre>
+<p>The function literal regex checks for <code>function</code> or <code>=></code> patterns at the start of the string:</p>
+<pre><code class="language-typescript">// utils/text.ts:23-24
+const RE_FUNCTION_LITERAL =
+  /^(?:(?:async\s+)?function\b|(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=&gt;)/
+</code></pre>
+<p>This matches: <code>function() {}</code>, <code>async function() {}</code>, <code>() => {}</code>, <code>x => {}</code>, <code>async () => {}</code>.</p>
 <h2>Comparison: Watchers vs Attribute Plugins</h2>
-<table><tr><th>Aspect</th><th>Watcher Plugin</th><th>Attribute Plugin</th></tr><tr><td>Trigger</td><td>Custom event on document</td><td>Attribute on DOM element</td></tr><tr><td>Scope</td><td>Global (document-level)</td><td>Element-local</td></tr><tr><td>Lifecycle</td><td>One-shot per event</td><td>Long-lived (effect + cleanup)</td></tr><tr><td>Cleanup</td><td>None needed</td><td>Returns cleanup function</td></tr><tr><td>Examples</td><td>patchElements, patchSignals</td><td>bind, on, show, class, style</td></tr></table>
+<table><tr><th>Aspect</th><th>Watcher Plugin</th><th>Attribute Plugin</th></tr><tr><td>Trigger</td><td>`datastar-fetch` event on document</td><td>Attribute on DOM element</td></tr><tr><td>Scope</td><td>Global (document-level)</td><td>Element-local</td></tr><tr><td>Lifecycle</td><td>One-shot per event</td><td>Long-lived (effect + cleanup)</td></tr><tr><td>Cleanup</td><td>None needed</td><td>Returns cleanup function</td></tr><tr><td>Registration</td><td>`watcher()` → Map lookup</td><td>`attribute()` → DOM scan</td></tr><tr><td>Examples</td><td>patchElements, patchSignals</td><td>bind, on, show, class, style</td></tr></table>
 <p>Watchers are for server-pushed changes. Attribute plugins are for element-bound reactivity.</p>
-<p>See <a href="07-dom-morphing.md">DOM Morphing</a> for the morph algorithm used by patchElements. See <a href="08-sse-streaming.md">SSE Streaming</a> for how SSE events trigger watchers.</p>
+<h2>Event Flow — Complete SSE to DOM Patch</h2>
+<div class="mermaid">
+sequenceDiagram
+    participant SERVER as Server
+    participant FETCH as fetch action
+    participant DOC as document
+    participant ENGINE as engine.ts listener
+    participant WATCHER as patchElements
+    participant DOM as DOM
+
+    SERVER-&gt;&gt;FETCH: SSE: event: datastar-patch-elements
+    FETCH-&gt;&gt;DOC: dispatchEvent(datastar-fetch, {type: &quot;datastar-patch-elements&quot;})
+    DOC-&gt;&gt;ENGINE: event listener fires
+    ENGINE-&gt;&gt;ENGINE: watcherPlugins.get(&quot;datastar-patch-elements&quot;)
+    ENGINE-&gt;&gt;WATCHER: apply(ctx, argsRaw)
+    WATCHER-&gt;&gt;WATCHER: parse HTML string
+    WATCHER-&gt;&gt;WATCHER: resolve targets by selector/ID
+    WATCHER-&gt;&gt;DOM: morph(oldContent, newContent)
+    DOM-&gt;&gt;DOM: match IDs, update attributes, insert/remove nodes
+    WATCHER-&gt;&gt;DOM: execute(new &lt;script&gt; tags)
+
+</div>
+<p>See <a href="07-dom-morphing.md">DOM Morphing</a> for the full morph algorithm. See <a href="08-sse-streaming.md">SSE Streaming</a> for how SSE events trigger watchers. See <a href="02-reactive-signals.md">Signals</a> for mergePatch and signal store internals.</p>
   </article>
   <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
 </body>

@@ -152,41 +152,141 @@ flowchart LR
     RX --> EXEC["Execute with root signal store"]
 ```
 
-## Value Mode — Return the Last Expression
+## Value Mode — Return the Last Expression (Lines 405-439)
 
-When `returnsValue: true` (used by plugins like `data-text`, `data-bind`), the compiler treats the last statement as a return value:
+When `returnsValue: true` (used by plugins like `data-text`, `data-bind`, `data-show`), the compiler treats the last statement as a return value:
 
 ```typescript
-// engine/engine.ts:426-436
-const statementRe =
-  /(\/(\\\/|[^/])*\/|"(\\"|[^"])*"|'(\\'|[^'])*'|`(\\`|[^`])*`|\(\s*((function)\s*\(\s*\)|(\(\s*\))\s*=>)\s*(?:\{[\s\S]*?\}|[^;){]*)\s*\)\s*\(\s*\)|[^;])+/gm
-const statements = value.trim().match(statementRe)
-if (statements) {
-  const lastIdx = statements.length - 1
-  const last = statements[lastIdx].trim()
-  if (!last.startsWith('return')) {
-    statements[lastIdx] = `return (${last});`
+// engine/engine.ts:405-439
+if (returnsValue) {
+  const statementRe =
+    /(\/(\\\/|[^/])*\/|"(\\"|[^"])*"|'(\\'|[^'])*'|`(\\`|[^`])*`|\(\s*((function)\s*\(\s*\)|(\(\s*\))\s*=>)\s*(?:\{[\s\S]*?\}|[^;){]*)\s*\)\s*\(\s*\)|[^;])+/gm
+  const statements = value.trim().match(statementRe)
+  if (statements) {
+    const lastIdx = statements.length - 1
+    const last = statements[lastIdx].trim()
+    if (!last.startsWith('return')) {
+      statements[lastIdx] = `return (${last});`
+    }
+    expr = statements.join(';\n')
   }
-  expr = statements.join(';\n')
+} else {
+  expr = value.trim()
 }
 ```
 
 The statement regex is carefully crafted to handle:
-- **Regular expressions**: `\/(\\\/|[^/])*\/` — avoids splitting on `/` inside regex literals
-- **Double-quoted strings**: `"(\\"|[^"])*"` — handles escaped quotes
-- **Single-quoted strings**: `'(\\'|[^'])*'` — handles escaped quotes
-- **Template literals**: `` `(\\`|[^`])*` `` — handles backticks
-- **IIFEs**: `\(\s*((function)\s*\(\s*\)|(\(\s*\))\s*=>)\s*...\(\s*\)` — limited IIFE support (no args, no nesting)
-- **Regular code**: `[^;]` — everything except semicolons
 
-**Aha:** The IIFE support is intentional but limited. Datastar allows expressions like `(() => { return $count * 2; })()` to evaluate to a value, but only no-argument IIFEs. This lets users write complex logic without needing a full JavaScript function in their HTML.
+| Alternative | Pattern | Matches |
+|-------------|---------|---------|
+| Regex literals | `\/(\\\/|[^/])*\/` | `/foo/g`, `/\d+/` |
+| Double-quoted strings | `"(\\"|[^"])*"` | `"hello \"world\""` |
+| Single-quoted strings | `'(\\'|[^'])*'` | `'it\'s fine'` |
+| Template literals | `` `(\\`|[^`])*` `` | `` `hi ${x}` `` |
+| No-arg IIFE function | `\(\s*(function)\s*\(\s*\)\s*...\)\s*\(\s*\)` | `(function() { return 1; })()` |
+| No-arg IIFE arrow | `\(\s*\(\s*\)\s*=>\s*...\)\s*\(\s*\)` | `(() => 42)()` |
+| Regular code | `[^;]` | Anything except semicolons |
 
-## Escaping — DSP/DSS Patterns
+**Aha:** The IIFE support is intentional but limited. Datastar allows expressions like `(() => { return $count * 2; })()` to evaluate to a value, but only no-argument IIFEs. This lets users write complex logic without needing a full JavaScript function in their HTML. The regex `(?:\{[\s\S]*?\}|[^;){]*)` inside the IIFE matches either a block `{...}` or a single expression — covering both `(() => { return x; })()` and `(() => x)()`.
+
+**Execution example — multi-statement:**
+
+```html
+<div data-effect="$count++; console.log($count)"></div>
+```
+
+Since `returnsValue: false` for `effect`, the expression is used as-is: `$count++; console.log($count)`. But with `data-text`:
+
+```html
+<div data-text="x = $count * 2; x > 100 ? 'big' : 'small'"></div>
+```
+
+With `returnsValue: true`, this becomes:
+```js
+x = $['count'] * 2;
+return (x > 100 ? 'big' : 'small');
+```
+
+The semicolons split statements, and the last one gets wrapped in `return (...)`.
+
+### Non-value mode (line 437-439)
+
+```typescript
+} else {
+  expr = value.trim()
+}
+```
+
+For `data-on:click`, `data-effect`, etc. — expressions are used as statement bodies, not return values. No `return` wrapping.
+
+## The Function Constructor — Full Wrapper (Lines 495-551)
+
+After rewriting, the expression is compiled into a Function with four fixed parameters:
+
+```typescript
+try {
+  const fn = Function('el', '$', '__action', 'evt', ...argNames, expr)
+  return (el: HTMLOrSVG, ...args: any[]) => {
+    const action = (name: string, evt: Event | undefined, ...args: any[]) => {
+      const err = error.bind(0, {
+        plugin: { type: 'action', name },
+        element: { id: el.id, tag: el.tagName },
+        expression: { fnContent: expr, value },
+      })
+      const fn = actions[name]
+      if (fn) {
+        return fn(
+          { el, evt, error: err, cleanups },
+          ...args,
+        )
+      }
+      throw err('UndefinedAction')
+    }
+    try {
+      return fn(el, root, action, undefined, ...args)
+    } catch (e: any) {
+      console.error(e)
+      throw error(
+        { element: { id: el.id, tag: el.tagName }, expression: { fnContent: expr, value }, error: e.message },
+        'ExecuteExpression',
+      )
+    }
+  }
+} catch (e: any) {
+  console.error(e)
+  throw error(
+    { expression: { fnContent: expr, value }, error: e.message },
+    'GenerateExpression',
+  )
+}
+```
+
+**Line-by-line walkthrough:**
+
+1. **Line 496:** `Function('el', '$', '__action', 'evt', ...argNames, expr)` creates a new function. `expr` is the function body. The four fixed params are `el` (element), `$` (signal root), `__action` (internal action dispatcher), `evt` (event). `argNames` are plugin-specific extras (e.g., `['evt']` for `data-on`, `['patch']` for `data-on-signal-patch`).
+
+2. **Line 497-520:** Returns a wrapper function that captures `el`, `expr`, `value`, `cleanups` in its closure. This wrapper is what `ctx.rx()` actually calls.
+
+3. **Line 498-519:** The inner `action` function is created fresh on each invocation. It:
+   - Creates an error factory (`err`) bound to the plugin name, element, and expression
+   - Looks up the action in the `actions` proxy
+   - Calls the action with `{ el, evt, error, cleanups }` context
+   - Throws `'UndefinedAction'` if no matching plugin
+
+4. **Line 522:** `fn(el, root, action, undefined, ...args)` invokes the compiled function. `root` is the signal store (`export const root = deep({})`). `undefined` is passed for `evt` (the actual event comes from the plugin calling `ctx.rx(evt)`).
+
+5. **Line 523-536:** Execution error handling — catches runtime errors and wraps them with element/expression context as `'ExecuteExpression'`.
+
+6. **Line 538-550:** Compilation error handling — catches syntax errors from the `Function` constructor and wraps them as `'GenerateExpression'`.
+
+**Aha:** Two levels of error handling — `GenerateExpression` for compile-time syntax errors (bad JS in the HTML attribute), and `ExecuteExpression` for runtime errors (the JS is valid but throws when run). Both include the element ID/tag and the original attribute value for debugging.
+
+## Escaping — DSP/DSS Patterns (Lines 441-493)
 
 Before compilation, patterns wrapped in `${DSP}...${DSS}` (Datastar Start Pattern / Datastar Stop Pattern) are escaped to prevent signal rewriting:
 
 ```typescript
-// engine/engine.ts:442-450
+// engine/engine.ts:441-450
 const escaped = new Map<string, string>()
 const escapeRe = RegExp(`(?:${DSP})(.*?)(?:${DSS})`, 'gm')
 let counter = 0
@@ -196,13 +296,60 @@ for (const match of expr.matchAll(escapeRe)) {
   escaped.set(v, k)
   expr = expr.replace(DSP + k + DSS, v)
 }
-// ... after compilation, restore ...
+```
+
+**Example:** If you want a literal `$foo` in your expression (not a signal reference):
+```html
+<div data-text="${DSP}foo${DSS}"></div>
+```
+
+This becomes `$['foo']` during normal processing. But with escaping:
+1. `${DSP}foo${DSS}` → replaced with `__escaped0`
+2. Signal rewriting runs — `__escaped0` has no `$` prefix, so it's untouched
+3. After rewriting: `expr = expr.replace('__escaped0', 'foo')` restores the original
+
+**Why this matters:** Without escaping, any `$` followed by a valid identifier would be treated as a signal reference. This lets you include literal `$` variables from external libraries (e.g., jQuery's `$`).
+
+After all rewriting, escaped values are restored:
+
+```typescript
+// engine/engine.ts:490-493
 for (const [k, v] of escaped) {
   expr = expr.replace(k, v)
 }
 ```
 
-This lets users include literal `$foo` text without it being treated as a signal reference.
+## Signal Reference Rewriting — Deep Dive (Lines 452-486)
+
+The rewriting regex has three capture groups that handle different contexts:
+
+```typescript
+// Line 470
+/("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\$]|\$(?!\{))*`)|\$\{([^{}]*)\}|\$([a-zA-Z_\d]\w*(?:[.-]\w+)*)/g
+```
+
+**Group 1 (quoted):** `("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\$]|\$(?!\{))*`)`
+
+Matches string literals of all three types. The template literal pattern `` `(?:\\.|[^`\\$]|\$(?!\{))*` `` is special: it matches backtick strings that don't contain `${` (because `${` starts an interpolation, which is handled separately). If a quoted string matches, it's returned unchanged — signal references inside strings are NOT rewritten.
+
+**Group 2 (interpolationExpr):** `\$\{([^{}]*)\}`
+
+Matches `${...}` template interpolation. The `[^{}]*` ensures non-nested braces. For each signal reference inside the interpolation, it rewrites:
+```js
+${$user.name} → ${$['user']['name']}
+```
+
+The `.reduce()` call splits on `.` and builds bracket notation:
+```js
+'user.name'.split('.').reduce((acc, part) => acc + "['" + part + "']", '$')
+// Result: "$['user']['name']"
+```
+
+**Group 3 (signalName):** `\$([a-zA-Z_\d]\w*(?:[.-]\w+)*)`
+
+Matches `$foo`, `$foo.bar`, `$foo-bar`. The pattern `[a-zA-Z_\d]\w*` allows starting with a digit (unusual but valid). The `(?:[.-]\w+)*` allows dot or hyphen-separated segments.
+
+**Aha:** The hyphen support (`$foo-bar`) is important because HTML attributes commonly use hyphens. `data-bind:user-name` maps to signal `$user-name`, which gets rewritten to `$['user-name']`. Without hyphen support, you'd need bracket notation: `$['user-name']`.
 
 ## Per-Attribute Caching — No Global Cache
 

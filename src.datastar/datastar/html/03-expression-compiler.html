@@ -227,27 +227,95 @@ flowchart LR
     RX --&gt; EXEC[&quot;Execute with root signal store&quot;]
 
 </div>
-<h2>Value Mode — Return the Last Expression</h2>
-<p>When <code>returnsValue: true</code> (used by plugins like <code>data-text</code>, <code>data-bind</code>), the compiler treats the last statement as a return value:</p>
-<pre><code class="language-typescript">// engine/engine.ts:426-436
-const statementRe =
-  /(\/(\\\/|[^/])*\/|&quot;(\\&quot;|[^&quot;])*&quot;|&#x27;(\\&#x27;|[^&#x27;])*&#x27;|`(\\`|[^`])*`|\(\s*((function)\s*\(\s*\)|(\(\s*\))\s*=&gt;)\s*(?:\{[\s\S]*?\}|[^;){]*)\s*\)\s*\(\s*\)|[^;])+/gm
-const statements = value.trim().match(statementRe)
-if (statements) {
-  const lastIdx = statements.length - 1
-  const last = statements[lastIdx].trim()
-  if (!last.startsWith(&#x27;return&#x27;)) {
-    statements[lastIdx] = `return (${last});`
+<h2>Value Mode — Return the Last Expression (Lines 405-439)</h2>
+<p>When <code>returnsValue: true</code> (used by plugins like <code>data-text</code>, <code>data-bind</code>, <code>data-show</code>), the compiler treats the last statement as a return value:</p>
+<pre><code class="language-typescript">// engine/engine.ts:405-439
+if (returnsValue) {
+  const statementRe =
+    /(\/(\\\/|[^/])*\/|&quot;(\\&quot;|[^&quot;])*&quot;|&#x27;(\\&#x27;|[^&#x27;])*&#x27;|`(\\`|[^`])*`|\(\s*((function)\s*\(\s*\)|(\(\s*\))\s*=&gt;)\s*(?:\{[\s\S]*?\}|[^;){]*)\s*\)\s*\(\s*\)|[^;])+/gm
+  const statements = value.trim().match(statementRe)
+  if (statements) {
+    const lastIdx = statements.length - 1
+    const last = statements[lastIdx].trim()
+    if (!last.startsWith(&#x27;return&#x27;)) {
+      statements[lastIdx] = `return (${last});`
+    }
+    expr = statements.join(&#x27;;\n&#x27;)
   }
-  expr = statements.join(&#x27;;\n&#x27;)
+} else {
+  expr = value.trim()
 }
 </code></pre>
 <p>The statement regex is carefully crafted to handle:</p>
-<ul><li><strong>Regular expressions</strong>: <code>\/(\\\/|[^/])*\/</code> — avoids splitting on <code>/</code> inside regex literals</li><li><strong>Double-quoted strings</strong>: <code>"(\\"|[^"])*"</code> — handles escaped quotes</li><li><strong>Single-quoted strings</strong>: <code>'(\\'|[^'])*'</code> — handles escaped quotes</li><li><strong>Template literals</strong>: `<code> </code>(\\<code>|[^</code>])*<code> </code>` — handles backticks</li><li><strong>IIFEs</strong>: <code>\(\s<em>((function)\s</em>\(\s<em>\)|(\(\s</em>\))\s<em>=>)\s</em>...\(\s*\)</code> — limited IIFE support (no args, no nesting)</li><li><strong>Regular code</strong>: <code>[^;]</code> — everything except semicolons</li></ul>
-<p><strong>Aha:</strong> The IIFE support is intentional but limited. Datastar allows expressions like <code>(() => { return $count * 2; })()</code> to evaluate to a value, but only no-argument IIFEs. This lets users write complex logic without needing a full JavaScript function in their HTML.</p>
-<h2>Escaping — DSP/DSS Patterns</h2>
+<table><tr><th>Alternative</th><th>Pattern</th><th>Matches</th></tr><tr><td>Regex literals</td><td>`\/(\\\/</td><td>[^/])*\/`</td><td>`/foo/g`, `/\d+/`</td></tr><tr><td>Double-quoted strings</td><td>`"(\\"</td><td>[^"])*"`</td><td>`"hello \"world\""`</td></tr><tr><td>Single-quoted strings</td><td>`'(\\'</td><td>[^'])*'`</td><td>`'it\'s fine'`</td></tr><tr><td>Template literals</td><td>`` `(\\`</td><td>[^`])*` ``</td><td>`` `hi ${x}` ``</td></tr><tr><td>No-arg IIFE function</td><td>`\(\s*(function)\s*\(\s*\)\s*...\)\s*\(\s*\)`</td><td>`(function() { return 1; })()`</td></tr><tr><td>No-arg IIFE arrow</td><td>`\(\s*\(\s*\)\s*=>\s*...\)\s*\(\s*\)`</td><td>`(() => 42)()`</td></tr><tr><td>Regular code</td><td>`[^;]`</td><td>Anything except semicolons</td></tr></table>
+<p><strong>Aha:</strong> The IIFE support is intentional but limited. Datastar allows expressions like <code>(() => { return $count <em> 2; })()</code> to evaluate to a value, but only no-argument IIFEs. This lets users write complex logic without needing a full JavaScript function in their HTML. The regex <code>(?:\{[\s\S]</em>?\}|[^;){]*)</code> inside the IIFE matches either a block <code>{...}</code> or a single expression — covering both <code>(() => { return x; })()</code> and <code>(() => x)()</code>.</p>
+<p><strong>Execution example — multi-statement:</strong></p>
+<pre><code class="language-html">&lt;div data-effect=&quot;$count++; console.log($count)&quot;&gt;&lt;/div&gt;
+</code></pre>
+<p>Since <code>returnsValue: false</code> for <code>effect</code>, the expression is used as-is: <code>$count++; console.log($count)</code>. But with <code>data-text</code>:</p>
+<pre><code class="language-html">&lt;div data-text=&quot;x = $count * 2; x &gt; 100 ? &#x27;big&#x27; : &#x27;small&#x27;&quot;&gt;&lt;/div&gt;
+</code></pre>
+<p>With <code>returnsValue: true</code>, this becomes:</p>
+<pre><code class="language-js">x = $[&#x27;count&#x27;] * 2;
+return (x &gt; 100 ? &#x27;big&#x27; : &#x27;small&#x27;);
+</code></pre>
+<p>The semicolons split statements, and the last one gets wrapped in <code>return (...)</code>.</p>
+<h3>Non-value mode (line 437-439)</h3>
+<pre><code class="language-typescript">} else {
+  expr = value.trim()
+}
+</code></pre>
+<p>For <code>data-on:click</code>, <code>data-effect</code>, etc. — expressions are used as statement bodies, not return values. No <code>return</code> wrapping.</p>
+<h2>The Function Constructor — Full Wrapper (Lines 495-551)</h2>
+<p>After rewriting, the expression is compiled into a Function with four fixed parameters:</p>
+<pre><code class="language-typescript">try {
+  const fn = Function(&#x27;el&#x27;, &#x27;$&#x27;, &#x27;__action&#x27;, &#x27;evt&#x27;, ...argNames, expr)
+  return (el: HTMLOrSVG, ...args: any[]) =&gt; {
+    const action = (name: string, evt: Event | undefined, ...args: any[]) =&gt; {
+      const err = error.bind(0, {
+        plugin: { type: &#x27;action&#x27;, name },
+        element: { id: el.id, tag: el.tagName },
+        expression: { fnContent: expr, value },
+      })
+      const fn = actions[name]
+      if (fn) {
+        return fn(
+          { el, evt, error: err, cleanups },
+          ...args,
+        )
+      }
+      throw err(&#x27;UndefinedAction&#x27;)
+    }
+    try {
+      return fn(el, root, action, undefined, ...args)
+    } catch (e: any) {
+      console.error(e)
+      throw error(
+        { element: { id: el.id, tag: el.tagName }, expression: { fnContent: expr, value }, error: e.message },
+        &#x27;ExecuteExpression&#x27;,
+      )
+    }
+  }
+} catch (e: any) {
+  console.error(e)
+  throw error(
+    { expression: { fnContent: expr, value }, error: e.message },
+    &#x27;GenerateExpression&#x27;,
+  )
+}
+</code></pre>
+<p><strong>Line-by-line walkthrough:</strong></p>
+<ol><li><strong>Line 496:</strong> <code>Function('el', '$', '__action', 'evt', ...argNames, expr)</code> creates a new function. <code>expr</code> is the function body. The four fixed params are <code>el</code> (element), <code>$</code> (signal root), <code>__action</code> (internal action dispatcher), <code>evt</code> (event). <code>argNames</code> are plugin-specific extras (e.g., <code>['evt']</code> for <code>data-on</code>, <code>['patch']</code> for <code>data-on-signal-patch</code>).</li></ol>
+<ol><li><strong>Line 497-520:</strong> Returns a wrapper function that captures <code>el</code>, <code>expr</code>, <code>value</code>, <code>cleanups</code> in its closure. This wrapper is what <code>ctx.rx()</code> actually calls.</li></ol>
+<ol><li><strong>Line 498-519:</strong> The inner <code>action</code> function is created fresh on each invocation. It:</li></ol>
+<ul><li>Creates an error factory (<code>err</code>) bound to the plugin name, element, and expression</li><li>Looks up the action in the <code>actions</code> proxy</li><li>Calls the action with <code>{ el, evt, error, cleanups }</code> context</li><li>Throws <code>'UndefinedAction'</code> if no matching plugin</li></ul>
+<ol><li><strong>Line 522:</strong> <code>fn(el, root, action, undefined, ...args)</code> invokes the compiled function. <code>root</code> is the signal store (<code>export const root = deep({})</code>). <code>undefined</code> is passed for <code>evt</code> (the actual event comes from the plugin calling <code>ctx.rx(evt)</code>).</li></ol>
+<ol><li><strong>Line 523-536:</strong> Execution error handling — catches runtime errors and wraps them with element/expression context as <code>'ExecuteExpression'</code>.</li></ol>
+<ol><li><strong>Line 538-550:</strong> Compilation error handling — catches syntax errors from the <code>Function</code> constructor and wraps them as <code>'GenerateExpression'</code>.</li></ol>
+<p><strong>Aha:</strong> Two levels of error handling — <code>GenerateExpression</code> for compile-time syntax errors (bad JS in the HTML attribute), and <code>ExecuteExpression</code> for runtime errors (the JS is valid but throws when run). Both include the element ID/tag and the original attribute value for debugging.</p>
+<h2>Escaping — DSP/DSS Patterns (Lines 441-493)</h2>
 <p>Before compilation, patterns wrapped in <code>${DSP}...${DSS}</code> (Datastar Start Pattern / Datastar Stop Pattern) are escaped to prevent signal rewriting:</p>
-<pre><code class="language-typescript">// engine/engine.ts:442-450
+<pre><code class="language-typescript">// engine/engine.ts:441-450
 const escaped = new Map&lt;string, string&gt;()
 const escapeRe = RegExp(`(?:${DSP})(.*?)(?:${DSS})`, &#x27;gm&#x27;)
 let counter = 0
@@ -257,12 +325,37 @@ for (const match of expr.matchAll(escapeRe)) {
   escaped.set(v, k)
   expr = expr.replace(DSP + k + DSS, v)
 }
-// ... after compilation, restore ...
+</code></pre>
+<p><strong>Example:</strong> If you want a literal <code>$foo</code> in your expression (not a signal reference):</p>
+<pre><code class="language-html">&lt;div data-text=&quot;${DSP}foo${DSS}&quot;&gt;&lt;/div&gt;
+</code></pre>
+<p>This becomes <code>$['foo']</code> during normal processing. But with escaping:</p>
+<ol><li><code>${DSP}foo${DSS}</code> → replaced with <code>__escaped0</code></li><li>Signal rewriting runs — <code>__escaped0</code> has no <code>$</code> prefix, so it's untouched</li><li>After rewriting: <code>expr = expr.replace('__escaped0', 'foo')</code> restores the original</li></ol>
+<p><strong>Why this matters:</strong> Without escaping, any <code>$</code> followed by a valid identifier would be treated as a signal reference. This lets you include literal <code>$</code> variables from external libraries (e.g., jQuery's <code>$</code>).</p>
+<p>After all rewriting, escaped values are restored:</p>
+<pre><code class="language-typescript">// engine/engine.ts:490-493
 for (const [k, v] of escaped) {
   expr = expr.replace(k, v)
 }
 </code></pre>
-<p>This lets users include literal <code>$foo</code> text without it being treated as a signal reference.</p>
+<h2>Signal Reference Rewriting — Deep Dive (Lines 452-486)</h2>
+<p>The rewriting regex has three capture groups that handle different contexts:</p>
+<pre><code class="language-typescript">// Line 470
+/(&quot;(?:\\.|[^&quot;\\])*&quot;|&#x27;(?:\\.|[^&#x27;\\])*&#x27;|`(?:\\.|[^`\\$]|\$(?!\{))*`)|\$\{([^{}]*)\}|\$([a-zA-Z_\d]\w*(?:[.-]\w+)*)/g
+</code></pre>
+<p><strong>Group 1 (quoted):</strong> <code>("(?:\\.|[^"\\])<em>"|'(?:\\.|[^'\\])</em>'|</code>(?:\\.|[^<code>\\$]|\$(?!\{))*</code>)`</p>
+<p>Matches string literals of all three types. The template literal pattern `<code> </code>(?:\\.|[^<code>\\$]|\$(?!\{))*</code> `<code> is special: it matches backtick strings that don't contain </code>${<code> (because </code>${` starts an interpolation, which is handled separately). If a quoted string matches, it's returned unchanged — signal references inside strings are NOT rewritten.</p>
+<p><strong>Group 2 (interpolationExpr):</strong> <code>\$\{([^{}]*)\}</code></p>
+<p>Matches <code>${...}</code> template interpolation. The <code>[^{}]*</code> ensures non-nested braces. For each signal reference inside the interpolation, it rewrites:</p>
+<pre><code class="language-js">${$user.name} → ${$[&#x27;user&#x27;][&#x27;name&#x27;]}
+</code></pre>
+<p>The <code>.reduce()</code> call splits on <code>.</code> and builds bracket notation:</p>
+<pre><code class="language-js">&#x27;user.name&#x27;.split(&#x27;.&#x27;).reduce((acc, part) =&gt; acc + &quot;[&#x27;&quot; + part + &quot;&#x27;]&quot;, &#x27;$&#x27;)
+// Result: &quot;$[&#x27;user&#x27;][&#x27;name&#x27;]&quot;
+</code></pre>
+<p><strong>Group 3 (signalName):</strong> <code>\$([a-zA-Z_\d]\w<em>(?:[.-]\w+)</em>)</code></p>
+<p>Matches <code>$foo</code>, <code>$foo.bar</code>, <code>$foo-bar</code>. The pattern <code>[a-zA-Z_\d]\w<em></code> allows starting with a digit (unusual but valid). The <code>(?:[.-]\w+)</em></code> allows dot or hyphen-separated segments.</p>
+<p><strong>Aha:</strong> The hyphen support (<code>$foo-bar</code>) is important because HTML attributes commonly use hyphens. <code>data-bind:user-name</code> maps to signal <code>$user-name</code>, which gets rewritten to <code>$['user-name']</code>. Without hyphen support, you'd need bracket notation: <code>$['user-name']</code>.</p>
 <h2>Per-Attribute Caching — No Global Cache</h2>
 <p>Unlike what you might expect, genRx does NOT cache compiled functions globally. Each call to genRx creates a fresh Function. The caching happens at the attribute plugin level:</p>
 <pre><code class="language-typescript">// engine/engine.ts:353-364 — in applyAttributePlugin

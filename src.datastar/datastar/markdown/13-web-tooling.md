@@ -185,3 +185,79 @@ library/
 
 See [Architecture](01-architecture.md) for the full module graph.
 See [Overview](00-overview.md) for a high-level introduction.
+
+## Build Pipeline
+
+```mermaid
+flowchart LR
+    subgraph "Source"
+        TS["library/src/**/*.ts"]
+        PKG["package.json"]
+        TSCFG["tsconfig.json"]
+    end
+
+    subgraph "esbuild"
+        BUILD["esbuild.build()"]
+        DEFINE["define: { ALIAS: '...' }"]
+    end
+
+    subgraph "Output"
+        FULL["datastar.js<br/>11.80 KiB — full bundle"]
+        CORE["datastar-core.js<br/>engine only"]
+        ALIAS["datastar-aliased.js<br/>custom prefix"]
+    end
+
+    subgraph "Extensions"
+        VSCODE["VS Code Extension<br/>TextMate grammar + snippets"]
+        INTELLIJ["IntelliJ Plugin<br/>Gradle + schema.json"]
+        SDK["SDK Schema<br/>datastar-sdk-config-v1.schema.json"]
+    end
+
+    TS --> BUILD
+    PKG --> BUILD
+    TSCFG --> BUILD
+    BUILD --> DEFINE
+    BUILD --> FULL
+    BUILD --> CORE
+    DEFINE --> ALIAS
+
+    TS -.grammar-> VSCODE
+    SDK -.schema-> INTELLIJ
+    SDK -.schema-> VSCODE
+```
+
+## IDE Extension Architecture
+
+```mermaid
+flowchart TB
+    subgraph "VS Code Extension"
+        TM[TextMate Grammar<br/>datastar.tmLanguage.json]
+        SN[Snippets<br/>data-attributes.json]
+        CFG[Contributes<br/>package.json]
+        SET[Settings<br/>datastar.customAttributes]
+    end
+
+    subgraph "IntelliJ Plugin"
+        GRADLE[build.gradle.kts]
+        SCHEMA[schema.json]
+        PLUGIN[src/main/kotlin/]
+    end
+
+    subgraph "SDK Schema"
+        V[version: "1.0.1"]
+        D[defaults]
+        E[enums: PatchMode, EventType, Namespace]
+        DL[datalineLiterals]
+    end
+
+    TM -->|injected into| HTML[22+ language scopes]
+    SN -->|tab-completion| ATTR[data-bind, data-on:click, ...]
+    CFG -->|contributes| VSCODE[VS Code IDE]
+    SET -->|user config| CUSTOM[custom attribute names]
+
+    GRADLE -->|builds| IDE[IntelliJ/WebStorm/PhpStorm]
+    SCHEMA -->|validates| PLUGIN
+    V --> SDK[Third-party LSP]
+    E --> SDK
+    DL --> SDK
+```

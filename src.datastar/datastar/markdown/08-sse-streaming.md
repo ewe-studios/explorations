@@ -57,32 +57,70 @@ const getBytes = async (stream, onChunk) => {
 }
 ```
 
-### Stage 2: getLines
+### Stage 2: getLines — Byte-Level Line Parser (Lines 309-371)
 
 Converts byte chunks into lines, handling the SSE line-splitting protocol:
 
 ```typescript
 const getLines = (onLine) => {
-  let buffer, position, fieldLength, discardTrailingNewline
+  let buffer: Uint8Array | undefined
+  let position = 0
+  let fieldLength = -1
+  let discardTrailingNewline = false
 
-  return (arr) => {
-    // Append new bytes to buffer
-    // Scan for \r\n or \n line endings
-    // For each complete line, call onLine(line, fieldLength)
-    // fieldLength = position of first ":" in line (for "field: value" parsing)
+  return (arr: Uint8Array) => {
+    if (!buffer) {
+      buffer = arr; position = 0; fieldLength = -1
+    } else {
+      buffer = concat(buffer, arr)  // Append new bytes
+    }
+
+    const bufLength = buffer.length
+    let lineStart = 0
+
+    while (position < bufLength) {
+      if (discardTrailingNewline) {
+        if (buffer[position] === 10) lineStart = ++position  // Skip \n after \r
+        discardTrailingNewline = false
+      }
+
+      for (; position < bufLength && lineEnd === -1; ++position) {
+        switch (buffer[position]) {
+          case 58:  // ':' — first colon marks field separator
+            if (fieldLength === -1) fieldLength = position - lineStart
+            break
+          case 13:  // '\r' — CR, set flag and fallthrough to LF
+            discardTrailingNewline = true
+          case 10:  // '\n' — LF, line complete
+            lineEnd = position
+            break
+        }
+      }
+
+      if (lineEnd === -1) break  // Incomplete line, wait for more bytes
+
+      onLine(buffer.subarray(lineStart, lineEnd), fieldLength)
+      lineStart = position
+      fieldLength = -1
+    }
+
+    // Compact buffer: remove processed bytes
+    if (lineStart === bufLength) buffer = undefined
+    else if (lineStart) { buffer = buffer.subarray(lineStart); position -= lineStart }
   }
 }
 ```
 
-Key SSE detail: A colon (`:`) in the stream marks the field/value separator. The parser records the field length when it sees the first colon, then passes it to `onLine` so the value can be extracted without re-scanning.
+**Key SSE detail:** The parser uses raw byte values (58 = `:`, 13 = `\r`, 10 = `\n`) rather than string comparison for performance. The `discardTrailingNewline` flag handles the `\r\n` sequence — when `\r` is seen, the flag is set and control falls through to the `\n` case, but the flag ensures the `\n` is consumed as part of the line ending rather than starting a new line.
 
-### Stage 3: getMessages
+**Partial chunk handling:** A single SSE line might span multiple `Uint8Array` chunks. The `buffer` accumulates bytes across calls, and `subarray` compacts processed bytes without copying. This is critical for streaming — the server might send one byte at a time over a slow connection.
 
-Assembles lines into SSE messages:
+### Stage 3: getMessages — SSE Message Assembler (Lines 373-416)
 
 ```typescript
 const getMessages = (onId, onRetry, onMessage) => {
-  let message = { data: '', event: '', id: '', retry: undefined }
+  let message = newMessage()  // { data: '', event: '', id: '', retry: undefined }
+  const decoder = new TextDecoder()
 
   return (line, fieldLength) => {
     if (!line.length) {
@@ -91,19 +129,24 @@ const getMessages = (onId, onRetry, onMessage) => {
       message = newMessage()
     } else if (fieldLength > 0) {
       const field = decoder.decode(line.subarray(0, fieldLength))
+      // Skip optional leading space after colon
+      const valueOffset = fieldLength + (line[fieldLength + 1] === 32 ? 2 : 1)
       const value = decoder.decode(line.subarray(valueOffset))
+
       switch (field) {
         case 'data': message.data = message.data ? `${message.data}\n${value}` : value; break
         case 'event': message.event = value; break
         case 'id': onId(message.id = value); break
-        case 'retry': onRetry(message.retry = +value); break
+        case 'retry': { const retry = +value; if (!Number.isNaN(retry)) onRetry(retry); break }
       }
     }
   }
 }
 ```
 
-Multiple `data:` lines are joined with `\n` per the SSE spec.
+The value offset calculation (`line[fieldLength + 1] === 32 ? 2 : 1`) handles both `field: value` (with space) and `field:value` (without space) formats per the SSE spec.
+
+**Aha:** The `newMessage()` function initializes all fields to empty strings (not undefined), which is required by the SSE spec. The `retry` field is initialized to `undefined` to maintain consistent shape for the JS engine's hidden class optimization — this is a micro-optimization noted in the source comment.
 
 ## Response Content-Type Handling
 

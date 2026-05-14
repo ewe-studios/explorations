@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Signals Deep Dive — Line-by-Line Through the Algorithmic Core -- datastar</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/datastar/docs</span>
+    <div class="nav-actions">
+      <a href="15-dom-morphing-deep-dive.html" class="nav-breadcrumb">Deep Dive: The DOM Morphing Algorithm</a><a href="16-form-preservation-deep-dive.html" class="nav-breadcrumb">Deep Dive: Form State Preservation</a><a href="17-rendering-signals-deep-dive.html" class="nav-breadcrumb">Deep Dive: Rendering, Signals, and Server-to-Browser Data Flow</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="17-rendering-signals-deep-dive.html" class="nav-btn" title="Previous: Deep Dive: Rendering, Signals, and Server-to-Browser Data Flow">← prev</a>
+      <a href="README.html" class="nav-btn nav-btn-next" title="Next: Datastar Core Library -- Documentation">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Signals Deep Dive — Line-by-Line Through the Algorithmic Core</h1>
+<p>This document walks through the most complex functions in <code>engine/signals.ts</code> line by line, explaining what each line does and how it fits into the overall signal logic. The existing <a href="02-reactive-signals.md">Reactive Signals</a> document covers the interfaces, flags, and API surface — this is the algorithmic guts.</p>
+<h2>The Big Picture</h2>
+<p>Before diving in, understand the four-phase cycle that every signal change goes through:</p>
+<div class="mermaid">
+flowchart LR
+    A[&quot;signal(value)&quot;] --&gt; B[&quot;propagate()\nmark Dirty+Pending&quot;]
+    B --&gt; C[&quot;notify()\nqueue effect&quot;]
+    C --&gt; D[&quot;flush()\nrun effect&quot;]
+    D --&gt; E[&quot;endTracking()\nclean stale deps&quot;]
+    E -.-&gt; B
+
+</div>
+<ol><li><strong>SET</strong> — <code>signalOper</code> detects a value change, calls <code>propagate()</code></li><li><strong>MARK</strong> — <code>propagate()</code> walks the sub graph, setting Dirty/Pending flags</li><li><strong>QUEUE</strong> — <code>notify()</code> puts Watching effects into the queue</li><li><strong>RUN</strong> — <code>flush()</code> executes each effect, which re-evaluates, calls <code>endTracking()</code> to clean up</li></ol>
+<p>The complexity lives in phases 2 and 4 — walking the graph correctly and handling diamond dependencies.</p>
+<h2>propagate() — Line by Line (Lines 354-425)</h2>
+<p>This is the most complex function. It walks the subscription graph iteratively (no recursion), handling diamond dependencies through bit-flag state machines.</p>
+<h3>Function signature and setup</h3>
+<pre><code class="language-typescript">// Line 354-356
+const propagate = (link: Link): void =&gt; {
+  let next = link.nextSub_
+  let stack: Stack&lt;Link | undefined&gt; | undefined
+</code></pre>
+<p><strong>What:</strong> <code>propagate()</code> starts at a specific Link (the first subscriber to the changed signal). <code>next</code> is the next sibling subscriber to visit after the current branch. <code>stack</code> is the DFS stack for when a node has multiple subscribers.</p>
+<p><strong>Why iterative instead of recursive:</strong> TypeScript/JS has limited stack depth. A large signal graph could blow the stack. The manual <code>Stack<T></code> linked list avoids this.</p>
+<h3>The top loop (line 358)</h3>
+<pre><code class="language-typescript">top: while (true) {
+  const sub = link.sub_      // The node we&#x27;re propagating TO
+  let flags = sub.flags_     // Snapshot its current flags
+</code></pre>
+<p>The <code>top:</code> label is used later (<code>continue top</code>) to restart the outer loop after popping from the stack.</p>
+<h3>Case 1: First time visiting this node (lines 363-373)</h3>
+<pre><code class="language-typescript">if (
+  !(flags &amp; (60 as RecursedCheck | Recursed | Dirty | Pending))
+) {
+  sub.flags_ = flags | (32 satisfies ReactiveFlags.Pending)
+}
+</code></pre>
+<p><strong>What:</strong> If NONE of the four flags are set (60 = 0b111100), this node hasn't been seen in this propagation cycle yet. Just mark it <code>Pending</code>.</p>
+<p><strong>Why:</strong> The first visit to any node is trivial — it hasn't been dirtied, recursed, or marked. Just set <code>Pending</code> to say "we'll need to check this later."</p>
+<p>The flag 60 = <code>RecursedCheck(4) | Recursed(8) | Dirty(16) | Pending(32)</code> = <code>0b111100</code>.</p>
+<h3>Case 2: Not RecursedCheck and not Recursed (lines 374-377)</h3>
+<pre><code class="language-typescript">else if (
+  !(flags &amp; (12 as RecursedCheck | Recursed))
+) {
+  flags = 0 satisfies ReactiveFlags.None
+}
+</code></pre>
+<p><strong>What:</strong> If it HAS one of the four flags (we didn't take Case 1), but neither <code>RecursedCheck</code> nor <code>Recursed</code> is set... this means it's Dirty or Pending but NOT in a diamond situation. Set <code>flags = 0</code> to skip further processing.</p>
+<p><strong>Why:</strong> This is a "re-entry" check. If we see a node that's Dirty/Pending but not marked as recursed, it means we already processed it and there's nothing new to do. The flags were already set by a previous path.</p>
+<h3>Case 3: Has RecursedCheck but NOT Recursed (lines 378-381)</h3>
+<pre><code class="language-typescript">else if (!(flags &amp; (4 satisfies ReactiveFlags.RecursedCheck))) {
+  sub.flags_ =
+    (flags &amp; ~(8 satisfies ReactiveFlags.Recursed)) |
+    (32 satisfies ReactiveFlags.Pending)
+}
+</code></pre>
+<p><strong>What:</strong> <code>RecursedCheck</code> is set (this node is currently being checked for a diamond), but <code>Recursed</code> is NOT set (we haven't processed it as a diamond yet). Clear <code>Recursed</code> and mark <code>Pending</code>.</p>
+<p><strong>Why:</strong> This is the <strong>first encounter</strong> within a diamond check. The <code>RecursedCheck</code> flag means <code>startTracking</code> was called on this node (or it's in the middle of evaluation). We clear any stale <code>Recursed</code> flag and mark it <code>Pending</code>.</p>
+<h3>Case 4: Has BOTH RecursedCheck AND Recursed — the diamond case (lines 382-388)</h3>
+<pre><code class="language-typescript">else if (
+  !(flags &amp; (48 as Dirty | Pending)) &amp;&amp;
+  isValidLink(link, sub)
+) {
+  sub.flags_ = flags | (40 as Recursed | Pending)
+  flags &amp;= 1 satisfies ReactiveFlags.Mutable
+}
+</code></pre>
+<p><strong>What:</strong> Both recursion flags are set (we've already visited this node in this cycle), AND it's not already Dirty or Pending, AND the link is still valid. Mark it <code>Recursed | Pending</code>. Then <code>flags &= Mutable</code> — if the node is a plain signal (Mutable), keep that flag; otherwise zero it out.</p>
+<p><strong>Why:</strong> This is the <strong>second encounter</strong> in a diamond. We reach the same computed/effect through a different path. <code>isValidLink()</code> confirms the link through which we arrived is still part of the consumer's current dependency list (not a stale link from a previous evaluation). If valid, we mark it <code>Pending</code> again but also <code>Recursed</code> to say "this was reached through a diamond."</p>
+<p>The key insight: <code>flags &= Mutable</code> extracts whether this node is a Mutable signal. If it IS Mutable, we need to continue propagating into its subscribers. If it's NOT Mutable (computed or effect), we don't propagate further from this encounter.</p>
+<h3>Case 5: Default fallback (lines 389-391)</h3>
+<pre><code class="language-typescript">else {
+  flags = 0 satisfies ReactiveFlags.None
+}
+</code></pre>
+<p><strong>What:</strong> None of the above matched. Set <code>flags = 0</code> — skip processing.</p>
+<h3>Notify effects (lines 393-395)</h3>
+<pre><code class="language-typescript">if (flags &amp; (2 satisfies ReactiveFlags.Watching)) {
+  notify(sub as AlienEffect)
+}
+</code></pre>
+<p><strong>What:</strong> If the processed node is an effect (<code>Watching</code> flag), queue it for execution via <code>notify()</code>.</p>
+<h3>Continue propagation (lines 397-407)</h3>
+<pre><code class="language-typescript">if (flags &amp; (1 satisfies ReactiveFlags.Mutable)) {
+  const subSubs = sub.subs_
+  if (subSubs) {
+    const nextSub = (link = subSubs).nextSub_
+    if (nextSub) {
+      stack = { value_: next, prev_: stack }
+      next = nextSub
+    }
+    continue
+  }
+}
+</code></pre>
+<p><strong>What:</strong> If the node is Mutable (plain signal) and has subscribers, descend into its subscriber chain. Take the first subscriber as the current <code>link</code>. If there are additional siblings (<code>nextSub</code>), push them onto the stack. Then <code>continue</code> — stay in the loop and process the first subscriber.</p>
+<p><strong>Why:</strong> Plain signals can have multiple subscribers (computed values, effects). We need to visit all of them. The stack saves the siblings so we can come back after processing the first branch.</p>
+<h3>Move to next sibling (lines 409-412)</h3>
+<pre><code class="language-typescript">if ((link = next!)) {
+  next = link.nextSub_
+  continue
+}
+</code></pre>
+<p><strong>What:</strong> If there's a pending <code>next</code> (saved from the current branch), move to it and continue.</p>
+<h3>Pop from stack (lines 414-420)</h3>
+<pre><code class="language-typescript">while (stack) {
+  link = stack.value_!
+  stack = stack.prev_
+  if (link) {
+    next = link.nextSub_
+    continue top
+  }
+}
+</code></pre>
+<p><strong>What:</strong> Pop the next pending branch from the stack. If found, restart the <code>top</code> loop with it.</p>
+<h3>Break (line 423)</h3>
+<pre><code class="language-typescript">break
+</code></pre>
+<p>No more nodes to visit. Propagation complete.</p>
+<h3>propagate() summary diagram</h3>
+<div class="mermaid">
+flowchart TD
+    A[&quot;propagate starts at link&quot;] --&gt; B[&quot;Get sub and flags&quot;]
+    B --&gt; C{&quot;flags &amp; 60 == 0?&quot;}
+    C --&gt;|Yes: first visit| D[&quot;Mark Pending only&quot;]
+    C --&gt;|No: seen before| E{&quot;flags &amp; 12 == 0?&quot;}
+    E --&gt;|Yes: Dirty/Pending, not recursed| F[&quot;flags = 0, skip&quot;]
+    E --&gt;|No: has RecursedCheck| G{&quot;has RecursedCheck?&quot;}
+    G --&gt;|No: first diamond encounter| H[&quot;Clear Recursed, mark Pending&quot;]
+    G --&gt;|Yes: second diamond encounter| I{&quot;Dirty|Pending AND isValidLink?&quot;}
+    I --&gt;|Yes| J[&quot;Mark Recursed+Pending, keep Mutable&quot;]
+    I --&gt;|No| K[&quot;flags = 0, skip&quot;]
+    D --&gt; L{&quot;flags &amp; Watching?&quot;}
+    J --&gt; L
+    H --&gt; L
+    L --&gt;|Yes| M[&quot;notify effect&quot;]
+    L --&gt;|No| N{&quot;flags &amp; Mutable?&quot;}
+    M --&gt; N
+    N --&gt;|Yes, has subs| O[&quot;Descend to first sub, push rest on stack&quot;]
+    N --&gt;|No| P{&quot;next sibling?&quot;}
+    O --&gt; P
+    P --&gt;|Yes| Q[&quot;Move to sibling&quot;]
+    P --&gt;|No| R{&quot;stack?&quot;}
+    Q --&gt; B
+    R --&gt;|Yes| S[&quot;Pop, restart top&quot;]
+    R --&gt;|No| T[&quot;BREAK - done&quot;]
+    S --&gt; B
+
+</div>
+<h2>checkDirty() — Line by Line (Lines 448-521)</h2>
+<p>This is the second most complex function. It's called when a computed is <code>Pending</code> but not <code>Dirty</code> — it lazily walks the dependency tree to determine if any source actually changed.</p>
+<h3>Setup</h3>
+<pre><code class="language-typescript">// Line 448-451
+const checkDirty = (link: Link, sub: ReactiveNode): boolean =&gt; {
+  let stack: Stack&lt;Link&gt; | undefined
+  let checkDepth = 0
+  let dirty = false
+</code></pre>
+<p><strong>What:</strong> <code>link</code> is the first dependency to check. <code>sub</code> is the computed/effect being checked. <code>stack</code> saves return points when we descend into nested dependencies. <code>checkDepth</code> tracks how deep we've gone. <code>dirty</code> accumulates the result.</p>
+<h3>The top loop</h3>
+<pre><code class="language-typescript">top: while (true) {
+  const dep = link.dep_    // The dependency node
+  const flags = dep.flags_ // Its current flags
+</code></pre>
+<h3>Branch 1: sub itself is Dirty (lines 457-458)</h3>
+<pre><code class="language-typescript">if (sub.flags_ &amp; (16 satisfies ReactiveFlags.Dirty)) {
+  dirty = true
+}
+</code></pre>
+<p><strong>What:</strong> The node we're checking (<code>sub</code>) is already marked Dirty. No need to walk further — we know it needs re-evaluation.</p>
+<h3>Branch 2: dep is Mutable + Dirty (lines 459-469)</h3>
+<pre><code class="language-typescript">else if (
+  (flags &amp; (17 as Mutable | Dirty)) === (17 as Mutable | Dirty)
+) {
+  if (update(dep as AlienSignal | AlienComputed)) {
+    const subs = dep.subs_!
+    if (subs.nextSub_) {
+      shallowPropagate(subs)
+    }
+    dirty = true
+  }
+}
+</code></pre>
+<p><strong>What:</strong> The dependency is a plain signal or computed AND it's Dirty. Call <code>update()</code> to re-evaluate it. If the value actually changed, set <code>dirty = true</code>. If it has multiple subscribers, also <code>shallowPropagate</code> to mark them Dirty.</p>
+<p><strong>Why 17:</strong> <code>Mutable(1) | Dirty(16) = 17</code>. This exact match confirms the node is both a Mutable signal/computed AND flagged Dirty.</p>
+<h3>Branch 3: dep is Mutable + Pending (lines 470-481)</h3>
+<pre><code class="language-typescript">else if (
+  (flags &amp; (33 as Mutable | Pending)) === (33 as Mutable | Pending)
+) {
+  if (link.nextSub_ || link.prevSub_) {
+    stack = { value_: link, prev_: stack }
+  }
+  link = dep.deps_!
+  sub = dep
+  ++checkDepth
+  continue
+}
+</code></pre>
+<p><strong>What:</strong> The dependency is Mutable AND Pending (but not Dirty). We need to check ITS dependencies recursively. Save the current position on the stack (if there are siblings). Then descend: <code>link</code> becomes the dependency's first dep, <code>sub</code> becomes the dependency itself, increment depth, <code>continue</code>.</p>
+<p><strong>Why 33:</strong> <code>Mutable(1) | Pending(32) = 33</code>. This is a signal that was marked Pending by <code>propagate()</code> but hasn't been checked yet.</p>
+<h3>No dirty yet — advance to next dep (lines 483-488)</h3>
+<pre><code class="language-typescript">if (!dirty) {
+  const nextDep = link.nextDep_
+  if (nextDep) {
+    link = nextDep
+    continue
+  }
+}
+</code></pre>
+<p><strong>What:</strong> We haven't found a dirty source yet. Move to the next dependency in the chain.</p>
+<h3>Unwind the stack (lines 491-516)</h3>
+<pre><code class="language-typescript">while (checkDepth--) {
+  const firstSub = sub.subs_!
+  const hasMultipleSubs = firstSub.nextSub_
+  if (hasMultipleSubs) {
+    link = stack!.value_
+    stack = stack!.prev_
+  } else {
+    link = firstSub
+  }
+  if (dirty) {
+    if (update(sub as AlienSignal | AlienComputed)) {
+      if (hasMultipleSubs) {
+        shallowPropagate(firstSub)
+      }
+      sub = link.sub_
+      continue
+    }
+    dirty = false
+  } else {
+    sub.flags_ &amp;= ~(32 satisfies ReactiveFlags.Pending)
+  }
+  sub = link.sub_
+  if (link.nextDep_) {
+    link = link.nextDep_
+    continue top
+  }
+}
+</code></pre>
+<p>This is the unwind phase — we're coming back up from a recursive descent.</p>
+<p><strong>Step 1:</strong> Restore position from stack. If there were multiple subscribers, restore from stack. Otherwise, take the first sub.</p>
+<p><strong>Step 2:</strong> If we found dirty deeper (<code>dirty = true</code>), try to <code>update()</code> this node. If the value changed, propagate to other subscribers and keep <code>dirty = true</code>. If the value didn't change, set <code>dirty = false</code> (the change was absorbed by the getter).</p>
+<p><strong>Step 3:</strong> If not dirty, clear this node's <code>Pending</code> flag — it's clean now.</p>
+<p><strong>Step 4:</strong> Move to the next sibling dep. If there's another dep at this level, restart <code>top</code> to check it.</p>
+<h3>Return (line 519)</h3>
+<pre><code class="language-typescript">return dirty
+</code></pre>
+<p>True if any source changed, false otherwise.</p>
+<h3>checkDirty() execution example</h3>
+<p>Consider: <code>signal A → computed B → computed C → effect D</code></p>
+<p>When A changes:</p>
+<ol><li><code>propagate()</code> marks B as Pending, C as Pending</li><li><code>flush()</code> runs D</li><li>D reads C → <code>computedOper</code> sees C is Pending but not Dirty</li><li>Calls <code>checkDirty(C's deps, C)</code></li><li><code>checkDirty</code> finds B is Mutable+Pending → descends into B</li><li>Finds A is Mutable+Dirty → <code>update(A)</code> → dirty = true</li><li>Unwinds: <code>update(B)</code> → if B changed, dirty stays true</li><li>Unwinds: <code>update(C)</code> → if C changed, dirty stays true</li><li>Returns true → C re-evaluates</li></ol>
+<h2>link() — Line by Line (Lines 274-313)</h2>
+<p>Creates or reuses a bidirectional Link between a dependency and subscriber.</p>
+<h3>Fast path: dep is already the tail (lines 275-278)</h3>
+<pre><code class="language-typescript">const prevDep = sub.depsTail_
+if (prevDep &amp;&amp; prevDep.dep_ === dep) {
+  return
+}
+</code></pre>
+<p><strong>What:</strong> The last dependency in the consumer's list IS this dep. No-op.</p>
+<p><strong>Why:</strong> During re-evaluation, signals are typically read in the same order. If the dep was just added, it's at the tail. This is O(1) for the common case.</p>
+<h3>Second fast path: dep is next in line (lines 279-284)</h3>
+<pre><code class="language-typescript">const nextDep = prevDep ? prevDep.nextDep_ : sub.deps_
+if (nextDep &amp;&amp; nextDep.dep_ === dep) {
+  nextDep.version_ = version
+  sub.depsTail_ = nextDep
+  return
+}
+</code></pre>
+<p><strong>What:</strong> The dep is the next one after the tail. Update its version and bump the tail. O(1).</p>
+<p><strong>Why:</strong> When a computed re-evaluates and reads its deps in the same order, they'll appear sequentially. This moves the tail forward without creating a new link.</p>
+<h3>Third fast path: already on source's sub side (lines 285-288)</h3>
+<pre><code class="language-typescript">const prevSub = dep.subsTail_
+if (prevSub &amp;&amp; prevSub.version_ === version &amp;&amp; prevSub.sub_ === sub) {
+  return
+}
+</code></pre>
+<p><strong>What:</strong> The dep's last subscriber is this sub at the current version. No-op.</p>
+<p><strong>Why:</strong> Same logic as the dep-side check but from the source's perspective.</p>
+<h3>Create new link (lines 289-312)</h3>
+<pre><code class="language-typescript">const newLink =
+  (sub.depsTail_ = dep.subsTail_ = {
+    version_: version,
+    dep_: dep,
+    sub_: sub,
+    prevDep_: prevDep,
+    nextDep_: nextDep,
+    prevSub_: prevSub,
+  })
+</code></pre>
+<p><strong>What:</strong> Create the Link object and assign it to both tails simultaneously.</p>
+<p>Then splice it into both doubly-linked lists:</p>
+<pre><code class="language-typescript">if (nextDep) { nextDep.prevDep_ = newLink }
+if (prevDep) { prevDep.nextDep_ = newLink }
+else { sub.deps_ = newLink }        // New head
+if (prevSub) { prevSub.nextSub_ = newLink }
+else { dep.subs_ = newLink }        // New head
+</code></pre>
+<p><strong>What:</strong> Standard doubly-linked list insertion. The link appears in:</p>
+<ul><li>sub's dep list (what I depend on)</li><li>dep's sub list (what depends on me)</li></ul>
+<h2>unlink() — Line by Line (Lines 315-352)</h2>
+<p>Removes a link from both doubly-linked lists and handles cascading cleanup.</p>
+<h3>Extract all neighbors (lines 316-320)</h3>
+<pre><code class="language-typescript">const dep_ = link.dep_
+const prevDep_ = link.prevDep_
+const nextDep_ = link.nextDep_
+const nextSub_ = link.nextSub_
+const prevSub_ = link.prevSub_
+</code></pre>
+<p>Save all pointers before modifying.</p>
+<h3>Remove from consumer's dep list (lines 321-329)</h3>
+<pre><code class="language-typescript">if (nextDep_) { nextDep_.prevDep_ = prevDep_ }
+else { sub.depsTail_ = prevDep_ }    // Was tail, new tail is prev
+if (prevDep_) { prevDep_.nextDep_ = nextDep_ }
+else { sub.deps_ = nextDep_ }        // Was head, new head is next
+</code></pre>
+<p>Standard doubly-linked list removal for the dep side.</p>
+<h3>Remove from source's sub list (lines 331-338)</h3>
+<pre><code class="language-typescript">if (nextSub_) { nextSub_.prevSub_ = prevSub_ }
+else { dep_.subsTail_ = prevSub_ }
+if (prevSub_) { prevSub_.nextSub_ = nextSub_ }
+else if (!(dep_.subs_ = nextSub_)) {
+</code></pre>
+<p>Same for the sub side. The <code>else if</code> chain: if this was the last subscriber (no prevSub, and no nextSub), then <code>dep_.subs_</code> becomes falsy — the dep has no more subscribers.</p>
+<h3>Cascade: dep lost all subscribers (lines 338-349)</h3>
+<pre><code class="language-typescript">if (&#x27;getter&#x27; in dep_) {
+  // It&#x27;s a computed — mark Dirty and unlink all its deps
+  let toRemove = dep_.deps_
+  if (toRemove) {
+    dep_.flags_ = 17 as Mutable | Dirty
+    do { toRemove = unlink(toRemove, dep_) } while (toRemove)
+  }
+} else if (!(&#x27;previousValue&#x27; in dep_)) {
+  // It&#x27;s an effect — dispose it
+  effectOper(dep_ as AlienEffect)
+}
+// Plain signals: value persists, no cleanup needed
+</code></pre>
+<p><strong>What:</strong> When a computed loses its last subscriber:</p>
+<ol><li>Mark it Dirty + Mutable (value is stale, needs re-eval if subscribed again)</li><li>Unlink all its dependencies (recursive cleanup)</li></ol>
+<p>When an effect loses its last subscriber: dispose it entirely.</p>
+<p><strong>Why:</strong> This is "lazy resource cleanup." A computed that nobody subscribes to doesn't need to stay connected to its sources. The resources release automatically.</p>
+<h2>deep() Proxy — Line by Line (Lines 562-674)</h2>
+<p>The deep signal system wraps objects/arrays in Proxies that auto-create signals on access.</p>
+<h3>Entry point</h3>
+<pre><code class="language-typescript">const deep = (value: any, prefix = &#x27;&#x27;): any =&gt; {
+  const isArr = Array.isArray(value)
+  if (isArr || isPojo(value)) {
+</code></pre>
+<p>Only objects and arrays get proxied. Primitives pass through.</p>
+<h3>Recursive signal creation (lines 565-570)</h3>
+<pre><code class="language-typescript">const deepObj = (isArr ? [] : {}) as Record&lt;string, Signal&lt;any&gt;&gt;
+for (const key in value) {
+  deepObj[key] = signal(
+    deep(value[key], `${prefix + key}.`)
+  )
+}
+const keys = signal(0)  // Tracks key count for reactivity
+</code></pre>
+<p>Each property becomes a signal containing the recursively deep-wrapped value. <code>keys</code> is a counter signal that reactivity hooks (like <code>.map()</code>) read to detect additions/deletions.</p>
+<h3>Proxy get handler (lines 573-598)</h3>
+<pre><code class="language-typescript">get(_, prop: string) {
+  // Line 577: Prevent toJSON from auto-creating signals
+  if (!(prop === &#x27;toJSON&#x27; &amp;&amp; !hasOwn(deepObj, prop))) {
+</code></pre>
+<p><code>JSON.stringify</code> calls <code>.toJSON()</code> without checking if it exists. If we auto-created a signal for <code>toJSON</code>, stringify would get a signal instead of the actual data.</p>
+<pre><code class="language-typescript">    // Line 580-583: Array methods read keys for reactivity
+    if (isArr &amp;&amp; prop in Array.prototype) {
+      keys()
+      return deepObj[prop]
+    }
+</code></pre>
+<p><code>arr.map()</code>, <code>arr.filter()</code> etc. need to re-run when items are added. Reading <code>keys()</code> creates a dependency on the key count.</p>
+<pre><code class="language-typescript">    // Line 586-588: Symbols pass through
+    if (typeof prop === &#x27;symbol&#x27;) {
+      return deepObj[prop]
+    }
+</code></pre>
+<p><code>Symbol.iterator</code>, <code>Symbol.toStringTag</code>, etc. shouldn't create signals.</p>
+<pre><code class="language-typescript">    // Line 591-596: Auto-create missing properties
+    if (!hasOwn(deepObj, prop) || deepObj[prop]() == null) {
+      deepObj[prop] = signal(&#x27;&#x27;)
+      dispatch(prefix + prop, &#x27;&#x27;)
+      keys(keys() + 1)
+    }
+    return deepObj[prop]()
+</code></pre>
+<p><strong>Aha:</strong> Accessing a non-existent property auto-creates it as an empty string signal. This means <code>user.name</code> works even if <code>name</code> was never defined — it just starts as <code>''</code>. The <code>dispatch()</code> notifies watchers.</p>
+<h3>Proxy set handler (lines 599-656)</h3>
+<p>The set handler is the most complex part, handling multiple cases:</p>
+<pre><code class="language-typescript">// Line 602-614: Array length changes
+if (isArr &amp;&amp; prop === &#x27;length&#x27;) {
+  const diff = deepObj[prop] - newValue
+  deepObj[prop] = newValue
+  if (diff &gt; 0) {  // Shrinking
+    const patch = {}
+    for (let i = newValue; i &lt; deepObj[prop]; i++) {
+      patch[i] = null  // Mark removed items
+    }
+    dispatch(prefix.slice(0, -1), patch)
+    keys(keys() + 1)
+  }
+}
+</code></pre>
+<p>When an array shrinks, dispatch a patch setting removed indices to null.</p>
+<pre><code class="language-typescript">// Line 615-642: Setting an existing property
+else if (hasOwn(deepObj, prop)) {
+  if (newValue == null) {
+    delete deepObj[prop]  // Null deletes the property
+  } else if (hasOwn(newValue, computedSymbol)) {
+    deepObj[prop] = newValue  // Set computed directly
+    dispatch(path, &#x27;&#x27;)
+  } else {
+    const currentValue = deepObj[prop]()
+    const pathStr = `${path}.`
+    if (isPojo(currentValue) &amp;&amp; isPojo(newValue)) {
+      // Deep merge: remove old keys, update changed keys
+      for (const key in currentValue) {
+        if (!hasOwn(newValue, key)) {
+          delete currentValue[key]
+          dispatch(pathStr + key, null)
+        }
+      }
+      for (const key in newValue) {
+        if (currentValue[key] !== newValue[key]) {
+          currentValue[key] = newValue[key]
+        }
+      }
+    } else if (deepObj[prop](deep(newValue, pathStr))) {
+      // Set the signal&#x27;s value (deep-wrapping newValue)
+      dispatch(path, newValue)
+    }
+  }
+}
+</code></pre>
+<p>Deep merge for objects: remove keys that no longer exist, update keys that changed.</p>
+<pre><code class="language-typescript">// Line 644-654: Setting a new property
+else if (newValue != null) {
+  if (hasOwn(newValue, computedSymbol)) {
+    deepObj[prop] = newValue
+    dispatch(path, &#x27;&#x27;)
+  } else {
+    deepObj[prop] = signal(deep(newValue, `${path}.`))
+    dispatch(path, newValue)
+  }
+  keys(keys() + 1)
+}
+</code></pre>
+<p>New properties get deep-wrapped and wrapped in a signal. <code>keys</code> increments so array methods re-evaluate.</p>
+<h2>mergePatch() and mergeInner() — Lines 691-746</h2>
+<h3>mergePatch</h3>
+<pre><code class="language-typescript">export const mergePatch = (patch: JSONPatch, { ifMissing }: MergePatchArgs = {}): void =&gt; {
+  beginBatch()
+  for (const key in patch) {
+    if (patch[key] == null) {
+      if (!ifMissing) { delete root[key] }
+    } else {
+      mergeInner(patch[key], key, root, &#x27;&#x27;, ifMissing)
+    }
+  }
+  endBatch()
+}
+</code></pre>
+<p><strong>What:</strong> RFC 7396 JSON Merge Patch applied to the signal root. <code>null</code> values delete keys (unless <code>ifMissing</code> is set). Non-null values merge recursively. Wrapped in a batch so all changes propagate together.</p>
+<h3>mergeInner</h3>
+<pre><code class="language-typescript">const mergeInner = (patch, target, targetParent, prefix, ifMissing): void =&gt; {
+  if (isPojo(patch)) {
+    // Recursively merge objects
+    if (!(hasOwn(targetParent, target) &amp;&amp;
+        (isPojo(targetParent[target]) || Array.isArray(targetParent[target])))) {
+      targetParent[target] = {}
+    }
+    for (const key in patch) {
+      if (patch[key] == null) {
+        if (!ifMissing) { delete targetParent[target][key] }
+      } else {
+        mergeInner(patch[key], key, targetParent[target], `${prefix + target}.`, ifMissing)
+      }
+    }
+  } else if (!(ifMissing &amp;&amp; hasOwn(targetParent, target))) {
+    // Leaf value: set directly (unless ifMissing and target already exists)
+    targetParent[target] = patch
+  }
+}
+</code></pre>
+<p><strong>What:</strong> Recursive merge. If the patch value is a plain object, descend. If it's a leaf, set directly. The <code>ifMissing</code> flag prevents overwriting existing values — useful for SSE patches that should only fill in gaps.</p>
+<h2>dispatch() — Lines 676-689</h2>
+<pre><code class="language-typescript">const dispatch = (path?: string, value?: any) =&gt; {
+  if (path !== undefined &amp;&amp; value !== undefined) {
+    currentPatch.push([path, value])
+  }
+  if (!batchDepth &amp;&amp; currentPatch.length) {
+    const detail = pathToObj(currentPatch)
+    currentPatch.length = 0
+    document.dispatchEvent(
+      new CustomEvent&lt;JSONPatch&gt;(DATASTAR_SIGNAL_PATCH_EVENT, { detail })
+    )
+  }
+}
+</code></pre>
+<p><strong>What:</strong> Collects path changes into <code>currentPatch</code>. When not inside a batch (<code>batchDepth === 0</code>) and there are changes, dispatch a DOM CustomEvent with the patch as detail.</p>
+<p><strong>Why DOM event:</strong> Watcher plugins (<code>WatchPlugin</code>) listen for <code>datastar:signal-patch</code> events. This bridges the signal system to the DOM morphing system without tight coupling.</p>
+<p><strong>Why only when <code>!batchDepth</code>:</strong> Inside a batch, multiple changes should be coalesced into a single event. The <code>endBatch()</code> call (which decrements <code>batchDepth</code> to 0) doesn't call <code>dispatch()</code> directly — instead, each <code>dispatch()</code> call checks <code>batchDepth</code>. When the batch ends, the next <code>dispatch()</code> (or the one from <code>endBatch()</code> in the signals module) fires with all accumulated changes.</p>
+<h2>The Complete Flow — Putting It All Together</h2>
+<p>Consider this HTML:</p>
+<pre><code class="language-html">&lt;div data-on-signal-patch=&quot;console.log(&#x27;patched&#x27;)&quot;&gt;&lt;/div&gt;
+&lt;div data-text=&quot;`Hello, ${user.name}`&quot;&gt;&lt;/div&gt;
+</code></pre>
+<p>When SSE arrives with <code>{ user: { name: "Alice" } }</code>:</p>
+<pre><code class="language-">1. mergePatch({ user: { name: &quot;Alice&quot; } })
+   → beginBatch()
+   → mergeInner creates root.user signal, then root.user.name signal
+   → dispatch(&quot;user.name&quot;, &quot;Alice&quot;) → pushes to currentPatch
+   → endBatch()
+     → flush() (nothing queued)
+     → dispatch() → fires CustomEvent with { user: { name: &quot;Alice&quot; } }
+
+2. on-signal-patch plugin receives event, runs callback
+
+3. data-text plugin effect re-evaluates:
+   → reads user.name signal (creates link if new)
+   → updates DOM textContent to &quot;Hello, Alice&quot;
+</code></pre>
+<p>The signal system connects SSE patches → DOM updates through a chain of:</p>
+<ul><li><code>mergePatch</code> (applies patch to signal root)</li><li><code>dispatch</code> (emits DOM event)</li><li><code>on-signal-patch</code> plugin (listens for event)</li><li><code>data-text</code> plugin's effect (reads signal, updates DOM)</li></ul>
+<p>All bound together by <code>link()</code> creating the dependency graph and <code>propagate()</code>/<code>checkDirty()</code> ensuring only affected DOM nodes update.</p>
+<p><a href="02-reactive-signals.md">← Back to Signals</a> | <a href="03-expression-compiler.md">← Back to Expression Compiler</a> | <a href="04-plugin-system.md">Next → Plugin System</a></p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

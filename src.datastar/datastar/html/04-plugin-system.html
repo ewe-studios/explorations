@@ -136,27 +136,502 @@
 <p>Datastar's plugin system has three types: ActionPlugin, AttributePlugin, and WatcherPlugin. Each registers at module load time by calling <code>action()</code>, <code>attribute()</code>, or <code>watcher()</code> from <code>engine.ts</code>.</p>
 <p><strong>Aha:</strong> There is no central "plugin manager" object. Plugins register themselves via module-level function calls that add entries to Maps (<code>actionPlugins</code>, <code>attributePlugins</code>, <code>watcherPlugins</code>). The engine discovers plugins by matching DOM attribute names against Map keys — no plugin registry needs to be maintained manually.</p>
 <p>Source: <code>library/src/engine/engine.ts</code> — plugin registration and DOM scanning</p>
-<h2>Plugin Registration</h2>
-<pre><code class="language-typescript">// engine/engine.ts
-const actionPlugins = new Map&lt;string, ActionPlugin&gt;()
-const attributePlugins = new Map&lt;string, AttributePlugin&gt;()
-const watcherPlugins = new Map&lt;string, WatcherPlugin&gt;()
-
-export const action = (plugin: ActionPlugin) =&gt; actionPlugins.set(plugin.name, plugin)
-export const attribute = (plugin: AttributePlugin) =&gt; attributePlugins.set(plugin.name, plugin)
-export const watcher = (plugin: WatcherPlugin) =&gt; watcherPlugins.set(plugin.name, plugin)
+<h2>Plugin Registration — Full Source Walkthrough</h2>
+<h3>Module-Level Maps (Lines 40-42)</h3>
+<pre><code class="language-typescript">// engine/engine.ts:40-42
+const actionPlugins: Map&lt;string, ActionPlugin&gt; = new Map()
+const attributePlugins: Map&lt;string, AttributePlugin&gt; = new Map()
+const watcherPlugins: Map&lt;string, WatcherPlugin&gt; = new Map()
 </code></pre>
-<p>Each plugin is just an object with <code>name</code>, <code>apply</code>, and optional metadata:</p>
-<pre><code class="language-typescript">// Example plugin
-attribute({
-  name: &#x27;bind&#x27;,
-  requirement: &#x27;exclusive&#x27;,
-  apply({ el, key, mods, rx }) {
-    // Plugin logic
-    return () =&gt; { /* cleanup */ }
+<p>Three module-scoped Maps — not exported directly. The only public interface to action plugins is the <code>actions</code> Proxy (line 44).</p>
+<h3>The <code>actions</code> Proxy (Lines 44-56)</h3>
+<pre><code class="language-typescript">// engine/engine.ts:44-56
+export const actions: Record&lt;
+  string,
+  (ctx: ActionContext, ...args: any[]) =&gt; any
+&gt; = new Proxy(
+  {},
+  {
+    get: (_, prop: string) =&gt; actionPlugins.get(prop)?.apply,
+    has: (_, prop: string) =&gt; actionPlugins.has(prop),
+    ownKeys: () =&gt; Reflect.ownKeys(actionPlugins),
+    set: () =&gt; false,
+    deleteProperty: () =&gt; false,
   },
-})
+)
 </code></pre>
+<p><strong>Aha:</strong> The <code>actions</code> Proxy is a read-only facade over the action plugins. When <code>@post(...)</code> is compiled, the expression calls <code>actions['post']</code> — the Proxy's <code>get</code> trap intercepts this and returns <code>actionPlugins.get('post')?.apply</code>. The <code>set</code> and <code>deleteProperty</code> traps always return <code>false</code>, making the Proxy immutable at runtime. <code>ownKeys</code> returns the actual plugin names, enabling <code>Object.keys(actions)</code> for debugging.</p>
+<h3>Removals Map — Three-Level Cleanup Tracking (Line 59)</h3>
+<pre><code class="language-typescript">// engine/engine.ts:59
+const removals = new Map&lt;HTMLOrSVG, Map&lt;string, Map&lt;string, () =&gt; void&gt;&gt;&gt;()
+</code></pre>
+<p>Three-level nested Map structure:</p>
+<ul><li><strong>Level 1:</strong> Element → Map of attribute cleanups</li><li><strong>Level 2:</strong> Attribute name (e.g., <code>"bind:title"</code>) → Map of named cleanup functions</li><li><strong>Level 3:</strong> Cleanup name (e.g., <code>"attribute"</code>) → The actual cleanup function</li></ul>
+<p>This allows multiple cleanup functions per attribute (the plugin's cleanup + any registered via <code>cleanups.set()</code>), and batch cleanup when an element is removed.</p>
+<h3>Queued Attribute Registration (Lines 61-64)</h3>
+<pre><code class="language-typescript">// engine/engine.ts:61-64
+const queuedAttributes: AttributePlugin[] = []
+const queuedAttributeNames = new Set&lt;string&gt;()
+const observedRoots = new Set&lt;HTMLOrSVG | ShadowRoot&gt;()
+let datastarReadyDispatched = false
+</code></pre>
+<p><code>queuedAttributes</code> holds plugins that have been registered but not yet activated. <code>queuedAttributeNames</code> tracks their names for the <code>onlyNew</code> optimization during initial DOM scan. <code>observedRoots</code> tracks which roots already have MutationObservers attached.</p>
+<h3><code>attribute()</code> — Registration with Deferred Activation (Lines 66-87)</h3>
+<pre><code class="language-typescript">// engine/engine.ts:66-87
+export const attribute = &lt;R extends Requirement, B extends boolean&gt;(
+  plugin: AttributePlugin&lt;R, B&gt;,
+): void =&gt; {
+  queuedAttributes.push(plugin as unknown as AttributePlugin)
+
+  if (queuedAttributes.length === 1) {
+    setTimeout(() =&gt; {
+      for (const attribute of queuedAttributes) {
+        queuedAttributeNames.add(attribute.name)
+        attributePlugins.set(attribute.name, attribute)
+      }
+      queuedAttributes.length = 0
+      const roots = observedRoots.size
+        ? [...observedRoots]
+        : [document.documentElement]
+      for (const root of roots) {
+        applyQueued(root, !observedRoots.has(root))
+      }
+      queuedAttributeNames.clear()
+    })
+  }
+}
+</code></pre>
+<p><strong>Aha:</strong> The <code>queuedAttributes.length === 1</code> check is a debounce mechanism. When the first attribute plugin registers, it schedules a <code>setTimeout(0)</code>. Subsequent plugins that register before the timeout fires just get pushed to the queue. When the timeout fires, ALL queued plugins are registered and scanned in a single DOM pass. This prevents multiple DOM scans when many plugins register at module load time.</p>
+<p><code>applyQueued</code> (vs <code>apply</code>) passes <code>onlyNew = true</code> for existing roots, meaning it only applies plugins whose names are in <code>queuedAttributeNames</code> — it skips re-applying plugins that are already set up. For new roots (not yet observed), it observes them from scratch.</p>
+<h3><code>action()</code> — Immediate Registration (Lines 89-91)</h3>
+<pre><code class="language-typescript">// engine/engine.ts:89-91
+export const action = &lt;T&gt;(plugin: ActionPlugin&lt;T&gt;): void =&gt; {
+  actionPlugins.set(plugin.name, plugin)
+}
+</code></pre>
+<p>Action plugins register immediately — no queuing needed because they're invoked imperatively, not bound to DOM elements.</p>
+<h3>Watcher Event Listener (Lines 93-111)</h3>
+<pre><code class="language-typescript">// engine/engine.ts:93-111
+document.addEventListener(DATASTAR_FETCH_EVENT, ((
+  evt: CustomEvent&lt;DatastarFetchEvent&gt;,
+) =&gt; {
+  const plugin = watcherPlugins.get(evt.detail.type)
+  if (plugin) {
+    plugin.apply(
+      {
+        error: error.bind(0, {
+          plugin: { type: &#x27;watcher&#x27;, name: plugin.name },
+          element: {
+            id: (evt.target as Element).id,
+            tag: (evt.target as Element).tagName,
+          },
+        }),
+      },
+      evt.detail.argsRaw,
+    )
+  }
+}) as EventListener)
+</code></pre>
+<p><strong>Aha:</strong> Watchers don't register their own event listeners. There is a SINGLE listener on <code>document</code> for <code>datastar-fetch</code> events. When a fetch plugin dispatches a <code>datastar-fetch</code> event, this handler looks up the watcher by <code>evt.detail.type</code> and calls its <code>apply</code> with a bound error factory that includes the triggering element's ID and tag.</p>
+<h3><code>watcher()</code> — Immediate Registration (Lines 113-115)</h3>
+<pre><code class="language-typescript">// engine/engine.ts:113-115
+export const watcher = (plugin: WatcherPlugin): void =&gt; {
+  watcherPlugins.set(plugin.name, plugin)
+}
+</code></pre>
+<p>Watchers register immediately. The single event listener on line 93 routes to them by name.</p>
+<h2>Cleanup System — Element Removal (Lines 117-128)</h2>
+<pre><code class="language-typescript">// engine/engine.ts:117-128
+const cleanupEls = (els: Iterable&lt;HTMLOrSVG&gt;): void =&gt; {
+  for (const el of els) {
+    const elCleanups = removals.get(el)
+    if (elCleanups &amp;&amp; removals.delete(el)) {
+      for (const attrCleanups of elCleanups.values()) {
+        for (const cleanup of attrCleanups.values()) {
+          cleanup()
+        }
+      }
+    }
+  }
+}
+</code></pre>
+<p><strong>Aha:</strong> The <code>removals.delete(el)</code> check is critical — it ensures cleanup only runs once per element. If <code>removals.get(el)</code> returns undefined (already cleaned up), the <code>&&</code> short-circuits and <code>removals.delete(el)</code> is never called. The deletion happens before iterating, so if a cleanup function itself triggers another cleanup (e.g., removing a child), the guard prevents infinite recursion.</p>
+<h2>Ignore Logic (Lines 130-133)</h2>
+<pre><code class="language-typescript">// engine/engine.ts:130-133
+const aliasedIgnore = aliasify(&#x27;ignore&#x27;)
+const aliasedIgnoreAttr = `[${aliasedIgnore}]`
+const shouldIgnore = (el: HTMLOrSVG) =&gt;
+  el.hasAttribute(`${aliasedIgnore}__self`) || !!el.closest(aliasedIgnoreAttr)
+</code></pre>
+<p>Two ignore mechanisms:</p>
+<ul><li><code>[data-ignore__self]</code> — skip this element only (children still scan)</li><li><code>[data-ignore]</code> — skip this element AND all descendants (via <code>.closest()</code>)</li></ul>
+<h2><code>applyEls</code> — Two-Pass Attribute Scanning (Lines 135-152)</h2>
+<pre><code class="language-typescript">// engine/engine.ts:135-152
+const applyEls = (els: Iterable&lt;HTMLOrSVG&gt;, onlyNew?: boolean): void =&gt; {
+  for (const el of els) {
+    if (!shouldIgnore(el)) {
+      const appliedKeys = new Set&lt;string&gt;()
+      // Pass 1: dataset properties (camelCase keys)
+      for (const key in el.dataset) {
+        const attrKey = key.replace(/[A-Z]/g, &#x27;-$&amp;&#x27;).toLowerCase()
+        appliedKeys.add(attrKey)
+        applyAttributePlugin(el, attrKey, el.dataset[key]!, onlyNew)
+      }
+      // Pass 2: raw attributes (for attributes not in dataset)
+      for (const attr of Array.from(el.attributes)) {
+        if (!attr.name.startsWith(&#x27;data-&#x27;)) continue
+        const attrKey = attr.name.slice(5)
+        if (appliedKeys.has(attrKey)) continue
+        applyAttributePlugin(el, attrKey, attr.value, onlyNew)
+      }
+    }
+  }
+}
+</code></pre>
+<p><strong>Aha:</strong> Two passes are needed because <code>el.dataset</code> only exposes attributes that are valid JavaScript property names. Attributes with hyphens that don't map cleanly to camelCase (like <code>data-foo--bar</code>) or attributes with special characters won't appear in <code>dataset</code>. Pass 2 catches those via <code>el.attributes</code>. The <code>appliedKeys</code> Set prevents double-processing.</p>
+<p>The <code>key.replace(/[A-Z]/g, '-$&').toLowerCase()</code> converts camelCase dataset keys back to kebab-case: <code>fooBar</code> → <code>foo-bar</code>.</p>
+<h2>MutationObserver Callback (Lines 154-203)</h2>
+<pre><code class="language-typescript">// engine/engine.ts:154-203
+const observe = (mutations: MutationRecord[]) =&gt; {
+  for (const {
+    target,
+    type,
+    attributeName,
+    addedNodes,
+    removedNodes,
+  } of mutations) {
+    // Type 1: childList — nodes added or removed
+    if (type === &#x27;childList&#x27;) {
+      // Step 1: Clean up removed nodes
+      for (const node of removedNodes) {
+        if (isHTMLOrSVG(node)) {
+          cleanupEls([node])
+          cleanupEls(node.querySelectorAll&lt;HTMLOrSVG&gt;(&#x27;*&#x27;))
+        }
+      }
+
+      // Step 2: Apply plugins to added nodes
+      for (const node of addedNodes) {
+        if (isHTMLOrSVG(node)) {
+          applyEls([node])
+          applyEls(node.querySelectorAll&lt;HTMLOrSVG&gt;(&#x27;*&#x27;))
+        }
+      }
+    }
+    // Type 2: attribute change on a data-* attribute
+    else if (
+      type === &#x27;attributes&#x27; &amp;&amp;
+      attributeName!.startsWith(&#x27;data-&#x27;) &amp;&amp;
+      isHTMLOrSVG(target) &amp;&amp;
+      !shouldIgnore(target)
+    ) {
+      const rawAttrKey = attributeName!.slice(5)  // Skip &#x27;data-&#x27;
+      const key = unaliasify(rawAttrKey)
+      if (!key) continue
+      const value = target.getAttribute(attributeName!)
+      if (value === null) {
+        // Attribute was removed — run cleanups
+        const elCleanups = removals.get(target)
+        if (elCleanups) {
+          const attrCleanups = elCleanups.get(key)
+          if (attrCleanups) {
+            for (const cleanup of attrCleanups.values()) {
+              cleanup()
+            }
+            elCleanups.delete(key)
+          }
+        }
+      } else {
+        // Attribute value changed — re-apply
+        applyAttributePlugin(target, rawAttrKey, value)
+      }
+    }
+  }
+}
+</code></pre>
+<p>The MutationObserver handles three scenarios:</p>
+<ol><li><strong>Element removal</strong> — calls <code>cleanupEls</code> on the removed node and all descendants</li><li><strong>Element addition</strong> — calls <code>applyEls</code> on the new node and all descendants</li><li><strong>Attribute change</strong> — if the attribute was removed, runs cleanups; if changed, re-applies the plugin</li></ol>
+<p><strong>Aha:</strong> Cleanup runs BEFORE the DOM node is garbage collected, so the element is still accessible in the cleanup function. This is important — the cleanup can still read element state (e.g., <code>el.value</code>) before the element disappears.</p>
+<h2>MutationObserver Setup (Lines 206, 227-254)</h2>
+<pre><code class="language-typescript">// engine/engine.ts:206
+const mutationObserver = new MutationObserver(observe)
+
+// engine/engine.ts:227-228
+export const isDocumentObserverActive = () =&gt;
+  observedRoots.has(document.documentElement)
+
+// engine/engine.ts:236-254
+const applyQueued = (
+  root: HTMLOrSVG | ShadowRoot = document.documentElement,
+  observeRoot = true,
+): void =&gt; {
+  if (isHTMLOrSVG(root)) {
+    applyEls([root], true)
+  }
+  applyEls(root.querySelectorAll&lt;HTMLOrSVG&gt;(&#x27;*&#x27;), true)
+
+  if (observeRoot) {
+    mutationObserver.observe(root, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+    })
+    observedRoots.add(root)
+    dispatchDatastarReady()
+  }
+}
+</code></pre>
+<p><code>applyQueued</code> uses <code>onlyNew = true</code> (the second argument to <code>applyEls</code>) — it only applies plugins whose names are in <code>queuedAttributeNames</code>. This is the optimization that avoids re-scanning already-processed attributes when new plugins register.</p>
+<h3><code>apply</code> vs <code>applyQueued</code> (Lines 256-274)</h3>
+<pre><code class="language-typescript">// engine/engine.ts:256-274
+export const apply = (
+  root: HTMLOrSVG | ShadowRoot = document.documentElement,
+  observeRoot = true,
+): void =&gt; {
+  if (isHTMLOrSVG(root)) {
+    applyEls([root])
+  }
+  applyEls(root.querySelectorAll&lt;HTMLOrSVG&gt;(&#x27;*&#x27;))
+
+  if (observeRoot) {
+    mutationObserver.observe(root, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+    })
+    observedRoots.add(root)
+    dispatchDatastarReady()
+  }
+}
+</code></pre>
+<p><code>apply</code> is the public API — it scans ALL attributes (no <code>onlyNew</code> filter). <code>applyQueued</code> is internal and only scans newly-registered plugins. The difference: <code>apply</code> is for manual initialization on a specific root; <code>applyQueued</code> is for automatic plugin registration.</p>
+<h3><code>datastar:ready</code> Event (Lines 230-234)</h3>
+<pre><code class="language-typescript">// engine/engine.ts:230-234
+const dispatchDatastarReady = () =&gt; {
+  if (datastarReadyDispatched || !isDocumentObserverActive()) return
+  datastarReadyDispatched = true
+  document.dispatchEvent(new Event(DATASTAR_READY_EVENT))
+}
+</code></pre>
+<p>Dispatched once when the document root becomes observed. The guard ensures it fires exactly once — if already dispatched or if the document root isn't being observed, it returns early.</p>
+<h3><code>parseAttributeKey</code> — Modifier Parser (Lines 208-225)</h3>
+<pre><code class="language-typescript">// engine/engine.ts:208-225
+export const parseAttributeKey = (
+  rawKey: string,
+): {
+  pluginName: string
+  key: string | undefined
+  mods: Modifiers
+} =&gt; {
+  const [namePart, ...rawModifiers] = rawKey.split(&#x27;__&#x27;)
+  const [pluginName, key] = namePart.split(/:(.+)/)
+  const mods: Modifiers = new Map()
+
+  for (const rawMod of rawModifiers) {
+    const [label, ...mod] = rawMod.split(&#x27;.&#x27;)
+    mods.set(label, new Set(mod))
+  }
+
+  return { pluginName, key, mods }
+}
+</code></pre>
+<p><strong>Aha:</strong> The <code>split(/:(.+)/)</code> uses a capturing group so the <code>:</code> separator is consumed but everything after it becomes the key. For <code>bind:title</code>, this gives <code>['bind', 'title']</code>. For <code>on:click</code>, it gives <code>['on', 'click']</code>. For <code>show</code> (no colon), it gives <code>['show', undefined]</code>.</p>
+<p>Modifiers use <code>__</code> as separator from the name:key part. <code>on:click__delay.500ms.passive</code> splits into:</p>
+<ul><li><code>namePart = "on:click"</code></li><li><code>rawModifiers = ["delay.500ms.passive"]</code></li><li>Then <code>delay.500ms.passive</code> splits into <code>label = "delay"</code>, <code>mod = ["500ms", "passive"]</code></li><li>Result: <code>mods = Map { "delay" → Set { "500ms", "passive" } }</code></li></ul>
+<h2><code>applyAttributePlugin</code> — Full 8-Step Flow (Lines 280-386)</h2>
+<pre><code class="language-typescript">// engine/engine.ts:280-386
+const applyAttributePlugin = (
+  el: HTMLOrSVG,
+  attrKey: string,
+  value: string,
+  onlyNew?: boolean,
+): void =&gt; {
+  // Step 1: Unaliasify and parse
+  const rawKey = unaliasify(attrKey)
+  if (!rawKey) return
+  const { pluginName, key, mods } = parseAttributeKey(rawKey)
+  const plugin = attributePlugins.get(pluginName)
+
+  // Step 2: Should we apply? (onlyNew filter + plugin exists)
+  const shouldApply =
+    (!onlyNew || queuedAttributeNames.has(pluginName)) &amp;&amp; !!plugin
+  if (shouldApply) {
+</code></pre>
+<p><strong>Step 3:</strong> Build context with error factory:</p>
+<pre><code class="language-typescript">    const ctx = {
+      el,
+      rawKey,
+      mods,
+      error: error.bind(0, {
+        plugin: { type: &#x27;attribute&#x27;, name: plugin.name },
+        element: { id: el.id, tag: el.tagName },
+        expression: { rawKey, key, value },
+      }),
+      key,
+      value,
+      loadedPluginNames: {
+        actions: new Set(actionPlugins.keys()),
+        attributes: new Set(attributePlugins.keys()),
+      },
+      rx: undefined,
+    } as AttributeContext
+</code></pre>
+<p><strong>Step 4:</strong> Validate key/value requirements:</p>
+<pre><code class="language-typescript">    const keyReq =
+      (plugin.requirement &amp;&amp;
+        (typeof plugin.requirement === &#x27;string&#x27;
+          ? plugin.requirement
+          : plugin.requirement.key)) ||
+      &#x27;allowed&#x27;
+    const valueReq =
+      (plugin.requirement &amp;&amp;
+        (typeof plugin.requirement === &#x27;string&#x27;
+          ? plugin.requirement
+          : plugin.requirement.value)) ||
+      &#x27;allowed&#x27;
+
+    const keyProvided = key !== undefined &amp;&amp; key !== null &amp;&amp; key !== &#x27;&#x27;
+    const valueProvided = value !== undefined &amp;&amp; value !== null &amp;&amp; value !== &#x27;&#x27;
+
+    if (keyProvided) {
+      if (keyReq === &#x27;denied&#x27;) throw ctx.error(&#x27;KeyNotAllowed&#x27;)
+    } else if (keyReq === &#x27;must&#x27;) {
+      throw ctx.error(&#x27;KeyRequired&#x27;)
+    }
+
+    if (valueProvided) {
+      if (valueReq === &#x27;denied&#x27;) throw ctx.error(&#x27;ValueNotAllowed&#x27;)
+    } else if (valueReq === &#x27;must&#x27;) {
+      throw ctx.error(&#x27;ValueRequired&#x27;)
+    }
+
+    if (keyReq === &#x27;exclusive&#x27; || valueReq === &#x27;exclusive&#x27;) {
+      if (keyProvided &amp;&amp; valueProvided) {
+        throw ctx.error(&#x27;KeyAndValueProvided&#x27;)
+      }
+      if (!keyProvided &amp;&amp; !valueProvided) {
+        throw ctx.error(&#x27;KeyOrValueRequired&#x27;)
+      }
+    }
+</code></pre>
+<p><strong>Step 5:</strong> Create per-attribute cleanup Map and rx wrapper:</p>
+<pre><code class="language-typescript">    const cleanups = new Map&lt;string, () =&gt; void&gt;()
+    if (valueProvided) {
+      let cachedRx: GenRxFn
+      ctx.rx = (...args: any[]) =&gt; {
+        if (!cachedRx) {
+          cachedRx = genRx(value, {
+            returnsValue: plugin.returnsValue,
+            argNames: plugin.argNames,
+            cleanups,
+          })
+        }
+        return cachedRx(el, ...args)
+      }
+    }
+</code></pre>
+<p><strong>Aha:</strong> The <code>cachedRx</code> closure is the caching mechanism. The first call to <code>ctx.rx()</code> compiles the expression via <code>genRx</code>. Every subsequent call reuses the compiled function. This is per-element, per-attribute — two elements with the same expression each have their own compiled function.</p>
+<p><strong>Step 6:</strong> Call plugin apply and capture cleanup:</p>
+<pre><code class="language-typescript">    const cleanup = plugin.apply(ctx)
+    if (cleanup) {
+      cleanups.set(&#x27;attribute&#x27;, cleanup)
+    }
+</code></pre>
+<p><strong>Step 7:</strong> Run old cleanups for this attribute (re-application case):</p>
+<pre><code class="language-typescript">    let elCleanups = removals.get(el)
+    if (elCleanups) {
+      const attrCleanups = elCleanups.get(rawKey)
+      if (attrCleanups) {
+        for (const oldCleanup of attrCleanups.values()) {
+          oldCleanup()
+        }
+      }
+    } else {
+      elCleanups = new Map()
+      removals.set(el, elCleanups)
+    }
+</code></pre>
+<p><strong>Step 8:</strong> Store new cleanups:</p>
+<pre><code class="language-typescript">    elCleanups.set(rawKey, cleanups)
+</code></pre>
+<h2>Error Builder (Lines 24-38)</h2>
+<pre><code class="language-typescript">// engine/engine.ts:24-38
+const error = (
+  ctx: Record&lt;string, any&gt;,
+  reason: string,
+  metadata: Record&lt;string, any&gt; = {},
+) =&gt; {
+  Object.assign(metadata, ctx)
+  const e = new Error()
+  const r = snake(reason)
+  const q = new URLSearchParams({
+    metadata: JSON.stringify(metadata),
+  }).toString()
+  const c = JSON.stringify(metadata, null, 2)
+  e.message = `${reason}\nMore info: ${url}/${r}?${q}\nContext: ${c}`
+  return e
+}
+</code></pre>
+<p><strong>Aha:</strong> Every error includes a URL to <code>datastar.dev/errors/<reason></code> with full context as a JSON-encoded query parameter. The <code>snake()</code> function converts the reason to snake_case (e.g., <code>KeyRequired</code> → <code>key_required</code>). This makes production debugging straightforward — the URL contains enough context to reproduce the issue.</p>
+<h2>Plugin Registration Flow</h2>
+<div class="mermaid">
+sequenceDiagram
+    participant MODULE as Plugin Module
+    participant ENGINE as engine.ts
+    participant QUEUE as queuedAttributes
+    participant MAPS as Plugin Maps
+    participant DOM as DOM Scanner
+
+    MODULE-&gt;&gt;ENGINE: attribute({name: &quot;bind&quot;, ...})
+    ENGINE-&gt;&gt;QUEUE: push to queuedAttributes
+    Note over ENGINE,QUEUE: Only first plugin triggers setTimeout(0)
+    MODULE-&gt;&gt;ENGINE: attribute({name: &quot;on&quot;, ...})
+    ENGINE-&gt;&gt;QUEUE: push to queuedAttributes
+
+    Note over ENGINE: setTimeout(0) fires
+    ENGINE-&gt;&gt;MAPS: register ALL queued plugins
+    ENGINE-&gt;&gt;DOM: applyQueued — single DOM scan
+    DOM-&gt;&gt;ENGINE: plugins applied to all elements
+    ENGINE-&gt;&gt;ENGINE: clear queuedAttributes, queuedAttributeNames
+
+</div>
+<h2>Plugin Lifecycle</h2>
+<div class="mermaid">
+flowchart TD
+    LOAD[Module loads] --&gt; REG[Plugin calls action/attribute/watcher]
+    REG --&gt; QUEUE{Attribute plugin?}
+    QUEUE --&gt;|Yes| QUEUED[Push to queue, setTimeout(0)]
+    QUEUE --&gt;|No| MAP[Added to Map immediately]
+    QUEUED --&gt; BATCH[All queued plugins registered together]
+    BATCH --&gt; SCAN[Single DOM scan via applyQueued]
+    MAP --&gt; SCAN
+    SCAN --&gt; MATCH{Attribute matches?}
+    MATCH --&gt;|Yes| APPLY[Call plugin.apply]
+    MATCH --&gt;|No| SCAN
+    APPLY --&gt; SETUP[Plugin sets up effects/listeners]
+    SETUP --&gt; CLEANUP[Returns cleanup function]
+    CLEANUP --&gt; STORE[Stored in removals Map]
+    STORE --&gt; REMOVE[Element removed from DOM]
+    REMOVE --&gt; RUN[Run all cleanup functions]
+    RUN --&gt; DELETE[Remove from removals Map]
+
+</div>
+<h2>Modifier System</h2>
+<p>Modifiers are colon-separated suffixes on attribute names:</p>
+<pre><code class="language-html">&lt;!-- data-on:click.prevent.delay:500ms.passive --&gt;
+&lt;!--     ^name  ^key    ^mods                        --&gt;
+</code></pre>
+<p>The modifier parser splits on <code>.</code> and stores them in a <code>Set<string></code>:</p>
+<pre><code class="language-typescript">// Parsed from &quot;data-on:click__prevent.delay:500ms.passive&quot;:
+// name = &quot;on&quot;
+// key = &quot;click&quot;
+// mods = Map { &quot;prevent&quot; → Set {}, &quot;delay&quot; → Set { &quot;500ms&quot; }, &quot;passive&quot; → Set {} }
+</code></pre>
+<p>Plugins access modifiers via:</p>
+<pre><code class="language-typescript">mods.has(&#x27;prevent&#x27;)        // → true
+mods.get(&#x27;delay&#x27;)          // → Set { &quot;500ms&quot; }
+</code></pre>
+<p><strong>Aha:</strong> The modifier label is the first segment before <code>.</code>, and the remaining segments form a Set. This allows multiple sub-modifiers per label: <code>delay:500ms.leading</code> gives <code>mods.get('delay') = Set { "500ms", "leading" }</code>. The <code>tagToMs</code> and <code>tagHas</code> utilities in <code>utils/tags.ts</code> parse these sets.</p>
 <h2>Three Plugin Types</h2>
 <h3>AttributePlugin — Reactive DOM bindings</h3>
 <p>Bound to <code>data-{name}</code> or <code>data-{name}:key</code> attributes on elements.</p>
@@ -166,10 +641,10 @@ attribute({
   // el: the DOM element
   // key: the attribute key (e.g., &quot;title&quot; from data-bind:title)
   // rawKey: unprocessed key before case modification
-  // mods: Set of modifiers (e.g., data-on:click.prevent → mods.has(&#x27;prevent&#x27;) === true)
-  // rx: compiled expression function
-  // error: error factory
-  // cleanups: Map for storing cleanup functions
+  // mods: Map of modifier labels to Sets of modifier values
+  // rx: compiled expression function (cached per element+attribute)
+  // error: error factory bound to plugin/element/expression context
+  // cleanups: Map for storing named cleanup functions
 
   return () =&gt; { /* cleanup on element removal */ }
 }
@@ -180,7 +655,7 @@ attribute({
 <p>The <code>apply</code> function receives:</p>
 <pre><code class="language-typescript">apply({ el, evt, error, cleanups }, ...args) {
   // el: the element that triggered the action
-  // evt: the event that triggered it
+  // evt: the event that triggered it (or undefined)
   // error: error factory
   // cleanups: Map for cleanup functions
   // ...args: arguments from the expression
@@ -188,91 +663,13 @@ attribute({
 </code></pre>
 <h3>WatcherPlugin — Event listeners on document</h3>
 <p>Listens for custom events dispatched on the <code>document</code>.</p>
-<table><tr><th>Field</th><th>Type</th><th>Purpose</th></tr><tr><td>`name`</td><td>`string`</td><td>Event name to listen for</td></tr><tr><td>`apply`</td><td>`function`</td><td>Called when the event fires</td></tr></table>
+<table><tr><th>Field</th><th>Type</th><th>Purpose</th></tr><tr><td>`name`</td><td>`string`</td><td>Event type to match in `datastar-fetch` events</td></tr><tr><td>`apply`</td><td>`function`</td><td>Called when the event fires</td></tr></table>
 <p>The <code>apply</code> function:</p>
-<pre><code class="language-typescript">apply({ error }, args) {
-  // args: deserialized event detail
-  // error: error factory
+<pre><code class="language-typescript">apply({ error }, argsRaw) {
+  // argsRaw: raw deserialized event detail arguments
+  // error: error factory bound to watcher/element context
 }
 </code></pre>
-<h2>DOM Scanning Flow</h2>
-<div class="mermaid">
-sequenceDiagram
-    participant DOM as Document
-    participant OBS as MutationObserver
-    participant ENG as Engine
-    participant MAPS as Plugin Maps
-    participant PLUGIN as Plugin apply()
-
-    DOM-&gt;&gt;OBS: New element appears
-    OBS-&gt;&gt;ENG: Mutation callback
-    ENG-&gt;&gt;ENG: Scan element attributes
-    ENG-&gt;&gt;MAPS: Match &quot;data-bind:title&quot; → bind plugin
-    MAPS--&gt;&gt;ENG: Found AttributePlugin(&quot;bind&quot;)
-    ENG-&gt;&gt;PLUGIN: apply({el, key:&quot;title&quot;, mods:{}, rx:...})
-    PLUGIN-&gt;&gt;DOM: Set up effect + MutationObserver
-    PLUGIN--&gt;&gt;ENG: Return cleanup function
-    ENG-&gt;&gt;ENG: Store cleanup for element removal
-
-</div>
-<h2>MutationObserver Integration</h2>
-<p>The engine uses a <code>MutationObserver</code> to watch for DOM changes:</p>
-<pre><code class="language-typescript">// engine/engine.ts — simplified
-const observer = new MutationObserver((mutations) =&gt; {
-  for (const mutation of mutations) {
-    if (mutation.type === &#x27;childList&#x27;) {
-      for (const node of mutation.addedNodes) {
-        if (node instanceof Element) {
-          applyPlugins(node)  // Scan and register plugins
-        }
-      }
-      for (const node of mutation.removedNodes) {
-        if (node instanceof Element) {
-          runCleanups(node)  // Call cleanup functions
-        }
-      }
-    }
-  }
-})
-
-observer.observe(document.documentElement, {
-  childList: true,
-  subtree: true,
-  attributes: true,
-  attributeFilter: [&#x27;data-*&#x27;],  // Watch for attribute changes
-})
-</code></pre>
-<h2>Modifier System</h2>
-<p>Modifiers are colon-separated suffixes on attribute names:</p>
-<pre><code class="language-html">&lt;!-- data-on:click.prevent.delay:500ms.capture --&gt;
-&lt;!--     ^name  ^key    ^mods                        --&gt;
-</code></pre>
-<p>The modifier parser splits on <code>.</code> and stores them in a <code>Set<string></code>:</p>
-<pre><code class="language-typescript">// Parsed from &quot;data-on:click.prevent.delay:500ms.capture&quot;:
-// name = &quot;on&quot;
-// key = &quot;click&quot;
-// mods = { &quot;prevent&quot;, &quot;delay:500ms&quot;, &quot;capture&quot; }
-</code></pre>
-<p>Plugins access modifiers via:</p>
-<pre><code class="language-typescript">mods.has(&#x27;prevent&#x27;)        // → true
-mods.get(&#x27;delay&#x27;)          // → Set { &quot;500ms&quot; }
-</code></pre>
-<h2>Plugin Lifecycle</h2>
-<div class="mermaid">
-flowchart TD
-    LOAD[Module loads] --&gt; REG[Plugin calls action/attribute/watcher]
-    REG --&gt; MAP[Added to Map&lt;string, Plugin&gt;]
-    MAP --&gt; SCAN[Engine scans DOM]
-    SCAN --&gt; MATCH{Attribute matches?}
-    MATCH --&gt;|Yes| APPLY[Call plugin.apply]
-    MATCH --&gt;|No| SCAN
-    APPLY --&gt; SETUP[Plugin sets up effects/listeners]
-    SETUP --&gt; CLEANUP[Returns cleanup function]
-    CLEANUP --&gt; REMOVE[Element removed from DOM]
-    REMOVE --&gt; RUN[Run cleanup function]
-    RUN --&gt; SCAN
-
-</div>
 <p>See <a href="05-attribute-plugins.md">Attribute Plugins</a> for all 17 attribute plugins. See <a href="06-action-plugins.md">Action Plugins</a> for all 4 action plugins. See <a href="09-watchers.md">Watchers</a> for the 2 watcher plugins.</p>
   </article>
   <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>

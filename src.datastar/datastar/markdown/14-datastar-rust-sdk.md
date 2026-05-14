@@ -329,3 +329,82 @@ The Rust SDK is purely a server-side event generator — it has no DOM manipulat
 See [SSE Streaming](08-sse-streaming.md) for how the client parses these events.
 See [Watchers](09-watchers.md) for how events are dispatched.
 See [Rust Equivalents](11-rust-equivalents.md) for broader Rust translation patterns.
+
+## SDK Event Building Pipeline
+
+```mermaid
+flowchart TD
+    subgraph "Builder Creation"
+        PE["PatchElements::new(html)"]
+        PS["PatchSignals::new(json)"]
+        ES["ExecuteScript::new(js)"]
+    end
+
+    subgraph "Builder Configuration"
+        PE_SEL[".selector('#main')"]
+        PE_MODE[".mode(ElementPatchMode::Inner)"]
+        PS_OIM[".only_if_missing(true)"]
+        ES_AR[".attributes(vec!['type=\"module\"'])"]
+        PE_ID[".id('update-1')"]
+        PE_RETRY[".retry(Duration::from_millis(2000))"]
+    end
+
+    subgraph "DatastarEvent Construction"
+        PE_INNER["convert_to_datastar_event_inner()"]
+        DATA["data: Vec<String><br/>— selector #main<br/>— mode inner<br/>— elements <div>..."]
+        EVENT["DatastarEvent<br/>event: PatchElements<br/>id: Some('update-1')<br/>retry: 2000ms<br/>data: [...]"]
+    end
+
+    subgraph "Display / SSE Wire Format"
+        FMT["Display::fmt"]
+        SSE["event: datastar-patch-elements\nid: update-1\nretry: 2000\ndata: selector #main\ndata: mode inner\ndata: elements <div>...\n\n"]
+    end
+
+    subgraph "Framework Integration"
+        AXUM["impl Into<axum::sse::Event>"]
+        ROCKET["impl Into<rocket::Event>"]
+        WARP["impl Into<warp::sse::Event>"]
+    end
+
+    PE --> PE_SEL
+    PE --> PE_MODE
+    PE --> PE_ID
+    PE --> PE_RETRY
+    PS --> PS_OIM
+    PS --> PE_ID
+    ES --> ES_AR
+    ES --> PE_ID
+
+    PE_SEL --> PE_INNER
+    PE_MODE --> PE_INNER
+    PE_ID --> DATA
+    PE_RETRY --> EVENT
+    PE_INNER --> DATA
+    DATA --> EVENT
+    EVENT --> FMT
+    FMT --> SSE
+
+    SSE --> AXUM
+    SSE --> ROCKET
+    SSE --> WARP
+```
+
+## Signal Extraction Flow (Axum)
+
+```mermaid
+flowchart TD
+    REQ["HTTP Request arrives"] --> METHOD{Method?}
+
+    METHOD -->|GET| QP["Extract ?datastar={json} query param"]
+    METHOD -->|POST/PUT/PATCH| BODY["Deserialize JSON body"]
+
+    QP --> PARSE["serde_json::from_str(&param)"]
+    BODY --> OK["Ok(TypedSignals)"]
+
+    PARSE --> OK
+
+    OK --> HANDLER["Handler function"]
+    HANDLER --> SIGNALS["signals: MySignals struct"]
+    SIGNALS --> BUILD["PatchElements::new(...)"]
+    BUILD --> RESP["Sse::new(stream::iter(events))"]
+```

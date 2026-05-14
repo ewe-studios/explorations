@@ -309,15 +309,29 @@ python3 build.py graphify                      # build one project
 - Copies shared `styles.css` on first run
 - Idempotent (safe to re-run)
 
-## Critical Quality Warning: Depth Over Brevity
+## Critical Quality Warning: Source-Level Depth
 
-**This is the most common failure mode: explorations that are too light.** A 200-line markdown file for a large, multi-file project is unacceptable. The purpose of exploration is to **teach** — a reader should be able to understand the project deeply without reading the source. That means:
+**This is the most common failure mode: documentation that is too light.** A 200-line markdown file for a large, multi-file project is unacceptable. The purpose of documentation is to **teach** — a reader should be able to understand the project deeply without reading the source. That means:
 
 - **Every file matters.** Read every source file. Document every significant function, type, algorithm, and data structure.
 - **No summaries where detail is required.** Don't say "the parser handles expressions" — show the expression grammar, the precedence table, the AST nodes, the evaluation order.
 - **Include the Aha moments from the actual code,** not guessed ones. Read the implementation, find the clever bit, document it.
 - **Length is not a constraint.** If a project needs 50 pages to explain properly, write 50 pages. If it needs 200, write 200. Short documents are a failure of thoroughness, not a virtue.
-- **Grandfather review is mandatory, not optional.** Every exploration must be verified against the source before being marked complete.
+- **Grandfather review is mandatory, not optional.** Every document must be verified against the source before being marked complete.
+
+### Mandatory Depth Requirement
+
+**Ask yourself each time: if a user reads this, would they need to go to the code to really understand it, or is it detailed everything fully that reading this markdown and section explains this completely?**
+
+Every section must pass this test. If a reader would need to open the source to understand how a function works, the section is not detailed enough. Include:
+
+- Line-by-line or block-by-block walkthroughs of complex functions (propagation algorithms, state machines, recursive traversals)
+- Flag/bitfield meanings with exact numeric values (e.g., `flags & 60` = `RecursedCheck | Recursed | Dirty | Pending`)
+- Execution examples that trace through the actual code path with concrete inputs
+- State diagrams showing how data structures change across function calls
+- The "why" behind non-obvious design decisions, not just the "what"
+
+This requirement applies to both initial document generation and grandfather review. The grandfather reviewer must verify that no section requires source-code lookup for comprehension.
 
 ## Checklist: Before Marking a Document Complete
 

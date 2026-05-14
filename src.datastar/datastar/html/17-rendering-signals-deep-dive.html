@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Deep Dive: Rendering, Signals, and Server-to-Browser Data Flow -- datastar</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/datastar/docs</span>
+    <div class="nav-actions">
+      <a href="14.1-exploration.html" class="nav-breadcrumb">Project Exploration: Datastar</a><a href="15-dom-morphing-deep-dive.html" class="nav-breadcrumb">Deep Dive: The DOM Morphing Algorithm</a><a href="16-form-preservation-deep-dive.html" class="nav-breadcrumb">Deep Dive: Form State Preservation</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="16-form-preservation-deep-dive.html" class="nav-btn" title="Previous: Deep Dive: Form State Preservation">← prev</a>
+      <a href="README.html" class="nav-btn nav-btn-next" title="Next: Datastar Core Library -- Documentation">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Deep Dive: Rendering, Signals, and Server-to-Browser Data Flow</h1>
+<p>This document traces the complete lifecycle of data from server to browser and explains how Datastar's reactive system transforms signal changes into DOM updates.</p>
+<hr>
+<h2>1. The Reactive Signal System</h2>
+<h3>1.1 Core Primitives</h3>
+<p>Datastar's reactivity is built on three primitives, all in <code>library/src/engine/signals.ts</code>:</p>
+<p><strong>Signal</strong> — A mutable reactive container:</p>
+<pre><code class="language-typescript">export const signal = &lt;T&gt;(initialValue?: T): Signal&lt;T&gt; =&gt; {
+  return signalOper.bind(0, {
+    previousValue: initialValue,
+    value_: initialValue,
+    flags_: ReactiveFlags.Mutable,
+  }) as Signal&lt;T&gt;
+}
+</code></pre>
+<p>A signal is a function. Call with no args to read (<code>signal()</code>), call with a value to write (<code>signal(newValue)</code> returns <code>true</code> if changed, <code>false</code> if same value).</p>
+<p><strong>Computed</strong> — A derived value that lazily re-evaluates when dependencies change:</p>
+<pre><code class="language-typescript">export const computed = &lt;T&gt;(getter: (previousValue?: T) =&gt; T): Computed&lt;T&gt;
+</code></pre>
+<p>Marked with <code>computedSymbol</code>. Only re-evaluates when dirty-flagged.</p>
+<p><strong>Effect</strong> — A side effect that re-runs when any accessed signal changes:</p>
+<pre><code class="language-typescript">export const effect = (fn: () =&gt; void): Effect
+</code></pre>
+<p>Runs immediately on creation, then re-runs whenever a signal it read during execution changes. Returns a cleanup function.</p>
+<h3>1.2 The Dependency Graph</h3>
+<p>The system tracks dependencies via a doubly-linked list of <code>Link</code> nodes:</p>
+<pre><code class="language-typescript">interface ReactiveNode {
+  deps_?: Link       // first dependency link
+  depsTail_?: Link   // last dependency link
+  subs_?: Link       // first subscriber link
+  subsTail_?: Link   // last subscriber link
+  flags_: ReactiveFlags
+}
+
+interface Link {
+  version_: number
+  dep_: ReactiveNode      // the dependency (signal/computed)
+  sub_: ReactiveNode      // the subscriber (computed/effect)
+  prevSub_?: Link
+  nextSub_?: Link
+  prevDep_?: Link
+  nextDep_?: Link
+}
+</code></pre>
+
+<div class="mermaid">
+graph LR
+    subgraph &quot;Dependency Graph&quot;
+        S1[&quot;Signal: count&lt;br/&gt;flags: Mutable&quot;]
+        S2[&quot;Signal: name&lt;br/&gt;flags: Mutable&quot;]
+        C1[&quot;Computed: doubled&lt;br/&gt;flags: Mutable|Dirty&quot;]
+        E1[&quot;Effect: update textContent&lt;br/&gt;flags: Watching&quot;]
+        E2[&quot;Effect: update className&lt;br/&gt;flags: Watching&quot;]
+    end
+
+    S1 --&gt;|&quot;Link (dep→sub)&quot;| C1
+    S1 --&gt;|&quot;Link&quot;| E2
+    C1 --&gt;|&quot;Link&quot;| E1
+    S2 --&gt;|&quot;Link&quot;| E1
+
+</div>
+<p>Each <code>Link</code> connects a dependency to a subscriber. When a signal changes, <code>propagate()</code> walks the subscriber chain marking nodes as <code>Pending</code> or <code>Dirty</code>, then <code>notify()</code> queues effects for execution.</p>
+<h3>1.3 Reactivity Flags (Bitfield)</h3>
+<pre><code class="language-typescript">enum ReactiveFlags {
+  None          = 0,       // 000000
+  Mutable       = 1 &lt;&lt; 0,  // 000001 — can be written to (signals, computeds)
+  Watching      = 1 &lt;&lt; 1,  // 000010 — is an effect (needs re-execution)
+  RecursedCheck = 1 &lt;&lt; 2,  // 000100 — currently being checked for recursion
+  Recursed      = 1 &lt;&lt; 3,  // 001000 — detected as recursed
+  Dirty         = 1 &lt;&lt; 4,  // 010000 — value has changed, needs re-evaluation
+  Pending       = 1 &lt;&lt; 5,  // 100000 — a dependency might have changed
+}
+
+enum EffectFlags {
+  Queued = 1 &lt;&lt; 6,  // 1000000 — effect is in the queue, don&#x27;t add again
+}
+</code></pre>
+<p>These flags allow the system to skip unnecessary work. <code>Pending</code> means "a dependency <em>might</em> have changed" (check lazily), while <code>Dirty</code> means "a dependency <em>did</em> change" (must re-evaluate).</p>
+<h3>1.4 The Update Propagation Algorithm</h3>
+<p>When a signal value is set:</p>
+<pre><code class="language-">signal(newValue)
+  ├─ if value === oldValue → return false (skip)
+  ├─ set value, mark self Mutable|Dirty
+  ├─ propagate(subs) → walk subscriber chain
+  │   ├─ for each subscriber:
+  │   │   ├─ if no flags set → mark Pending
+  │   │   ├─ if Watching (is effect) → notify()
+  │   │   │   └─ push to queuedEffects[] (if not already Queued)
+  │   │   └─ if Mutable (is computed) with subs → recurse into subs
+  │   └─ uses explicit stack (not recursion) to avoid stack overflow
+  └─ if not batching → flush()
+        └─ drain queuedEffects[], running each effect
+</code></pre>
+<p>The key insight: propagation only marks nodes, it doesn't re-evaluate anything. Effects are queued and run in order during <code>flush()</code>. This allows multiple signal changes to be coalesced.</p>
+<h3>1.5 Batching</h3>
+<pre><code class="language-typescript">let batchDepth = 0
+
+export const beginBatch = (): void =&gt; { batchDepth++ }
+export const endBatch = (): void =&gt; {
+  if (!--batchDepth) {
+    flush()      // drain effect queue
+    dispatch()   // fire DATASTAR_SIGNAL_PATCH_EVENT
+  }
+}
+</code></pre>
+<p>Batching defers effect execution and event dispatch until the outermost batch completes. The <code>mergePatch()</code> function (used by the signal patcher) wraps all mutations in a batch — so 50 signals updated in one SSE event cause only one round of effect execution.</p>
+<h3>1.6 Deep Reactivity via Proxy</h3>
+<p>The root signal store is created with <code>deep({})</code>:</p>
+<pre><code class="language-typescript">export const root: Record&lt;string, any&gt; = deep({})
+</code></pre>
+<p><code>deep()</code> wraps objects/arrays in ES6 Proxies that intercept property access:</p>
+<p><strong>Get trap:</strong></p>
+<pre><code class="language-">proxy.get(prop)
+  ├─ if prop doesn&#x27;t exist → create signal(&#x27;&#x27;), dispatch, increment keys signal
+  ├─ if prop is array method → read keys() for reactivity, return method
+  └─ return deepObj[prop]()  ← calls the signal getter (subscribes the active effect)
+</code></pre>
+<p><strong>Set trap:</strong></p>
+<pre><code class="language-">proxy.set(prop, newValue)
+  ├─ if prop exists and is POJO → recursive merge (delete missing keys, update changed)
+  ├─ if prop exists → deepObj[prop](deep(newValue)) ← wraps in new signals, calls setter
+  ├─ if prop doesn&#x27;t exist → create new signal(deep(newValue))
+  └─ dispatch(path, value) → accumulates into currentPatch[]
+</code></pre>
+<p>This means <code>root.user.name = "Alice"</code> automatically:</p>
+<ol><li>Creates <code>root.user</code> as a Proxy-wrapped signal container (if missing)</li><li>Creates <code>root.user.name</code> as a <code>signal("Alice")</code></li><li>Dispatches a patch event with path <code>"user.name"</code> and value <code>"Alice"</code></li></ol>
+<h3>1.7 The Dispatch System</h3>
+<p>Every signal mutation through the deep Proxy accumulates <code>[path, value]</code> tuples into <code>currentPatch[]</code>. When the batch ends:</p>
+<pre><code class="language-typescript">const dispatch = (path?: string, value?: any) =&gt; {
+  if (path !== undefined &amp;&amp; value !== undefined) {
+    currentPatch.push([path, value])
+  }
+  if (!batchDepth &amp;&amp; currentPatch.length) {
+    const detail = pathToObj(currentPatch)  // converts [[&quot;a.b&quot;, 1]] to {a:{b:1}}
+    currentPatch.length = 0
+    document.dispatchEvent(
+      new CustomEvent(DATASTAR_SIGNAL_PATCH_EVENT, { detail })
+    )
+  }
+}
+</code></pre>
+<p>This <code>CustomEvent</code> is what <code>data-on-signal-patch</code> listens to — it allows user code to react to any signal change.</p>
+<hr>
+<h2>2. How Attributes Become Reactive</h2>
+<h3>2.1 Attribute Scanning</h3>
+<p>On initialization and whenever the DOM changes, the engine scans elements for <code>data-*</code> attributes:</p>
+<pre><code class="language-">MutationObserver fires
+  → observe() callback
+    → for added nodes: applyEls([node, ...descendants])
+    → for removed nodes: cleanupEls([node, ...descendants])
+    → for changed attributes: applyAttributePlugin(target, key, value)
+</code></pre>
+<h3>2.2 Attribute Key Parsing</h3>
+<pre><code class="language-">data-on:click__prevent__delay.500ms
+      ↓ parseAttributeKey()
+{
+  pluginName: &quot;on&quot;,
+  key: &quot;click&quot;,
+  mods: Map {
+    &quot;prevent&quot; → Set {},
+    &quot;delay&quot;   → Set { &quot;500ms&quot; }
+  }
+}
+</code></pre>
+<p>Format: <code>data-{plugin}:{key}__{modifier}.{tag1}.{tag2}__{modifier2}</code></p>
+<h3>2.3 Expression Compilation (<code>genRx</code>)</h3>
+<p>The <code>genRx()</code> function in <code>engine.ts</code> transforms attribute value expressions into executable JavaScript:</p>
+<p><strong>Input:</strong> <code>"$count > 5 ? 'highlight' : ''"</code></p>
+<p><strong>Transformation steps:</strong></p>
+<ol><li><strong>Escape handling</strong> — Content between <code>🖕JS_DS🚀</code> markers is preserved verbatim</li><li><strong>Signal replacement</strong> — <code>$count</code> → <code>$['count']</code>, <code>$user.name</code> → <code>$['user']['name']</code></li><li><strong>Action replacement</strong> — <code>@get('/url')</code> → <code>__action("get", evt, '/url')</code></li><li><strong>Return wrapping</strong> — If plugin declares <code>returnsValue</code>, last statement gets <code>return (...);</code></li><li><strong>Function construction</strong> — <code>new Function('el', '$', '__action', 'evt', ...argNames, expr)</code></li></ol>
+<p><strong>Output:</strong> A function <code>(el, ...args) => T</code> that:</p>
+<ul><li>Receives <code>el</code> (the DOM element) and passes <code>root</code> as <code>$</code></li><li>Provides <code>__action</code> helper for action dispatch</li><li>Is wrapped in try-catch with detailed error reporting including a URL to <code>data-star.dev/errors</code></li></ul>
+<p>The compiled function is cached per attribute — it only compiles once, then the <code>rx()</code> wrapper re-executes it whenever an effect re-runs.</p>
+<h3>2.4 From Attribute to Reactive Binding</h3>
+<p>Example: <code><span data-text="$count"></span></code></p>
+<pre><code class="language-">1. Engine finds data-text=&quot;$count&quot; on &lt;span&gt;
+2. Looks up &quot;text&quot; in attributePlugins
+3. Creates ctx.rx = () =&gt; genRx(&quot;$count&quot;, {returnsValue: true})(el)
+4. Calls text plugin&#x27;s apply(ctx):
+
+   // text plugin (simplified):
+   apply({ el, rx }) {
+     return effect(() =&gt; {
+       el.textContent = rx()  // calls compiled fn, which reads root[&#x27;count&#x27;]
+     })
+   }
+
+5. effect() immediately runs the fn:
+   - Reads root[&#x27;count&#x27;] (via $[&#x27;count&#x27;] in compiled expression)
+   - This read subscribes the effect to the &#x27;count&#x27; signal
+   - Sets el.textContent to the current value
+
+6. When count changes → effect is dirty → re-runs → updates textContent
+</code></pre>
+<h3>2.5 Cleanup Lifecycle</h3>
+<pre><code class="language-">Element removed from DOM
+  → MutationObserver fires (removedNodes)
+  → cleanupEls(removedNodes)
+    → For each element:
+      → Get removals.get(el) → Map&lt;attrKey, Map&lt;cleanupName, fn&gt;&gt;
+      → Call every cleanup function
+      → Delete element from removals map
+
+Cleanup functions include:
+  - &quot;attribute&quot;: the return value of plugin.apply() (e.g., the effect disposer)
+  - &quot;@get&quot;, &quot;@post&quot;: abort controllers for in-flight requests
+  - Event listener removers
+</code></pre>
+<hr>
+<h2>3. The Server-to-Browser SSE Pipeline</h2>
+<h3>3.1 Initiating the Connection</h3>
+<p>A user interaction triggers a fetch action:</p>
+<pre><code class="language-html">&lt;button data-on:click=&quot;@get(&#x27;/api/counter/increment&#x27;)&quot;&gt;+1&lt;/button&gt;
+</code></pre>
+<p>The <code>@get</code> action (defined in <code>fetch.ts</code>) executes:</p>
+<pre><code class="language-">1. Create AbortController (auto-cancels previous request on same element)
+2. Build request:
+   - URL: /api/counter/increment
+   - Method: GET
+   - Headers: { Accept: &quot;text/event-stream, text/html, application/json&quot;,
+                 Datastar-Request: true }
+   - Signals payload: filtered(root) → JSON stringified → ?datastar={...} query param
+3. Dispatch &#x27;started&#x27; event (for data-indicator tracking)
+4. Call fetchEventSource() — the SSE streaming engine
+</code></pre>
+<h3>3.2 The SSE Streaming Engine</h3>
+<p><code>fetchEventSource()</code> in <code>fetch.ts</code> is a custom SSE client (originally based on Azure's <code>fetch-event-source</code>):</p>
+<div class="mermaid">
+graph TB
+    subgraph &quot;SSE Parsing Pipeline&quot;
+        Fetch[&quot;fetch(url, init)&quot;]
+        Body[&quot;response.body (ReadableStream)&quot;]
+        GB[&quot;getBytes()&lt;br/&gt;Read chunks from stream&quot;]
+        GL[&quot;getLines()&lt;br/&gt;Buffer management, line splitting&quot;]
+        GM[&quot;getMessages()&lt;br/&gt;SSE field parsing&quot;]
+        CB[&quot;onmessage callback&lt;br/&gt;Dispatch to watchers&quot;]
+    end
+
+    Fetch --&gt; Body
+    Body --&gt; GB
+    GB --&gt;|&quot;Uint8Array chunks&quot;| GL
+    GL --&gt;|&quot;line + fieldLength&quot;| GM
+    GM --&gt;|&quot;EventSourceMessage&quot;| CB
+
+</div>
+<p><strong>Stage 1: <code>getBytes()</code></strong> — Reads the <code>ReadableStream</code> chunk by chunk:</p>
+<pre><code class="language-typescript">const reader = stream.getReader()
+let result = await reader.read()
+while (!result.done) {
+  onChunk(result.value)  // Uint8Array
+  result = await reader.read()
+}
+</code></pre>
+<p><strong>Stage 2: <code>getLines()</code></strong> — Accumulates bytes into lines, splitting on <code>\n</code> or <code>\r\n</code>:</p>
+<ul><li>Maintains a <code>buffer</code> and <code>position</code> cursor</li><li>Tracks <code>fieldLength</code> (position of first <code>:</code> in line)</li><li>Handles partial chunks by concatenating buffers</li><li>Zero-copy where possible (uses <code>subarray</code> views)</li></ul>
+<p><strong>Stage 3: <code>getMessages()</code></strong> — Parses SSE fields per the <a href="https://html.spec.whatwg.org/multipage/server-sent-events.html#event-stream-interpretation">HTML spec</a>:</p>
+<pre><code class="language-typescript">switch (field) {
+  case &#x27;data&#x27;:  message.data = message.data ? `${message.data}\n${value}` : value
+  case &#x27;event&#x27;: message.event = value
+  case &#x27;id&#x27;:    onId(message.id = value)
+  case &#x27;retry&#x27;: onRetry(message.retry = +value)
+}
+</code></pre>
+<p>An empty line signals end-of-message → fire <code>onmessage</code>.</p>
+<p><strong>Stage 4: <code>onmessage</code> callback</strong> — Parses data lines into watcher arguments:</p>
+<pre><code class="language-typescript">onmessage: (evt) =&gt; {
+  if (!evt.event.startsWith(&#x27;datastar&#x27;)) return
+  const argsRawLines: Record&lt;string, string[]&gt; = {}
+  for (const line of evt.data.split(&#x27;\n&#x27;)) {
+    const i = line.indexOf(&#x27; &#x27;)
+    const k = line.slice(0, i)   // argument name
+    const v = line.slice(i + 1)  // argument value
+    ;(argsRawLines[k] ||= []).push(v)
+  }
+  // Join multi-line values
+  const argsRaw = Object.fromEntries(
+    Object.entries(argsRawLines).map(([k, v]) =&gt; [k, v.join(&#x27;\n&#x27;)])
+  )
+  dispatchFetch(evt.event, el, argsRaw)  // CustomEvent → engine → watcher
+}
+</code></pre>
+<h3>3.3 Content-Type Routing</h3>
+<p>The fetch action doesn't only handle SSE. It inspects <code>Content-Type</code> and routes accordingly:</p>
+<div class="mermaid">
+flowchart TD
+    Response[&quot;HTTP Response&quot;]
+    CT{&quot;Content-Type?&quot;}
+    SSE[&quot;text/event-stream&lt;br/&gt;→ Stream parsing pipeline&quot;]
+    HTML[&quot;text/html&lt;br/&gt;→ dispatchNonSSE(&#x27;datastar-patch-elements&#x27;)&quot;]
+    JSON[&quot;application/json&lt;br/&gt;→ dispatchNonSSE(&#x27;datastar-patch-signals&#x27;)&quot;]
+    JS[&quot;text/javascript&lt;br/&gt;→ Create script tag, append to head&quot;]
+
+    Response --&gt; CT
+    CT --&gt;|&quot;text/event-stream&quot;| SSE
+    CT --&gt;|&quot;text/html&quot;| HTML
+    CT --&gt;|&quot;application/json&quot;| JSON
+    CT --&gt;|&quot;text/javascript&quot;| JS
+
+</div>
+<p>For non-SSE responses, it reads <code>datastar-*</code> headers for additional arguments (selector, mode, namespace, etc.).</p>
+<h3>3.4 SSE Message Protocol</h3>
+<p>An SSE message from the server to Datastar follows this format:</p>
+<pre><code class="language-">event: datastar-patch-signals
+id: optional-event-id
+retry: 1000
+data: signals {&quot;count&quot;:42,&quot;user&quot;:{&quot;name&quot;:&quot;Alice&quot;}}
+data: onlyIfMissing true
+
+</code></pre>
+<p>The <code>data:</code> lines use a key-value format where the first word is the argument name and the rest is the value. Multi-line values (like HTML) span multiple <code>data: elements</code> lines:</p>
+<pre><code class="language-">event: datastar-patch-elements
+data: selector #content
+data: mode inner
+data: elements &lt;div class=&quot;card&quot;&gt;
+data: elements   &lt;h2&gt;Title&lt;/h2&gt;
+data: elements   &lt;p&gt;Body text&lt;/p&gt;
+data: elements &lt;/div&gt;
+
+</code></pre>
+<h3>3.5 Signal Patching (Server → Browser Signals)</h3>
+<p>When the server sends <code>event: datastar-patch-signals</code>:</p>
+<pre><code class="language-">1. Watcher receives: { signals: &#x27;{&quot;count&quot;:42}&#x27;, onlyIfMissing: &#x27;false&#x27; }
+2. patchSignals plugin:
+   - Parses JSON string via jsStrToObject() (supports function revival)
+   - Calls mergePatch({count: 42}, {ifMissing: false})
+3. mergePatch():
+   - beginBatch()
+   - For each key in patch:
+     - null value → delete from root (signal removal)
+     - POJO value → recurse into nested object
+     - primitive → set on root (creates or updates signal)
+   - endBatch() → flush() effects → dispatch() patch event
+4. All effects subscribed to changed signals re-run
+</code></pre>
+<p><strong>RFC 7386 JSON Merge Patch semantics:</strong></p>
+<pre><code class="language-json">{&quot;count&quot;: 42}           → Set count to 42
+{&quot;count&quot;: null}         → Delete count signal
+{&quot;user&quot;: {&quot;name&quot;: &quot;A&quot;}} → Set user.name to &quot;A&quot; (preserves user.email)
+{&quot;user&quot;: null}          → Delete entire user object
+</code></pre>
+<p><strong><code>onlyIfMissing</code> mode:</strong> When <code>true</code>, only sets values for signals that don't already exist. Used for initializing defaults without overwriting user-modified state.</p>
+<h3>3.6 Element Patching (Server → Browser DOM)</h3>
+<p>When the server sends <code>event: datastar-patch-elements</code>:</p>
+<pre><code class="language-">1. Watcher receives: { selector: &#x27;#counter&#x27;, mode: &#x27;outer&#x27;, elements: &#x27;&lt;div id=&quot;counter&quot;&gt;42&lt;/div&gt;&#x27; }
+2. patchElements plugin:
+   - Validates mode (one of 8: remove/outer/inner/replace/prepend/append/before/after)
+   - Validates namespace (html/svg/mathml)
+   - Parses HTML string via DOMParser
+   - Optionally wraps with View Transitions API
+3. Based on mode:
+   - remove: target.remove()
+   - outer/inner: morph(target, newContent, mode)
+   - replace: target.replaceWith(newContent)
+   - prepend/append/before/after: target[mode](newContent)
+</code></pre>
+<h3>3.7 The Morphing Algorithm</h3>
+<p>The <code>morph()</code> function in <code>patchElements.ts</code> is a sophisticated DOM reconciliation algorithm:</p>
+<div class="mermaid">
+flowchart TD
+    Start[&quot;morph(oldElt, newContent, mode)&quot;]
+
+    BuildIdMap[&quot;Build persistent ID map&lt;br/&gt;IDs present in both old and new&quot;]
+    PopTree[&quot;populateIdMapWithTree()&lt;br/&gt;Map each element to set of&lt;br/&gt;descendant persistent IDs&quot;]
+
+    MC[&quot;morphChildren(oldParent, newParent)&quot;]
+    FindMatch[&quot;findBestMatch(newChild, cursor)&quot;]
+
+    IdMatch{&quot;ID set&lt;br/&gt;match?&quot;}
+    SoftMatch{&quot;Soft match?&lt;br/&gt;(same tag, compatible id)&quot;}
+    PersistId{&quot;New child has&lt;br/&gt;persistent ID?&quot;}
+    HasIdChildren{&quot;New child has&lt;br/&gt;children with IDs?&quot;}
+
+    MorphNode[&quot;morphNode(old, new)&lt;br/&gt;Sync attributes, values,&lt;br/&gt;checked/selected state&quot;]
+    MoveInto[&quot;Find by ID in document,&lt;br/&gt;moveBefore() to position,&lt;br/&gt;then morphNode()&quot;]
+    CreateDummy[&quot;Create empty element,&lt;br/&gt;insertBefore, morphNode&lt;br/&gt;(state-preserving insert)&quot;]
+    CloneInsert[&quot;importNode(new, deep)&lt;br/&gt;insertBefore&lt;br/&gt;(fast path, no state)&quot;]
+    Remove[&quot;removeNode()&lt;br/&gt;→ pantry (if has IDs)&lt;br/&gt;→ removeChild (otherwise)&quot;]
+
+    Start --&gt; BuildIdMap
+    BuildIdMap --&gt; PopTree
+    PopTree --&gt; MC
+    MC --&gt; FindMatch
+
+    FindMatch --&gt; IdMatch
+    IdMatch --&gt;|Yes| MorphNode
+    IdMatch --&gt;|No| SoftMatch
+    SoftMatch --&gt;|Yes, no ID conflict| MorphNode
+    SoftMatch --&gt;|No match found| PersistId
+    PersistId --&gt;|Yes| MoveInto
+    PersistId --&gt;|No| HasIdChildren
+    HasIdChildren --&gt;|Yes| CreateDummy
+    HasIdChildren --&gt;|No| CloneInsert
+
+    MC --&gt;|&quot;Remaining old nodes&quot;| Remove
+
+</div>
+<p><strong>Key details:</strong></p>
+<ol><li><strong>Persistent ID tracking:</strong> Before morphing, computes the intersection of IDs in old and new content. Only IDs that appear in both (with matching tag names) are considered "persistent."</li></ol>
+<ol><li><strong>ID set matching:</strong> Each element gets a set of all persistent IDs in its subtree. When scanning for matches, the algorithm prefers elements whose subtrees share IDs with the new content.</li></ol>
+<ol><li><strong>Soft matching:</strong> Fallback when no ID match exists. Matches by <code>nodeType + tagName + (compatible id)</code>. Won't soft-match an element with a persistent ID to a different ID.</li></ol>
+<ol><li><strong>Pantry pattern:</strong> When removing a node that contains persistent IDs, it's moved to a hidden "pantry" <code><div></code> instead of being destroyed. This preserves the DOM node so it can be moved back in later during the same morph operation.</li></ol>
+<ol><li><strong><code>moveBefore</code> API:</strong> Uses the new DOM <code>moveBefore()</code> method if available (preserves element state like iframe contents, CSS animations), falls back to <code>insertBefore()</code>.</li></ol>
+<ol><li><strong>Form state preservation:</strong> Explicitly handles <code><input></code> values, <code>checked</code> state, <code><textarea></code> content, <code><option></code> selected state, and dispatches <code>change</code> events when values change.</li></ol>
+<ol><li><strong>Script de-duplication:</strong> Tracks all <code><script></code> elements in a WeakSet. New scripts are only executed if they haven't been seen before (prevents re-execution on morph).</li></ol>
+<ol><li><strong><code>data-ignore-morph</code>:</strong> Elements with this attribute are skipped entirely during morphing — useful for preserving third-party widget state.</li></ol>
+<hr>
+<h2>4. Retry and Error Handling</h2>
+<h3>4.1 Automatic Retry</h3>
+<p>The fetch action implements exponential backoff:</p>
+<pre><code class="language-">retryInterval: 1000ms (initial)
+retryScaler: 2 (multiplier per retry)
+retryMaxWaitMs: 30000ms (cap)
+retryMaxCount: 10 (max attempts)
+
+Retry 1: wait 1000ms
+Retry 2: wait 2000ms
+Retry 3: wait 4000ms
+...
+Retry n: wait min(1000 * 2^n, 30000)ms
+</code></pre>
+<p><strong>Retry modes:</strong></p>
+<ul><li><code>auto</code> (default for SSE): Retry on network errors, not on 204/redirect/HTTP errors</li><li><code>error</code>: Retry only on 4xx/5xx status codes</li><li><code>always</code>: Retry after stream closes (for long-lived SSE connections)</li><li><code>never</code>: No retries</li></ul>
+<h3>4.2 Visibility Handling</h3>
+<p>For GET requests, <code>openWhenHidden</code> defaults to <code>false</code>:</p>
+<ul><li>When the tab becomes hidden → abort current request</li><li>When the tab becomes visible → rebuild request with fresh signals and reconnect</li><li>This prevents stale connections and unnecessary server load</li></ul>
+<p>For mutating requests (POST, PUT, etc.), <code>openWhenHidden</code> defaults to <code>true</code> to avoid losing writes.</p>
+<h3>4.3 Request Cancellation</h3>
+<p>Three modes via <code>requestCancellation</code>:</p>
+<ul><li><code>auto</code> (default): Abort previous request from same element when new one starts</li><li><code>cleanup</code>: Abort on element removal (cleanup lifecycle)</li><li><code>disabled</code>: No automatic cancellation</li><li>Can also pass a custom <code>AbortController</code></li></ul>
+<h3>4.4 Indicator Tracking</h3>
+<p>The <code>data-indicator</code> attribute creates a boolean signal that tracks fetch state:</p>
+<pre><code class="language-html">&lt;div data-indicator:loading&gt;
+  &lt;button data-on:click=&quot;@get(&#x27;/api/data&#x27;)&quot; data-attr:disabled=&quot;$loading&quot;&gt;
+    Load
+  &lt;/button&gt;
+  &lt;span data-show=&quot;$loading&quot;&gt;Loading...&lt;/span&gt;
+&lt;/div&gt;
+</code></pre>
+<p>The indicator plugin listens for <code>started</code>, <code>finished</code>, <code>error</code>, and <code>retrying</code> events dispatched by the fetch action.</p>
+<hr>
+<h2>5. The Complete Reactive Cycle</h2>
+<p>Here's the full path from user click to DOM update:</p>
+<div class="mermaid">
+sequenceDiagram
+    participant User
+    participant DOM
+    participant MO as MutationObserver
+    participant Engine
+    participant Effect as Effect Queue
+    participant Signals as Signal Store
+    participant Fetch as Fetch Action
+    participant SSE as SSE Parser
+    participant Server
+    participant PatchEl as patchElements
+    participant PatchSig as patchSignals
+    participant Morph as Morph Algorithm
+
+    User-&gt;&gt;DOM: Click button
+    DOM-&gt;&gt;Engine: &#x27;click&#x27; event fires (data-on:click)
+    Engine-&gt;&gt;Engine: Execute compiled expression
+    Engine-&gt;&gt;Fetch: @get(&#x27;/api/counter/increment&#x27;)
+    Fetch-&gt;&gt;Fetch: Build request with filtered signals
+    Fetch-&gt;&gt;Server: GET /api/counter/increment?datastar={&quot;count&quot;:0}
+
+    Server-&gt;&gt;SSE: HTTP 200, Content-Type: text/event-stream
+
+    Note over Server: event: datastar-patch-signals
+    Note over Server: data: signals {&quot;count&quot;:1}
+
+    SSE-&gt;&gt;SSE: getBytes() → getLines() → getMessages()
+    SSE-&gt;&gt;Fetch: onmessage({event: &quot;datastar-patch-signals&quot;, data: &quot;signals {count:1}&quot;})
+    Fetch-&gt;&gt;Fetch: Parse data lines into argsRaw
+    Fetch-&gt;&gt;PatchSig: dispatchFetch → CustomEvent → watcher
+    PatchSig-&gt;&gt;Signals: mergePatch({count: 1})
+    Signals-&gt;&gt;Signals: beginBatch()
+    Signals-&gt;&gt;Signals: root.count = 1 → signal setter
+    Signals-&gt;&gt;Signals: propagate() → mark effects Pending/Dirty
+    Signals-&gt;&gt;Signals: endBatch() → flush()
+    Signals-&gt;&gt;Effect: Run queued effects
+    Effect-&gt;&gt;DOM: el.textContent = &quot;1&quot; (data-text effect)
+    Effect-&gt;&gt;DOM: el.classList.add(&quot;active&quot;) (data-class effect)
+
+    Note over Server: event: datastar-patch-elements
+    Note over Server: data: elements &lt;div id=&quot;result&quot;&gt;Updated!&lt;/div&gt;
+
+    SSE-&gt;&gt;PatchEl: dispatchFetch → watcher
+    PatchEl-&gt;&gt;PatchEl: Parse HTML via DOMParser
+    PatchEl-&gt;&gt;Morph: morph(existingDiv, newDiv, &#x27;outer&#x27;)
+    Morph-&gt;&gt;Morph: Build ID maps, find matches
+    Morph-&gt;&gt;DOM: Sync attributes, preserve form state
+    DOM-&gt;&gt;MO: Attribute/childList mutations
+    MO-&gt;&gt;Engine: Apply data-* attributes on new elements
+    Engine-&gt;&gt;Signals: New data-text, data-class effects registered
+
+</div>
+<hr>
+<h2>6. Server SDK Protocol (Reference Implementation)</h2>
+<h3>6.1 SSE Generator Interface</h3>
+<p>Every server SDK must implement:</p>
+<pre><code class="language-go">type ServerSentEventGenerator struct {
+    // Must set: Cache-Control: no-cache
+    //           Content-Type: text/event-stream
+    //           Connection: keep-alive (HTTP/1.1)
+    // Must flush immediately after headers
+}
+
+func (s *SSE) PatchElements(elements string, opts ...Option)
+func (s *SSE) PatchSignals(signals string, opts ...Option)
+func (s *SSE) ExecuteScript(script string, opts ...Option)
+func (s *SSE) ReadSignals(r *http.Request) (map[string]any, error)
+</code></pre>
+<h3>6.2 Wire Format Examples</h3>
+<p><strong>Patch signals (set counter to 5):</strong></p>
+<pre><code class="language-">event: datastar-patch-signals
+data: signals {&quot;count&quot;:5}
+
+</code></pre>
+<p><strong>Patch signals (only if missing, with event ID and custom retry):</strong></p>
+<pre><code class="language-">event: datastar-patch-signals
+id: init-001
+retry: 5000
+data: signals {&quot;theme&quot;:&quot;dark&quot;,&quot;lang&quot;:&quot;en&quot;}
+data: onlyIfMissing true
+
+</code></pre>
+<p><strong>Patch elements (replace outer HTML):</strong></p>
+<pre><code class="language-">event: datastar-patch-elements
+data: elements &lt;div id=&quot;counter&quot;&gt;
+data: elements   &lt;span&gt;5&lt;/span&gt;
+data: elements   &lt;button data-on:click=&quot;@get(&#x27;/api/increment&#x27;)&quot;&gt;+&lt;/button&gt;
+data: elements &lt;/div&gt;
+
+</code></pre>
+<p><strong>Patch elements (append to list):</strong></p>
+<pre><code class="language-">event: datastar-patch-elements
+data: selector #todo-list
+data: mode append
+data: elements &lt;li&gt;New item&lt;/li&gt;
+
+</code></pre>
+<p><strong>Remove element:</strong></p>
+<pre><code class="language-">event: datastar-patch-elements
+data: selector #notification-42
+data: mode remove
+
+</code></pre>
+<p><strong>Execute script:</strong></p>
+<pre><code class="language-">event: datastar-patch-elements
+data: selector body
+data: mode append
+data: elements &lt;script data-effect=&quot;el.remove()&quot;&gt;alert(&#x27;Hello!&#x27;)&lt;/script&gt;
+
+</code></pre>
+<h3>6.3 Reading Signals from Requests</h3>
+<p><strong>GET requests:</strong> Signals are in the <code>datastar</code> query parameter as URL-encoded JSON:</p>
+<pre><code class="language-">GET /api/data?datastar=%7B%22count%22%3A0%7D
+→ { &quot;count&quot;: 0 }
+</code></pre>
+<p><strong>POST/PUT/PATCH/DELETE requests:</strong> Signals are in the request body as JSON:</p>
+<pre><code class="language-">POST /api/data
+Content-Type: application/json
+
+{&quot;count&quot;: 0}
+</code></pre>
+<hr>
+<h2>7. Key Design Decisions</h2>
+<h3>Why SSE over WebSockets?</h3>
+<ol><li><strong>Unidirectional by design</strong> — Server pushes state; browser sends via standard HTTP requests. No need for bidirectional framing.</li><li><strong>HTTP/2 multiplexing</strong> — Multiple SSE streams share one TCP connection. WebSockets can't be multiplexed.</li><li><strong>Automatic reconnection</strong> — Built into the SSE spec (and enhanced by Datastar's retry logic).</li><li><strong>Simpler server implementation</strong> — Just write text to the response. No upgrade handshake, no frame encoding.</li><li><strong>Infrastructure friendly</strong> — Works through proxies, load balancers, CDNs without special configuration.</li></ol>
+<h3>Why Morphing over Virtual DOM?</h3>
+<ol><li><strong>No client-side component tree</strong> — The server owns the template. The browser just patches real DOM.</li><li><strong>State preservation</strong> — Morphing preserves focus, scroll position, CSS transitions, iframe state. VDOM diffing destroys and recreates elements.</li><li><strong>Simpler mental model</strong> — "The server sends HTML, the browser puts it in place" vs. "reconcile virtual trees, compute patches, apply to DOM."</li></ol>
+<h3>Why Signals over Stores?</h3>
+<ol><li><strong>Fine-grained updates</strong> — Each signal independently tracks its subscribers. Changing <code>count</code> only re-runs effects that read <code>count</code>, not all effects.</li><li><strong>Automatic cleanup</strong> — When an effect is disposed, its links are removed from all signals. No manual unsubscription.</li><li><strong>Zero overhead for unused signals</strong> — Signals with no subscribers don't participate in propagation.</li></ol>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

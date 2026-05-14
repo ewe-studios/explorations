@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Deep Dive: Form State Preservation -- datastar</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/datastar/docs</span>
+    <div class="nav-actions">
+      <a href="14-datastar-rust-sdk.html" class="nav-breadcrumb">Datastar -- Rust Server SDK</a><a href="14.1-exploration.html" class="nav-breadcrumb">Project Exploration: Datastar</a><a href="15-dom-morphing-deep-dive.html" class="nav-breadcrumb">Deep Dive: The DOM Morphing Algorithm</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="15-dom-morphing-deep-dive.html" class="nav-btn" title="Previous: Deep Dive: The DOM Morphing Algorithm">← prev</a>
+      <a href="17-rendering-signals-deep-dive.html" class="nav-btn nav-btn-next" title="Next: Deep Dive: Rendering, Signals, and Server-to-Browser Data Flow">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Deep Dive: Form State Preservation</h1>
+<p>Form state is the most fragile part of any DOM manipulation. Users type into inputs, check boxes, select options, upload files — and all of that state exists only as live DOM properties, not as HTML attributes. A naive <code>innerHTML</code> replacement destroys it all. Datastar solves this at two levels: the <strong>morph algorithm</strong> preserves form state during server-driven DOM updates, and the <strong>bind plugin</strong> provides reactive two-way binding between form elements and the signal store.</p>
+<hr>
+<h2>1. The Attribute vs. Property Problem</h2>
+<p>HTML attributes and DOM properties are different things, and this distinction is the root of all form preservation complexity.</p>
+<pre><code class="language-html">&lt;input type=&quot;text&quot; value=&quot;initial&quot;&gt;
+</code></pre>
+<p>When the page loads:</p>
+<ul><li><code>el.getAttribute('value')</code> → <code>"initial"</code> (the HTML attribute, reflects the markup)</li><li><code>el.value</code> → <code>"initial"</code> (the DOM property, reflects the current state)</li></ul>
+<p>After the user types "hello":</p>
+<ul><li><code>el.getAttribute('value')</code> → <code>"initial"</code> (unchanged — attributes don't track user input)</li><li><code>el.value</code> → <code>"hello"</code> (updated — this is the live state)</li></ul>
+<p>For checkboxes, the split is between <code>checked</code> attribute and <code>checked</code> property. For <code><select></code>, it's the <code>selected</code> attribute on <code><option></code> elements vs. the <code>selectedIndex</code> property.</p>
+<p>This means any DOM update strategy must sync <strong>properties</strong> (not just attributes) when morphing form elements.</p>
+<hr>
+<h2>2. Form State Preservation in <code>morphNode()</code></h2>
+<p>The form state handling in <code>morphNode()</code> (patchElements.ts:564-631) has an explicit comment acknowledging its sensitivity:</p>
+<pre><code class="language-typescript">// The following logic for handling inputs, textareas, and options is finnicky.
+// Only change with extreme caution and lots of testing!
+// --
+//  many bothans died to bring us this information:
+//  https://github.com/patrick-steele-idem/morphdom/blob/master/src/specialElHandlers.js
+//  https://github.com/choojs/nanomorph/blob/master/lib/morph.js#L113
+// --
+</code></pre>
+<p>This references two earlier DOM morphing libraries whose authors discovered the edge cases through painful experience. Datastar inherits and refines their solutions.</p>
+<h3>2.1 The <code>data-preserve-attr</code> Mechanism</h3>
+<p>Before any form state handling, the algorithm reads the <code>data-preserve-attr</code> attribute from the <strong>new</strong> element:</p>
+<pre><code class="language-typescript">const preserveAttrs = (
+  (newNode as HTMLElement).getAttribute(aliasedPreserveAttr) ?? &#x27;&#x27;
+).split(&#x27; &#x27;)
+</code></pre>
+<p>This is a space-separated list of attribute names that should NOT be updated during morphing. If <code>value</code> is in this list, the input's value won't be overwritten by the server — the user's current input is preserved.</p>
+<pre><code class="language-html">&lt;!-- Server sends this --&gt;
+&lt;input id=&quot;search&quot; data-preserve-attr=&quot;value&quot; value=&quot;server-default&quot;&gt;
+</code></pre>
+<p>Even though the server sends <code>value="server-default"</code>, the morph won't overwrite whatever the user has typed because <code>value</code> is in the preserve list.</p>
+<h3>2.2 <code>HTMLInputElement</code> Handling</h3>
+<pre><code class="language-typescript">if (
+  oldElt instanceof HTMLInputElement &amp;&amp;
+  newElt instanceof HTMLInputElement &amp;&amp;
+  newElt.type !== &#x27;file&#x27;    // file inputs are read-only, never sync
+) {
+  // Value sync
+  const newValue = newElt.getAttribute(&#x27;value&#x27;)
+  if (
+    oldElt.getAttribute(&#x27;value&#x27;) !== newValue &amp;&amp;
+    !preserveAttrs.includes(&#x27;value&#x27;)
+  ) {
+    oldElt.value = newValue ?? &#x27;&#x27;      // set the PROPERTY, not the attribute
+    shouldDispatchChangeEvent = true
+  }
+
+  // Checked state sync
+  shouldDispatchChangeEvent =
+    updateElementProp(oldElt, newElt, &#x27;checked&#x27;) || shouldDispatchChangeEvent
+
+  // Disabled state sync
+  updateElementProp(oldElt, newElt, &#x27;disabled&#x27;)
+}
+</code></pre>
+<p><strong>Critical detail — attribute-to-property bridge:</strong> The value sync reads from <code>getAttribute('value')</code> (the new HTML attribute) but writes to <code>oldElt.value</code> (the old DOM property). This is correct because:</p>
+<ol><li>The server sends HTML with <code>value="..."</code> attributes</li><li>The DOMParser creates elements where <code>.getAttribute('value')</code> reflects what the server sent</li><li>Setting <code>.value</code> on the old element updates the live property that the user sees</li><li>If the server's attribute matches the old attribute, nothing happens (preserving user edits)</li></ol>
+<p><strong>File inputs are excluded</strong> (<code>newElt.type !== 'file'</code>) because file inputs are read-only — their value can only be set by user interaction, never programmatically. Attempting to set <code>.value</code> on a file input throws a security error in most browsers.</p>
+<h3>2.3 The <code>updateElementProp</code> Helper</h3>
+<pre><code class="language-typescript">const updateElementProp = (
+  oldElt: Element,
+  newElt: Element,
+  name: string,
+): boolean =&gt; {
+  const newEltHasAttr = newElt.hasAttribute(name)
+  if (
+    oldElt.hasAttribute(name) !== newEltHasAttr &amp;&amp;
+    !preserveAttrs.includes(name)
+  ) {
+    oldElt[name] = newEltHasAttr   // set boolean PROPERTY from attribute presence
+    return true
+  }
+  return false
+}
+</code></pre>
+<p>This function bridges HTML attributes to DOM boolean properties. For <code>checked</code>:</p>
+<ul><li>If new element has <code>checked</code> attribute and old doesn't → set <code>oldElt.checked = true</code></li><li>If new element doesn't have <code>checked</code> and old does → set <code>oldElt.checked = false</code></li><li>If both agree → do nothing (preserves any user toggle that hasn't been reflected in attributes)</li></ul>
+<p>The pattern leverages the fact that boolean HTML attributes are present/absent (not true/false):</p>
+<pre><code class="language-html">&lt;input type=&quot;checkbox&quot; checked&gt;    &lt;!-- checked attribute present → .checked = true --&gt;
+&lt;input type=&quot;checkbox&quot;&gt;            &lt;!-- checked attribute absent → .checked = false --&gt;
+</code></pre>
+<h3>2.4 <code>HTMLTextAreaElement</code> Handling</h3>
+<pre><code class="language-typescript">else if (
+  oldElt instanceof HTMLTextAreaElement &amp;&amp;
+  newElt instanceof HTMLTextAreaElement
+) {
+  const newValue = newElt.value
+  if (oldElt.defaultValue !== newValue) {
+    oldElt.value = newValue
+    shouldDispatchChangeEvent = true
+  }
+}
+</code></pre>
+<p>Textareas are special because their "attribute value" is their text content, not a <code>value</code> attribute:</p>
+<pre><code class="language-html">&lt;textarea&gt;This is the default value&lt;/textarea&gt;
+</code></pre>
+<p>The comparison uses <code>defaultValue</code> (which corresponds to the text content in markup) rather than <code>value</code> (which reflects what the user has typed). This means the morph only overwrites user input when the <strong>server's default</strong> actually changed.</p>
+<h3>2.5 <code>HTMLOptionElement</code> Handling</h3>
+<pre><code class="language-typescript">else if (
+  oldElt instanceof HTMLOptionElement &amp;&amp;
+  newElt instanceof HTMLOptionElement
+) {
+  shouldDispatchChangeEvent =
+    updateElementProp(oldElt, newElt, &#x27;selected&#x27;) || shouldDispatchChangeEvent
+}
+</code></pre>
+<p>For <code><option></code> elements inside <code><select></code>, the <code>selected</code> attribute/property is synced using the same boolean attribute-to-property bridge. The <code>selected</code> HTML attribute marks the default selection; the <code>.selected</code> property reflects the current state.</p>
+<h3>2.6 Change Event Dispatch</h3>
+<pre><code class="language-typescript">if (shouldDispatchChangeEvent) {
+  const dispatchElt =
+    oldElt instanceof HTMLOptionElement ? oldElt.closest(&#x27;select&#x27;) : oldElt
+  dispatchElt?.dispatchEvent(new Event(&#x27;change&#x27;, { bubbles: true }))
+}
+</code></pre>
+<p>When any form state is modified by the morph, a synthetic <code>change</code> event is dispatched. This ensures that:</p>
+<ol><li><code>data-on:change</code> handlers fire</li><li><code>data-bind</code> listeners pick up the change and update signals</li><li>Third-party form libraries that listen for <code>change</code> events stay in sync</li></ol>
+<p>For <code><option></code> elements, the event is dispatched on the parent <code><select></code> (via <code>closest('select')</code>), because that's where <code>change</code> listeners are typically attached.</p>
+<p><strong>The event bubbles</strong> (<code>bubbles: true</code>) so that event delegation patterns work — a <code>data-on:change</code> on a parent form element will catch changes to any child input.</p>
+<hr>
+<h2>3. Attribute Synchronization</h2>
+<p>After form-specific handling, all attributes are synchronized:</p>
+<h3>3.1 Add/Update Attributes</h3>
+<pre><code class="language-typescript">for (const { name, value } of newElt.attributes) {
+  if (
+    oldElt.getAttribute(name) !== value &amp;&amp;
+    !preserveAttrs.includes(name)
+  ) {
+    oldElt.setAttribute(name, value)
+  }
+}
+</code></pre>
+<p>This iterates the new element's attributes and sets any that differ. The <code>preserveAttrs</code> check prevents overwriting attributes the server explicitly marked for preservation.</p>
+<h3>3.2 Remove Stale Attributes</h3>
+<pre><code class="language-typescript">for (const { name } of Array.from(oldElt.attributes)) {
+  if (!newElt.hasAttribute(name) &amp;&amp; !preserveAttrs.includes(name)) {
+    oldElt.removeAttribute(name)
+  }
+}
+</code></pre>
+<p>Attributes on the old element that don't exist on the new element are removed. <code>Array.from()</code> creates a static copy of the attribute list because removing attributes during iteration would cause the live <code>NamedNodeMap</code> to skip entries.</p>
+<hr>
+<h2>4. Two-Way Data Binding: The <code>bind</code> Plugin</h2>
+<p>The <code>bind</code> plugin (<code>library/src/plugins/attributes/bind.ts</code>) creates a reactive connection between a form element and a signal in the store. It handles the full spectrum of HTML form elements.</p>
+<h3>4.1 Architecture</h3>
+<div class="mermaid">
+flowchart LR
+    subgraph &quot;Signal Store&quot;
+        S[&quot;signal: &#x27;email&#x27;&lt;br/&gt;value: &#x27;user@example.com&#x27;&quot;]
+    end
+
+    subgraph &quot;DOM&quot;
+        Input[&quot;&lt;input data-bind:email&gt;&quot;]
+    end
+
+    S --&gt;|&quot;effect(() =&gt; set(getPath(&#x27;email&#x27;)))&quot;| Input
+    Input --&gt;|&quot;&#x27;input&#x27;/&#x27;change&#x27; event → syncSignal()&quot;| S
+
+    style S fill:#e8f4f8
+    style Input fill:#f8e8e8
+
+</div>
+<p>Two connections:</p>
+<ol><li><strong>Signal → DOM:</strong> An <code>effect()</code> that reads the signal and calls the element-specific <code>set()</code> function</li><li><strong>DOM → Signal:</strong> Event listeners on <code>input</code> and <code>change</code> that read the element and call <code>mergePaths()</code></li></ol>
+<h3>4.2 Element-Specific Getters and Setters</h3>
+<p>The plugin defines <code>get</code> and <code>set</code> functions that are specialized per element type:</p>
+<h4>Text/Search/Email/URL/Password Inputs (default)</h4>
+<pre><code class="language-typescript">let get = (el: any, type: string) =&gt;
+  type === &#x27;number&#x27; ? +el.value : el.value
+
+let set = (value: any) =&gt; {
+  (el as HTMLInputElement).value = `${value}`
+}
+</code></pre>
+<p>The <code>type</code> parameter refers to the signal's current type (<code>typeof initialValue</code>), not the input type. If the signal was initialized as a number, the getter coerces the string input value to a number.</p>
+<h4>Range and Number Inputs</h4>
+<pre><code class="language-typescript">case &#x27;range&#x27;:
+case &#x27;number&#x27;:
+  get = (el, type) =&gt; type === &#x27;string&#x27; ? el.value : +el.value
+</code></pre>
+<p>Inverted from the default: these inputs produce numbers by default, but return strings if the signal was initialized as a string.</p>
+<h4>Checkbox Inputs</h4>
+<pre><code class="language-typescript">case &#x27;checkbox&#x27;:
+  get = (el: HTMLInputElement, type: string) =&gt; {
+    if (el.value !== &#x27;on&#x27;) {
+      // checkbox has an explicit value attribute
+      if (type === &#x27;boolean&#x27;) return el.checked
+      else return el.checked ? el.value : &#x27;&#x27;
+    } else {
+      // default checkbox (value=&quot;on&quot;)
+      if (type === &#x27;string&#x27;) return el.checked ? el.value : &#x27;&#x27;
+      else return el.checked
+    }
+  }
+  set = (value: string | boolean) =&gt; {
+    el.checked = typeof value === &#x27;string&#x27; ? value === el.value : value
+  }
+</code></pre>
+<p>This handles four combinations: | Signal type | Checkbox has <code>value="..."</code> | Getter returns | |------------|---------------------------|----------------| | boolean | yes | <code>el.checked</code> | | string | yes | <code>el.checked ? el.value : ''</code> | | boolean | no (default "on") | <code>el.checked</code> | | string | no (default "on") | <code>el.checked ? 'on' : ''</code> |</p>
+<p>The setter reverses the logic: if the signal is a string, it compares against the element's value attribute to determine checked state. If boolean, it sets checked directly.</p>
+<h4>Radio Buttons</h4>
+<pre><code class="language-typescript">case &#x27;radio&#x27;:
+  if (!el.getAttribute(&#x27;name&#x27;)?.length) {
+    el.setAttribute(&#x27;name&#x27;, signalName)  // auto-set name from signal
+  }
+  get = (el, type) =&gt;
+    el.checked ? (type === &#x27;number&#x27; ? +el.value : el.value) : empty
+  set = (value) =&gt; {
+    el.checked = value === (typeof value === &#x27;number&#x27; ? +el.value : el.value)
+  }
+</code></pre>
+<p>The <code>empty</code> sentinel (a Symbol) prevents unchecked radio buttons from writing to the signal — only the checked button in the group writes its value.</p>
+<p><strong>Auto-naming:</strong> Radio buttons need a <code>name</code> attribute to form a group. If none is set, the plugin automatically uses the signal name, so all radios bound to the same signal form a group.</p>
+<h4>File Inputs</h4>
+<pre><code class="language-typescript">case &#x27;file&#x27;: {
+  const syncSignal = () =&gt; {
+    const files = [...(el.files || [])]
+    const signalFiles: SignalFile[] = []
+    Promise.all(
+      files.map(f =&gt; new Promise&lt;void&gt;(resolve =&gt; {
+        const reader = new FileReader()
+        reader.onload = () =&gt; {
+          const match = reader.result.match(dataURIRegex)
+          signalFiles.push({
+            name: f.name,
+            contents: match.groups.contents,  // base64 content
+            mime: match.groups.mime,
+          })
+        }
+        reader.onloadend = () =&gt; resolve()
+        reader.readAsDataURL(f)
+      }))
+    ).then(() =&gt; mergePaths([[signalName, signalFiles]]))
+  }
+  el.addEventListener(&#x27;change&#x27;, syncSignal)
+  el.addEventListener(&#x27;input&#x27;, syncSignal)
+  return () =&gt; {
+    el.removeEventListener(&#x27;change&#x27;, syncSignal)
+    el.removeEventListener(&#x27;input&#x27;, syncSignal)
+  }
+}
+</code></pre>
+<p>File inputs get special treatment:</p>
+<ol><li>Files are read as Data URIs via <code>FileReader</code></li><li>The base64 content, filename, and MIME type are extracted</li><li>The signal receives an array of <code>{ name, contents, mime }</code> objects</li><li>This happens asynchronously (Promise.all) because <code>FileReader</code> is async</li><li>No <code>set()</code> is needed — file inputs are write-only from the user's perspective</li></ol>
+<p>The Data URI regex extracts the parts:</p>
+<pre><code class="language-">data:image/png;base64,iVBORw0KGgo...
+     ^^^^^^^^         ^^^^^^^^^^^^
+     mime             contents
+</code></pre>
+<h4>Multi-Select</h4>
+<pre><code class="language-typescript">if (el.multiple) {
+  const typeMap = new Map&lt;string, string&gt;()
+  get = (el: HTMLSelectElement) =&gt;
+    [...el.selectedOptions].map(option =&gt; {
+      const type = typeMap.get(option.value)
+      return type === &#x27;string&#x27; || type == null ? option.value : +option.value
+    })
+  set = (value: (string | number)[]) =&gt; {
+    for (const option of el.options) {
+      if (value.includes(option.value)) {
+        typeMap.set(option.value, &#x27;string&#x27;)
+        option.selected = true
+      } else if (value.includes(+option.value)) {
+        typeMap.set(option.value, &#x27;number&#x27;)
+        option.selected = true
+      } else {
+        option.selected = false
+      }
+    }
+  }
+}
+</code></pre>
+<p>Multi-select produces arrays. The <code>typeMap</code> tracks whether each option was last matched as a string or number, maintaining type consistency across updates.</p>
+<h4>Web Components (Fallback)</h4>
+<pre><code class="language-typescript">get = (el: Element) =&gt;
+  &#x27;value&#x27; in el ? el.value : el.getAttribute(&#x27;value&#x27;)
+set = (value: any) =&gt; {
+  if (&#x27;value&#x27; in el) {
+    el.value = value
+  } else {
+    el.setAttribute(&#x27;value&#x27;, value)
+  }
+}
+</code></pre>
+<p>For custom elements / web components, the plugin checks for a <code>value</code> property (which a well-behaved form-associated custom element would expose) and falls back to the <code>value</code> attribute.</p>
+<h3>4.3 Signal Initialization</h3>
+<p>When a bind plugin processes an element, it initializes the signal if it doesn't already exist:</p>
+<pre><code class="language-typescript">const initialValue = getPath(signalName)
+const type = typeof initialValue
+
+// For arrays (multiple checkboxes/radios bound to same signal):
+if (Array.isArray(initialValue) &amp;&amp; !(el instanceof HTMLSelectElement &amp;&amp; el.multiple)) {
+  // Find all inputs bound to this signal, assign each an array index
+  const inputs = document.querySelectorAll(`[data-bind\\:${signalName}]`)
+  let i = 0
+  for (const input of inputs) {
+    paths.push([`${path}.${i}`, get(input, &#x27;none&#x27;)])
+    if (el === input) break
+    i++
+  }
+  mergePaths(paths, { ifMissing: true })
+  path = `${path}.${i}`
+} else {
+  mergePaths([[path, get(el, type)]], { ifMissing: true })
+}
+</code></pre>
+<p><strong>The <code>ifMissing: true</code> flag</strong> ensures that:</p>
+<ul><li>If a signal already exists (e.g., set by <code>data-signals</code> or a previous morph), the element reads from it</li><li>If the signal doesn't exist, it's created with the element's current value</li><li>This prevents server-driven signal patches from being overwritten by the initial DOM state</li></ul>
+<p><strong>Array binding:</strong> When the signal's initial value is an array, each input element bound to the same signal gets its own array index. This handles checkbox groups:</p>
+<pre><code class="language-html">&lt;div data-signals=&quot;{colors: [&#x27;red&#x27;]}&quot;&gt;
+  &lt;input type=&quot;checkbox&quot; data-bind:colors value=&quot;red&quot;&gt;    &lt;!-- colors.0 --&gt;
+  &lt;input type=&quot;checkbox&quot; data-bind:colors value=&quot;green&quot;&gt;  &lt;!-- colors.1 --&gt;
+  &lt;input type=&quot;checkbox&quot; data-bind:colors value=&quot;blue&quot;&gt;   &lt;!-- colors.2 --&gt;
+&lt;/div&gt;
+</code></pre>
+<h3>4.4 The Reactive Loop</h3>
+<pre><code class="language-typescript">// DOM → Signal
+const syncSignal = () =&gt; {
+  const signalValue = getPath(path)
+  if (signalValue != null) {
+    const value = get(el, typeof signalValue)
+    if (value !== empty) {
+      mergePaths([[path, value]])
+    }
+  }
+}
+el.addEventListener(&#x27;input&#x27;, syncSignal)
+el.addEventListener(&#x27;change&#x27;, syncSignal)
+
+// Signal → DOM
+const cleanup = effect(() =&gt; {
+  set(getPath(path))
+})
+</code></pre>
+<p><strong>DOM → Signal path:</strong> On <code>input</code> (fires on every keystroke) and <code>change</code> (fires on blur/commit), read the element's value and merge it into the signal store. The <code>typeof signalValue</code> ensures type coercion matches the signal's established type.</p>
+<p><strong>Signal → DOM path:</strong> An <code>effect</code> reads the signal (subscribing to changes) and calls <code>set()</code>. When the signal changes (from a server patch, another input, or programmatic update), the effect re-runs and updates the element.</p>
+<p><strong>Avoiding infinite loops:</strong> The <code>mergePaths</code> call in <code>syncSignal</code> triggers the signal to change, which triggers the effect, which calls <code>set()</code>. But <code>set()</code> doesn't fire <code>input</code> or <code>change</code> events (programmatic <code>.value</code> assignment doesn't trigger DOM events), so the loop naturally stops. The synthetic <code>change</code> event from morphNode is the exception — but morphing and binding operate on different elements, so they don't create cycles on the same element.</p>
+<h3>4.5 Cleanup</h3>
+<pre><code class="language-typescript">return () =&gt; {
+  cleanup()                                    // dispose the effect (unsubscribes from signal)
+  el.removeEventListener(&#x27;input&#x27;, syncSignal)  // remove DOM → Signal listener
+  el.removeEventListener(&#x27;change&#x27;, syncSignal)
+}
+</code></pre>
+<p>When the element is removed from the DOM, the MutationObserver triggers cleanup, which:</p>
+<ol><li>Disposes the effect (removes it from the signal's subscriber list)</li><li>Removes event listeners (prevents memory leaks and ghost updates)</li></ol>
+<hr>
+<h2>5. How Morphing and Binding Interact</h2>
+<p>When the server sends new HTML containing form elements, the morphing algorithm and bind plugin interact in a carefully choreographed sequence:</p>
+<div class="mermaid">
+sequenceDiagram
+    participant Server
+    participant Morph as morphNode()
+    participant MO as MutationObserver
+    participant Engine
+    participant Bind as bind plugin
+    participant Signals as Signal Store
+
+    Server-&gt;&gt;Morph: New HTML with form elements
+
+    Note over Morph: Phase 1: Sync attributes
+    Morph-&gt;&gt;Morph: setAttribute(&#x27;value&#x27;, newValue)
+    Morph-&gt;&gt;Morph: setAttribute(&#x27;data-bind:email&#x27;, ...)
+
+    Note over Morph: Phase 2: Sync form properties
+    Morph-&gt;&gt;Morph: oldElt.value = newValue (property)
+    Morph-&gt;&gt;Morph: oldElt.checked = newChecked (property)
+    Morph-&gt;&gt;Morph: Dispatch &#x27;change&#x27; event
+
+    Note over Bind: Existing bind catches change event
+    Bind-&gt;&gt;Signals: mergePaths([[path, newValue]])
+
+    Note over Morph: Phase 3: morph children
+    Morph-&gt;&gt;MO: DOM mutations fire
+
+    Note over MO: Phase 4: New elements processed
+    MO-&gt;&gt;Engine: New data-bind attributes detected
+    Engine-&gt;&gt;Bind: Apply bind plugin
+    Bind-&gt;&gt;Signals: mergePaths with ifMissing: true
+    Bind-&gt;&gt;Bind: Setup effect + event listeners
+
+</div>
+<p><strong>Key interaction points:</strong></p>
+<ol><li><strong>Morph updates the property</strong> → existing <code>change</code> listener fires → signal updates</li><li><strong>Morph changes/adds <code>data-bind</code> attributes</strong> → MutationObserver fires → old bind cleans up, new bind initializes</li><li><strong>New bind initializes with <code>ifMissing: true</code></strong> → reads existing signal value → DOM shows current state</li></ol>
+<p>This means a server can:</p>
+<ul><li>Update form values: Send new <code>value</code> attributes → morph syncs → change event → signal updates</li><li>Preserve user input: Use <code>data-preserve-attr="value"</code> → morph skips value sync → user's typing preserved</li><li>Change form structure: Add/remove inputs → morph handles DOM, MutationObserver handles binding lifecycle</li></ul>
+<hr>
+<h2>6. Edge Cases and Gotchas</h2>
+<h3>6.1 The <code>defaultValue</code> vs <code>value</code> Distinction for Textareas</h3>
+<pre><code class="language-html">&lt;textarea&gt;Default text&lt;/textarea&gt;
+</code></pre>
+<p>After the user types "User text":</p>
+<ul><li><code>el.defaultValue</code> → <code>"Default text"</code> (what's in the markup)</li><li><code>el.value</code> → <code>"User text"</code> (what's on screen)</li></ul>
+<p>The morph compares against <code>defaultValue</code>:</p>
+<pre><code class="language-typescript">if (oldElt.defaultValue !== newValue) {
+  oldElt.value = newValue
+}
+</code></pre>
+<p>This means: "Only overwrite the user's text if the server is sending a <strong>new default</strong>." If the server re-sends the same default, the user's edits are preserved.</p>
+<h3>6.2 Radio Button Groups Across Morphs</h3>
+<p>Radio buttons must all have the same <code>name</code> attribute to form a group. The bind plugin auto-sets this from the signal name. During morphing, <code>morphNode</code> syncs the <code>name</code> attribute via the generic attribute sync — so if the server sends a different <code>name</code>, the radio group may break.</p>
+<p>The safe pattern is to always include <code>name</code> in the HTML:</p>
+<pre><code class="language-html">&lt;input type=&quot;radio&quot; name=&quot;color&quot; data-bind:color value=&quot;red&quot;&gt;
+&lt;input type=&quot;radio&quot; name=&quot;color&quot; data-bind:color value=&quot;blue&quot;&gt;
+</code></pre>
+<h3>6.3 The <code>change</code> Event on <code><option></code> Elements</h3>
+<p>When morphing an <code><option></code> element's <code>selected</code> state, the <code>change</code> event is dispatched on the parent <code><select></code>, not the <code><option></code>:</p>
+<pre><code class="language-typescript">const dispatchElt =
+  oldElt instanceof HTMLOptionElement ? oldElt.closest(&#x27;select&#x27;) : oldElt
+</code></pre>
+<p>This is because <code><option></code> elements don't fire their own <code>change</code> events in standard browser behavior — the <code><select></code> does. The morph preserves this convention so that bind listeners on the <code><select></code> work correctly.</p>
+<h3>6.4 Attribute Order During Morph</h3>
+<p>Attribute sync iterates <code>newElt.attributes</code> (for additions/updates) and <code>Array.from(oldElt.attributes)</code> (for removals). The <code>Array.from()</code> on the removal pass is required because <code>attributes</code> is a live <code>NamedNodeMap</code> — removing an attribute shifts the indices of all subsequent attributes, causing the loop to skip entries.</p>
+<h3>6.5 The <code>empty</code> Symbol in Radio Getters</h3>
+<pre><code class="language-typescript">const empty = Symbol(&#x27;empty&#x27;)
+get = (el, type) =&gt; el.checked ? el.value : empty
+</code></pre>
+<p>When a radio button is unchecked, the getter returns <code>empty</code> (a unique Symbol). The sync function checks for this:</p>
+<pre><code class="language-typescript">if (value !== empty) {
+  mergePaths([[path, value]])
+}
+</code></pre>
+<p>This prevents unchecked radios from writing empty/false values to the signal. In a radio group, only the checked button writes — the others are silent. Without this, the last radio in DOM order would always win (overwriting the checked button's value).</p>
+<h3>6.6 Morph and <code>data-bind</code> on the Same Element</h3>
+<p>When a server sends new HTML that changes both the <code>value</code> attribute and adds/modifies a <code>data-bind</code> attribute on the same element:</p>
+<ol><li><code>morphNode</code> runs first — syncs the value property, fires change event</li><li>MutationObserver fires — detects <code>data-bind</code> attribute change</li><li>Old bind cleanup runs — removes effect + event listeners</li><li>New bind initializes — reads signal (which may have been updated by step 1)</li></ol>
+<p>The <code>ifMissing: true</code> on initialization means the new bind reads the signal's current value (set by the morph's change event) rather than the element's current value. This prevents a double-write race condition.</p>
+<hr>
+<h2>7. Comparison with Other Approaches</h2>
+<h3>7.1 vs. React Controlled Components</h3>
+<p>React uses a unidirectional model: state → render → DOM. User input fires an <code>onChange</code> handler that updates state, which triggers a re-render.</p>
+<p>Datastar's bind is bidirectional by design:</p>
+<ul><li>Signal → DOM via <code>effect()</code></li><li>DOM → Signal via <code>input</code>/<code>change</code> listeners</li></ul>
+<p>The bidirectional model is simpler (no re-render cycle) but relies on the morph algorithm to prevent conflicts when the server pushes updates.</p>
+<h3>7.2 vs. morphdom's Form Handling</h3>
+<p>morphdom uses <code>onBeforeElUpdated</code> callbacks that users must implement to preserve form state. Datastar bakes this into the core algorithm — no configuration needed.</p>
+<p>morphdom also doesn't dispatch synthetic <code>change</code> events, which means form libraries that rely on change events break after morphing. Datastar's synthetic <code>change</code> dispatch addresses this.</p>
+<h3>7.3 vs. Alpine.js x-model</h3>
+<p>Alpine's <code>x-model</code> is similar to <code>data-bind</code> but doesn't handle server-driven morphing. When Alpine's DOM is morphed (e.g., via htmx), the morph library (idiomorph) handles form state separately from Alpine's reactivity. Datastar unifies both concerns in a single system.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

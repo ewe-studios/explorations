@@ -134,18 +134,13 @@
   <article class="prose">
 <h1>Datastar -- Utility Systems</h1>
 <p>Eight utility modules support the engine and plugins with common operations: case conversion, timing, path manipulation, math, and DOM helpers.</p>
+<p><strong>Aha:</strong> The utility modules are pure functions with no side effects — they're the most portable parts of Datastar to other frameworks or to a Rust translation. Each is a self-contained module with a single responsibility.</p>
 <p>Source: <code>library/src/utils/*.ts</code></p>
 <h2>text.ts — Case Conversion and String Utilities</h2>
-<pre><code class="language-typescript">// Case conversion functions
-export const kebab = (str: string): string =&gt;  // camelCase → camel-case
-export const camel = (str: string): string =&gt;  // camel-case → camelCase
-export const snake = (str: string): string =&gt;  // camel-case → camel_case
-export const pascal = (str: string): string =&gt; // camel-case → CamelCase
-export const title = (str: string): string =&gt;  // camel case → Camel Case
-</code></pre>
-<h3>kebab</h3>
-<p>Converts any string to kebab-case via a chain of regex replacements:</p>
-<pre><code class="language-typescript">export const kebab = (str) =&gt;
+<p>Source: <code>utils/text.ts</code> — 79 lines</p>
+<h3>Case Conversion Chain (Lines 3-21)</h3>
+<pre><code class="language-typescript">// text.ts:3-10
+export const kebab = (str: string): string =&gt;
   str
     .replace(/([A-Z]+)([A-Z][a-z])/g, &#x27;$1-$2&#x27;)  // &quot;HTMLElement&quot; → &quot;HTML-Element&quot;
     .replace(/([a-z0-9])([A-Z])/g, &#x27;$1-$2&#x27;)     // &quot;camelCase&quot; → &quot;camel-Case&quot;
@@ -154,57 +149,163 @@ export const title = (str: string): string =&gt;  // camel case → Camel Case
     .replace(/[\s_]+/g, &#x27;-&#x27;)                     // &quot;hello world&quot; → &quot;hello-world&quot;
     .toLowerCase()
 </code></pre>
-<h3>jsStrToObject — JSON with Function Revival</h3>
-<pre><code class="language-typescript">export const jsStrToObject = (raw: string, { reviveFunctionStrings = false } = {}) =&gt; {
-  if (!reviveFunctionStrings) return JSON.parse(raw)
-  return JSON.parse(raw, (_k, value) =&gt; {
-    if (typeof value !== &#x27;string&#x27;) return value
-    const trimmed = value.trim()
-    if (!RE_FUNCTION_LITERAL.test(trimmed)) return value
-    try {
-      const revived = Function(`return (${trimmed})`)()
-      return typeof revived === &#x27;function&#x27; ? revived : value
-    } catch { return value }
-  })
+<p><strong>Aha:</strong> The first regex handles consecutive uppercase followed by a capitalized word — this is the tricky case that most kebab-case implementations miss. <code>"HTMLElement"</code> → <code>"HTML-Element"</code> not <code>"Ht-ml-Element"</code>. The regex <code>([A-Z]+)([A-Z][a-z])</code> matches the boundary between <code>HTML</code> and <code>Element</code>.</p>
+<p>The remaining conversions are all built on top of <code>kebab</code>:</p>
+<pre><code class="language-typescript">// text.ts:12-13
+export const camel = (str: string): string =&gt;
+  kebab(str).replace(/-./g, (x) =&gt; x[1].toUpperCase())
+
+// text.ts:15
+export const snake = (str: string): string =&gt; kebab(str).replace(/-/g, &#x27;_&#x27;)
+
+// text.ts:17-18
+export const pascal = (str: string): string =&gt;
+  camel(str).replace(/(^.|(?&lt;=\.).)/g, (x) =&gt; x[0].toUpperCase())
+
+// text.ts:20-21
+export const title = (str: string): string =&gt;
+  str.replace(/\b\w/g, (char) =&gt; char.toUpperCase())
+</code></pre>
+<p><code>camel</code> converts to kebab first, then uppercases each letter after a hyphen. <code>snake</code> is kebab with underscores. <code>pascal</code> capitalizes the first letter of camelCase. <code>title</code> capitalizes each word.</p>
+<h3>jsStrToObject — JSON with Function Revival (Lines 23-53)</h3>
+<pre><code class="language-typescript">// text.ts:23-24
+const RE_FUNCTION_LITERAL =
+  /^(?:(?:async\s+)?function\b|(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=&gt;)/
+</code></pre>
+<p>This regex matches function literals at the start of a string:</p>
+<table><tr><th>Pattern</th><th>Matches</th></tr><tr><td>`(?:async\s+)?function\b`</td><td>`function() {}`, `async function() {}`</td></tr><tr><td>`(?:\([^)]*\)</td><td>[A-Za-z_$][\w$]*)\s*=>`</td><td>`() => {}`, `(x) => {}`, `x => {}`</td></tr><tr><td>`(?:async\s*)?` prefix</td><td>`async () => {}`, `async x => {}`</td></tr></table>
+<pre><code class="language-typescript">// text.ts:30-53
+export const jsStrToObject = (
+  raw: string,
+  options: JsStrToObjectOptions = {},
+) =&gt; {
+  const { reviveFunctionStrings = false } = options
+  try {
+    if (!reviveFunctionStrings) return JSON.parse(raw)
+    return JSON.parse(raw, (_k, value) =&gt; {
+      if (typeof value !== &#x27;string&#x27;) return value
+      const trimmed = value.trim()
+      if (!RE_FUNCTION_LITERAL.test(trimmed)) return value
+      try {
+        const revived = Function(`return (${trimmed})`)()
+        return typeof revived === &#x27;function&#x27; ? revived : value
+      } catch {
+        return value
+      }
+    })
+  } catch {
+    // If JSON parsing fails, try to evaluate as a JavaScript object
+    return Function(`return (${raw})`)()
+  }
 }
 </code></pre>
-<p>Used by attribute plugins to parse JSON values from HTML attributes. When <code>reviveFunctionStrings</code> is true, string values that look like function expressions are evaluated into actual functions.</p>
-<h3>modifyCasing</h3>
-<p>Applies case transformation based on modifiers:</p>
-<pre><code class="language-typescript">export const modifyCasing = (str, mods, defaultCase = &#x27;camel&#x27;) =&gt; {
+<p><strong>Aha:</strong> The function has three fallback levels:</p>
+<ol><li>Standard <code>JSON.parse</code> if <code>reviveFunctionStrings</code> is false</li><li><code>JSON.parse</code> with a reviver that evals function strings</li><li>Direct <code>Function</code> eval if the string isn't valid JSON at all (level 3 is the least safe)</li></ol>
+<p>The reviver function is called for every value in the JSON tree. Only string values that match the function literal regex are evaluated. Non-function strings pass through unchanged.</p>
+<h3>modifyCasing — Runtime Case Transformation (Lines 55-70)</h3>
+<pre><code class="language-typescript">// text.ts:55-59
+const caseFns: Record&lt;string, (s: string) =&gt; string&gt; = {
+  camel: (str) =&gt; str.replace(/-[a-z]/g, (x) =&gt; x[1].toUpperCase()),
+  snake: (str) =&gt; str.replace(/-/g, &#x27;_&#x27;),
+  pascal: (str) =&gt; str[0].toUpperCase() + caseFns.camel(str.slice(1)),
+}
+
+// text.ts:61-70
+export const modifyCasing = (
+  str: string,
+  mods: Modifiers,
+  defaultCase = &#x27;camel&#x27;,
+): string =&gt; {
   for (const c of mods.get(&#x27;case&#x27;) || [defaultCase]) {
     str = caseFns[c]?.(str) || str
   }
   return str
 }
 </code></pre>
-<p>Used by <code>data-bind:kebab</code> to convert <code>someSignalName</code> to <code>some-signal-name</code>.</p>
-<h3>aliasify / unaliasify</h3>
-<p>Adds/removes a custom prefix from attribute names:</p>
-<pre><code class="language-typescript">export const aliasify = (name) =&gt; ALIAS ? `data-${ALIAS}-${name}` : `data-${name}`
-export const unaliasify = (name) =&gt; {
+<p>Used by <code>data-bind:snake</code> to convert signal key names to attribute names. The <code>case</code> modifier is read from <code>mods.get('case')</code> — if present, each case function is applied in sequence. The default is <code>'camel'</code>.</p>
+<h3>aliasify / unaliasify — Build-Time Prefix (Lines 72-79)</h3>
+<pre><code class="language-typescript">// text.ts:72-79
+export const aliasify = (name: string) =&gt;
+  ALIAS ? `data-${ALIAS}-${name}` : `data-${name}`
+
+export const unaliasify = (name: string) =&gt; {
   if (!ALIAS) return name
   if (!name.startsWith(`${ALIAS}-`)) return null
   return name.slice(ALIAS.length + 1)
 }
 </code></pre>
-<p>When <code>ALIAS</code> is set at build time (e.g., <code>"myapp"</code>), all attributes become <code>data-myapp-<em></code> instead of <code>data-</em></code>.</p>
+<p><strong>Aha:</strong> <code>ALIAS</code> is a global constant injected at build time via esbuild's <code>define</code> option. When set to <code>"myapp"</code>, all attributes become <code>data-myapp-<em></code> instead of <code>data-</em></code>. <code>unaliasify</code> returns <code>null</code> if the name doesn't have the expected prefix, which causes <code>applyAttributePlugin</code> to skip the attribute (the <code>if (!rawKey) return</code> guard on line 287 of engine.ts).</p>
 <h2>timing.ts — Delay, Throttle, Debounce</h2>
-<pre><code class="language-typescript">export const delay = (callback, wait) =&gt;
-  (...args) =&gt; setTimeout(() =&gt; callback(...args), wait)
-
-export const throttle = (callback, wait, leading = true, trailing = false, debounce = false) =&gt;
-  // Combined throttle + debounce implementation
+<p>Source: <code>utils/timing.ts</code> — 74 lines</p>
+<h3>delay (Lines 4-13)</h3>
+<pre><code class="language-typescript">// timing.ts:4-13
+export const delay = (
+  callback: EventCallbackHandler,
+  wait: number,
+): EventCallbackHandler =&gt; {
+  return (...args: any[]) =&gt; {
+    setTimeout(() =&gt; {
+      callback(...args)
+    }, wait)
+  }
+}
 </code></pre>
-<h3>throttle</h3>
-<p>A unified throttle/debounce function:</p>
-<table><tr><th>Mode</th><th>leading</th><th>trailing</th><th>debounce</th></tr><tr><td>Throttle (leading)</td><td>`true`</td><td>`false`</td><td>`false`</td></tr><tr><td>Throttle (trailing)</td><td>`false`</td><td>`true`</td><td>`false`</td></tr><tr><td>Debounce</td><td>`false`</td><td>`true`</td><td>`true`</td></tr></table>
-<h3>modifyTiming</h3>
-<p>Reads timing modifiers from the modifier set and applies them:</p>
-<pre><code class="language-typescript">export const modifyTiming = (callback, mods) =&gt; {
-  const delayArgs = mods.get(&#x27;delay&#x27;)
-  if (delayArgs) callback = delay(callback, tagToMs(delayArgs))
+<p>Returns a new function that defers the callback by <code>wait</code> milliseconds. Simple wrapper around <code>setTimeout</code>.</p>
+<h3>throttle — Unified Throttle/Debounce (Lines 15-45)</h3>
+<pre><code class="language-typescript">// timing.ts:15-45
+export const throttle = (
+  callback: EventCallbackHandler,
+  wait: number,
+  leading = true,
+  trailing = false,
+  debounce = false,
+): EventCallbackHandler =&gt; {
+  let lastArgs: Parameters&lt;EventCallbackHandler&gt; | null = null
+  let timer: ReturnType&lt;typeof setTimeout&gt; | number = 0
 
+  return (...args: any[]) =&gt; {
+    // Leading edge: fire immediately if no timer is active
+    if (leading &amp;&amp; !timer) {
+      callback(...args)
+      lastArgs = null
+    } else {
+      lastArgs = args
+    }
+
+    // Timer management
+    if (!timer || debounce) {
+      if (timer) {
+        clearTimeout(timer)
+      }
+      timer = setTimeout(() =&gt; {
+        if (trailing &amp;&amp; lastArgs !== null) {
+          callback(...lastArgs)
+        }
+        lastArgs = null
+        timer = 0
+      }, wait)
+    }
+  }
+}
+</code></pre>
+<p><strong>Aha:</strong> This is a single function that implements three behaviors through flag combinations:</p>
+<table><tr><th>Mode</th><th>leading</th><th>trailing</th><th>debounce</th><th>Behavior</th></tr><tr><td>Throttle (leading)</td><td>`true`</td><td>`false`</td><td>`false`</td><td>Fire immediately, then once per `wait`</td></tr><tr><td>Throttle (trailing)</td><td>`false`</td><td>`true`</td><td>`false`</td><td>Fire after `wait`, then once per `wait`</td></tr><tr><td>Debounce</td><td>`false`</td><td>`true`</td><td>`true`</td><td>Fire only after `wait` ms of inactivity</td></tr></table>
+<p>The <code>debounce</code> flag causes <code>clearTimeout(timer)</code> to run on every call (the <code>if (timer) clearTimeout(timer)</code> branch), resetting the wait period. Without <code>debounce</code>, the timer is only set if there's no active timer (<code>!timer</code>).</p>
+<p>The <code>lastArgs</code> tracking ensures that the trailing edge fires with the most recent arguments, not the original ones.</p>
+<h3>modifyTiming — Modifier Pipeline (Lines 47-74)</h3>
+<pre><code class="language-typescript">// timing.ts:47-74
+export const modifyTiming = (
+  callback: EventCallbackHandler,
+  mods: Modifiers,
+): EventCallbackHandler =&gt; {
+  // Apply delay first (outermost wrapper)
+  const delayArgs = mods.get(&#x27;delay&#x27;)
+  if (delayArgs) {
+    const wait = tagToMs(delayArgs)
+    callback = delay(callback, wait)
+  }
+
+  // Apply debounce (wraps the existing callback)
   const debounceArgs = mods.get(&#x27;debounce&#x27;)
   if (debounceArgs) {
     const wait = tagToMs(debounceArgs)
@@ -213,6 +314,7 @@ export const throttle = (callback, wait, leading = true, trailing = false, debou
     callback = throttle(callback, wait, leading, trailing, true)
   }
 
+  // Apply throttle (innermost wrapper)
   const throttleArgs = mods.get(&#x27;throttle&#x27;)
   if (throttleArgs) {
     const wait = tagToMs(throttleArgs)
@@ -224,47 +326,163 @@ export const throttle = (callback, wait, leading = true, trailing = false, debou
   return callback
 }
 </code></pre>
+<p><strong>Aha:</strong> The order matters — delay is applied first (outermost), then debounce, then throttle (innermost). This means <code>data-on:input__delay:100ms.debounce:300ms</code> wraps as: <code>delay(debounce(callback))</code> — the callback fires 300ms after the last input, then delayed by 100ms more.</p>
+<p>The debounce defaults: <code>leading = false</code>, <code>trailing = true</code> (standard debounce behavior). The throttle defaults: <code>leading = true</code>, <code>trailing = false</code> (standard throttle behavior).</p>
 <h2>tags.ts — Tag/Argument Parsing</h2>
-<pre><code class="language-typescript">export const tagToMs = (args: Set&lt;string&gt;) =&gt; {
-  // &quot;500ms&quot; → 500
-  // &quot;2s&quot; → 2000
-  // &quot;300&quot; → 300
+<p>Source: <code>utils/tags.ts</code> — 33 lines</p>
+<h3>tagToMs (Lines 1-15)</h3>
+<pre><code class="language-typescript">// tags.ts:1-15
+export const tagToMs = (args: Set&lt;string&gt;) =&gt; {
+  if (!args || args.size &lt;= 0) return 0
+  for (const arg of args) {
+    if (arg.endsWith(&#x27;ms&#x27;)) {
+      return +arg.replace(&#x27;ms&#x27;, &#x27;&#x27;)
+    }
+    if (arg.endsWith(&#x27;s&#x27;)) {
+      return +arg.replace(&#x27;s&#x27;, &#x27;&#x27;) * 1000
+    }
+    try {
+      return Number.parseFloat(arg)
+    } catch (_) {}
+  }
+  return 0
 }
-
-export const tagHas = (tags, tag, defaultValue) =&gt; tags?.has(tag.toLowerCase())
-export const tagFirst = (tags, defaultValue) =&gt; tags?.values().next().value ?? defaultValue
 </code></pre>
-<h2>math.ts — Interpolation Utilities</h2>
-<pre><code class="language-typescript">export const clamp = (value, min, max) =&gt; Math.max(min, Math.min(max, value))
-export const lerp = (min, max, t, clamped = true) =&gt; min + (max - min) * t
-export const inverseLerp = (min, max, value, clamped = true) =&gt; (value - min) / (max - min)
-export const fit = (value, inMin, inMax, outMin, outMax, clamped, rounded) =&gt;
-  lerp(outMin, outMax, inverseLerp(inMin, inMax, value), clamped)
+<p><strong>Aha:</strong> The <code>+</code> prefix is a concise way to convert a string to a number — <code>+"500"</code> → <code>500</code>. The function tries each argument in the Set and returns the first parseable value. This means <code>delay:500ms.leading</code> would parse <code>500ms</code> as 500 and ignore <code>leading</code>.</p>
+<h3>tagHas (Lines 17-24)</h3>
+<pre><code class="language-typescript">// tags.ts:17-24
+export const tagHas = (
+  tags: Set&lt;string&gt;,
+  tag: string,
+  defaultValue = false,
+) =&gt; {
+  if (!tags) return defaultValue
+  return tags.has(tag.toLowerCase())
+}
 </code></pre>
-<p>Used primarily by the <code>on-intersect</code> plugin for threshold calculations.</p>
+<p>Case-insensitive tag lookup. Used by <code>modifyTiming</code> to check for sub-modifiers like <code>leading</code>, <code>notrailing</code>, <code>noleading</code>, <code>trailing</code>.</p>
+<h3>tagFirst (Lines 26-33)</h3>
+<pre><code class="language-typescript">// tags.ts:26-33
+export const tagFirst = (tags?: Set&lt;string&gt;, defaultValue = &#x27;&#x27;): string =&gt; {
+  if (tags &amp;&amp; tags.size &gt; 0) {
+    for (const tag of tags) {
+      return tag
+    }
+  }
+  return defaultValue
+}
+</code></pre>
+<p>Returns the first element of a Set. The <code>for...of</code> loop with immediate <code>return</code> is the idiomatic way to get the first element of a Set in JavaScript (since Sets don't have <code>.first()</code> or <code>[0]</code>).</p>
 <h2>paths.ts — Object Path Utilities</h2>
-<pre><code class="language-typescript">export const isPojo = (obj) =&gt;
-  obj !== null &amp;&amp; typeof obj === &#x27;object&#x27; &amp;&amp;
-  (Object.getPrototypeOf(obj) === Object.prototype || Object.getPrototypeOf(obj) === null)
-
-export const updateLeaves = (obj, fn) =&gt; {
-  // Recursively walk an object, applying fn to each leaf value
-}
-
-export const pathToObj = (paths) =&gt; {
-  // [[&#x27;user.name&#x27;, &#x27;Alice&#x27;]] → { user: { name: &#x27;Alice&#x27; } }
+<p>Source: <code>utils/paths.ts</code> — 42 lines</p>
+<h3>isPojo — Plain Object Check (Lines 4-8)</h3>
+<pre><code class="language-typescript">// paths.ts:4-8
+export const isPojo = (obj: any): obj is Record&lt;string, any&gt; =&gt;
+  obj !== null &amp;&amp;
+  typeof obj === &#x27;object&#x27; &amp;&amp;
+  (Object.getPrototypeOf(obj) === Object.prototype ||
+   Object.getPrototypeOf(obj) === null)
+</code></pre>
+<p><strong>Aha:</strong> This check excludes class instances (whose prototype is a custom constructor), arrays (whose prototype is <code>Array.prototype</code>), Dates, Maps, etc. Only plain objects created with <code>{}</code> or <code>Object.create(null)</code> pass. The <code>Object.getPrototypeOf(obj) === null</code> case handles objects created with <code>Object.create(null)</code> — these are used as safe dictionaries with no inherited methods.</p>
+<h3>isEmpty (Lines 10-17)</h3>
+<pre><code class="language-typescript">// paths.ts:10-17
+export const isEmpty = (obj: Record&lt;string, any&gt;): boolean =&gt; {
+  for (const prop in obj) {
+    if (hasOwn(obj, prop)) {
+      return false
+    }
+  }
+  return true
 }
 </code></pre>
+<p>Short-circuits on the first own property found. Uses <code>hasOwn</code> from the polyfill to avoid prototype pollution issues.</p>
+<h3>updateLeaves — Recursive Leaf Mapper (Lines 19-31)</h3>
+<pre><code class="language-typescript">// paths.ts:19-31
+export const updateLeaves = (
+  obj: Record&lt;string, any&gt;,
+  fn: (oldValue: any) =&gt; any,
+) =&gt; {
+  for (const key in obj) {
+    const val = obj[key]
+    if (isPojo(val) || Array.isArray(val)) {
+      updateLeaves(val, fn)
+    } else {
+      obj[key] = fn(val)
+    }
+  }
+}
+</code></pre>
+<p><strong>Aha:</strong> This function mutates <code>obj</code> in place. It recursively walks nested objects and arrays, applying <code>fn</code> to every leaf value. Used by <code>mergePatch</code> to update all signal values at once, and by <code>setAll</code>/<code>toggleAll</code> actions to bulk-modify signals.</p>
+<p>Arrays are treated as containers (like objects) — the recursion goes into them but the array structure itself is preserved. Only leaf values (non-objects, non-arrays) are transformed.</p>
+<h3>pathToObj — Dot-Notation to Nested Object (Lines 33-42)</h3>
+<pre><code class="language-typescript">// paths.ts:33-42
+export const pathToObj = (paths: Paths): Record&lt;string, any&gt; =&gt; {
+  const result: Record&lt;string, any&gt; = {}
+  for (const [path, value] of paths) {
+    const keys = path.split(&#x27;.&#x27;)
+    const lastKey = keys.pop()!
+    const obj = keys.reduce((acc, key) =&gt; (acc[key] ??= {}), result)
+    obj[lastKey] = value
+  }
+  return result
+}
+</code></pre>
+<p>Converts <code>[['user.name', 'Alice'], ['user.age', 30]]</code> to <code>{ user: { name: 'Alice', age: 30 } }</code>. The <code>??=</code> (nullish coalescing assignment) operator creates intermediate objects only if they don't exist.</p>
+<h2>math.ts — Interpolation Utilities</h2>
+<p>Source: <code>utils/math.ts</code> — 39 lines</p>
+<pre><code class="language-typescript">// math.ts:1-3
+export const clamp = (value: number, min: number, max: number): number =&gt; {
+  return Math.max(min, Math.min(max, value))
+}
+
+// math.ts:5-13
+export const lerp = (
+  min: number, max: number, t: number, clamped = true,
+): number =&gt; {
+  const v = min + (max - min) * t
+  return clamped ? clamp(v, min, max) : v
+}
+
+// math.ts:15-25
+export const inverseLerp = (
+  min: number, max: number, value: number, clamped = true,
+): number =&gt; {
+  if (value &lt; min) return 0
+  if (value &gt; max) return 1
+  const v = (value - min) / (max - min)
+  return clamped ? clamp(v, min, max) : v  // &lt;-- clamped is redundant here
+}
+
+// math.ts:27-39
+export const fit = (
+  value: number, inMin: number, inMax: number,
+  outMin: number, outMax: number, clamped = true, rounded = false,
+): number =&gt; {
+  const t = inverseLerp(inMin, inMax, value, clamped)
+  const fitted = lerp(outMin, outMax, t, clamped)
+  return rounded ? Math.round(fitted) : fitted
+}
+</code></pre>
+<p><strong>Aha:</strong> <code>inverseLerp</code> has an early return (<code>if (value < min) return 0; if (value > max) return 1</code>) before the clamping logic, making the <code>clamped ? clamp(v, ...) : v</code> at the end redundant for the common case. The <code>clamped</code> parameter still matters for edge cases where <code>min === max</code> (division by zero would produce <code>NaN</code>, and <code>clamp(NaN, ...)</code> returns <code>NaN</code>).</p>
+<p><code>fit</code> composes <code>inverseLerp</code> + <code>lerp</code> to map a value from one range to another. For example, <code>fit(0.5, 0, 1, 0, 255)</code> maps 0.5 from [0,1] to [0,255], giving 127.5 (or 128 if <code>rounded = true</code>).</p>
+<p>Used primarily by the <code>on-intersect</code> plugin for threshold-to-opacity mapping.</p>
 <h2>polyfills.ts — Object.hasOwn</h2>
-<pre><code class="language-typescript">export const hasOwn = Object.hasOwn ?? Object.prototype.hasOwnProperty.call
+<p>Source: <code>utils/polyfills.ts</code> — 1 line</p>
+<pre><code class="language-typescript">// polyfills.ts
+export const hasOwn = Object.hasOwn ?? Object.prototype.hasOwnProperty.call
 </code></pre>
-<p>Provides <code>Object.hasOwn</code> for older browsers.</p>
+<p><strong>Aha:</strong> <code>Object.hasOwn</code> was added in ES2022. The polyfill uses <code>Object.prototype.hasOwnProperty.call</code> as a fallback, which is the pre-ES2022 standard way to safely check for own properties (calling <code>.hasOwnProperty</code> directly on an object could fail if the object has a shadowed method).</p>
 <h2>dom.ts — Type Guard</h2>
-<pre><code class="language-typescript">export const isHTMLOrSVG = (el: Node): el is HTMLOrSVG =&gt;
+<p>Source: <code>utils/dom.ts</code> — 1 line</p>
+<pre><code class="language-typescript">// dom.ts
+export const isHTMLOrSVG = (el: Node): el is HTMLOrSVG =&gt;
   el instanceof HTMLElement || el instanceof SVGElement || el instanceof MathMLElement
 </code></pre>
+<p>Used throughout the engine to filter out Text nodes, Comment nodes, and other non-element Node types. The <code>el is HTMLOrSVG</code> TypeScript type assertion narrows the type in conditional blocks.</p>
 <h2>view-transitions.ts — View Transitions API</h2>
-<pre><code class="language-typescript">export const supportsViewTransitions = !!document.startViewTransition
+<p>Source: <code>utils/view-transitions.ts</code> — 7 lines</p>
+<pre><code class="language-typescript">// view-transitions.ts
+export const supportsViewTransitions = !!document.startViewTransition
 
 export const modifyViewTransition = (callback, mods) =&gt; {
   if (mods.has(&#x27;viewtransition&#x27;) &amp;&amp; supportsViewTransitions) {
@@ -273,7 +491,71 @@ export const modifyViewTransition = (callback, mods) =&gt; {
   return callback
 }
 </code></pre>
-<p>Wraps callbacks in the View Transitions API when the browser supports it and the <code>.viewtransition</code> modifier is present.</p>
+<p>Wraps callbacks in <code>document.startViewTransition</code> when the browser supports it and the <code>.viewtransition</code> modifier is present. Falls through silently on unsupported browsers (currently Chromium-only).</p>
+<h2>Utility Module Dependency Graph</h2>
+<div class="mermaid">
+flowchart LR
+    subgraph &quot;Engine Dependencies&quot;
+        ENG[engine.ts]
+        TEXT[text.ts]
+        PATHS[paths.ts]
+        DOM[dom.ts]
+    end
+
+    subgraph &quot;Plugin Dependencies&quot;
+        ATTR[Attribute Plugins]
+        ACT[Action Plugins]
+    end
+
+    subgraph &quot;Utility Modules&quot;
+        TIMING[timing.ts]
+        TAGS[tags.ts]
+        MATH[math.ts]
+        VT[view-transitions.ts]
+        POLY[polyfills.ts]
+    end
+
+    ENG --&gt;|aliasify, snake, unaliasify| TEXT
+    ENG --&gt;|isHTMLOrSVG| DOM
+    ENG --&gt;|pathToObj| PATHS
+
+    ATTR --&gt;|modifyTiming, delay, throttle| TIMING
+    ATTR --&gt;|modifyViewTransition| VT
+    ATTR --&gt;|modifyCasing| TEXT
+
+    ACT --&gt;|updateLeaves, isPojo, pathToObj| PATHS
+    ACT --&gt;|tagToMs, tagHas| TAGS
+
+    TIMING --&gt;|tagToMs, tagHas| TAGS
+    PATHS --&gt;|hasOwn| POLY
+    ATTR --&gt;|lerp, fit, clamp| MATH
+
+</div>
+<h2>Modifier Processing Pipeline</h2>
+<div class="mermaid">
+flowchart TD
+    ATTR[&quot;data-on:click__prevent.delay:500ms.passive.viewtransition&quot;] --&gt; PARSE[parseAttributeKey]
+
+    PARSE --&gt;|name| N[&quot;on&quot;]
+    PARSE --&gt;|key| K[&quot;click&quot;]
+    PARSE --&gt;|mods| M[Map: prevent{}, delay{500ms, passive}, viewtransition{}]
+
+    M --&gt; TIMING[modifyTiming]
+    M --&gt; VT[modifyViewTransition]
+
+    TIMING --&gt; DELAY{has delay?}
+    DELAY --&gt;|yes| DL[delay(callback, 500)]
+    DELAY --&gt;|no| CB[callback]
+    DL --&gt; CB
+
+    VT --&gt; VTCHECK{viewtransition + supported?}
+    VTCHECK --&gt;|yes| WRAP[startViewTransition(callback)]
+    VTCHECK --&gt;|no| CB
+
+    CB --&gt;|prevent mod| PREV[evt.preventDefault()]
+    CB --&gt;|passive mod| PASS[addEventListener passive:true]
+
+</div>
 <p>See <a href="05-attribute-plugins.md">Attribute Plugins</a> for how plugins use these utilities. See <a href="04-plugin-system.md">Plugin System</a> for how modifiers are parsed.</p>
   </article>
   <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>

@@ -56,33 +56,211 @@ attribute({
 
 The MutationObserver prevents external changes (e.g., from browser extensions) from being overwritten by the effect.
 
-## 2. bind — Two-way data binding
+## 2. bind — Two-way data binding (Full Source Walkthrough)
 
-The most complex plugin. Creates bidirectional sync between a form element's value and a signal.
+The most complex plugin (301 lines). Creates bidirectional sync between form element values and signals.
 
-```html
-<!-- Text input: data-bind:title -->
-<!-- Checkbox: data-bind:kebab="$isChecked" -->
-<!-- Radio group: data-bind="$selectedRadio" (auto-creates name attribute) -->
-<!-- File upload: data-bind="$files" → { name, contents, mime }[] -->
-<!-- Select multiple: data-bind="$selectedOptions" -->
-<!-- Custom property: data-bind.prop:value="$customValue" -->
+Source: `plugins/attributes/bind.ts` — 301 lines
+
+### Adapter Pattern (lines 24-52)
+
+Three adapter factory functions handle common cases:
+
+```typescript
+// propAdapter — reads/writes a DOM property directly
+const propAdapter = (prop: string, ...events: string[]): BindAdapter => ({
+  get: (el: any) => el[prop],
+  set: (el: any, value: any) => { el[prop] = value },
+  events,
+})
+
+// attrAdapter — reads/writes a DOM attribute
+const attrAdapter = (attr: string, ...events: string[]): BindAdapter => ({
+  get: (el: Element) => el.getAttribute(attr),
+  set: (el: Element, value: any) => { el.setAttribute(attr, `${value}`) },
+  events,
+})
+
+// valueAdapter — reads/writes the .value property with type coercion
+const valueAdapter = (treatUndefinedAsString = false, ...events: string[]): BindAdapter => ({
+  get: (el, type: string) =>
+    type === 'string' || (treatUndefinedAsString && type === 'undefined')
+      ? el.value : +el.value,
+  set: (el, value: string | number) => { el.value = `${value}` },
+  events,
+})
 ```
 
-**Aha:** The bind plugin has per-element-type adapters. An `<input type="checkbox">` gets a different adapter than `<input type="radio">`, which gets a different adapter than `<select multiple>`. The adapter pattern means each element type handles its native value semantics correctly — checkboxes use `checked` boolean, radios use `value` string, selects use `selectedOptions` NodeList.
+**Aha:** The type-aware `valueAdapter` checks the type of the current signal value to decide whether to return a string or number. If the signal is `string` type, it returns `el.value` as-is. Otherwise it coerces with `+el.value`. This means `data-bind:count` auto-detects whether the signal should be numeric.
 
-Key adapter behaviors:
+### boundPath — Signal Path Resolution (lines 57-114)
 
-| Element | Adapter | Events | Notes |
-|---------|---------|--------|-------|
-| `input[type=range/number]` | valueAdapter(false) | `input` | Parses numeric values |
-| `input[type=checkbox]` | Custom | `input` | Boolean or value-based |
-| `input[type=radio]` | Custom | `input` | Auto-sets `name` attribute |
-| `input[type=file]` | FileReader | `change` | Converts to `{name, contents, mime}[]` |
-| `select[multiple]` | Custom | `change` | Array of selected values |
-| `select` | valueAdapter(true) | `change` | String value |
-| `textarea` | propAdapter('value') | `input` | Text content |
-| Custom element (`*-tag`) | prop/attr | `input, change` | `.value` property or attribute |
+```typescript
+const boundPath = (el, key, rawKey, signalName, adapter, initialValue) => {
+  const rawAttribute = aliasify(CSS.escape(rawKey))
+  const selector = key
+    ? `[${rawAttribute}]`
+    : `[${rawAttribute}="${CSS.escape(signalName)}"]`
+```
+
+**What:** Builds a CSS selector to find all elements with the same bind attribute. This is used for radio group synchronization — all radios in a group share the same signal.
+
+Radio group special case (lines 69-82):
+```typescript
+if (initialValue === undefined && el instanceof HTMLInputElement && el.type === 'radio') {
+  const checked = [...document.querySelectorAll(selector)].find(
+    (input): input is HTMLInputElement => input.checked,
+  )
+  if (checked) {
+    mergePaths([[signalName, checked.value]], { ifMissing: true })
+  }
+}
+```
+
+If the signal doesn't exist yet and there's a checked radio in the group, adopt that radio's value as the signal's initial value. This means the HTML can define the default, not the JS.
+
+Array binding (lines 84-113):
+```typescript
+if (!Array.isArray(initialValue) || (el instanceof HTMLSelectElement && el.multiple)) {
+  mergePaths([[signalName, adapter.get(el, typeof initialValue)]], { ifMissing: true })
+  return signalName
+}
+// For arrays: find position of this element in the group
+const inputs = document.querySelectorAll(selector)
+let i = 0
+for (const input of inputs) {
+  paths.push([`${signalName}.${i}`, adapter.get(input, typeof initialValue[i])])
+  if (el === input) break
+  i++
+}
+mergePaths(paths, { ifMissing: true })
+return `${signalName}.${i}`
+```
+
+### Per-Element-Type Dispatch (lines 119-251)
+
+The `apply` function dispatches to different adapters based on element type:
+
+```typescript
+apply({ el, key, rawKey, mods, value, error }) {
+  const signalName = key != null ? modifyCasing(key, mods) : value
+
+  // Determine adapter based on element type
+  if (el instanceof HTMLInputElement) {
+    switch (el.type) {
+      case 'range': case 'number':
+        adapter = valueAdapter(false, 'input')
+        break
+      case 'checkbox':
+        adapter = {
+          get: (el, type) => {
+            if (el.value !== 'on') {
+              return type === 'boolean' ? el.checked : (el.checked ? el.value : '')
+            }
+            return type === 'string' ? (el.checked ? el.value : '') : el.checked
+          },
+          set: (el, value) => {
+            el.checked = typeof value === 'string' ? value === el.value : value
+          },
+          events: ['input'],
+        }
+        break
+      case 'radio':
+        if (!el.getAttribute('name')?.length) {
+          el.setAttribute('name', signalName)  // Auto-assign name
+        }
+        adapter = {
+          get: (el, type) => el.checked ? (type === 'number' ? +el.value : el.value) : empty,
+          set: (el, value) => {
+            el.checked = value === (typeof value === 'number' ? +el.value : el.value)
+          },
+          events: ['input'],
+        }
+        break
+      case 'file':
+        // FileReader-based upload handler (see below)
+        break
+      default:
+        adapter = valueAdapter(true, 'input')
+    }
+  } else if (el instanceof HTMLSelectElement && el.multiple) {
+    // Multi-select adapter with type tracking
+  } else if (el instanceof HTMLSelectElement) {
+    adapter = valueAdapter(true, 'change')
+  } else if (el instanceof HTMLTextAreaElement) {
+    adapter = propAdapter('value', 'input')
+  } else if (el instanceof HTMLElement && el.tagName.includes('-')) {
+    // Custom elements: try .value property, fall back to attribute
+    adapter = 'value' in el ? propAdapter('value', 'input', 'change') : attrAdapter('value', 'input', 'change')
+  }
+```
+
+### File Upload Adapter (lines 169-208)
+
+The file input is special — it reads files via `FileReader` and converts to base64:
+
+```typescript
+case 'file': {
+  const syncSignal = () => {
+    const files = [...(el.files || [])]
+    const signalFiles: SignalFile[] = []
+    Promise.all(files.map(f => new Promise<void>((resolve) => {
+      const reader = new FileReader()
+      reader.onload = () => {
+        const match = reader.result.match(dataURIRegex)
+        signalFiles.push({
+          name: f.name,
+          contents: match.groups.contents,  // base64 content
+          mime: match.groups.mime,
+        })
+      }
+      reader.onloadend = () => resolve()
+      reader.readAsDataURL(f)
+    }))).then(() => {
+      mergePaths([[signalName, signalFiles]])
+    })
+  }
+  el.addEventListener('change', syncSignal)
+  return () => { el.removeEventListener('change', syncSignal) }
+}
+```
+
+**What:** Each file is read as a Data URI, parsed with regex to extract mime and base64 content, and stored as `{ name, contents, mime }` objects in the signal.
+
+### Signal Sync and Effect (lines 275-300)
+
+```typescript
+const syncSignal = () => {
+  const signalValue = getPath(path)
+  if (signalValue != null) {
+    const value = adapter.get(el, typeof signalValue)
+    if (value !== empty) {
+      mergePaths([[path, value]])
+    }
+  }
+}
+
+// DOM → Signal: listen for input/change events
+for (const eventName of adapter.events) {
+  el.addEventListener(eventName, syncSignal)
+}
+el.addEventListener(DATASTAR_PROP_CHANGE_EVENT, syncSignal)
+
+// Signal → DOM: effect watches signal and updates element
+const cleanup = effect(() => {
+  adapter.set(el, getPath(path))
+})
+
+return () => {
+  cleanup()
+  for (const eventName of adapter.events) {
+    el.removeEventListener(eventName, syncSignal)
+  }
+  el.removeEventListener(DATASTAR_PROP_CHANGE_EVENT, syncSignal)
+}
+```
+
+**Aha:** The bind plugin uses `DATASTAR_PROP_CHANGE_EVENT` — a custom event dispatched by the morphing system when attributes change during a morph. This means if a morph updates an input's value, the bind plugin catches it and syncs the signal, preventing stale state after DOM patches.
 
 ## 3. class — Conditional CSS classes
 
@@ -169,38 +347,162 @@ Outputs filtered signals as JSON text content:
 
 Uses `effect()` to re-render whenever any filtered signal changes. Also uses a MutationObserver to prevent external text changes from being overwritten.
 
-## 9. on — Event listener
+## 9. on — Event listener (Full Source Walkthrough)
 
-The most versatile plugin. Attaches event listeners with modifiers:
+Source: `plugins/attributes/on.ts` — 70 lines
 
-```html
-<!-- data-on:click="$count++" -->
-<!-- data-on:submit.prevent="$submit()" -->
-<!-- data-on:keyup.escape.window="$closeModal()" -->
-<!-- data-on:click.delay:200ms.debounce="$search($event.target.value)" -->
-<!-- data-on:click.outside="$closeDropdown()" -->
-<!-- data-on:scroll.passive.capture.throttle:100ms="$onScroll($event)" -->
-<!-- data-on:keydown.ctrl.k.prevent="$openCommandPalette()" -->
+```typescript
+attribute({
+  name: 'on',
+  requirement: 'must',  // Key (event name) is required
+  argNames: ['evt'],    // Pass the event object to the compiled expression
+  apply({ el, key, mods, rx }) {
 ```
 
-Modifiers:
+### Target Resolution (lines 20-25)
 
-| Modifier | What it does |
-|----------|-------------|
-| `.prevent` | `event.preventDefault()` |
-| `.stop` | `event.stopPropagation()` |
-| `.once` | `{ once: true }` in addEventListener |
-| `.capture` | `{ capture: true }` |
-| `.passive` | `{ passive: true }` |
-| `.window` | Listen on `window` instead of element |
-| `.document` | Listen on `document` instead of element |
-| `.outside` | Only fire when click target is NOT inside element |
-| `.delay:Nms` | `setTimeout` before executing |
-| `.debounce:Nms` | Debounce (with `.leading`, `.notrailing`) |
-| `.throttle:Nms` | Throttle (with `.noleading`, `.trailing`) |
-| `.viewtransition` | Wrap in `document.startViewTransition()` |
+```typescript
+let target: Element | Window | Document = el
+if (mods.has('window')) {
+  target = window
+} else if (mods.has('document')) {
+  target = document
+}
+```
 
-**Aha:** The on plugin automatically prevents form submission when `data-on:submit` is present. This means you don't need `.prevent` on submit handlers — it's built into the plugin's event listener wrapper.
+Default: listen on the element itself. `.window` modifier → `window`, `.document` → `document`.
+
+### Callback with Batching (lines 26-30)
+
+```typescript
+let callback = (evt?: Event) => {
+  beginBatch()
+  rx(evt)
+  endBatch()
+}
+```
+
+Every event handler runs inside a batch — any signal changes are coalesced into a single propagation cycle.
+
+### Modifier Pipeline (lines 31-33)
+
+```typescript
+callback = modifyViewTransition(callback, mods)
+callback = modifyTiming(callback, mods)
+const eventName = modifyCasing(key, mods, 'kebab')
+```
+
+Three modifier transformations applied in order:
+1. **View transitions:** If `.viewtransition` modifier, wrap in `document.startViewTransition()`
+2. **Timing:** If `.delay`, `.debounce`, or `.throttle` modifiers, wrap in timing wrappers
+3. **Event name casing:** Default is kebab-case (`click`), but `.camel` or `.pascal` modifiers change it
+
+### Event Listener Options (lines 34-38)
+
+```typescript
+const evtListOpts: AddEventListenerOptions = {
+  capture: mods.has('capture'),
+  passive: mods.has('passive'),
+  once: mods.has('once'),
+}
+```
+
+### Outside Click Handler (lines 39-47)
+
+```typescript
+if (mods.has('outside')) {
+  target = document
+  const cb = callback
+  callback = (evt?: Event) => {
+    if (!el.contains(evt?.target as HTMLElement)) {
+      cb(evt)
+    }
+  }
+}
+```
+
+The `.outside` modifier redirects listening to `document` and filters out clicks that originate inside the element. This is the standard "click outside to close dropdown" pattern.
+
+### Datastar Event Override (lines 49-54)
+
+```typescript
+if (eventName === DATASTAR_FETCH_EVENT || eventName === DATASTAR_SIGNAL_PATCH_EVENT) {
+  target = document
+}
+```
+
+Custom Datastar events (`datastar-fetch`, `datastar-signal-patch`) are always dispatched on `document`, so the listener must be on `document` to receive them.
+
+### Event Listener with Side Effects (lines 56-68)
+
+```typescript
+const listener = (evt?: Event) => {
+  if (evt) {
+    if (mods.has('prevent')) evt.preventDefault()
+    if (mods.has('stop')) evt.stopPropagation()
+    if (el instanceof HTMLFormElement && eventName === 'submit') evt.preventDefault()
+  }
+  callback(evt)
+}
+target.addEventListener(eventName, listener, evtListOpts)
+return () => { target.removeEventListener(eventName, listener, evtListOpts) }
+```
+
+**Aha:** Form submission is automatically prevented when `data-on:submit` is present. The check `el instanceof HTMLFormElement && eventName === 'submit'` calls `evt.preventDefault()` unconditionally. This means you never need `.prevent` on submit handlers — it's baked in. This is a deliberate design decision to prevent the common footgun of forgetting `.prevent` and getting a full page reload.
+
+## 1. attr — Generic attribute binding (Full Source Walkthrough)
+
+Source: `plugins/attributes/attr.ts` — 61 lines
+
+```typescript
+attribute({
+  name: 'attr',
+  requirement: { value: 'must' },
+  returnsValue: true,
+  apply({ el, key, rx }) {
+```
+
+### Value Serialization (lines 13-30)
+
+```typescript
+const syncAttr = (key: string, val: any) => {
+  if (val === '' || val === true) {
+    el.setAttribute(key, '')           // Boolean attributes: empty string
+  } else if (val === false || val == null) {
+    el.removeAttribute(key)            // false/null/undefined → remove
+  } else if (typeof val === 'string') {
+    el.setAttribute(key, val)          // String → set directly
+  } else if (typeof val === 'function') {
+    el.setAttribute(key, val.toString()) // Function → toString()
+  } else {
+    el.setAttribute(key, JSON.stringify(val, (_k, v) =>
+      typeof v === 'function' ? v.toString() : v))
+  }
+}
+```
+
+**What:** Smart serialization — booleans map to HTML boolean attribute semantics, functions are stringified, objects are JSON-stringified (with nested functions also stringified).
+
+### Two Modes: Single Key vs Object (lines 32-51)
+
+```typescript
+const update = key
+  ? () => {
+      // Single attribute mode: data-attr:placeholder="$hint"
+      observer.disconnect()
+      syncAttr(key, rx())
+      observer.observe(el, { attributeFilter: [key] })
+    }
+  : () => {
+      // Object mode: data-attr="{ placeholder: $hint, disabled: $isDisabled }"
+      observer.disconnect()
+      const obj = rx() as Record<string, any>
+      for (const key of Object.keys(obj)) { syncAttr(key, obj[key]) }
+      observer.observe(el, { attributeFilter: Object.keys(obj) })
+    }
+```
+
+In single-key mode, only the specified attribute is observed. In object mode, all keys from the returned object are observed. The MutationObserver prevents external changes from being overwritten.
 
 ## 10. on-intersect — IntersectionObserver trigger
 

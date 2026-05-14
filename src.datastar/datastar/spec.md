@@ -49,7 +49,8 @@ src.datastar/datastar/
 │   ├── 11-rust-equivalents.md
 │   ├── 12-production-patterns.md
 │   ├── 13-web-tooling.md
-│   └── 14-datastar-rust-sdk.md
+│   ├── 14-datastar-rust-sdk.md
+│   └── 17-rendering-signals-deep-dive.md
 ├── html/
 │   ├── index.html
 │   ├── styles.css
@@ -75,10 +76,13 @@ src.datastar/datastar/
 | 13 | Write 11-rust-equivalents.md | DONE |
 | 14 | Write 12-production-patterns.md | DONE |
 | 15 | Write 13-web-tooling.md | DONE |
-| 15 | Write 14-datastar-rust-sdk.md | DONE |
-| 16 | Write README.md (index) | DONE |
-| 17 | Generate HTML with build.py | DONE |
-| 18 | Grandfather Review + Fix Gaps | DONE |
+| 16 | Write 14-datastar-rust-sdk.md | DONE |
+| 17 | Write README.md (index) | DONE |
+| 18 | Generate HTML with build.py | DONE |
+| 19 | Grandfather Review + Fix Gaps | DONE |
+| 20 | Merge 18-signals into 02-reactive-signals.md | DONE |
+| 21 | Deepen all remaining markdown docs to line-by-line depth | DONE |
+| 22 | Rebuild HTML with build.py | DONE |
 
 ## Build System
 
