@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CF Request Lifecycle — Preload, Eval, Drain, Persist -- http-nu</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/http-nu/docs</span>
+    <div class="nav-actions">
+      <a href="02-vfs.html" class="nav-breadcrumb">Vfs Abstraction — The Bridge Between Desktop and CF</a><a href="03-snapshot-vfs.html" class="nav-breadcrumb">SnapshotVfs — CF's Workspace-Backed Vfs Implementation</a><a href="04-shadow-commands.html" class="nav-breadcrumb">Shadow Commands — The Layer 1/2/3 Strategy</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="04-shadow-commands.html" class="nav-btn" title="Previous: Shadow Commands — The Layer 1/2/3 Strategy">← prev</a>
+      <a href="06-desktop-vs-cf.html" class="nav-btn nav-btn-next" title="Next: Desktop vs CF — Feature Comparison Matrix">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>CF Request Lifecycle — Preload, Eval, Drain, Persist</h1>
+<p>Every HTTP request to a CF user's DurableObject follows a four-phase lifecycle that bridges the async Workers runtime with sync Nushell execution.</p>
+<p><strong>Source:</strong> <code>src/cf/mod.rs:169-241</code> (<code>UserSpace::fetch</code>) and <code>src/cf/handler.rs:56-179</code> (<code>handle</code>, <code>run_closure</code>)</p>
+<h2>Full Request Flow</h2>
+<div class="mermaid">
+sequenceDiagram
+    participant Client
+    participant Edge as CF Edge
+    participant DO as UserSpace DO
+    participant WS as Workspace (SQLite+R2)
+    participant Snap as SnapshotVfs
+    participant Nu as Nushell Engine
+    participant Handler as cf/handler.rs
+
+    Client-&gt;&gt;Edge: GET /u/alice/hello
+    Edge-&gt;&gt;DO: route to alice&#x27;s DO
+    DO-&gt;&gt;DO: maybe_reload_handler()
+    DO-&gt;&gt;DO: strip_user_prefix(&quot;/u/alice/hello&quot;) → &quot;/hello&quot;
+    alt &quot;/_workspace/*&quot;
+        DO-&gt;&gt;WS: workspace_debug()
+        WS--&gt;&gt;DO: JSON/bytes
+        DO--&gt;&gt;Client: Response
+    else Normal route
+        DO-&gt;&gt;DO: reset_sleep_budget()
+        DO-&gt;&gt;WS: open_workspace()
+        DO-&gt;&gt;WS: load_from_workspace(depth=4, limit=1.5MB)
+        WS--&gt;&gt;DO: SnapshotVfs
+        DO-&gt;&gt;Snap: install_vfs(Box::new(snapshot))
+        DO-&gt;&gt;Handler: handle(req)
+        Handler-&gt;&gt;Handler: Read body (non-GET)
+        alt Datastar JS bundle
+            Handler--&gt;&gt;Client: 200 JS bundle
+        else Admin handler swap
+            Handler-&gt;&gt;Nu: parse_closure(script)
+            Handler--&gt;&gt;Client: 200 &quot;ok&quot;
+        else Run closure
+            Handler-&gt;&gt;Handler: worker_request_to_http_nu(req)
+            Handler-&gt;&gt;Handler: body_to_pipeline(body)
+            Handler-&gt;&gt;Nu: run_closure(req_value, pipeline_input)
+            Nu-&gt;&gt;Snap: Vfs reads (ls, open, path exists...)
+            Nu-&gt;&gt;Snap: Vfs writes (save, mkdir, rm...)
+            Nu--&gt;&gt;Handler: PipelineData result
+            alt .static via RESPONSE_TX
+                Handler-&gt;&gt;Snap: serve_static_from_snapshot()
+            else Normal pipeline
+                Handler-&gt;&gt;Handler: build_response(PipelineData)
+            end
+            Handler--&gt;&gt;DO: Result&lt;Response&gt;
+            DO-&gt;&gt;Snap: drain_pending_writes()
+            DO-&gt;&gt;Snap: drain_pending_ops()
+            DO-&gt;&gt;WS: async flush: mkdir → writes → rm
+            DO-&gt;&gt;Snap: drop_vfs()
+            DO--&gt;&gt;Client: Response
+        end
+    end
+
+</div>
+<h2>Phase 1: Hot-Reload Check</h2>
+<p><strong>Source:</strong> <code>src/cf/mod.rs:170-173</code></p>
+<pre><code class="language-rust">self.maybe_reload_handler().await;
+</code></pre>
+<p>If the previous request's Nu commands wrote to <code>/serve.nu</code> (or a debug PUT did), the <code>HANDLER_RELOAD_PENDING</code> flag is set. This phase re-reads and re-parses the handler script before serving. If not set, this is a no-op (the common case).</p>
+<h2>Phase 2: Preload</h2>
+<p><strong>Source:</strong> <code>src/cf/mod.rs:192-194</code></p>
+<pre><code class="language-rust">let ws = self.open_workspace()?;
+let snapshot = SnapshotVfs::load_from_workspace(&amp;ws, 4, 1_500_000).await?;
+crate::vfs::install_vfs(Box::new(snapshot.clone()));
+</code></pre>
+<p>Three steps:</p>
+<ol><li>Open Workspace with DO SQLite + R2 bucket</li><li>Recursively walk Workspace tree (depth ≤ 4, files ≤ 1.5MB inlined)</li><li>Install the snapshot in the thread-local Vfs slot</li></ol>
+<p>The <code>snapshot.clone()</code> is cheap — just an <code>Rc</code> increment. Both the handler and the fetch method share the same <code>SnapshotInner</code>.</p>
+<h2>Phase 3: Evaluate</h2>
+<p><strong>Source:</strong> <code>src/cf/handler.rs:107-179</code></p>
+<p>The handler runs the Nushell closure:</p>
+<pre><code class="language-rust">let pd_result = {
+    let engine = super::engine()?.lock()?;
+    let req_struct = worker_request_to_http_nu(req)?;
+    let req_value = request_to_value(&amp;req_struct, Span::unknown());
+    let pipeline_input = body_to_pipeline(body, &amp;engine);
+    engine.run_closure(req_value, pipeline_input)
+};
+</code></pre>
+<p>During eval, Nu commands reach the Vfs through <code>with_vfs</code>:</p>
+<ul><li><code>ls /</code> → <code>VfsLs</code> → <code>with_vfs(|v| v.read_dir(...))</code> → returns preloaded directory</li><li><code>save /out</code> → <code>VfsSave</code> → <code>with_vfs(|v| v.write(...))</code> → queues to <code>pending_writes</code></li><li><code>path exists /foo</code> → <code>VfsPathExists</code> → <code>with_vfs(|v| v.exists(...))</code> → checks all maps</li></ul>
+<p>The <code>RESPONSE_TX</code> oneshot channel allows <code>.static</code> to short-circuit the normal body pipeline (same as desktop).</p>
+<h2>Response Building</h2>
+<p><strong>Source:</strong> <code>src/cf/response.rs:53-111</code></p>
+<p>After eval, <code>build_response()</code> converts <code>PipelineData</code> to a <code>worker::Response</code>:</p>
+<table><tr><th>PipelineData</th><th>Response Shape</th></tr><tr><td>`Empty` / `Value::Nothing`</td><td>Empty body (204)</td></tr><tr><td>`Value`</td><td>One-shot bytes</td></tr><tr><td>`ListStream`</td><td>Streamed response (peeks first value for JSONL detection)</td></tr><tr><td>`ByteStream`</td><td>Streamed via `Response::from_stream` with 8KB chunks</td></tr></table>
+<p>For <code>.static</code> responses (via <code>RESPONSE_TX</code>), <code>build_early_response()</code> serves from the snapshot:</p>
+<pre><code class="language-rust">fn serve_static_from_snapshot(root, request_path, fallback) -&gt; Result&lt;Vec&lt;u8&gt;, String&gt; {
+    // Try primary path
+    // If directory-like, try index.html
+    // If fallback provided, try that
+    // Return error if nothing found
+}
+</code></pre>
+<p>Content-Type is inferred from file extension via <code>content_type_for()</code> (covers html, css, js, json, md, png, jpg, gif, webp, wasm, woff, etc.).</p>
+<h2>Phase 4: Drain and Persist</h2>
+<p><strong>Source:</strong> <code>src/cf/mod.rs:202-238</code></p>
+<p>After the handler returns, pending changes are flushed back to Workspace:</p>
+<pre><code class="language-rust">let writes = snapshot.drain_pending_writes();
+let ops = snapshot.drain_pending_ops();
+
+// Order matters: mkdir → writes → rm
+for op in &amp;ops {
+    if let PendingOp::Mkdir(path) = op {
+        ws.mkdir(&amp;path, MkdirOptions { recursive: true }).await?;
+    }
+}
+for (path, bytes) in writes {
+    ws.write_file_bytes(&amp;path, &amp;bytes, None).await?;
+}
+for op in ops {
+    if let PendingOp::Rm(path) = op {
+        ws.rm(&amp;path, RmOptions { recursive: true, force: true }).await?;
+    }
+}
+crate::vfs::drop_vfs();
+</code></pre>
+<p><strong>Aha:</strong> Even if the handler returned an error, pending writes are still flushed. This ensures partial results persist — a script that does <code>save /a; save /b; panic</code> still leaves both files in the Workspace. The flush is best-effort; failures are logged but don't error the request.</p>
+<p><a href="04-shadow-commands.md">← Back to Shadow Commands</a> | <a href="06-desktop-vs-cf.md">Next → Desktop vs CF</a></p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
