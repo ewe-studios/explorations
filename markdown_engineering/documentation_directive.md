@@ -349,3 +349,11 @@ This requirement applies to both initial document generation and grandfather rev
 - [ ] Index page lists the document
 - [ ] Nav bar: index button, ← prev, next →, theme toggle all present and correct
 - [ ] Spec.md task is marked DONE
+
+Did you perform grandfather review on them, to confirm:
+
+  1. Completeness
+  2. Non-vague areas
+  3. Light exploration with no value
+  4. Comprehensive coverage as a senior level architect and engineer would expect
+  5. Deep details to ensure once read everyone fully understands the protocol or exploration end to end

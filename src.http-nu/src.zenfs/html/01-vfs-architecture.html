@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>zenfs — VFS Architecture -- src.zenfs</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.zenfs/docs</span>
+    <div class="nav-actions">
+      <a href="00-overview.html" class="nav-breadcrumb">zenfs — Overview</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="00-overview.html" class="nav-btn" title="Previous: zenfs — Overview">← prev</a>
+      <a href="02-backends-stores.html" class="nav-btn nav-btn-next" title="Next: zenfs — Backends and Stores">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>zenfs — VFS Architecture</h1>
+<p><strong>Source:</strong> <code>core/src/vfs/</code>, <code>core/src/internal/</code>, <code>core/src/node/</code>, <code>core/src/mixins/</code> — ~800 LOC. Three-layer architecture: VFS (user API), Backend (storage), Internal (primitives).</p>
+<h2>Layer 1: VFS — User-Facing API</h2>
+<div class="mermaid">
+flowchart TD
+    subgraph &quot;node:fs API&quot;
+        SYNC[&quot;Sync API\nreadFileSync, writeFileSync\nmkdirSync, readdirSync&quot;]
+        ASYNC[&quot;Async API (callbacks)\nreadFile, writeFile\nmkdir, readdir&quot;]
+        PROMISES[&quot;Promises API\nfs.promises.readFile\nfs.promises.mkdir&quot;]
+        STREAMS[&quot;Streams API\nReadStream, WriteStream&quot;]
+    end
+
+    subgraph &quot;VFS Core&quot;
+        RESOLVE[&quot;resolveMount()\nLongest-prefix mount matching&quot;]
+        HANDLE[&quot;Handle class\nFile descriptor management&quot;]
+        SYMLINK[&quot;Symlink resolution\nRecursive following&quot;]
+        ACCESS[&quot;Access checks\nCredentials-based&quot;]
+    end
+
+    SYNC --&gt; RESOLVE
+    ASYNC --&gt; RESOLVE
+    PROMISES --&gt; RESOLVE
+    STREAMS --&gt; RESOLVE
+    RESOLVE --&gt; HANDLE
+    RESOLVE --&gt; SYMLINK
+    RESOLVE --&gt; ACCESS
+
+</div>
+<h3>Path Resolution — Longest Prefix Match</h3>
+<pre><code class="language-typescript">// core/src/vfs/shared.ts:92
+export function resolveMount(path: string): { fs: FileSystem, path: string } {
+    // Sorts mounts by path length descending
+    // Finds the deepest matching mount point
+    // Returns the FileSystem and the path relative to that mount
+}
+</code></pre>
+<p><strong>Aha:</strong> Mount resolution sorts all registered mounts by path length (longest first) and returns the first match. This means <code>/home/user</code> takes precedence over <code>/home</code> which takes precedence over <code>/</code>. You can mount specific subtrees independently — <code>/home/user</code> on IndexedDB, <code>/home</code> on InMemory, <code>/</code> on InMemory.</p>
+<h3>Handle — File Descriptor Management</h3>
+<pre><code class="language-typescript">// core/src/vfs/file.ts:19
+export class Handle {
+    private position: number;
+    private dirty: boolean;
+    private closed: boolean;
+
+    // Read/write at current position, advance
+    // Truncate, chmod, chown, utimes
+    // close() — releases the FD
+    // Implements Symbol.dispose and Symbol.asyncDispose
+}
+</code></pre>
+<p>File descriptors are managed through a global registry:</p>
+<pre><code class="language-typescript">// core/src/vfs/file.ts:399-418
+export function toFD(handle: Handle): number;    // Allocate new FD
+export function fromFD(fd: number): Handle;      // Get handle by FD
+export function deleteFD(fd: number): void;      // Release FD
+</code></pre>
+<p><strong>Aha:</strong> The <code>Handle</code> class implements <code>Symbol.dispose</code> and <code>Symbol.asyncDispose</code> — meaning it works with JavaScript's <code>using</code> and <code>await using</code> declarations for automatic cleanup:</p>
+<pre><code class="language-typescript">using fd = fs.openSync(&#x27;/file.txt&#x27;, &#x27;r&#x27;);
+// fd.close() called automatically when scope exits
+</code></pre>
+<h3>FSContext — Chroot-Like Isolation</h3>
+<pre><code class="language-typescript">// core/src/internal/contexts.ts:21
+export class FSContext {
+    root: string;              // Root path for this context
+    pwd: string;               // Current working directory
+    credentials: Credentials;  // uid/gid
+    fds: Map&lt;number, Handle&gt;;  // Open file descriptors
+    parent: FSContext | null;
+    children: Set&lt;FSContext&gt;;
+}
+
+// core/src/internal/contexts.ts:71
+export function bindContext(root: string): BoundContext;
+</code></pre>
+<p><strong>Aha:</strong> <code>bindContext()</code> creates child contexts with isolated roots — like <code>chroot</code> in Unix. The child inherits credentials but has its own file descriptor table and root path. This enables sandboxing: a web worker can be given a filesystem context rooted at <code>/sandbox</code> with no access to <code>/etc</code> or <code>/home</code>.</p>
+<h3>Credentials — Unix-Like Permissions</h3>
+<pre><code class="language-typescript">// core/src/internal/credentials.ts:8
+export interface Credentials {
+    uid: number;     // User ID
+    gid: number;     // Group ID
+    suid: number;    // Saved user ID
+    sgid: number;    // Saved group ID
+    euid: number;    // Effective user ID
+    egid: number;    // Effective group ID
+    groups: number[]; // Supplementary groups
+}
+</code></pre>
+<p>Access checks use these credentials to verify read/write/execute permissions on inodes.</p>
+<h2>Layer 2: Internal Primitives</h2>
+<h3>Inode — 4 KiB Serialized Metadata</h3>
+<pre><code class="language-typescript">// core/src/internal/inode.ts:322
+@struct.packed(4096)  // Packed to exactly 4 KiB
+class Inode {
+    @t.uint32 accessor data: number;       // Data block ID
+    @t.uint32 accessor size: number;       // File size
+    @t.uint32 accessor mode: number;       // File mode (permissions + type)
+    @t.uint32 accessor nlink: number;      // Hard link count
+    @t.uint32 accessor uid: number;        // Owner user ID
+    @t.uint32 accessor gid: number;        // Owner group ID
+    @t.uint64 accessor atimeMs: number;    // Access time
+    @t.uint64 accessor birthtimeMs: number; // Creation time
+    @t.uint64 accessor mtimeMs: number;    // Modification time
+    @t.uint64 accessor ctimeMs: number;    // Change time
+    @t.uint64 accessor ino: number;        // Inode number
+    @t.uint32 accessor flags: number;      // InodeFlags
+    @t.uint32 accessor version: number;    // Format version (5)
+}
+</code></pre>
+<p><strong>Aha:</strong> The inode format has evolved through 5 versions (comment at line 257). The current 4 KiB layout is padded for ABI stability — future versions can add fields without breaking existing data. The <code>@struct.packed()</code> decorator from <code>memium</code> generates binary serialization code automatically.</p>
+<h3>InodeFlags</h3>
+<pre><code class="language-typescript">// core/src/internal/inode.ts
+export class InodeFlags {
+    // Append-only, immutable, compression, encryption flags
+    // Mirrors Linux ext4 inode flags
+}
+</code></pre>
+<h3>Store — Key-Value Abstraction</h3>
+<pre><code class="language-typescript">// core/src/backends/store/store.ts:21
+export interface Store {
+    sync(): Promise&lt;void&gt;;
+    transaction(): Transaction;
+    flags?: StoreFlags;
+    usage?(): Promise&lt;StoreUsage&gt;;
+    uuid?(): Promise&lt;string&gt;;
+}
+</code></pre>
+<p>The Store is the lowest-level abstraction — a key-value store where keys are inode/data IDs and values are <code>Uint8Array</code> blobs. All filesystem semantics (directories, permissions, symlinks) are built on top by <code>StoreFS</code>.</p>
+<h3>Transaction with Rollback</h3>
+<pre><code class="language-typescript">// core/src/backends/store/store.ts:221
+class WrappedTransaction implements Transaction {
+    // Wraps any inner transaction
+    // Stashes original data before modifications
+    // commit() — applies changes
+    // abort() — restores stashed data
+    // Implements Symbol.dispose and Symbol.asyncDispose
+}
+</code></pre>
+<p><strong>Aha:</strong> <code>WrappedTransaction</code> enables atomic operations across any Store implementation. Before modifying data, it saves the original value. On <code>abort()</code>, it restores all stashed values. On <code>Symbol.dispose</code> (scope exit without explicit commit), it auto-aborts — preventing partial writes.</p>
+<h3>Index — Serializable File Metadata</h3>
+<pre><code class="language-typescript">// core/src/internal/file_index.ts:30
+export class Index {
+    private map: Map&lt;string, Inode&gt;;
+
+    // toJSON() / fromJSON() for serialization
+    // Version tracking for format migration
+    // Used by FetchFS and IndexFS for metadata caching
+}
+</code></pre>
+<p>The Index maps paths to inodes — it's the metadata cache for filesystems that don't use a Store (like FetchFS, which loads metadata from a JSON index over HTTP).</p>
+<h2>Layer 3: Node.js API Emulation</h2>
+<h3>Sync API</h3>
+<pre><code class="language-typescript">// core/src/node/sync.ts
+export function readFileSync(path: PathLike, options?: EncodingOption): string | Buffer;
+export function writeFileSync(file: PathLike, data: string | Buffer | Uint8Array, options?: WriteFileOptions): void;
+export function mkdirSync(path: PathLike, options?: Mode | MakeDirectoryOptions): string | undefined;
+export function readdirSync(path: PathLike, options?: readdirOptions): string[];
+// ... 50+ more functions
+</code></pre>
+<h3>Async API (Callbacks)</h3>
+<pre><code class="language-typescript">// core/src/node/async.ts
+export function readFile(path: PathLike, callback: (err: ErrnoException | null, data: Buffer) =&gt; void): void;
+export function writeFile(file: PathLike, data: string | Buffer | Uint8Array, callback: (err: ErrnoException | null) =&gt; void): void;
+// ... mirrored from sync API
+</code></pre>
+<h3>Promises API</h3>
+<pre><code class="language-typescript">// core/src/node/promises.ts
+export const promises: {
+    readFile(path: PathLike, options?: { encoding: string }): Promise&lt;string&gt;;
+    writeFile(file: PathLike, data: string | Buffer | Uint8Array): Promise&lt;void&gt;;
+    // ... full promises interface
+};
+</code></pre>
+<h3>Streams</h3>
+<pre><code class="language-typescript">// core/src/node/streams.ts
+export class ReadStream extends Readable { ... }
+export class WriteStream extends Writable { ... }
+</code></pre>
+<p><strong>Aha:</strong> The Node.js API layer is a thin wrapper over the VFS operations. Every function resolves the path to a mount, finds or creates a Handle, and delegates to the appropriate backend. This means adding a new backend automatically gets the full Node.js API — no per-backend API code needed.</p>
+<h2>Mixins — Composable Behavior</h2>
+<div class="mermaid">
+classDiagram
+    class FileSystem {
+        &lt;&lt;abstract&gt;&gt;
+        +rename()
+        +stat()
+        +read()
+        +write()
+        +mkdir()
+        +readdir()
+    }
+
+    class Async {
+        &lt;&lt;mixin&gt;&gt;
+        +adds sync methods to async FS
+        +uses in-memory cache
+        +pipelines writes
+    }
+
+    class Sync {
+        &lt;&lt;mixin&gt;&gt;
+        +adds async methods to sync FS
+    }
+
+    class Mutexed {
+        &lt;&lt;mixin&gt;&gt;
+        +thread-safe operations
+    }
+
+    class Readonly {
+        &lt;&lt;mixin&gt;&gt;
+        +blocks write operations
+    }
+
+    Async --|&gt; FileSystem
+    Sync --|&gt; FileSystem
+    Mutexed --|&gt; FileSystem
+    Readonly --|&gt; FileSystem
+
+</div>
+<h3>Async Mixin</h3>
+<pre><code class="language-typescript">// core/src/mixins/async.ts:48
+export function Async&lt;TBase extends new (...args: any[]) =&gt; FileSystem&gt;(Base: TBase) {
+    // Adds sync methods to an async filesystem
+    // Sync ops execute on an in-memory _sync cache
+    // Writes are pipelined async to the backing store
+    // _patchAsync() auto-syncs cache after async operations
+}
+</code></pre>
+<p><strong>Aha:</strong> The Async mixin is the key to supporting sync <code>fs.readFileSync</code> on async backends (like IndexedDB or HTTP fetch). It maintains an in-memory <code>_sync</code> cache: sync reads hit the cache, sync writes update the cache and pipeline the write to the backing store asynchronously. This means sync operations appear synchronous to the caller while the actual I/O happens in the background.</p>
+<h2>Configuration</h2>
+<pre><code class="language-typescript">// core/src/config.ts:160
+export interface Configuration {
+    mounts: Record&lt;string, BackendConfig&gt;;  // Path → backend mapping
+    uid?: number;                           // User ID
+    gid?: number;                           // Group ID
+    addDevices?: boolean;                   // Mount /dev
+    defaultDirectories?: boolean;           // Create /tmp, /home
+    disableAccessChecks?: boolean;          // Skip permission checks
+    onlySyncOnClose?: boolean;              // Defer sync for async backends
+    log?: LogLevel;                         // Logging level
+}
+
+export async function configure(config: Configuration): Promise&lt;void&gt;;
+</code></pre>
+
+<pre><code class="language-typescript">// Example configuration
+await configure({
+    mounts: {
+        &#x27;/&#x27;: { backend: &#x27;InMemory&#x27; },
+        &#x27;/data&#x27;: { backend: &#x27;IndexedDB&#x27;, storeName: &#x27;my-app&#x27; },
+        &#x27;/assets&#x27;: { backend: &#x27;Fetch&#x27;, baseUrl: &#x27;/assets/&#x27;, index: true },
+    },
+    uid: 1000,
+    gid: 1000,
+    addDevices: true,
+    defaultDirectories: true,
+});
+</code></pre>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
