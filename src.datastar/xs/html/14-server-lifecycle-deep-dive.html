@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>xs -- Server Lifecycle Deep Dive -- xs</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/xs/docs</span>
+    <div class="nav-actions">
+      <a href="11-iroh-networking-deep-dive.html" class="nav-breadcrumb">Iroh Networking Deep Dive</a><a href="12-http-router-deep-dive.html" class="nav-breadcrumb">xs -- HTTP Router Deep Dive</a><a href="13-store-broadcasting-deep-dive.html" class="nav-breadcrumb">xs -- Store Broadcasting Deep Dive</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="13-store-broadcasting-deep-dive.html" class="nav-btn" title="Previous: xs -- Store Broadcasting Deep Dive">← prev</a>
+      <a href="15-nushell-internals-deep-dive.html" class="nav-btn nav-btn-next" title="Next: xs -- Nushell Integration Internals Deep Dive">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>xs -- Server Lifecycle Deep Dive</h1>
+<h2>Overview</h2>
+<p>The xs server lifecycle is a carefully orchestrated sequence of initialization, service startup, graceful shutdown, and resource cleanup. Understanding this lifecycle is essential for operators deploying xs in production and developers extending the system. This document traces the exact execution path from <code>xs serve</code> invocation to final process termination.</p>
+<h2>The Entry Point: main.rs</h2>
+<p><strong>File</strong>: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.datastar/xs/src/main.rs:262-312</code></p>
+<p>The server lifecycle begins in the <code>main()</code> function, which is annotated with <code>#[tokio::main]</code> for the async runtime:</p>
+<pre><code class="language-rust">#[tokio::main]
+async fn main() -&gt; Result&lt;(), Box&lt;dyn std::error::Error + Send + Sync&gt;&gt; {
+    // Install the default rustls crypto provider first
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect(&quot;Failed to install rustls crypto provider&quot;);
+
+    nu_command::tls::CRYPTO_PROVIDER
+        .default()
+        .then_some(())
+        .expect(&quot;failed to set nu command crypto provider&quot;);
+
+    let args = Args::parse();
+    let addr = extract_addr_from_command(&amp;args.command);
+    let res = match args.command {
+        Command::Serve(args) =&gt; serve(args).await,
+        // ... other commands
+    };
+    // Error handling ...
+}
+</code></pre>
+<p>The crypto providers must be initialized before any TLS operations. This is a strict requirement enforced by rustls.</p>
+<h2>The Command Enum: All CLI Commands</h2>
+<p><strong>File</strong>: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.datastar/xs/src/main.rs:32-60</code></p>
+<p>The <code>Command</code> enum defines all CLI subcommands:</p>
+<pre><code class="language-rust">#[derive(Subcommand, Debug)]
+enum Command {
+    /// Provides an API to interact with a local store
+    Serve(CommandServe),
+    /// `cat` the event stream
+    Cat(CommandCat),
+    /// Append an event to the stream
+    Append(CommandAppend),
+    /// Retrieve content from Content-Addressable Storage
+    Cas(CommandCas),
+    /// Store content in Content-Addressable Storage
+    CasPost(CommandCasPost),
+    /// Remove an item from the stream
+    Remove(CommandRemove),
+    /// Get the most recent frame for a topic
+    Last(CommandLast),
+    /// Get a frame by ID
+    Get(CommandGet),
+    /// Import a frame directly into the store
+    Import(CommandImport),
+    /// Get the version of the server
+    Version(CommandVersion),
+    /// Manage the embedded xs.nu module
+    Nu(CommandNu),
+    /// Generate and manipulate SCRU128 IDs
+    Scru128(CommandScru128),
+    /// Evaluate a Nushell script with store helper commands available
+    Eval(CommandEval),
+}
+</code></pre>
+<h2>Phase 1: The serve() Function - Server Initialization</h2>
+<p><strong>File</strong>: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.datastar/xs/src/main.rs:314-383</code></p>
+<p>The <code>serve()</code> function orchestrates the entire server startup sequence:</p>
+<pre><code class="language-rust">async fn serve(args: CommandServe) -&gt; Result&lt;(), Box&lt;dyn std::error::Error + Send + Sync&gt;&gt; {
+    xs::trace::init();
+
+    tracing::trace!(&quot;Starting server with path: {:?}&quot;, args.path);
+
+    let store = match Store::new(args.path.clone()) {
+        Ok(store) =&gt; store,
+        Err(StoreError::Locked) =&gt; {
+            let sock_path = args.path.join(&quot;sock&quot;);
+            eprintln!(&quot;store locked: {} (already running)&quot;, args.path.display());
+            // ... helpful error messages ...
+            std::process::exit(1);
+        }
+        Err(e) =&gt; return Err(e.into()),
+    };
+    let engine = nu::Engine::new()?;
+    // ... background tasks ...
+}
+</code></pre>
+<h3>Store Initialization with Lock Detection</h3>
+<p>The store is the first component initialized. It attempts to acquire an exclusive lock on the store directory. If another xs server is already running on this store, <code>StoreError::Locked</code> is returned and the process exits with a helpful message showing how to connect to the existing server.</p>
+<h3>Nu Engine Initialization</h3>
+<p><strong>File</strong>: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.datastar/xs/src/nu/engine.rs:16-33</code></p>
+<p>The Nushell engine is created next:</p>
+<pre><code class="language-rust">pub struct Engine {
+    pub state: EngineState,
+}
+
+impl Engine {
+    pub fn new() -&gt; Result&lt;Self, Error&gt; {
+        let mut engine_state = create_default_context();
+        engine_state = add_shell_command_context(engine_state);
+        engine_state = add_cli_context(engine_state);
+
+        let init_cwd = std::env::current_dir()?;
+        gather_parent_env_vars(&amp;mut engine_state, init_cwd.as_ref());
+
+        Ok(Self {
+            state: engine_state,
+        })
+    }
+}
+</code></pre>
+<p>The engine initialization:</p>
+<ol><li>Creates a default Nushell context with core commands</li><li>Adds shell command context (file operations, etc.)</li><li>Adds CLI context (interactive features)</li><li>Gathers environment variables from the parent process</li></ol>
+<h2>Phase 2: Background Task Spawning</h2>
+<p><strong>File</strong>: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.datastar/xs/src/main.rs:340-372</code></p>
+<p>After store and engine initialization, four background tasks are spawned:</p>
+<h3>Task 1: log_stream Printer</h3>
+<pre><code class="language-rust">{
+    let store = store.clone();
+    tokio::spawn(async move {
+        let _ = xs::trace::log_stream(store).await;
+    });
+}
+</code></pre>
+<p>The <code>log_stream</code> task subscribes to all new frames and prints them to stderr in a compact format. This provides real-time visibility into store activity.</p>
+<h3>Task 2: Actor Processor</h3>
+<pre><code class="language-rust">{
+    let store = store.clone();
+    tokio::spawn(async move {
+        if let Err(e) = xs::processor::actor::run(store).await {
+            eprintln!(&quot;Actor processor error: {e}&quot;);
+        }
+    });
+}
+</code></pre>
+<h3>Task 3: Service Processor</h3>
+<pre><code class="language-rust">let service_handle = {
+    let store = store.clone();
+    tokio::spawn(async move {
+        if let Err(e) = xs::processor::service::run(store).await {
+            eprintln!(&quot;Service processor error: {e}&quot;);
+        }
+    })
+};
+</code></pre>
+<p>Note that <code>service_handle</code> is captured separately because the service processor requires special handling during shutdown (see Phase 5).</p>
+<h3>Task 4: Action Processor</h3>
+<pre><code class="language-rust">{
+    let store = store.clone();
+    tokio::spawn(async move {
+        if let Err(e) = xs::processor::action::run(store).await {
+            eprintln!(&quot;Action processor error: {e}&quot;);
+        }
+    });
+}
+</code></pre>
+<h2>Phase 3: Processor Compaction on Startup</h2>
+<p><strong>File</strong>: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.datastar/xs/src/processor/actor/serve.rs:31-80</code></p>
+<p>All three processors use the same compaction pattern. Here is the actor processor as an example:</p>
+<pre><code class="language-rust">pub async fn run(store: Store) -&gt; Result&lt;(), Box&lt;dyn std::error::Error + Send + Sync&gt;&gt; {
+    let rx = store
+        .read(ReadOptions::builder().follow(FollowOption::On).build())
+        .await;
+    let mut lifecycle = LifecycleReader::new(rx);
+    let mut compacted: HashMap&lt;String, Frame&gt; = HashMap::new();
+
+    while let Some(event) = lifecycle.recv().await {
+        match event {
+            Lifecycle::Historical(frame) =&gt; {
+                if let Some((topic, suffix)) = frame.topic.rsplit_once(&#x27;.&#x27;) {
+                    match suffix {
+                        &quot;register&quot; =&gt; {
+                            compacted.insert(topic.to_string(), frame);
+                        }
+                        &quot;unregister&quot; | &quot;inactive&quot; =&gt; {
+                            if let Some(meta) = &amp;frame.meta {
+                                if let Some(actor_id) =
+                                    meta.get(&quot;actor_id&quot;).and_then(|v| v.as_str())
+                                {
+                                    if let Some(f) = compacted.get(topic) {
+                                        if f.id.to_string() == actor_id {
+                                            compacted.remove(topic);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        _ =&gt; {}
+                    }
+                }
+            }
+            Lifecycle::Threshold(_) =&gt; {
+                let mut ordered: Vec&lt;_&gt; = compacted.drain().collect();
+                ordered.sort_by_key(|(_, frame)| frame.id);
+
+                for (topic, frame) in ordered {
+                    start_actor(&amp;frame, &amp;store, &amp;topic).await?;
+                }
+            }
+            Lifecycle::Live(frame) =&gt; {
+                if let Some(topic) = frame.topic.strip_suffix(&quot;.register&quot;) {
+                    start_actor(&amp;frame, &amp;store, topic).await?;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+</code></pre>
+<h3>The Compaction Algorithm</h3>
+<p>Each processor follows this pattern:</p>
+<ol><li><strong>Read all historical frames</strong> using <code>ReadOptions::builder().follow(FollowOption::On)</code></li><li><strong>Track lifecycle frames</strong> in a <code>HashMap<String, Frame></code>:</li></ol>
+<ul><li>Actors: <code>.register</code> adds, <code>.unregister</code>/<code>.inactive</code> removes</li><li>Services: <code>.spawn</code> adds, <code>.terminate</code> removes</li><li>Actions: <code>.define</code> adds (no removal - last definition wins)</li></ul>
+<ol><li><strong>At <code>xs.threshold</code></strong>: Drain the map and spawn processors in order sorted by frame ID</li><li><strong>Process live events</strong>: Handle new registrations/spawns/definitions</li></ol>
+<p>This compaction means startup time is proportional to the number of processor lifecycle events, not total frame count.</p>
+<h3>LifecycleReader: Historical vs Live</h3>
+<p><strong>File</strong>: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.datastar/xs/src/processor/mod.rs:22-52</code></p>
+<pre><code class="language-rust">pub enum Lifecycle {
+    Historical(Frame),  // Replayed from store on startup
+    Threshold(Frame),   // Marks end of historical data
+    Live(Frame),        // Real-time new frames
+}
+
+pub struct LifecycleReader {
+    rx: mpsc::Receiver&lt;Frame&gt;,
+    past_threshold: bool,
+}
+
+impl LifecycleReader {
+    pub async fn recv(&amp;mut self) -&gt; Option&lt;Lifecycle&gt; {
+        let frame = self.rx.recv().await?;
+        if !self.past_threshold {
+            if frame.topic == &quot;xs.threshold&quot; {
+                self.past_threshold = true;
+                return Some(Lifecycle::Threshold(frame));
+            }
+            return Some(Lifecycle::Historical(frame));
+        }
+        Some(Lifecycle::Live(frame))
+    }
+}
+</code></pre>
+<h2>Phase 4: Listener Binding and xs.start Frame</h2>
+<p><strong>File</strong>: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.datastar/xs/src/api.rs:422-465</code></p>
+<p>The <code>serve()</code> function in <code>api.rs</code> handles listener binding:</p>
+<pre><code class="language-rust">pub async fn serve(
+    store: Store,
+    engine: nu::Engine,
+    expose: Option&lt;String&gt;,
+) -&gt; Result&lt;(), BoxError&gt; {
+    let path = store.path.join(&quot;sock&quot;).to_string_lossy().to_string();
+    let listener = Listener::bind(&amp;path).await?;
+
+    let mut listeners = vec![listener];
+    let mut expose_meta = None;
+
+    if let Some(expose) = expose {
+        let expose_listener = Listener::bind(&amp;expose).await?;
+
+        // Check if this is an iroh listener and get the ticket
+        if let Some(ticket) = expose_listener.get_ticket() {
+            expose_meta = Some(serde_json::json!({&quot;expose&quot;: format!(&quot;iroh://{}&quot;, ticket)}));
+        } else {
+            expose_meta = Some(serde_json::json!({&quot;expose&quot;: expose}));
+        }
+
+        listeners.push(expose_listener);
+    }
+
+    if let Err(e) = store.append(Frame::builder(&quot;xs.start&quot;).maybe_meta(expose_meta).build()) {
+        tracing::error!(&quot;Failed to append xs.start frame: {}&quot;, e);
+    }
+
+    // ... spawn listener tasks ...
+}
+</code></pre>
+<h3>How xs.start Frame is Appended with Expose Metadata</h3>
+<p>The <code>xs.start</code> frame includes metadata about any exposed listeners:</p>
+<table><tr><th>`--expose` Value</th><th>Metadata Format</th></tr><tr><td>`:8080` (TCP)</td><td>`{"expose": ":8080"}`</td></tr><tr><td>`/tmp/xs.sock` (Unix)</td><td>`{"expose": "/tmp/xs.sock"}`</td></tr><tr><td>`iroh://` (Iroh)</td><td>`{"expose": "iroh://<ticket>"}`</td></tr></table>
+<p>This allows clients to discover the server's listening address by reading the <code>xs.start</code> frame.</p>
+<h3>Listener Binding Logic</h3>
+<p><strong>File</strong>: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.datastar/xs/src/listener.rs:296-338</code></p>
+<pre><code class="language-rust">pub async fn bind(addr: &amp;str) -&gt; io::Result&lt;Self&gt; {
+    if addr.starts_with(&quot;iroh://&quot;) {
+        // Iroh P2P endpoint with ticket generation
+        let secret_key = get_or_create_secret()?;
+        let endpoint = Endpoint::builder()
+            .alpns(vec![ALPN.to_vec()])
+            .relay_mode(RelayMode::Default)
+            .secret_key(secret_key)
+            .bind()
+            .await?;
+        // ... create ticket ...
+        Ok(Listener::Iroh(endpoint, ticket))
+    } else if addr.starts_with(&#x27;/&#x27;) || addr.starts_with(&#x27;.&#x27;) || is_windows_path(addr) {
+        // Unix domain socket (removed first if exists)
+        let _ = std::fs::remove_file(addr);
+        let listener = UnixListener::bind(addr)?;
+        Ok(Listener::Unix(listener))
+    } else {
+        // TCP (&quot;:PORT&quot; expands to &quot;127.0.0.1:PORT&quot;)
+        let mut addr = addr.to_owned();
+        if addr.starts_with(&#x27;:&#x27;) {
+            addr = format!(&quot;127.0.0.1{addr}&quot;);
+        };
+        let listener = TcpListener::bind(addr).await?;
+        Ok(Listener::Tcp(listener))
+    }
+}
+</code></pre>
+<h2>Phase 5: Signal Handling and Graceful Shutdown</h2>
+<p><strong>File</strong>: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.datastar/xs/src/main.rs:374-382</code></p>
+<p>The main server loop uses <code>tokio::select!</code> for graceful shutdown:</p>
+<pre><code class="language-rust">tokio::select! {
+    res = xs::api::serve(store.clone(), engine.clone(), args.expose) =&gt; { res?; }
+    _ = tokio::signal::ctrl_c() =&gt; {}
+}
+
+store.append(xs::store::Frame::builder(&quot;xs.stopping&quot;).build())?;
+let _ = tokio::time::timeout(Duration::from_secs(3), service_handle).await;
+</code></pre>
+<h3>Shutdown Sequence</h3>
+<ol><li><strong>SIGINT received</strong>: <code>tokio::signal::ctrl_c()</code> resolves</li><li><strong>Break from select</strong>: The <code>api::serve()</code> task is dropped</li><li><strong>xs.stopping frame</strong>: Appended to signal all processors</li><li><strong>3-second drain</strong>: Wait for service processor to complete</li><li><strong>Exit</strong>: Process terminates</li></ol>
+<h3>xs.stopping Frame and Service Drain</h3>
+<p><strong>File</strong>: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.datastar/xs/src/processor/service/serve.rs:84-103</code></p>
+<pre><code class="language-rust">Lifecycle::Live(frame) =&gt; {
+    if frame.topic == &quot;xs.stopping&quot; {
+        break;
+    }
+    // ... handle other frames ...
+}
+</code></pre>
+<p>The service processor specifically watches for <code>xs.stopping</code>:</p>
+<pre><code class="language-rust">let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+for (_, handle) in active {
+    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    let _ = tokio::time::timeout(remaining, handle).await;
+}
+</code></pre>
+<p>When <code>xs.stopping</code> is received:</p>
+<ol><li>The service processor breaks from its main loop</li><li>It waits up to 2 seconds for active services to complete</li><li>Each service task is awaited with a timeout</li></ol>
+<p><strong>Aha</strong>: The 3-second timeout in <code>main.rs</code> is longer than the 2-second timeout in <code>service/serve.rs</code> by design. This gives services 2 seconds to shut down gracefully while leaving 1 second of buffer for cleanup before the process exits.</p>
+<h2>Phase 6: Listener Loop and Error Handling</h2>
+<p><strong>File</strong>: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.datastar/xs/src/api.rs:467-499</code></p>
+<p>The <code>listener_loop</code> function handles incoming connections:</p>
+<pre><code class="language-rust">async fn listener_loop(
+    mut listener: Listener,
+    store: Store,
+    engine: nu::Engine,
+) -&gt; Result&lt;(), BoxError&gt; {
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let io = TokioIo::new(stream);
+        let store = store.clone();
+        let engine = engine.clone();
+        tokio::task::spawn(async move {
+            if let Err(err) = http1::Builder::new()
+                .serve_connection(
+                    io,
+                    service_fn(move |req| handle(store.clone(), engine.clone(), req)),
+                )
+                .await
+            {
+                // Match against the error kind to selectively ignore `NotConnected` errors
+                if let Some(std::io::ErrorKind::NotConnected) = err.source().and_then(|source| {
+                    source
+                        .downcast_ref::&lt;std::io::Error&gt;()
+                        .map(|io_err| io_err.kind())
+                }) {
+                    // ignore the NotConnected error, hyper&#x27;s way of saying the client disconnected
+                } else {
+                    // todo, Handle or log other errors
+                    tracing::error!(&quot;TBD: {:?}&quot;, err);
+                }
+            }
+        });
+    }
+}
+</code></pre>
+<h3>NotConnected Error Filtering</h3>
+<p><strong>Aha</strong>: The <code>NotConnected</code> error is filtered intentionally. This is hyper's way of signaling that the client disconnected before the server finished sending the response. It is not an error condition - it is normal client behavior (e.g., client received what it needed and closed the connection).</p>
+<p>The error chain traversal:</p>
+<ol><li><code>err.source()</code> - Get the error cause</li><li><code>.downcast_ref::<std::io::Error>()</code> - Try to cast to IO error</li><li><code>.map(|io_err| io_err.kind())</code> - Extract the error kind</li><li>Compare to <code>NotConnected</code></li></ol>
+<h2>Sequence Diagram: Startup</h2>
+<div class="mermaid">
+sequenceDiagram
+    participant Main as main()
+    participant Store as Store::new()
+    participant Trace as trace::init()
+    participant Nu as nu::Engine
+    participant Log as log_stream task
+    participant Actor as actor::run()
+    participant Service as service::run()
+    participant Action as action::run()
+    participant API as api::serve()
+    participant Listener as Listener::bind()
+
+    Main-&gt;&gt;Trace: Initialize tracing
+    Main-&gt;&gt;Store: Open store at path
+    alt Store locked
+        Store--&gt;&gt;Main: StoreError::Locked
+        Main-&gt;&gt;Main: eprintln (helpful msg)
+        Main-&gt;&gt;Main: exit(1)
+    end
+    Main-&gt;&gt;Nu: Engine::new()
+    Nu-&gt;&gt;Nu: create_default_context()
+    Nu-&gt;&gt;Nu: add_shell_command_context()
+    Nu-&gt;&gt;Nu: add_cli_context()
+    Nu-&gt;&gt;Nu: gather_parent_env_vars()
+    Nu--&gt;&gt;Main: Engine ready
+
+    Main-&gt;&gt;Log: spawn(log_stream)
+    Log-&gt;&gt;Store: read(follow=on, new=true)
+    Log-&gt;&gt;Log: print frames to stderr
+
+    Main-&gt;&gt;Actor: spawn(actor::run)
+    Actor-&gt;&gt;Store: read(follow=on)
+    Actor-&gt;&gt;Actor: Compact historical .register/.unregister
+    Actor-&gt;&gt;Actor: Start active actors at threshold
+
+    Main-&gt;&gt;Service: spawn(service::run)
+    Service-&gt;&gt;Store: read(follow=on)
+    Service-&gt;&gt;Service: Compact historical .spawn/.terminate
+    Service-&gt;&gt;Service: Start active services at threshold
+    Main--&gt;&gt;Service: Capture handle
+
+    Main-&gt;&gt;Action: spawn(action::run)
+    Action-&gt;&gt;Store: read(follow=on)
+    Action-&gt;&gt;Action: Compact historical .define
+    Action-&gt;&gt;Action: Register active actions at threshold
+
+    Main-&gt;&gt;API: api::serve(store, engine, expose)
+    API-&gt;&gt;Listener: bind(path/sock)
+    alt expose provided
+        API-&gt;&gt;Listener: bind(expose)
+    end
+    API-&gt;&gt;Store: append xs.start (with expose meta)
+    API-&gt;&gt;API: Spawn listener_loop tasks
+    API--&gt;&gt;Main: Running (select! branch)
+
+</div>
+<h2>Sequence Diagram: Shutdown</h2>
+<div class="mermaid">
+sequenceDiagram
+    participant Signal as SIGINT (Ctrl-C)
+    participant Main as main()
+    participant API as api::serve()
+    participant Store as Store
+    participant Service as service::run()
+    participant Active as Active Services
+
+    Signal-&gt;&gt;Main: tokio::signal::ctrl_c()
+    Main-&gt;&gt;Main: select! resolves (API branch cancelled)
+    Main-&gt;&gt;API: Drop (cancelled)
+    API-&gt;&gt;API: Listener tasks terminate
+    Main-&gt;&gt;Store: append xs.stopping frame
+    Store-&gt;&gt;Service: Live frame notification
+    Service-&gt;&gt;Service: if topic == &quot;xs.stopping&quot;
+    Service-&gt;&gt;Service: break from loop
+    Service-&gt;&gt;Active: For each active service
+    Active-&gt;&gt;Active: Execute shutdown (max 2s)
+    Service--&gt;&gt;Main: service_handle completes
+    Main-&gt;&gt;Main: timeout(3s) on service_handle
+    Main-&gt;&gt;Main: Ok(()) - exit process
+
+</div>
+<h2>How Graceful Shutdown Propagates Through Tasks</h2>
+<table><tr><th>Task</th><th>Shutdown Behavior</th><th>Cleanup</th></tr><tr><td>`api::serve()`</td><td>Cancelled via select!</td><td>Listeners dropped, connections close</td></tr><tr><td>`log_stream`</td><td>Cancelled when store read ends</td><td>Frame receiver dropped</td></tr><tr><td>`actor::run()`</td><td>Receives `xs.stopping` as Live frame</td><td>Continues processing until channel closes</td></tr><tr><td>`service::run()`</td><td>Breaks on `xs.stopping`, drains services</td><td>2s timeout for each active service</td></tr><tr><td>`action::run()`</td><td>Receives `xs.stopping` as Live frame</td><td>Continues processing until channel closes</td></tr></table>
+<h2>Key Files Summary</h2>
+<table><tr><th>File</th><th>Purpose</th></tr><tr><td>`src/main.rs:314-383`</td><td>`serve()` function - orchestrates startup/shutdown</td></tr><tr><td>`src/main.rs:32-60`</td><td>`Command` enum - all CLI commands</td></tr><tr><td>`src/api.rs:422-465`</td><td>API server and `xs.start` frame emission</td></tr><tr><td>`src/api.rs:467-499`</td><td>`listener_loop()` with NotConnected handling</td></tr><tr><td>`src/nu/engine.rs:16-33`</td><td>Nu Engine initialization</td></tr><tr><td>`src/processor/mod.rs:22-52`</td><td>`Lifecycle` enum and `LifecycleReader`</td></tr><tr><td>`src/processor/actor/serve.rs:31-80`</td><td>Actor compaction and startup</td></tr><tr><td>`src/processor/service/serve.rs:56-104`</td><td>Service compaction and shutdown handling</td></tr><tr><td>`src/processor/action/serve.rs:236-287`</td><td>Action compaction and execution</td></tr><tr><td>`src/trace.rs:347-359`</td><td>`log_stream()` printer task</td></tr><tr><td>`src/listener.rs:296-338`</td><td>Transport binding (Unix/TCP/Iroh)</td></tr></table>
+<h2>Next</h2>
+<ul><li>Learn about the <a href="02-storage-engine.md">Storage Engine</a> for details on store initialization and locking</li><li>Explore the <a href="07-processor-system.md">Processor System</a> for deep dives into actors, services, and actions</li><li>Read the <a href="06-api-transport.md">API & Transport</a> document for HTTP routes and transport details</li><li>See <a href="09-cli-commands.md">CLI Commands</a> for all available subcommands and flags</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

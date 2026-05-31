@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>xs -- HTTP Router Deep Dive -- xs</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/xs/docs</span>
+    <div class="nav-actions">
+      <a href="09-cli-commands.html" class="nav-breadcrumb">xs -- CLI Commands</a><a href="10-production-patterns.html" class="nav-breadcrumb">xs -- Production Patterns</a><a href="11-iroh-networking-deep-dive.html" class="nav-breadcrumb">Iroh Networking Deep Dive</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="11-iroh-networking-deep-dive.html" class="nav-btn" title="Previous: Iroh Networking Deep Dive">← prev</a>
+      <a href="13-store-broadcasting-deep-dive.html" class="nav-btn nav-btn-next" title="Next: xs -- Store Broadcasting Deep Dive">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>xs -- HTTP Router Deep Dive</h1>
+<p>The HTTP router in xs is a carefully designed system that maps incoming HTTP requests to stream operations. It sits at the boundary between network transport and the core store, handling route matching, content negotiation, query parsing, and connection lifecycle management. This document examines the complete request handling pipeline from socket accept to frame streaming.</p>
+<h2>The Routes Enum: Type-Safe Request Classification</h2>
+<p><strong>Source</strong>: <code>src/api.rs:53-82</code></p>
+<p>The <code>Routes</code> enum is the heart of xs's routing system. It transforms HTTP requests into type-safe operations that the handler can execute. Every incoming request is classified into exactly one route variant.</p>
+<pre><code class="language-rust">#[derive(Debug, PartialEq, Clone)]
+enum AcceptType {
+    Ndjson,
+    EventStream,
+}
+
+enum Routes {
+    StreamCat {
+        accept_type: AcceptType,
+        options: ReadOptions,
+        with_timestamp: bool,
+    },
+    StreamAppend {
+        topic: String,
+        ttl: Option&lt;TTL&gt;,
+        with_timestamp: bool,
+    },
+    LastGet {
+        topic: Option&lt;String&gt;,
+        last: usize,
+        follow: bool,
+        with_timestamp: bool,
+    },
+    StreamItemGet {
+        id: Scru128Id,
+        with_timestamp: bool,
+    },
+    StreamItemRemove(Scru128Id),
+    CasGet(ssri::Integrity),
+    CasPost,
+    Import,
+    Eval,
+    Version,
+    NotFound,
+    BadRequest(String),
+}
+</code></pre>
+<p>The <code>Routes</code> enum has two categories:</p>
+<ol><li><strong>Success variants</strong> (<code>StreamCat</code>, <code>StreamAppend</code>, <code>LastGet</code>, etc.) carry all parameters extracted from the HTTP request</li><li><strong>Error variants</strong> (<code>NotFound</code>, <code>BadRequest</code>) for requests that fail validation</li></ol>
+<p>Each success variant embeds its parameters directly, making the handler's job straightforward: pattern match on the route and call the appropriate handler function with the pre-extracted parameters. This design eliminates redundant parsing and provides compile-time guarantees that all routes are handled.</p>
+<h2>Route Matching Logic</h2>
+<p><strong>Source</strong>: <code>src/api.rs:105-213</code></p>
+<p>The <code>match_route</code> function implements a declarative router using pattern matching on <code>(Method, path)</code> tuples. Query parameters are parsed once upfront into a <code>HashMap</code> for efficient lookup.</p>
+<pre><code class="language-rust">fn match_route(
+    method: &amp;Method,
+    path: &amp;str,
+    headers: &amp;hyper::HeaderMap,
+    query: Option&lt;&amp;str&gt;,
+) -&gt; Routes {
+    let params: HashMap&lt;String, String&gt; =
+        url::form_urlencoded::parse(query.unwrap_or(&quot;&quot;).as_bytes())
+            .into_owned()
+            .collect();
+
+    match (method, path) {
+        (&amp;Method::GET, &quot;/version&quot;) =&gt; Routes::Version,
+
+        (&amp;Method::GET, &quot;/&quot;) =&gt; {
+            let accept_type = match headers.get(ACCEPT) {
+                Some(accept) if accept == &quot;text/event-stream&quot; =&gt; AcceptType::EventStream,
+                _ =&gt; AcceptType::Ndjson,
+            };
+
+            let options = ReadOptions::from_query(query);
+            let with_timestamp = params.contains_key(&quot;with-timestamp&quot;);
+
+            match options {
+                Ok(options) =&gt; Routes::StreamCat {
+                    accept_type,
+                    options,
+                    with_timestamp,
+                },
+                Err(e) =&gt; Routes::BadRequest(e.to_string()),
+            }
+        }
+        // ... additional routes
+    }
+}
+</code></pre>
+
+<pre><code class="language-rust">enum Routes {
+    StreamCat {
+        accept_type: AcceptType,
+        options: ReadOptions,
+        with_timestamp: bool,
+    },
+    StreamAppend {
+        topic: String,
+        ttl: Option&lt;TTL&gt;,
+        with_timestamp: bool,
+    },
+    LastGet {
+        topic: Option&lt;String&gt;,
+        last: usize,
+        follow: bool,
+        with_timestamp: bool,
+    },
+    StreamItemGet {
+        id: Scru128Id,
+        with_timestamp: bool,
+    },
+    StreamItemRemove(Scru128Id),
+    CasGet(ssri::Integrity),
+    CasPost,
+    Import,
+    Eval,
+    Version,
+    NotFound,
+    BadRequest(String),
+}
+</code></pre>
+<p>Each variant carries the extracted parameters needed to handle that route. For example:</p>
+<ul><li><code>StreamCat</code> carries <code>ReadOptions</code> parsed from query parameters and <code>AcceptType</code> from the Accept header</li><li><code>StreamAppend</code> carries the topic name (extracted from path) and optional TTL</li><li><code>LastGet</code> handles the <code>/last</code> and <code>/last/<topic></code> endpoints with pagination</li><li><code>StreamItemGet</code> and <code>StreamItemRemove</code> parse SCRU128 IDs from the path</li></ul>
+<p>The <code>NotFound</code> and <code>BadRequest</code> variants handle error cases at the routing layer itself.</p>
+<h2>Route Matching with <code>match_route</code></h2>
+<p><strong>File</strong>: <code>xs/src/api.rs:105-213</code></p>
+<p>The <code>match_route</code> function is the router's entry point. It takes HTTP method, path, headers, and query string, returning a <code>Routes</code> variant:</p>
+<pre><code class="language-rust">fn match_route(
+    method: &amp;Method,
+    path: &amp;str,
+    headers: &amp;hyper::HeaderMap,
+    query: Option&lt;&amp;str&gt;,
+) -&gt; Routes {
+    let params: HashMap&lt;String, String&gt; =
+        url::form_urlencoded::parse(query.unwrap_or(&quot;&quot;).as_bytes())
+            .into_owned()
+            .collect();
+
+    match (method, path) {
+        (&amp;Method::GET, &quot;/version&quot;) =&gt; Routes::Version,
+
+        (&amp;Method::GET, &quot;/&quot;) =&gt; {
+            let accept_type = match headers.get(ACCEPT) {
+                Some(accept) if accept == &quot;text/event-stream&quot; =&gt; AcceptType::EventStream,
+                _ =&gt; AcceptType::Ndjson,
+            };
+
+            let options = ReadOptions::from_query(query);
+            let with_timestamp = params.contains_key(&quot;with-timestamp&quot;);
+
+            match options {
+                Ok(options) =&gt; Routes::StreamCat { accept_type, options, with_timestamp },
+                Err(e) =&gt; Routes::BadRequest(e.to_string()),
+            }
+        }
+        // ... additional route patterns
+    }
+}
+</code></pre>
+<p><strong>Aha</strong>: The router parses query parameters once at the start using <code>url::form_urlencoded::parse</code>, storing them in a <code>HashMap</code>. This is efficient because multiple routes may need to check for the same parameters (like <code>with-timestamp</code>), and the HashMap allows O(1) lookups rather than re-parsing.</p>
+<h3>Route Pattern Matching Strategy</h3>
+<p>The <code>match_route</code> function uses Rust's pattern matching with guards:</p>
+<ol><li><strong>Exact matches</strong> first: <code>/version</code>, <code>/</code>, <code>/last</code>, <code>/cas</code>, <code>/import</code>, <code>/eval</code></li><li><strong>Prefix matches</strong> with guards: <code>p.starts_with("/last/")</code>, <code>p.starts_with("/cas/")</code>, <code>p.starts_with("/append/")</code></li><li><strong>Dynamic ID matches</strong>: <code>Scru128Id::from_str(p.trim_start_matches('/'))</code> for frame IDs</li><li><strong>Catch-all</strong>: <code>_ => Routes::NotFound</code></li></ol>
+<p>This ordering is critical. More specific patterns must come before general patterns. For example, <code>/last/topic</code> must be checked before trying to parse the path as a frame ID.</p>
+<h3>Complete Route Table</h3>
+<table><tr><th>Method</th><th>Path</th><th>Route Variant</th><th>Key Parameters</th></tr><tr><td>GET</td><td>`/version`</td><td>`Version`</td><td>None</td></tr><tr><td>GET</td><td>`/`</td><td>`StreamCat`</td><td>`ReadOptions`, `AcceptType`</td></tr><tr><td>GET</td><td>`/last`</td><td>`LastGet`</td><td>`last`, `follow`</td></tr><tr><td>GET</td><td>`/last/<topic>`</td><td>`LastGet`</td><td>`topic`, `last`, `follow`</td></tr><tr><td>GET</td><td>`/cas/<hash>`</td><td>`CasGet`</td><td>`ssri::Integrity`</td></tr><tr><td>GET</td><td>`/<id>`</td><td>`StreamItemGet`</td><td>`Scru128Id`</td></tr><tr><td>POST</td><td>`/append/<topic>`</td><td>`StreamAppend`</td><td>`topic`, `TTL`</td></tr><tr><td>POST</td><td>`/cas`</td><td>`CasPost`</td><td>Body as content</td></tr><tr><td>POST</td><td>`/import`</td><td>`Import`</td><td>Frame JSON</td></tr><tr><td>POST</td><td>`/eval`</td><td>`Eval`</td><td>Nushell script</td></tr><tr><td>DELETE</td><td>`/<id>`</td><td>`StreamItemRemove`</td><td>`Scru128Id`</td></tr></table>
+<h2>Query Parameter Parsing</h2>
+<p><strong>File</strong>: <code>xs/src/store/mod.rs:117-124</code></p>
+<p>The <code>ReadOptions</code> struct represents all possible query parameters for the streaming endpoint:</p>
+<pre><code class="language-rust">#[derive(PartialEq, Deserialize, Clone, Debug, Default, bon::Builder)]
+pub struct ReadOptions {
+    #[serde(default)]
+    #[builder(default)]
+    pub follow: FollowOption,
+    #[serde(default, deserialize_with = &quot;deserialize_bool&quot;)]
+    #[builder(default)]
+    pub new: bool,
+    /// Start after this ID (exclusive)
+    #[serde(rename = &quot;after&quot;)]
+    pub after: Option&lt;Scru128Id&gt;,
+    /// Start from this ID (inclusive)
+    pub from: Option&lt;Scru128Id&gt;,
+    pub limit: Option&lt;usize&gt;,
+    /// Return the last N frames (most recent)
+    pub last: Option&lt;usize&gt;,
+    pub topic: Option&lt;String&gt;,
+}
+</code></pre>
+<p>Query parameter parsing uses serde_urlencoded:</p>
+<pre><code class="language-rust">impl ReadOptions {
+    pub fn from_query(query: Option&lt;&amp;str&gt;) -&gt; Result&lt;Self, crate::error::Error&gt; {
+        match query {
+            Some(q) =&gt; Ok(serde_urlencoded::from_str(q)?),
+            None =&gt; Ok(Self::default()),
+        }
+    }
+}
+</code></pre>
+<p><strong>Aha</strong>: The <code>deserialize_bool</code> function (lines 87-96) handles xs's flexible boolean parsing:</p>
+<pre><code class="language-rust">fn deserialize_bool&lt;&#x27;de, D&gt;(deserializer: D) -&gt; Result&lt;bool, D::Error&gt;
+where
+    D: Deserializer&lt;&#x27;de&gt;,
+{
+    let s: String = Deserialize::deserialize(deserializer)?;
+    match s.as_str() {
+        &quot;false&quot; | &quot;no&quot; | &quot;0&quot; =&gt; Ok(false),
+        _ =&gt; Ok(true),  // Any other value (including empty) is true
+    }
+}
+</code></pre>
+<p>This means <code>?new</code>, <code>?new=true</code>, <code>?new=yes</code>, and <code>?new=1</code> all enable the flag, while only specific negative values disable it.</p>
+<h2>AcceptType and Content Negotiation</h2>
+<p><strong>File</strong>: <code>xs/src/api.rs:47-51</code></p>
+<p>The <code>AcceptType</code> enum represents the two output formats xs supports:</p>
+<pre><code class="language-rust">#[derive(Debug, PartialEq, Clone)]
+enum AcceptType {
+    Ndjson,
+    EventStream,
+}
+</code></pre>
+<p>Content negotiation happens in <code>match_route</code> (line 120-123):</p>
+<pre><code class="language-rust">let accept_type = match headers.get(ACCEPT) {
+    Some(accept) if accept == &quot;text/event-stream&quot; =&gt; AcceptType::EventStream,
+    _ =&gt; AcceptType::Ndjson,
+};
+</code></pre>
+<p>The logic is simple: if the Accept header contains exactly <code>text/event-stream</code>, use SSE format. Otherwise, default to NDJSON.</p>
+<h3>Encoding Differences</h3>
+<p><strong>File</strong>: <code>xs/src/api.rs:279-317</code></p>
+<p>The <code>handle_stream_cat</code> function encodes frames differently based on <code>AcceptType</code>:</p>
+<pre><code class="language-rust">let stream = stream.map(move |frame| {
+    let bytes = match accept_type_clone {
+        AcceptType::Ndjson =&gt; {
+            let mut encoded = serialize_frame(&amp;frame, with_timestamp).into_bytes();
+            encoded.push(b&#x27;\n&#x27;);  // Newline-delimited
+            encoded
+        }
+        AcceptType::EventStream =&gt; format!(
+            &quot;id: {id}\ndata: {data}\n\n&quot;,  // SSE format
+            id = frame.id,
+            data = serialize_frame(&amp;frame, with_timestamp)
+        )
+        .into_bytes(),
+    };
+    Ok(hyper::body::Frame::data(Bytes::from(bytes)))
+});
+
+let content_type = match accept_type {
+    AcceptType::Ndjson =&gt; &quot;application/x-ndjson&quot;,
+    AcceptType::EventStream =&gt; &quot;text/event-stream&quot;,
+};
+</code></pre>
+<p><strong>NDJSON</strong> (Newline-Delimited JSON):</p>
+<ul><li>Each frame is JSON-serialized</li><li>Followed by a single newline (<code>\n</code>)</li><li>Content-Type: <code>application/x-ndjson</code></li><li>Best for programmatic clients</li></ul>
+<p><strong>SSE</strong> (Server-Sent Events):</p>
+<ul><li>Each frame has an <code>id:</code> field (the SCRU128 ID)</li><li>Followed by <code>data:</code> field (the JSON frame)</li><li>Followed by double newline (<code>\n\n</code>)</li><li>Content-Type: <code>text/event-stream</code></li><li>Enables browser EventSource with automatic reconnection via <code>lastEventId</code></li></ul>
+<h2>The Service Function Wrapper</h2>
+<p><strong>File</strong>: <code>xs/src/api.rs:215-277</code></p>
+<p>The <code>handle</code> function is the core request handler. It's wrapped by hyper's <code>service_fn</code> macro:</p>
+<pre><code class="language-rust">async fn handle(
+    mut store: Store,
+    _engine: nu::Engine,
+    req: Request&lt;hyper::body::Incoming&gt;,
+) -&gt; HTTPResult {
+    let method = req.method();
+    let path = req.uri().path();
+    let headers = req.headers().clone();
+    let query = req.uri().query();
+
+    let res = match match_route(method, path, &amp;headers, query) {
+        Routes::Version =&gt; handle_version().await,
+        Routes::StreamCat { accept_type, options, with_timestamp } =&gt; {
+            handle_stream_cat(&amp;mut store, options, accept_type, with_timestamp).await
+        }
+        Routes::StreamAppend { topic, ttl, with_timestamp } =&gt; {
+            handle_stream_append(&amp;mut store, req, topic, ttl, with_timestamp).await
+        }
+        // ... additional route handlers
+        Routes::NotFound =&gt; response_404(),
+        Routes::BadRequest(msg) =&gt; response_400(msg),
+    };
+
+    res.or_else(|e| response_500(e.to_string()))
+}
+</code></pre>
+<p>Each route variant has a dedicated handler function:</p>
+<ul><li><code>handle_version()</code> - Returns server version</li><li><code>handle_stream_cat()</code> - Streams frames with live following</li><li><code>handle_stream_append()</code> - Appends new frames with CAS storage</li><li><code>handle_last_get()</code> - Gets recent frames with pagination</li><li><code>handle_cas_post()</code> - Stores content in CAS</li><li><code>handle_stream_item_remove()</code> - Deletes frames</li><li><code>handle_import()</code> - Imports frames with preserved IDs</li><li><code>handle_eval()</code> - Executes Nushell scripts</li></ul>
+<p>The final <code>or_else</code> converts any internal errors to 500 responses.</p>
+<h2>Listener Loop and Connection Handling</h2>
+<p><strong>File</strong>: <code>xs/src/api.rs:467-499</code></p>
+<p>The <code>listener_loop</code> function accepts connections and spawns handlers:</p>
+<pre><code class="language-rust">async fn listener_loop(
+    mut listener: Listener,
+    store: Store,
+    engine: nu::Engine,
+) -&gt; Result&lt;(), BoxError&gt; {
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let io = TokioIo::new(stream);
+        let store = store.clone();
+        let engine = engine.clone();
+        tokio::task::spawn(async move {
+            if let Err(err) = http1::Builder::new()
+                .serve_connection(
+                    io,
+                    service_fn(move |req| handle(store.clone(), engine.clone(), req)),
+                )
+                .await
+            {
+                // Error handling (see below)
+            }
+        });
+    }
+}
+</code></pre>
+<p><strong>Aha</strong>: Each connection gets its own task spawned via <code>tokio::task::spawn</code>. This means:</p>
+<ol><li>Connections are handled concurrently</li><li>Slow clients don't block other connections</li><li>Each connection has its own <code>store.clone()</code> (Store is cheap to clone - it's Arc-wrapped internally)</li><li>The <code>http1::Builder</code> configures HTTP/1.1 protocol settings</li></ol>
+<p>The <code>service_fn</code> closure captures <code>store</code> and <code>engine</code> by move, ensuring each request handler has access to the store and Nushell engine.</p>
+<h2>Error Handling and NotConnected Filtering</h2>
+<p><strong>File</strong>: <code>xs/src/api.rs:484-496</code></p>
+<p>The router has sophisticated error filtering for connection handling:</p>
+<pre><code class="language-rust">if let Err(err) = http1::Builder::new()
+    .serve_connection(io, service_fn(...))
+    .await
+{
+    // Match against the error kind to selectively ignore `NotConnected` errors
+    if let Some(std::io::ErrorKind::NotConnected) = err.source().and_then(|source| {
+        source
+            .downcast_ref::&lt;std::io::Error&gt;()
+            .map(|io_err| io_err.kind())
+    }) {
+        // ignore the NotConnected error, hyper&#x27;s way of saying the client disconnected
+    } else {
+        // todo, Handle or log other errors
+        tracing::error!(&quot;TBD: {:?}&quot;, err);
+    }
+}
+</code></pre>
+<p><strong>Aha</strong>: This error filtering pattern addresses a subtle hyper behavior. When a client disconnects mid-request, hyper surfaces this as an error. The <code>NotConnected</code> error kind specifically means "the client closed the connection" - which is not an error condition worth logging. The code:</p>
+<ol><li>Gets the error's source via <code>.source()</code></li><li>Downcasts to <code>std::io::Error</code> via <code>.downcast_ref()</code></li><li>Checks if the error kind is <code>NotConnected</code></li><li>Silently ignores NotConnected, logs others</li></ol>
+<p>This prevents log spam from normal client disconnections while still capturing genuine server errors.</p>
+<h2>Multiple Concurrent Listeners</h2>
+<p><strong>File</strong>: <code>xs/src/api.rs:422-465</code></p>
+<p>The <code>serve</code> function spawns multiple listeners concurrently:</p>
+<pre><code class="language-rust">pub async fn serve(
+    store: Store,
+    engine: nu::Engine,
+    expose: Option&lt;String&gt;,
+) -&gt; Result&lt;(), BoxError&gt; {
+    // Unix socket at store path
+    let path = store.path.join(&quot;sock&quot;).to_string_lossy().to_string();
+    let listener = Listener::bind(&amp;path).await?;
+    let mut listeners = vec![listener];
+    let mut expose_meta = None;
+
+    // Optional exposed listener (TCP/TLS/Iroh)
+    if let Some(expose) = expose {
+        let expose_listener = Listener::bind(&amp;expose).await?;
+        
+        // Capture ticket for Iroh connections
+        if let Some(ticket) = expose_listener.get_ticket() {
+            expose_meta = Some(serde_json::json!({&quot;expose&quot;: format!(&quot;iroh://{}&quot;, ticket)}));
+        } else {
+            expose_meta = Some(serde_json::json!({&quot;expose&quot;: expose}));
+        }
+        
+        listeners.push(expose_listener);
+    }
+
+    // Record startup event
+    if let Err(e) = store.append(Frame::builder(&quot;xs.start&quot;).maybe_meta(expose_meta).build()) {
+        tracing::error!(&quot;Failed to append xs.start frame: {}&quot;, e);
+    }
+
+    // Spawn listener tasks concurrently
+    let mut tasks = Vec::new();
+    for listener in listeners {
+        let store = store.clone();
+        let engine = engine.clone();
+        let task = tokio::spawn(async move { listener_loop(listener, store, engine).await });
+        tasks.push(task);
+    }
+
+    // Wait for all tasks (runs until error or shutdown)
+    for task in tasks {
+        task.await??;
+    }
+
+    Ok(())
+}
+</code></pre>
+<p><strong>Aha</strong>: The design elegantly handles multiple transports by:</p>
+<ol><li>Creating a <code>Vec<Listener></code> containing all listeners</li><li>Spawning a separate task for each listener via <code>tokio::spawn</code></li><li>Using the same <code>listener_loop</code> for all transports</li><li>Waiting for all tasks with <code>task.await??</code> (propagates errors)</li></ol>
+<p>This means xs can simultaneously accept connections via Unix socket (local only) and TCP/TLS/Iroh (exposed), using the same handler code for all. The <code>Listener</code> enum abstracts over transport details.</p>
+<h2>Request Lifecycle Sequence</h2>
+<div class="mermaid">
+sequenceDiagram
+    participant Client as HTTP Client
+    participant Listener as Listener Loop
+    participant Hyper as hyper http1::Builder
+    participant Service as service_fn
+    participant Router as match_route
+    participant Handler as Route Handler
+    participant Store as Store
+
+    Client-&gt;&gt;Listener: TCP/Unix/Iroh connect
+    Listener-&gt;&gt;Hyper: listener.accept() -&gt; stream
+    Hyper-&gt;&gt;Service: spawn async task
+    Service-&gt;&gt;Router: handle(store, engine, req)
+    Router-&gt;&gt;Router: Parse query params (HashMap)
+    Router-&gt;&gt;Router: Match (method, path)
+    Router--&gt;&gt;Service: Routes::StreamCat { ... }
+    Service-&gt;&gt;Handler: handle_stream_cat(...)
+    Handler-&gt;&gt;Store: store.read(options)
+    Store--&gt;&gt;Handler: mpsc::Receiver&lt;Frame&gt;
+    loop Streaming
+        Handler-&gt;&gt;Service: Frame::data(bytes)
+        Service-&gt;&gt;Hyper: Response&lt;BoxBody&gt;
+        Hyper-&gt;&gt;Client: HTTP/1.1 chunk
+    end
+    Client-&gt;&gt;Listener: disconnect
+    Listener-&gt;&gt;Listener: NotConnected error (ignored)
+
+</div>
+<h2>Route Dispatch Flowchart</h2>
+<div class="mermaid">
+flowchart TD
+    A[HTTP Request] --&gt; B[Extract method, path, headers, query]
+    B --&gt; C[Parse query params into HashMap]
+    C --&gt; D{Match method + path}
+
+    D --&gt;|GET /version| E[Version]
+    D --&gt;|GET /| F[Parse Accept header]
+    F --&gt;|text/event-stream| G[StreamCat SSE]
+    F --&gt;|otherwise| H[StreamCat NDJSON]
+    D --&gt;|GET /last| I[LastGet no topic]
+    D --&gt;|GET /last/*| J[LastGet with topic]
+    D --&gt;|GET /cas/*| K[Parse SRI hash]
+    K --&gt;|valid| L[CasGet]
+    K --&gt;|invalid| M[BadRequest]
+    D --&gt;|GET /*| N[Try parse Scru128Id]
+    N --&gt;|valid| O[StreamItemGet]
+    N --&gt;|invalid| P[BadRequest]
+    D --&gt;|POST /append/*| Q[Extract topic, parse TTL]
+    D --&gt;|POST /cas| R[CasPost]
+    D --&gt;|POST /import| S[Import]
+    D --&gt;|POST /eval| T[Eval]
+    D --&gt;|DELETE /*| U[Try parse Scru128Id]
+    U --&gt;|valid| V[StreamItemRemove]
+    U --&gt;|invalid| W[BadRequest]
+    D --&gt;|no match| X[NotFound]
+
+    E --&gt; Z[Handle Request]
+    G --&gt; Z
+    H --&gt; Z
+    I --&gt; Z
+    J --&gt; Z
+    L --&gt; Z
+    M --&gt; Z
+    O --&gt; Z
+    P --&gt; Z
+    Q --&gt; Z
+    R --&gt; Z
+    S --&gt; Z
+    T --&gt; Z
+    V --&gt; Z
+    W --&gt; Z
+    X --&gt; Z
+
+    Z --&gt; AA[Return Response]
+    AA --&gt; AB[Client receives data]
+
+</div>
+<h2>Cross-References</h2>
+<ul><li><a href="00-overview.md">00-overview.md</a> - Project overview and philosophy</li><li><a href="01-architecture.md">01-architecture.md</a> - Module layout and dependency graph</li><li><a href="02-storage-engine.md">02-storage-engine.md</a> - Store internals and ReadOptions</li><li><a href="06-api-transport.md">06-api-transport.md</a> - Transport layer (Unix/TCP/TLS/Iroh)</li><li><a href="07-processor-system.md">07-processor-system.md</a> - Actor/Service/Action processors</li><li><a href="11-iroh-networking-deep-dive.md">11-iroh-networking-deep-dive.md</a> - Iroh P2P transport details</li></ul>
+<h2>Next Steps</h2>
+<p>After understanding the HTTP router, explore:</p>
+<ol><li><strong>Store Operations</strong> - How the read/write operations work internally (<a href="02-storage-engine.md">02-storage-engine.md</a>)</li><li><strong>Nushell Integration</strong> - How <code>/eval</code> executes scripts (<a href="08-nushell-integration.md">08-nushell-integration.md</a>)</li><li><strong>Client Library</strong> - How clients connect over various transports (<a href="06-api-transport.md">06-api-transport.md</a>)</li></ol>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

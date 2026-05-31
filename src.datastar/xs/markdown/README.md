@@ -15,3 +15,8 @@ Local-first event streaming store with content-addressable storage, reactive pro
 9. [Nushell Integration](08-nushell-integration.md) -- Engine, custom commands, VFS modules, xs.nu
 10. [CLI Commands](09-cli-commands.md) -- All subcommands, flags, output formats
 11. [Production Patterns](10-production-patterns.md) -- Deployment, scaling, export/import, monitoring
+12. [Iroh Networking Deep Dive](11-iroh-networking-deep-dive.md) -- P2P networking with QUIC and Iroh
+13. [HTTP Router Deep Dive](12-http-router-deep-dive.md) -- HTTP routing, content negotiation, and SSE/NDJSON streaming
+14. [Store Broadcasting Deep Dive](13-store-broadcasting-deep-dive.md) -- The broadcast mechanism, read coordination, deduplication, and GC worker
+15. [Server Lifecycle Deep Dive](14-server-lifecycle-deep-dive.md) -- Server startup, shutdown, and graceful termination
+16. [Nushell Internals Deep Dive](15-nushell-internals-deep-dive.md) -- Engine initialization, threading constraints, EngineWorker pattern

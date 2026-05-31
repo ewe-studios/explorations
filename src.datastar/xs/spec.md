@@ -30,7 +30,12 @@ src.datastar/xs/
 │   ├── 07-processor-system.md
 │   ├── 08-nushell-integration.md
 │   ├── 09-cli-commands.md
-│   └── 10-production-patterns.md
+│   ├── 10-production-patterns.md
+│   ├── 11-iroh-networking-deep-dive.md
+│   ├── 12-http-router-deep-dive.md
+│   ├── 13-store-broadcasting-deep-dive.md
+│   ├── 14-server-lifecycle-deep-dive.md
+│   └── 15-nushell-internals-deep-dive.md
 ├── html/
 │   ├── index.html
 │   ├── styles.css

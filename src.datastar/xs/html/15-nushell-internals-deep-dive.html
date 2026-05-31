@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>xs -- Nushell Integration Internals Deep Dive -- xs</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/xs/docs</span>
+    <div class="nav-actions">
+      <a href="12-http-router-deep-dive.html" class="nav-breadcrumb">xs -- HTTP Router Deep Dive</a><a href="13-store-broadcasting-deep-dive.html" class="nav-breadcrumb">xs -- Store Broadcasting Deep Dive</a><a href="14-server-lifecycle-deep-dive.html" class="nav-breadcrumb">xs -- Server Lifecycle Deep Dive</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="14-server-lifecycle-deep-dive.html" class="nav-btn" title="Previous: xs -- Server Lifecycle Deep Dive">← prev</a>
+      <a href="README.html" class="nav-btn nav-btn-next" title="Next: xs (cross.stream) Documentation">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>xs -- Nushell Integration Internals Deep Dive</h1>
+<p>Nushell integration in xs (cross.stream) is not a thin wrapper around a shell. It is a deeply embedded runtime that executes user-defined closures for every processor type: actors, services, and actions. The integration bridges Nushell's value-oriented pipeline model with xs's stream-based event architecture.</p>
+<h2>Overview</h2>
+<p>xs embeds a full Nushell runtime that powers all event-driven processors. This document explores the internal architecture: how the engine initializes, why thread safety requires the EngineWorker pattern, how closures execute in background jobs, and the virtual file system that enables dynamic module loading.</p>
+<h2>Engine::new() Initialization</h2>
+<p><strong>Source</strong>: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.datastar/xs/src/nu/engine.rs:21-33</code></p>
+<p>The <code>Engine</code> struct wraps Nushell's <code>EngineState</code> and provides the primary interface for parsing, evaluating, and executing closures.</p>
+<pre><code class="language-rust">#[derive(Clone)]
+pub struct Engine {
+    pub state: EngineState,
+}
+
+impl Engine {
+    pub fn new() -&gt; Result&lt;Self, Error&gt; {
+        let mut engine_state = create_default_context();
+        engine_state = add_shell_command_context(engine_state);
+        engine_state = add_cli_context(engine_state);
+
+        let init_cwd = std::env::current_dir()?;
+        gather_parent_env_vars(&amp;mut engine_state, init_cwd.as_ref());
+
+        Ok(Self { state: engine_state })
+    }
+}
+</code></pre>
+<p>The initialization sequence matters:</p>
+<ol><li><strong><code>create_default_context()</code></strong> - Core language commands (let, def, if, for, etc.)</li><li><strong><code>add_shell_command_context()</code></strong> - Shell operations (ls, cd, open, etc.)</li><li><strong><code>add_cli_context()</code></strong> - CLI-specific features (history, completion, etc.)</li><li><strong><code>gather_parent_env_vars()</code></strong> - Inherits environment from parent process</li></ol>
+<p>This layered approach gives scripts full Nushell capabilities while maintaining isolation from the host system.</p>
+<h2>Why EngineState is Not Send</h2>
+<p><strong>Aha</strong>: <code>EngineState</code> does not implement <code>Send</code>. This is a fundamental constraint from Nushell's architecture. The state contains raw pointers, RefCell instances, and other thread-unsafe interior mutability. You cannot move an <code>EngineState</code> between threads.</p>
+<pre><code class="language-rust">// This WILL NOT compile:
+tokio::spawn(async move {
+    engine.eval(input, script);  // Error: EngineState is not Send
+});
+</code></pre>
+<p>This constraint shapes the entire xs architecture. The obvious pattern -- create an engine, spawn async tasks that use it -- is impossible. Instead, xs uses two patterns:</p>
+<ol><li><strong>Synchronous execution</strong> in services (the HTTP handler borrows the engine for the request duration)</li><li><strong>Dedicated OS thread</strong> with message passing for actors (the <code>EngineWorker</code> pattern)</li></ol>
+<p>The <code>EngineWorker</code> pattern is the clever solution: instead of moving the engine between threads, move the work to the thread that owns the engine.</p>
+<h2>Engine Initialization</h2>
+<p><strong>File</strong>: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.datastar/xs/src/nu/engine.rs</code></p>
+<p>The <code>Engine</code> struct wraps Nushell's <code>EngineState</code>:</p>
+<pre><code class="language-rust">#[derive(Clone)]
+pub struct Engine {
+    pub state: EngineState,
+}
+</code></pre>
+<h3>Engine::new() - The Initialization Sequence</h3>
+<pre><code class="language-rust">impl Engine {
+    pub fn new() -&gt; Result&lt;Self, Error&gt; {
+        let mut engine_state = create_default_context();
+        engine_state = add_shell_command_context(engine_state);
+        engine_state = add_cli_context(engine_state);
+
+        let init_cwd = std::env::current_dir()?;
+        gather_parent_env_vars(&amp;mut engine_state, init_cwd.as_ref());
+
+        Ok(Self {
+            state: engine_state,
+        })
+    }
+}
+</code></pre>
+<p>The initialization layers are:</p>
+<ol><li><strong><code>create_default_context()</code></strong> - Core language commands (let, def, if, etc.)</li><li><strong><code>add_shell_command_context()</code></strong> - Shell operations (ls, cd, open, etc.)</li><li><strong><code>add_cli_context()</code></strong> - CLI-specific features (history, completion, etc.)</li><li><strong><code>gather_parent_env_vars()</code></strong> - Inherits environment from parent process</li></ol>
+<p>This layered approach gives scripts full Nushell capabilities while maintaining isolation from the host system.</p>
+<h2>The EngineWorker Pattern</h2>
+<p><strong>Source</strong>: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.datastar/xs/src/processor/actor/actor.rs:392-458</code></p>
+<p>Actors must process frames asynchronously (they subscribe to streams), but the Nushell engine cannot leave the thread where it was created. The <code>EngineWorker</code> bridges this gap with a dedicated OS thread and an async channel.</p>
+<pre><code class="language-rust">pub struct EngineWorker {
+    work_tx: mpsc::Sender&lt;WorkItem&gt;,
+}
+
+struct WorkItem {
+    frame: Frame,
+    resp_tx: oneshot::Sender&lt;Result&lt;ClosureResult, Error&gt;&gt;,
+}
+
+impl EngineWorker {
+    pub fn new(
+        engine: nu::Engine,
+        closure: nu_protocol::engine::Closure,
+        initial_state: Value,
+    ) -&gt; Self {
+        let (work_tx, mut work_rx) = mpsc::channel(32);
+
+        std::thread::spawn(move || {
+            let mut engine = engine;
+            let mut state = initial_state;
+
+            while let Some(WorkItem { frame, resp_tx }) = work_rx.blocking_recv() {
+                let frame_val =
+                    crate::nu::frame_to_value(&amp;frame, nu_protocol::Span::unknown(), false);
+
+                let pipeline = engine.run_closure_in_job(
+                    &amp;closure,
+                    vec![frame_val, state.clone()],
+                    None,
+                    format!(&quot;actor {topic}&quot;, topic = frame.topic),
+                );
+
+                let result = pipeline
+                    .map_err(|e| {
+                        let working_set = nu_protocol::engine::StateWorkingSet::new(&amp;engine.state);
+                        Error::from(nu_protocol::format_cli_error(None, &amp;working_set, &amp;*e, None))
+                    })
+                    .and_then(|pd| {
+                        pd.into_value(nu_protocol::Span::unknown())
+                            .map_err(Error::from)
+                    })
+                    .and_then(interpret_closure_result);
+
+                if let Ok(ClosureResult::Continue { ref next_state, .. }) = result {
+                    state = next_state.clone();
+                }
+
+                let _ = resp_tx.send(result);
+            }
+        });
+
+        Self { work_tx }
+    }
+
+    pub async fn eval(&amp;self, frame: Frame) -&gt; Result&lt;ClosureResult, Error&gt; {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        let work_item = WorkItem { frame, resp_tx };
+
+        self.work_tx
+            .send(work_item)
+            .await
+            .map_err(|_| Error::from(&quot;Engine worker thread has terminated&quot;))?;
+
+        resp_rx
+            .await
+            .map_err(|_| Error::from(&quot;Engine worker thread has terminated&quot;))?
+    }
+}
+</code></pre>
+<p><strong>Key insight</strong>: The <code>EngineWorker</code> creates a thread that lives for the actor's lifetime. The engine lives on that thread. Work arrives via <code>tokio::sync::mpsc</code>. Results return via <code>tokio::sync::oneshot</code>. The actor's async <code>process_frame</code> method never touches the engine directly -- it sends a message and awaits the response.</p>
+<p><strong>Aha</strong>: This pattern elegantly solves the <code>!Send</code> constraint by keeping the <code>EngineState</code> on a single dedicated OS thread, using <code>mpsc::channel</code> for async-to-sync communication, using <code>oneshot::channel</code> for synchronous responses, and maintaining actor state (the <code>state</code> variable) as a local on the thread. This is similar to how browsers run JS engines on dedicated threads, but with Rust's ownership making the boundary explicit.</p>
+<h2>Closure Execution Sequence Diagram</h2>
+<div class="mermaid">
+sequenceDiagram
+    participant A as Actor::process_frame
+    participant E as EngineWorker
+    participant T as Dedicated Thread
+    participant N as Nushell Engine
+    participant R as run_closure_in_job
+
+    A-&gt;&gt;E: eval(frame)
+    E-&gt;&gt;E: create oneshot channel
+    E-&gt;&gt;T: send WorkItem via mpsc
+    E--&gt;&gt;A: await resp_rx
+
+    T-&gt;&gt;N: frame_to_value(frame)
+    T-&gt;&gt;R: run_closure_in_job(closure, [frame_val, state])
+
+    R-&gt;&gt;R: create ThreadJob
+    R-&gt;&gt;R: validate argument count
+    R-&gt;&gt;R: inject positional args into Stack
+    R-&gt;&gt;N: eval_block_with_early_return
+    N--&gt;&gt;R: PipelineData
+    R--&gt;&gt;T: Result&lt;PipelineData&gt;
+
+    T-&gt;&gt;T: interpret_closure_result
+    T-&gt;&gt;T: update state if Continue
+    T-&gt;&gt;A: send result via oneshot
+    A-&gt;&gt;A: process result (Continue/Stop)
+
+</div>
+<h2>run_closure_in_job: Background Job Execution</h2>
+<p><strong>File</strong>: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.datastar/xs/src/nu/engine.rs</code> (lines 178-284)</p>
+<p>The <code>run_closure_in_job</code> method executes closures with full job tracking:</p>
+<pre><code class="language-rust">pub fn run_closure_in_job(
+    &amp;mut self,
+    closure: &amp;nu_protocol::engine::Closure,
+    args: Vec&lt;Value&gt;,
+    pipeline_input: Option&lt;PipelineData&gt;,
+    job_name: impl Into&lt;String&gt;,
+) -&gt; Result&lt;PipelineData, Box&lt;ShellError&gt;&gt; {
+    let job_display_name = job_name.into();
+
+    // Create &amp; register job (boilerplate)
+    let (sender, _rx) = std::sync::mpsc::channel();
+    let job = ThreadJob::new(
+        self.state.signals().clone(),
+        Some(job_display_name.clone()),
+        sender,
+    );
+    let _job_id = {
+        let mut j = self.state.jobs.lock().unwrap();
+        j.add_job(Job::Thread(job.clone()))
+    };
+
+    // Temporarily attach the job to self.state
+    let saved_bg_job = self.state.current_job.background_thread_job.clone();
+    self.state.current_job.background_thread_job = Some(job.clone());
+
+    // Prepare stack &amp; validate/inject positional arguments
+    let block = self.state.get_block(closure.block_id);
+    let mut stack = Stack::new();
+    let mut stack = stack.push_redirection(Some(Redirection::Pipe(OutDest::PipeSeparate)), None);
+
+    // Validate argument count
+    let num_required = block.signature.required_positional.len();
+    let num_optional = block.signature.optional_positional.len();
+    // ... validation logic ...
+
+    // Inject provided positional args
+    for (i, val) in args.iter().enumerate() {
+        let param = if i &lt; num_required {
+            &amp;block.signature.required_positional[i]
+        } else {
+            &amp;block.signature.optional_positional[i - num_required]
+        };
+        if let Some(var_id) = param.var_id {
+            stack.add_var(var_id, val.clone());
+        }
+    }
+
+    // Set default values for optional params not covered
+    let optional_covered = args.len().saturating_sub(num_required);
+    for i in optional_covered..num_optional {
+        let param = &amp;block.signature.optional_positional[i];
+        if let Some(var_id) = param.var_id {
+            let default = param.default_value.clone()
+                .unwrap_or_else(|| Value::nothing(Span::unknown()));
+            stack.add_var(var_id, default);
+        }
+    }
+
+    // Execute with eval_block_with_early_return
+    let eval_res = nu_engine::eval_block_with_early_return::&lt;WithoutDebug&gt;(
+        &amp;self.state,
+        &amp;mut stack,
+        block,
+        eval_pipeline_input,
+    );
+
+    // Merge env, restore job, cleanup
+    if eval_res.is_ok() {
+        if let Err(e) = self.state.merge_env(&amp;mut stack) { /* ... */ }
+    }
+    self.state.current_job.background_thread_job = saved_bg_job;
+    eval_res.map(|exec_data| exec_data.body).map_err(Box::new)
+}
+</code></pre>
+<p>Key aspects:</p>
+<ol><li><strong>Job Registration</strong>: Creates a <code>ThreadJob</code> with signal handling and registers it in <code>EngineState.jobs</code></li><li><strong>Argument Injection</strong>: Manually binds positional arguments to the closure's variables</li><li><strong>Default Handling</strong>: Injects default values for optional parameters not provided</li><li><strong>Early Return Support</strong>: Uses <code>eval_block_with_early_return</code> for <code>return</code> statement support</li><li><strong>Environment Merge</strong>: Persists any environment changes made by the closure</li><li><strong>Cleanup</strong>: Always restores the saved background job state</li></ol>
+<h2>Custom Commands Reference</h2>
+<p>All custom commands are prefixed with <code>.</code> to avoid collisions with built-in Nushell commands.</p>
+<h3>.append (Direct vs Buffered)</h3>
+<p><strong>Direct</strong> (<code>/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.datastar/xs/src/nu/commands/append_command.rs</code>): Used by services, actions, and eval. Writes immediately to the store.</p>
+<pre><code class="language-rust">impl Command for AppendCommand {
+    fn name(&amp;self) -&gt; &amp;str { &quot;.append&quot; }
+    
+    fn signature(&amp;self) -&gt; Signature {
+        Signature::build(&quot;.append&quot;)
+            .input_output_types(vec![(Type::Any, Type::Any)])
+            .required(&quot;topic&quot;, SyntaxShape::String, &quot;this clip&#x27;s topic&quot;)
+            .named(&quot;meta&quot;, SyntaxShape::Record(vec![]), &quot;arbitrary metadata&quot;, None)
+            .named(&quot;ttl&quot;, SyntaxShape::String, &quot;TTL specification&quot;, None)
+            .switch(&quot;with-timestamp&quot;, &quot;include timestamp extracted from frame ID&quot;, None)
+    }
+
+    fn run(&amp;self, engine_state: &amp;EngineState, stack: &amp;mut Stack, call: &amp;Call, input: PipelineData) 
+        -&gt; Result&lt;PipelineData, ShellError&gt; {
+        // ... extracts flags and input ...
+        let hash = util::write_pipeline_to_cas(input, &amp;store, span)?;
+        let frame = store.append(Frame::builder(topic).maybe_hash(hash).meta(final_meta).maybe_ttl(ttl).build())?;
+        Ok(PipelineData::Value(util::frame_to_value(&amp;frame, span, with_timestamp), None))
+    }
+}
+</code></pre>
+<p><strong>Buffered</strong> (<code>/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.datastar/xs/src/nu/commands/append_command_buffered.rs</code>): Used by actors. Buffers frames for batch processing.</p>
+<pre><code class="language-rust">pub struct AppendCommand {
+    output: Arc&lt;Mutex&lt;Vec&lt;Frame&gt;&gt;&gt;,  // Shared with actor
+    store: Store,
+}
+
+fn run(&amp;self, ..., input: PipelineData) -&gt; Result&lt;PipelineData, ShellError&gt; {
+    // ... extracts args ...
+    let frame = Frame::builder(topic)
+        .maybe_meta(meta.map(|v| value_to_json(&amp;v)))
+        .maybe_hash(hash)
+        .maybe_ttl(ttl)
+        .build();
+    
+    self.output.lock().unwrap().push(frame);  // Buffer, don&#x27;t write yet
+    Ok(PipelineData::Empty)
+}
+</code></pre>
+<h3>.cas (Content-Addressed Storage)</h3>
+<p><strong>File</strong>: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.datastar/xs/src/nu/commands/cas_command.rs</code></p>
+<p>Retrieves content by hash:</p>
+<pre><code class="language-rust">fn run(&amp;self, engine_state: &amp;EngineState, stack: &amp;mut Stack, call: &amp;Call, _input: PipelineData) 
+    -&gt; Result&lt;PipelineData, ShellError&gt; {
+    let span = call.head;
+    let hash: String = call.req(engine_state, stack, 0)?;
+    let hash: ssri::Integrity = hash.parse().map_err(|e| /* ... */)?;
+
+    let mut reader = self.store.cas_reader_sync(hash).map_err(|e| /* ... */)?;
+    let mut contents = Vec::new();
+    reader.read_to_end(&amp;mut contents).map_err(|e| /* ... */)?;
+
+    // Try to convert to string if valid UTF-8, otherwise return as binary
+    let value = match String::from_utf8(contents.clone()) {
+        Ok(string) =&gt; Value::string(string, span),
+        Err(_) =&gt; Value::binary(contents, span),
+    };
+
+    Ok(PipelineData::Value(value, None))
+}
+</code></pre>
+<h3>.cat (Frame Query)</h3>
+<p><strong>File</strong>: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.datastar/xs/src/nu/commands/cat_command.rs</code></p>
+<pre><code class="language-rust">fn run(&amp;self, engine_state: &amp;EngineState, stack: &amp;mut Stack, call: &amp;Call, _input: PipelineData) 
+    -&gt; Result&lt;PipelineData, ShellError&gt; {
+    let limit: Option&lt;usize&gt; = call.get_flag(engine_state, stack, &quot;limit&quot;)?;
+    let last: Option&lt;usize&gt; = call.get_flag(engine_state, stack, &quot;last&quot;)?;
+    let after: Option&lt;String&gt; = call.get_flag(engine_state, stack, &quot;after&quot;)?;
+    let from: Option&lt;String&gt; = call.get_flag(engine_state, stack, &quot;from&quot;)?;
+    let topic: Option&lt;String&gt; = call.get_flag(engine_state, stack, &quot;topic&quot;)?;
+
+    let options = ReadOptions::builder()
+        .maybe_after(after.map(|s| s.parse().unwrap()))
+        .maybe_from(from.map(|s| s.parse().unwrap()))
+        .maybe_limit(limit)
+        .maybe_last(last)
+        .maybe_topic(topic)
+        .build();
+
+    let frames: Vec&lt;_&gt; = self.store.read_sync(options).collect();
+
+    let output = Value::list(
+        frames.into_iter()
+            .map(|frame| crate::nu::util::frame_to_value(&amp;frame, call.head, with_timestamp))
+            .collect(),
+        call.head,
+    );
+
+    Ok(PipelineData::Value(output, None))
+}
+</code></pre>
+<h3>.id (SCRU128 Operations)</h3>
+<p><strong>File</strong>: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.datastar/xs/src/nu/commands/scru128_command.rs</code></p>
+<p>Supports generating, unpacking, and packing IDs:</p>
+<pre><code class="language-rust">fn run(&amp;self, engine_state: &amp;EngineState, stack: &amp;mut Stack, call: &amp;Call, input: PipelineData) 
+    -&gt; Result&lt;PipelineData, ShellError&gt; {
+    let span = call.head;
+    let subcommand: Option&lt;String&gt; = call.opt(engine_state, stack, 0)?;
+
+    match subcommand.as_deref() {
+        Some(&quot;unpack&quot;) =&gt; {
+            let id_string = get_string_input(call, engine_state, stack, input, span)?;
+            let result = crate::scru128::unpack_to_json(&amp;id_string)?;
+            let nu_value = util::json_to_value(&amp;result, span);
+            let nu_value = convert_timestamp_to_datetime(nu_value, span);
+            Ok(PipelineData::Value(nu_value, None))
+        }
+        Some(&quot;pack&quot;) =&gt; {
+            let components = get_record_input(call, engine_state, stack, input, span)?;
+            let json_value = util::value_to_json(&amp;components);
+            let result = crate::scru128::pack_from_json(json_value)?;
+            Ok(PipelineData::Value(Value::string(result, span), None))
+        }
+        None =&gt; {
+            let result = crate::scru128::generate()?;
+            Ok(PipelineData::Value(Value::string(result, span), None))
+        }
+    }
+}
+</code></pre>
+<h2>Virtual File System for *.nu Modules</h2>
+<p><strong>File</strong>: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.datastar/xs/src/nu/vfs.rs</code></p>
+<p>The VFS enables storing Nushell modules as frames in the event stream:</p>
+<h3>Module Loading Architecture</h3>
+<div class="mermaid">
+graph TD
+    A[Frame with topic X.Y.Z.nu] --&gt;|store.cas_read_sync| B[Module Content]
+    B --&gt;|register_module| C[Parse topic path]
+    C --&gt;|replace &#x27;.&#x27; with &#x27;/&#x27;| D[X/Y/Z/mod.nu]
+    D --&gt;|add_virtual_path| E[Virtual File in EngineState]
+    E --&gt;|add_virtual_path| F[Virtual Dir chain]
+    F --&gt;|Script can now| G[use X/Y/Z]
+
+</div>
+<h3>Implementation</h3>
+<pre><code class="language-rust">/// Load modules from a topic-&gt;hash map into the engine&#x27;s VFS.
+pub fn load_modules(
+    engine_state: &amp;mut EngineState,
+    store: &amp;Store,
+    modules: &amp;HashMap&lt;String, ssri::Integrity&gt;,
+) -&gt; Result&lt;(), Box&lt;dyn std::error::Error + Send + Sync&gt;&gt; {
+    for (topic, hash) in modules {
+        let name = match topic.strip_suffix(&quot;.nu&quot;) {
+            Some(n) if !n.is_empty() =&gt; n,
+            _ =&gt; continue,
+        };
+        let content_bytes = store.cas_read_sync(hash)?;
+        let content = String::from_utf8(content_bytes)?;
+        register_module(engine_state, name, &amp;content)?;
+    }
+    Ok(())
+}
+
+/// Register a single module by name and content into the engine&#x27;s VFS.
+fn register_module(
+    engine_state: &amp;mut EngineState,
+    name: &amp;str,
+    content: &amp;str,
+) -&gt; Result&lt;(), Box&lt;dyn std::error::Error + Send + Sync&gt;&gt; {
+    let module_path = name.replace(&#x27;.&#x27;, &quot;/&quot;);
+    let mut working_set = StateWorkingSet::new(engine_state);
+
+    // Register &lt;module_path&gt;/mod.nu as a virtual file
+    let virt_file_name = format!(&quot;{module_path}/mod.nu&quot;);
+    let file_id = working_set.add_file(virt_file_name.clone(), content.as_bytes());
+    let virt_file_id = working_set.add_virtual_path(virt_file_name, VirtualPath::File(file_id));
+
+    // Build directory chain from leaf to root
+    let segments: Vec&lt;&amp;str&gt; = module_path.split(&#x27;/&#x27;).collect();
+    let mut child_id = virt_file_id;
+
+    for depth in (0..segments.len()).rev() {
+        let dir_path = if depth == 0 {
+            segments[0].to_string()
+        } else {
+            segments[..=depth].join(&quot;/&quot;)
+        };
+        child_id = working_set.add_virtual_path(dir_path, VirtualPath::Dir(vec![child_id]));
+    }
+
+    engine_state.merge_delta(working_set.render())?;
+    Ok(())
+}
+</code></pre>
+<h3>Example Module Mapping</h3>
+<table><tr><th>Topic</th><th>CAS Hash</th><th>Virtual Path</th><th>Usage</th></tr><tr><td>`discord.api.nu`</td><td>`sha256-abc...`</td><td>`discord/api/mod.nu`</td><td>`use discord/api`</td></tr><tr><td>`utils.strings.nu`</td><td>`sha256-def...`</td><td>`utils/strings/mod.nu`</td><td>`use utils/strings`</td></tr><tr><td>`app.config.nu`</td><td>`sha256-ghi...`</td><td>`app/config/mod.nu`</td><td>`use app/config`</td></tr></table>
+<h2>Script Parsing and Evaluation</h2>
+<h3>The NuScriptConfig Pattern</h3>
+<p><strong>File</strong>: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.datastar/xs/src/nu/config.rs</code></p>
+<p>All processor scripts must evaluate to a record containing at minimum a <code>run:</code> field:</p>
+<pre><code class="language-rust">pub struct NuScriptConfig {
+    /// The main executable closure defined by the `run:` field
+    pub run_closure: Closure,
+    /// The full Nushell Value that the script evaluated to
+    pub full_config_value: Value,
+}
+
+impl NuScriptConfig {
+    /// Deserializes specific options from the full_config_value
+    pub fn deserialize_options&lt;T&gt;(&amp;self) -&gt; Result&lt;T, Error&gt;
+    where
+        T: for&lt;&#x27;de&gt; serde::Deserialize&lt;&#x27;de&gt;,
+    {
+        let json_value = value_to_json(&amp;self.full_config_value);
+        serde_json::from_value(json_value)
+            .map_err(|e| format!(&quot;Failed to deserialize script options: {e}&quot;).into())
+    }
+}
+</code></pre>
+<h3>parse_config Implementation</h3>
+<pre><code class="language-rust">pub fn parse_config(engine: &amp;mut crate::nu::Engine, script: &amp;str) -&gt; Result&lt;NuScriptConfig, Error&gt; {
+    let mut working_set = StateWorkingSet::new(&amp;engine.state);
+    let block = parse(&amp;mut working_set, None, script.as_bytes(), false);
+
+    // Check for parse/compile errors
+    if let Some(err) = working_set.parse_errors.first() { /* ... */ }
+    if let Some(err) = working_set.compile_errors.first() { /* ... */ }
+
+    engine.state.merge_delta(working_set.render())?;
+
+    // Evaluate to get the config record
+    let mut stack = Stack::new();
+    let eval_result = eval_block_with_early_return::&lt;WithoutDebug&gt;(
+        &amp;engine.state, &amp;mut stack, &amp;block, PipelineData::empty()
+    )?;
+
+    let config_value = eval_result.body.into_value(Span::unknown())?;
+
+    // Extract the &#x27;run&#x27; closure
+    let run_val = config_value.get_data_by_key(&quot;run&quot;)
+        .ok_or_else(|| -&gt; Error { &quot;Script must define a &#x27;run&#x27; closure.&quot;.into() })?;
+    let run_closure = run_val.as_closure()
+        .map_err(|e| -&gt; Error { format!(&quot;&#x27;run&#x27; field must be a closure: {e}&quot;).into() })?;
+
+    engine.state.merge_env(&amp;mut stack)?;
+
+    Ok(NuScriptConfig {
+        run_closure: run_closure.clone(),
+        full_config_value: config_value,
+    })
+}
+</code></pre>
+<h3>Script Examples</h3>
+<p><strong>Actor Script</strong>:</p>
+<pre><code class="language-nushell">{
+    run: {|frame, state|
+        let new_count = ($state | default 0) + 1
+        {out: {count: $new_count}, next: $new_count}
+    }
+    start: &quot;new&quot;
+    pulse: 5000
+    return_options: {suffix: &quot;out&quot;, target: &quot;cas&quot;, ttl: &quot;last:10&quot;}
+}
+</code></pre>
+<p><strong>Service Script</strong>:</p>
+<pre><code class="language-nushell">{
+    run: {||
+        .cat --follow --topic &quot;requests.*&quot; | each {|frame|
+            .append &quot;responses&quot; --meta {result: &quot;processed&quot;}
+        }
+    }
+    duplex: true
+    return_options: {suffix: &quot;recv&quot;}
+}
+</code></pre>
+<h2>Build Engine Pattern</h2>
+<p><strong>File</strong>: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.datastar/xs/src/processor/mod.rs</code></p>
+<p>All processors use a common pattern to build their engines:</p>
+<pre><code class="language-rust">pub fn build_engine(
+    store: &amp;Store,
+    as_of: &amp;Scru128Id,
+) -&gt; Result&lt;nu::Engine, Box&lt;dyn std::error::Error + Send + Sync&gt;&gt; {
+    let mut engine = nu::Engine::new()?;
+    nu::add_core_commands(&amp;mut engine, store)?;
+    engine.add_alias(&quot;.rm&quot;, &quot;.remove&quot;)?;
+    let modules = store.nu_modules_at(as_of);
+    nu::load_modules(&amp;mut engine.state, store, &amp;modules)?;
+    Ok(engine)
+}
+</code></pre>
+<p>Steps:</p>
+<ol><li>Create new engine with default contexts</li><li>Add core commands (<code>.cas</code>, <code>.get</code>, <code>.remove</code>, <code>.id</code>)</li><li>Add aliases (<code>.rm</code> → <code>.remove</code>)</li><li>Load VFS modules as of the specified frame ID</li></ol>
+<p>The <code>as_of</code> parameter enables <strong>point-in-time module loading</strong> — actors see modules as they existed at registration time, supporting reproducible execution.</p>
+<h2>Type Conversion Bridge</h2>
+<p><strong>File</strong>: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.llamacpp/src.datastar/xs/src/nu/util.rs</code></p>
+<p>The util module provides bidirectional conversion between Nushell Values and JSON:</p>
+<pre><code class="language-rust">// JSON to Nushell Value
+pub fn json_to_value(json: &amp;serde_json::Value, span: Span) -&gt; Value {
+    match json {
+        serde_json::Value::Null =&gt; Value::nothing(span),
+        serde_json::Value::Bool(b) =&gt; Value::bool(*b, span),
+        serde_json::Value::Number(n) =&gt; /* int or float */,
+        serde_json::Value::String(s) =&gt; Value::string(s, span),
+        serde_json::Value::Array(arr) =&gt; /* recursive list conversion */,
+        serde_json::Value::Object(obj) =&gt; /* recursive record conversion */,
+    }
+}
+
+// Nushell Value to JSON
+pub fn value_to_json(value: &amp;Value) -&gt; serde_json::Value {
+    match value {
+        Value::Nothing { .. } =&gt; serde_json::Value::Null,
+        Value::Bool { val, .. } =&gt; serde_json::Value::Bool(*val),
+        Value::Int { val, .. } =&gt; (*val).into(),
+        Value::Float { val, .. } =&gt; serde_json::Number::from_f64(*val).unwrap(),
+        Value::String { val, .. } =&gt; serde_json::Value::String(val.clone()),
+        // ... more variants ...
+    }
+}
+
+// Frame to Nushell Record
+pub fn frame_to_value(frame: &amp;Frame, span: Span, with_timestamp: bool) -&gt; Value {
+    let mut record = Record::new();
+    record.push(&quot;id&quot;, Value::string(frame.id.to_string(), span));
+    record.push(&quot;topic&quot;, Value::string(frame.topic.clone(), span));
+    if let Some(hash) = &amp;frame.hash { record.push(&quot;hash&quot;, /* ... */); }
+    if let Some(meta) = &amp;frame.meta { record.push(&quot;meta&quot;, /* ... */); }
+    if let Some(ttl) = &amp;frame.ttl { record.push(&quot;ttl&quot;, /* ... */); }
+    if with_timestamp { record.push(&quot;timestamp&quot;, /* ... */); }
+    Value::record(record, span)
+}
+</code></pre>
+<h2>Summary</h2>
+<p>The Nushell integration in xs is a sophisticated embedding that addresses several challenges:</p>
+<table><tr><th>Challenge</th><th>Solution</th></tr><tr><td>EngineState not Send</td><td>EngineWorker pattern with dedicated OS thread</td></tr><tr><td>Stateful actor execution</td><td>Mutable `state` local on worker thread</td></tr><tr><td>Dynamic module loading</td><td>Virtual File System mapping topics to module paths</td></tr><tr><td>Immediate vs buffered output</td><td>Separate command implementations (direct vs buffered)</td></tr><tr><td>Point-in-time reproducibility</td><td>`as_of` parameter for module loading</td></tr><tr><td>Type interoperability</td><td>Bidirectional JSON/Value conversion utilities</td></tr></table>
+<p>The result is a reactive event processing system where Nushell closures become first-class computational units, with full access to the store via custom commands and the ability to maintain state across invocations.</p>
+<h2>Cross-Reference</h2>
+<ul><li><a href="08-nushell-integration.md">08-nushell-integration.md</a> - User-facing documentation</li><li><a href="07-processor-system.md">07-processor-system.md</a> - Actor/Service/Action architecture</li><li><a href="03-frame-model.md">03-frame-model.md</a> - Frame structure and metadata</li><li><a href="04-scru128-ids.md">04-scru128-ids.md</a> - ID generation and timestamp extraction</li><li><a href="14-server-lifecycle-deep-dive.md">14-server-lifecycle-deep-dive.md</a> - Server startup and processor spawning</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
