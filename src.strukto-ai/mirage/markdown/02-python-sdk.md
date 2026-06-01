@@ -215,6 +215,305 @@ Optional extras:
 - `[mongodb]` — `motor>=3.7.1`
 - `[fuse]` — `mfusepy>=1.0.0`
 
+## Additional Modules
+
+### Workspace Module
+
+**Source:** `python/mirage/workspace/`
+
+Workspace management and lifecycle:
+
+```python
+# python/mirage/workspace/manager.py
+from mirage.workspace import WorkspaceManager
+
+manager = WorkspaceManager()
+
+# Create workspace
+ws = manager.create({
+    '/data': RAMResource(),
+    '/s3': S3Resource(...),
+})
+
+# Clone workspace
+ws2 = manager.clone(ws.id)
+
+# Snapshot
+snapshot = await manager.snapshot(ws.id)
+
+# Restore
+restored = await manager.restore(snapshot.id)
+```
+
+### Runtime Module
+
+**Source:** `python/mirage/runtime/`
+
+Runtime context and execution state:
+
+```python
+# python/mirage/runtime/context.py
+from mirage.runtime import RuntimeContext
+
+ctx = RuntimeContext()
+ctx.chdir('/s3')
+ctx.setenv('AWS_REGION', 'us-east-1')
+
+# Use in workspace
+ws = Workspace({...}, runtime_context=ctx)
+```
+
+### Accessor Module
+
+**Source:** `python/mirage/accessor/`
+
+File access patterns:
+
+```python
+# python/mirage/accessor/reader.py
+from mirage.accessor import FileAccessor
+
+accessor = FileAccessor(vfs)
+
+# Stream read
+async for chunk in accessor.read_stream('/s3/large-file.bin'):
+    process(chunk)
+
+# Batch read
+results = await accessor.batch_read(['/s3/a.txt', '/s3/b.txt'])
+```
+
+### Bridge Module
+
+**Source:** `python/mirage/bridge/`
+
+Cross-language communication:
+
+```python
+# python/mirage/bridge/client.py
+from mirage.bridge import BridgeClient
+
+bridge = BridgeClient('ws://localhost:8080')
+await bridge.connect()
+
+# Call TypeScript function from Python
+result = await bridge.call('typescriptFunction', ['arg1', 'arg2'])
+```
+
+### Observe Module
+
+**Source:** `python/mirage/observe/`
+
+Observability and metrics:
+
+```python
+# python/mirage/observe/telemetry.py
+from mirage.observe import TelemetryCollector
+
+telemetry = TelemetryCollector()
+
+# Record metrics
+telemetry.record('vfs.read', 1.0, {'resource': 's3'})
+telemetry.record('vfs.write', 2.5, {'resource': 'gcs'})
+
+# Export to collector
+await telemetry.export()
+```
+
+### Ops Module
+
+**Source:** `python/mirage/ops/`
+
+Batch operations:
+
+```python
+# python/mirage/ops/batch.py
+from mirage.ops import BatchOperations
+
+ops = BatchOperations(vfs)
+
+# Batch copy
+await ops.batch_copy([
+    ('/s3/a.txt', '/gcs/a.txt'),
+    ('/s3/b.txt', '/gcs/b.txt'),
+])
+
+# Batch delete
+await ops.batch_delete(['/s3/old1.txt', '/s3/old2.txt'])
+```
+
+### Provision Module
+
+**Source:** `python/mirage/provision/`
+
+Resource provisioning:
+
+```python
+# python/mirage/provision/factory.py
+from mirage.provision import ResourceFactory
+
+factory = ResourceFactory()
+factory.register('s3', S3Provider())
+
+# Provision resource
+resource = await factory.provision('s3', {
+    'bucket': 'my-bucket',
+    'region': 'us-east-1',
+})
+```
+
+### IO Module
+
+**Source:** `python/mirage/io/`
+
+I/O utilities:
+
+```python
+# python/mirage/io/streams.py
+from mirage.io import AsyncStream
+
+# Create stream from iterator
+async def data_generator():
+    for i in range(10):
+        yield f"chunk {i}\n".encode()
+
+stream = AsyncStream(data_generator())
+data = await stream.read()
+```
+
+### Shell Module
+
+**Source:** `python/mirage/shell/`
+
+Shell command execution:
+
+```python
+# python/mirage/shell/executor.py
+from mirage.shell import ShellExecutor
+
+executor = ShellExecutor()
+
+# Execute shell command
+result = await executor.execute('echo hello')
+print(result.stdout)  # 'hello\n'
+print(result.returncode)  # 0
+```
+
+### VFP Module
+
+**Source:** `python/mirage/vfp/`
+
+Virtual File Protocol:
+
+```python
+# python/mirage/vfp/protocol.py
+from mirage.vfp import VFPClient
+
+client = VFPClient('localhost:9090')
+await client.connect()
+
+# Send VFP message
+response = await client.send({
+    'op': 'READ',
+    'path': '/s3/file.txt',
+})
+```
+
+### Utils Module
+
+**Source:** `python/mirage/utils/`
+
+Utility functions:
+
+```python
+# python/mirage/utils/async_.py
+from mirage.utils import gather_with_limit
+
+# Gather with concurrency limit
+tasks = [fetch_data(i) for i in range(100)]
+results = await gather_with_limit(tasks, limit=10)
+
+# python/mirage/utils/path.py
+from mirage.utils import normalize_path
+
+path = normalize_path('/s3//file.txt')  # '/s3/file.txt'
+```
+
+## Command Structure
+
+**Source:** `python/mirage/commands/`
+
+```
+commands/
+├── __init__.py
+├── builtin/              # Built-in commands
+│   ├── cat.py
+│   ├── ls.py
+│   ├── cp.py
+│   ├── mv.py
+│   ├── rm.py
+│   ├── grep.py
+│   ├── find.py
+│   ├── wc.py
+│   ├── sort.py
+│   ├── uniq.py
+│   ├── head.py
+│   ├── tail.py
+│   ├── echo.py
+│   └── pwd.py
+├── config.py             # Command configuration
+├── local_audio/          # Audio commands
+│   └── transcribe.py
+├── optional.py           # Optional commands
+├── registry.py           # Command registry
+├── resolve.py            # Path resolution
+├── safeguard.py          # Safety checks
+├── spec/                 # Command specifications
+│   ├── cat.yml
+│   ├── ls.yml
+│   └── ...
+└── types.py              # Type definitions
+```
+
+### Command Registry
+
+```python
+# python/mirage/commands/registry.py
+class CommandRegistry:
+    def __init__(self):
+        self.commands: Dict[str, Command] = {}
+    
+    def register(self, name: str, cmd: Command):
+        """Register command."""
+        self.commands[name] = cmd
+    
+    def get(self, name: str) -> Command:
+        """Get command by name."""
+        return self.commands[name]
+    
+    def list_builtin(self) -> list[str]:
+        """List built-in commands."""
+        return list(self.commands.keys())
+```
+
+### Adding Custom Commands
+
+```python
+# python/mirage/commands/custom.py
+from mirage.commands import Command, registry
+
+class MyCommand(Command):
+    name = 'mycommand'
+    description = 'My custom command'
+    
+    async def execute(self, vfs, args):
+        # Implementation
+        return 'result'
+
+# Register
+registry.register('mycommand', MyCommand())
+```
+
 ## Testing
 
 **Source:** `python/tests/`

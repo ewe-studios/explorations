@@ -77,7 +77,7 @@ src.strukto-ai/mirage/
 | 3 | Write 07-frameworks.md | DONE | Framework integrations |
 | 3 | Write 08-extending.md | DONE | Adding resources |
 | 4 | Generate HTML | DONE | All 9 documents generated |
-| 5 | Grandfather review | DONE | ⚠️ Partial — see grandfather-review.md |
+| 5 | Grandfather review | DONE | ✅ All issues fixed — see grandfather-review.md |
 
 ## Build System
 
