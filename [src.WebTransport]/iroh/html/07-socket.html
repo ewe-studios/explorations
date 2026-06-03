@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Socket Layer — Transports, RemoteMap, and Path Selection -- iroh</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/iroh/docs</span>
+    <div class="nav-actions">
+      <a href="04-address-lookup.html" class="nav-breadcrumb">Address Lookup — DNS, Pkarr, and Memory Resolution</a><a href="05-net_report.html" class="nav-breadcrumb">Network Report — Probes, NAT Detection, and Relay Selection</a><a href="06-tls.html" class="nav-breadcrumb">TLS Layer — Raw Public Key TLS with Ed25519</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="06-tls.html" class="nav-btn" title="Previous: TLS Layer — Raw Public Key TLS with Ed25519">← prev</a>
+      <a href="08-iroh-relay.html" class="nav-btn nav-btn-next" title="Next: Relay Server — Architecture and Operation">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Socket Layer — Transports, RemoteMap, and Path Selection</h1>
+<p>The Socket layer is iroh's connectivity engine. It manages multiple transport paths (direct UDP, relay), tracks per-remote state, and continuously selects the fastest path.</p>
+<h2>Architecture</h2>
+<div class="mermaid">
+flowchart TD
+    subgraph &quot;Socket (socket.rs)&quot;
+        Socket[Socket: Actor loop]
+        EP[EndpointInner]
+    end
+
+    subgraph &quot;Transports (socket/transports/)&quot;
+        Transports[Transports manager]
+        IP[IpTransport: UDP v4/v6]
+        RL[RelayTransport: relay actor]
+        Custom[CustomTransport: user-defined]
+    end
+
+    subgraph &quot;RemoteMap (socket/remote_map.rs)&quot;
+        RM[RemoteMap: per-endpoint actors]
+        RS1[RemoteStateActor: remote A]
+        RS2[RemoteStateActor: remote B]
+    end
+
+    subgraph &quot;Remote State (socket/remote_map/remote_state.rs)&quot;
+        Holepunch[Holepunching]
+        PS[PathSelector: biased RTT]
+        CS[ConnectionState tracking]
+    end
+
+    Socket --&gt; Transports
+    Transports --&gt; IP
+    Transports --&gt; RL
+    Transports --&gt; Custom
+    Socket --&gt; RM
+    RM --&gt; RS1
+    RM --&gt; RS2
+    RS1 --&gt; Holepunch
+    RS1 --&gt; PS
+    RS1 --&gt; CS
+
+</div>
+<p>Source: <code>iroh/src/socket.rs</code> (2860 lines including tests), <code>iroh/src/socket/transports.rs</code>, <code>iroh/src/socket/remote_map.rs</code>, <code>iroh/src/socket/remote_map/remote_state.rs</code>.</p>
+<h2>Transports Manager</h2>
+<pre><code class="language-rust">// iroh/src/socket/transports.rs
+pub enum TransportConfig {
+    /// IPv4 and IPv6 UDP sockets.
+    Ip { v4: Option&lt;Config&gt;, v6: Option&lt;Config&gt; },
+    /// Relay transport for datagram forwarding.
+    Relay { actor: RelayTransport },
+    /// User-defined custom transport.
+    Custom { ... },
+}
+</code></pre>
+<p>Source: <code>iroh/src/socket/transports.rs:1</code> — <code>Transports</code> manages IP, Relay, and Custom transports. It implements <code>noq::AsyncUdpSocket</code> so the QUIC stack (noq) calls into it for datagram send/recv.</p>
+<h2>IpTransport</h2>
+<p>Binds UDP sockets for IPv4 and/or IPv6:</p>
+<pre><code class="language-rust">// iroh/src/socket/transports/ip.rs
+pub struct IpTransport {
+    v4: Option&lt;UdpSocket&gt;,
+    v6: Option&lt;UdpSocket&gt;,
+}
+</code></pre>
+<p>Source: <code>iroh/src/socket/transports/ip.rs:1</code> — <code>IpTransport</code> manages the UDP sockets. The <code>IpSender</code> handles outgoing datagrams, sorting by network prefix length.</p>
+<h2>RelayTransport</h2>
+<p>Manages relay connections via an actor:</p>
+<pre><code class="language-rust">// iroh/src/socket/transports/relay.rs
+pub struct RelayTransport {
+    /// Actor managing datagram send/receive queues.
+    actor: ActorHandle,
+}
+</code></pre>
+<p>Source: <code>iroh/src/socket/transports/relay.rs:1</code> — The relay actor coordinates send and receive queues, with <code>RelaySender</code> using <code>PollSender</code> waker coordination for backpressure.</p>
+<h2>RemoteMap: Per-Endpoint State</h2>
+<pre><code class="language-rust">// iroh/src/socket/remote_map.rs
+pub struct RemoteMap {
+    /// Map from EndpointId to RemoteStateActor sender.
+    remotes: DashMap&lt;EndpointId, RemoteStateActorHandle&gt;,
+}
+</code></pre>
+<p>Source: <code>iroh/src/socket/remote_map.rs:1</code> — <code>RemoteMap</code> creates a <code>RemoteStateActor</code> for each unique remote endpoint. The actor manages all connections, hole-punching attempts, and path selection for that specific remote.</p>
+<h2>RemoteStateActor: The Connection Brain</h2>
+<pre><code class="language-rust">// iroh/src/socket/remote_map/remote_state.rs
+struct RemoteStateActor {
+    /// Current known addresses for the remote.
+    addresses: BTreeSet&lt;SocketAddr&gt;,
+    /// Relay URL for this remote.
+    relay_url: Option&lt;RelayUrl&gt;,
+    /// Active connections to this remote.
+    connections: HashMap&lt;ConnectionId, ConnectionState&gt;,
+    /// Path selection context (RTT measurements).
+    path_context: PathSelectionContext,
+}
+</code></pre>
+<p>Source: <code>iroh/src/socket/remote_map/remote_state.rs:1</code> — The actor:</p>
+<ol><li><strong>Receives address updates</strong> from AddressLookup</li><li><strong>Triggers hole-punching</strong> when new direct addresses appear</li><li><strong>Selects the best path</strong> via the <code>PathSelector</code> trait</li><li><strong>Pings the remote</strong> on network changes to verify paths</li><li><strong>Manages connection lifecycle</strong> — creates, tracks, and cleans up connections</li></ol>
+<h2>PathSelector: Biased RTT Selection</h2>
+<p>The default path selector uses biased RTT measurement — it slightly prefers the currently active path to avoid unnecessary switching:</p>
+<pre><code class="language-rust">// iroh/src/socket/remote_map/remote_state.rs
+trait PathSelector {
+    fn select_path(&amp;self, context: &amp;PathSelectionContext) -&gt; Option&lt;PathId&gt;;
+}
+
+/// Default: biased RTT selector.
+struct BiasedRttPathSelector { ... }
+</code></pre>
+<p>Source: <code>iroh/src/socket/remote_map/remote_state.rs:1</code> — <code>BiasedRttPathSelector</code> implements the default path selection logic. It measures RTT on all available paths and selects the fastest, with a bias toward the current path to prevent flapping.</p>
+<h2>Hole-Punching</h2>
+<p>When a new direct address is discovered for a remote, the actor initiates hole-punching:</p>
+<ol><li>Send STUN-like probes to the new address</li><li>If the remote does the same, both sides establish a direct UDP path</li><li>The path's RTT is measured and compared with the relay path</li><li>If direct is faster, the path selector switches to direct</li></ol>
+<p>Source: <code>iroh/src/socket/remote_map/remote_state.rs:1</code> — Hole-punching is managed by the <code>RemoteStateActor</code> via the <code>PathSelector</code>.</p>
+<h2>FourTuple: Path Identification</h2>
+<pre><code class="language-rust">// iroh/src/socket/transports.rs
+pub struct FourTuple {
+    pub local: SocketAddr,
+    pub remote: SocketAddr,
+    pub transport: TransportId,
+    pub interface: Option&lt;u32&gt;,
+}
+</code></pre>
+<p>Source: <code>iroh/src/socket/transports.rs:1</code> — Each path is identified by a <code>FourTuple</code>: local address, remote address, transport type, and network interface.</p>
+<h2>Network Change Handling</h2>
+<p>When the network changes (WiFi → cellular, IP address change), the Socket:</p>
+<ol><li>Detects the change via OS network events</li><li>Triggers pings on all active paths</li><li>Invalidates stale addresses</li><li>Starts new address lookups</li><li>May trigger a full net_report</li></ol>
+<p>Source: <code>iroh/src/socket.rs:1</code> — Network change handling is integrated into the Socket's actor loop.</p>
+<h2>Related Documents</h2>
+<ul><li><a href="../markdown/02-endpoint.md">Endpoint</a> — How the endpoint uses the Socket</li><li><a href="../markdown/05-net_report.md">Network Report</a> — How net_report feeds path data</li><li><a href="../markdown/09-data-flow.md">Data Flow</a> — Complete data flow sequence</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
