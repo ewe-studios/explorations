@@ -145,6 +145,33 @@ Iroh connects nodes by **public key (NodeId)**. The process:
 └─────────────────────────────────────────┘
 ```
 
+### Blob Transfer Flow (iroh-blobs + bao-tree)
+
+```mermaid
+sequenceDiagram
+    participant Sender as Sender Node
+    participant Bao as bao-tree
+    participant Conn as QUIC Connection
+    participant Recv as Receiver Node
+
+    Sender->>Bao: compute BLAKE3 root hash
+    Bao-->>Sender: root hash + chunk tree
+    Sender->>Conn: send root hash
+    Conn->>Recv: root hash received
+    Recv->>Conn: request chunk range
+    Conn->>Bao: fetch chunk range with proofs
+    Bao-->>Conn: chunks + BLAKE3 proofs
+    Conn->>Recv: verified chunks
+    Recv->>Recv: verify each chunk against root
+    loop until complete
+        Recv->>Conn: request next missing range
+        Conn->>Recv: verified chunks
+    end
+    Recv-->>Recv: full blob verified
+```
+
+**Key insight:** The bao-tree chunking protocol enables partial blob transfer — the receiver doesn't need to download the entire blob to verify what it has. Each chunk carries its own BLAKE3 proof against the root hash, so the receiver can request missing ranges and verify them independently. This is what makes `sendme` resume possible.
+
 ## Core Components
 
 ### 1. iroh (v1.0.0-rc.1) — Core P2P Library
@@ -264,6 +291,26 @@ IPFS-compatible implementation adapted for Iroh networking:
 | `iroh-ffi` | Python + others | Python, etc. |
 | `iroh-c-ffi` | C header (irohnet.h) | C |
 | `iroh-js` | Bun-based build | JavaScript/TypeScript |
+
+## Entry Points
+
+### dumbpipe — P2P Data Pipe
+
+- **File:** `dumbpipe/src/main.rs`
+- **Description:** CLI to pipe data between machines with NAT hole punching
+- **Flow:** `dumbpipe send` → encode data as iroh-blobs → transfer via QUIC → `dumbpipe receive` decodes
+
+### sendme — Directory Transfer
+
+- **File:** `sendme/src/main.rs`
+- **Description:** CLI to send directories over P2P
+- **Flow:** `sendme <path>` → BLAKE3 hash + bao-tree chunking → QUIC transfer → receiver verifies each chunk
+
+### iroh-doctor — Network Diagnostics
+
+- **File:** `iroh-doctor/src/main.rs`
+- **Description:** Diagnostic tool for Iroh connectivity
+- **Flow:** Tests DNS resolution → direct QUIC connection → relay fallback → reports latency and path
 
 ## Utility Crates
 

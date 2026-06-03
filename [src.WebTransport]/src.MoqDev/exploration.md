@@ -131,6 +131,28 @@ flowchart TD
 
 ### Protocol Negotiation
 
+```mermaid
+sequenceDiagram
+    participant Pub as Publisher
+    participant Net as moq-net (negotiator)
+    participant WT as WebTransport
+    participant Relay as moq-relay
+    participant Sub as Subscriber
+
+    Pub->>Net: connect(WebTransport)
+    Net->>Net: negotiate moq-lite vs IETF transport
+    Net->>WT: open session (Quinn/Iroh/QUICHE)
+    WT-->>Relay: session established
+    Pub->>Relay: publish Broadcast(track1)
+    Relay->>Relay: store groups/frames
+    Sub->>Relay: subscribe(track1)
+    Relay->>Sub: stream Track groups (out-of-order)
+    Sub->>Sub: reorder within each Group
+    Sub-->>Sub: render frames (in-order)
+```
+
+**Aha:** The moq-net negotiator is the bridge between protocol versions. Publishers and subscribers don't need to agree on the same draft version — moq-net forwards old clients (draft 14) to new servers transparently by wrapping moq-lite messages in IETF transport framing when needed.
+
 ```
 ┌─────────────────────────────────────────────┐
 │           moq-net (v0.1.7)                  │
@@ -262,6 +284,26 @@ JWT token generation and validation for relay authentication.
 | **C** | `libmoq` | v0.3.1 | Staticlib + cbindgen |
 | **JavaScript** | `@moq/web-transport` | varies | Node ESM + WASM |
 | **Python** | `moq-ffi` | varies | FFI via moq/rs/moq-ffi |
+
+## Entry Points
+
+### moq-cli — Publish/Subscribe CLI
+
+- **File:** `moq/rs/moq-cli/src/main.rs`
+- **Description:** Command-line tool to publish and subscribe to MoQ broadcasts
+- **Flow:** `moq-cli publish <relay-url> --track <name>` → connect via WebTransport → open broadcast → stream groups/frames
+
+### moq-relay — Media Relay Server
+
+- **File:** `moq/rs/moq-relay/src/main.rs`
+- **Description:** Content-agnostic relay connecting publishers to subscribers
+- **Flow:** Start server → accept WebTransport connections → route broadcasts between publishers and subscribers → JWT auth via moq-token
+
+### hang.live — Production Web App
+
+- **File:** `hang.live/` (Next.js + Cloudflare Workers)
+- **Description:** Live streaming web application
+- **Flow:** Browser connects via WebSocket fallback → subscribes to MoQ broadcast → renders WebCodecs video/audio
 
 ## External Integrations
 

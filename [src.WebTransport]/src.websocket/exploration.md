@@ -270,6 +270,41 @@ sequenceDiagram
     Tung-->>Client: Message::Text("world")
 ```
 
+### WebSocket Frame Format (RFC6455)
+
+```mermaid
+flowchart LR
+    subgraph "WebSocket Frame"
+        FIN[FIN bit]
+        RSV[RSV 1-3]
+        Opcode[Opcode 4 bits]
+        MASK[MASK bit]
+        PayloadLen[Payload length 7/23/71 bits]
+        MaskKey[Masking key 0/4 bytes]
+        Data[Payload data]
+    end
+
+    FIN --> RSV --> Opcode --> MASK --> PayloadLen --> MaskKey --> Data
+
+    subgraph "Opcode Values"
+        O1[0x0 = Continuation]
+        O2[0x1 = Text UTF-8]
+        O3[0x2 = Binary]
+        O4[0x8 = Close]
+        O5[0x9 = Ping]
+        O6[0xA = Pong]
+    end
+
+    Opcode -.-> O1
+    Opcode -.-> O2
+    Opcode -.-> O3
+    Opcode -.-> O4
+    Opcode -.-> O5
+    Opcode -.-> O6
+```
+
+**Key insight:** Client-to-server frames MUST be masked (MASK bit = 1, 4-byte XOR mask key precedes payload). Server-to-client frames are NOT masked. This asymmetry prevents cache poisoning attacks — a malicious client can't craft frames that look like server responses to intermediaries. The tungstenite-rs `Message` enum (Text, Binary, Ping, Pong, Close) maps directly to these opcodes.
+
 ### tokio-tungstenite Async Stack
 
 ```
@@ -287,6 +322,26 @@ sequenceDiagram
 │  tokio::io::{AsyncRead, AsyncWrite} │
 └─────────────────────────────────────┘
 ```
+
+## Entry Points
+
+### tungstenite-rs — Library Entry
+
+- **File:** `tungstenite-rs/src/lib.rs`
+- **Description:** Core WebSocket RFC6455 implementation (sync)
+- **Flow:** `accept(stream)` or `connect(url)` → handshake → `WebSocket<Stream>` with `read()`/`write()` API
+
+### tokio-tungstenite — Async Entry
+
+- **File:** `tokio-tungstenite/src/lib.rs`
+- **Description:** Tokio async wrapper
+- **Flow:** `connect_async(url)` → `accept_async(stream)` → `WebSocketStream<S>` implementing `Stream` + `Sink`
+
+### websocat — CLI Entry
+
+- **File:** `websocat/src/main.rs`
+- **Description:** Command-line WebSocket client/server/proxy
+- **Flow:** `websocat ws://host:port` → connect → pipe stdin/stdout over WebSocket frames
 
 ## Key Insights
 
