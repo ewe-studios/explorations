@@ -53,9 +53,7 @@ pub enum EntryState {
     },
     /// Blob is partially stored.
     Partial {
-        size_info: SizeInfo,
-        data_location: DataLocation,
-        outboard_location: OutboardLocation,
+        size: Option<u64>,
     },
 }
 ```

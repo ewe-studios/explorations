@@ -10,7 +10,7 @@ The iroh-blobs protocol defines four request types for transferring blobs over i
 
 ```rust
 // iroh-blobs/src/protocol.rs
-pub const ALPN: &[u8] = b"/iroh-blobs/1";
+pub const ALPN: &[u8] = b"/iroh-bytes/4";
 ```
 
 Source: `iroh-blobs/src/protocol.rs:1` — The ALPN used for iroh-blobs connections.
@@ -22,16 +22,18 @@ Source: `iroh-blobs/src/protocol.rs:1` — The ALPN used for iroh-blobs connecti
 pub enum Request {
     /// Get a single blob or hash sequence.
     Get(GetRequest),
-    /// Get multiple blobs in a single connection.
-    GetMany(GetManyRequest),
-    /// Push a blob to the remote (reverse direction).
-    Push(PushRequest),
     /// Observe a blob without transferring (check existence/size).
     Observe(ObserveRequest),
+    /// Reserved slots for future extensions.
+    Slot2, Slot3, Slot4, Slot5, Slot6, Slot7,
+    /// Push a blob to the remote (reverse direction).
+    Push(PushRequest),
+    /// Get multiple blobs in a single connection.
+    GetMany(GetManyRequest),
 }
 ```
 
-Source: `iroh-blobs/src/protocol.rs:1` — Four request types.
+Source: `iroh-blobs/src/protocol.rs:1` — 10 request variants (4 active + 6 reserved).
 
 ## GetRequest
 
@@ -41,13 +43,11 @@ pub struct GetRequest {
     /// The root hash to fetch.
     pub hash: Hash,
     /// Which ranges to fetch (can be "all" or specific ranges).
-    pub ranges: RangeSpecSeq,
-    /// Whether this is a hash sequence.
-    pub format: BlobFormat,
+    pub ranges: ChunkRangesSeq,
 }
 ```
 
-Source: `iroh-blobs/src/protocol.rs:1` — `GetRequest` fetches a single blob with optional range restrictions.
+Source: `iroh-blobs/src/protocol.rs:1` — `GetRequest` fetches a single blob. Format (Raw vs HashSeq) is determined by the ranges requested, not a separate field.
 
 ## GetManyRequest
 
@@ -57,25 +57,20 @@ pub struct GetManyRequest {
     /// Multiple root hashes to fetch.
     pub hashes: Vec<Hash>,
     /// Per-hash range specifications.
-    pub ranges: RangeSpecSeq,
+    pub ranges: ChunkRangesSeq,
 }
 ```
 
-Source: `iroh-blobs/src/protocol.rs:1` — `GetManyRequest` fetches multiple blobs in a single connection, reducing handshake overhead.
+Source: `iroh-blobs/src/protocol.rs:1` — `GetManyRequest` fetches multiple blobs. Uses `ChunkRangesSeq` (not `RangeSpecSeq`).
 
 ## PushRequest
 
 ```rust
 // iroh-blobs/src/protocol.rs
-pub struct PushRequest {
-    /// The blob to push.
-    pub hash: Hash,
-    /// Format (Raw or HashSeq).
-    pub format: BlobFormat,
-}
+pub struct PushRequest(GetRequest);
 ```
 
-Source: `iroh-blobs/src/protocol.rs:1` — `PushRequest` sends a blob TO the remote (opposite of Get).
+Source: `iroh-blobs/src/protocol.rs:1` — `PushRequest` is a newtype wrapping `GetRequest`. It reuses the same hash and ranges structure — format is implicit.
 
 ## ObserveRequest
 
@@ -84,10 +79,12 @@ Source: `iroh-blobs/src/protocol.rs:1` — `PushRequest` sends a blob TO the rem
 pub struct ObserveRequest {
     /// The hash to check.
     pub hash: Hash,
+    /// Range specification for partial existence checks.
+    pub ranges: RangeSpec,
 }
 ```
 
-Source: `iroh-blobs/src/protocol.rs:1` — `ObserveRequest` checks if a blob exists on the remote without transferring it. Returns blob status (complete/partial/not found) and size.
+Source: `iroh-blobs/src/protocol.rs:1` — `ObserveRequest` checks blob existence with optional range filtering.
 
 ## RangeSpec and ChunkRangesSeq
 
@@ -142,14 +139,16 @@ Source: `iroh-blobs/src/provider.rs:1` — `handle_connection` dispatches to the
 
 ```rust
 // iroh-blobs/src/protocol.rs
+#[repr(u32)]
 pub enum Closed {
-    /// Transfer completed successfully.
-    Success,
-    /// Transfer was aborted by the sender.
-    Abort,
-    /// Internal error.
-    InternalError,
+    /// Stream was dropped without explicit close.
+    StreamDropped = 0,
+    /// Provider is terminating (server shutting down).
+    ProviderTerminating = 1,
+    /// Request was received but could not be processed.
+    RequestReceived = 2,
 }
+```
 ```
 
 Source: `iroh-blobs/src/protocol.rs:1` — Connection close reasons.

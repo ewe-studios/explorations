@@ -167,7 +167,7 @@ Source: `iroh-blobs/src/store/fs/mod.rs:1` — Two-actor architecture.
 
 ```rust
 // iroh-blobs/src/store/mod.rs
-pub const IROH_BLOCK_SIZE: u32 = 16 * 1024; // 16 KiB chunks
+pub const IROH_BLOCK_SIZE: BlockSize = BlockSize::from_chunk_log(4); // 16 KiB chunks
 ```
 
 Source: `iroh-blobs/src/store/mod.rs:1` — The default chunk size for bao verified streaming.

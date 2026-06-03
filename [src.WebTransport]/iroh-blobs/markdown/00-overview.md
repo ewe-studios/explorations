@@ -143,10 +143,9 @@ Source: `iroh-blobs/README.md:1`
 
 | Feature | Default | Purpose |
 |---------|---------|---------|
-| `default` | ✅ | Standard features |
-| `redb` | ✅ | redb metadata database |
-| `tokio-io` | ✅ | Tokio async I/O |
-| `test-utils` | — | Test utilities |
+| `default` | ✅ | Enables `metrics` |
+| `hide-proto-docs` | — | Hide internal protocol docs |
+| `metrics` | ✅ | Prometheus metrics collection |
 
 Source: `iroh-blobs/Cargo.toml:features`
 
@@ -155,12 +154,14 @@ Source: `iroh-blobs/Cargo.toml:features`
 | Dependency | Version | Purpose |
 |------------|---------|---------|
 | `bao-tree` | 0.15 | BLAKE3 verified streaming |
-| `iroh-base` | =1.0.0-rc.1 | PublicKey, NodeAddr types |
-| `iroh` | =1.0.0-rc.1 | Networking |
+| `iroh-base` | 0.90 | PublicKey, NodeAddr types |
+| `iroh` | 0.90 | Networking |
 | `postcard` | 1 | Serialization |
-| `iroh-metrics` | =1.0.0-rc.0 | Metrics |
-| `redb` | 2 | Metadata database (FsStore) |
-| `blake3` | 1.8 | Hashing |
+| `iroh-metrics` | 0.35 | Metrics collection |
+| `redb` | =2.4 | Metadata database (FsStore) |
+| `iroh-io` | — | Async I/O utilities |
+| `iroh-quinn` | 0.14 | QUIC backend |
+| `irpc` | 0.16 | RPC system |
 
 Source: `iroh-blobs/Cargo.toml:dependencies`
 

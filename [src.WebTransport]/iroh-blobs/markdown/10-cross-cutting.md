@@ -11,7 +11,7 @@ These concerns span multiple modules in iroh-blobs.
 ```rust
 // iroh-blobs/src/ticket.rs
 pub struct BlobTicket {
-    addr: NodeAddr,
+    node: NodeAddr,
     hash: Hash,
     format: BlobFormat,
 }
@@ -44,19 +44,19 @@ Source: `iroh-blobs/src/format/collection.rs:1` — A collection groups named bl
 
 ```
 CollectionMeta (serialized with postcard):
-  ├── version: u64
-  ├── blobs: Vec<(String, Hash)>
+  ├── header: [u8; 13]    // Must be "CollectionV0."
+  └── names: Vec<String>  // Names of blobs in the sequence
 ```
 
-The collection itself is stored as a HashSeq blob, where each child is a named blob.
+The blobs themselves are stored as a `HashSeq` where the meta hash is the first element.
 
 ## TempTag
 
 ```rust
 // iroh-blobs/src/util/temp_tag.rs
 pub struct TempTag {
-    hash: Hash,
-    counter: Arc<AtomicUsize>,
+    inner: HashAndFormat,
+    on_drop: Option<Weak<dyn TagDrop>>,
 }
 ```
 
@@ -79,20 +79,22 @@ pub struct Metrics {
     pub downloads_error: Counter,
     pub downloads_notfound: Counter,
     pub downloader_tick_main: Counter,
-    pub downloader_tick_rx: Counter,
-    pub downloader_tick_discovery: Counter,
-    pub downloader_tick_dialer: Counter,
-    pub downloader_tick_connections: Counter,
+    pub downloader_tick_connection_ready: Counter,
+    pub downloader_tick_message_received: Counter,
+    pub downloader_tick_transfer_completed: Counter,
+    pub downloader_tick_transfer_failed: Counter,
+    pub downloader_tick_retry_node: Counter,
+    pub downloader_tick_goodbye_node: Counter,
 }
 ```
 
-Source: `iroh-blobs/src/metrics.rs:1` — 10 Prometheus counters for download tracking.
+Source: `iroh-blobs/src/metrics.rs:1` — 12 Prometheus counters for download tracking and downloader actor loop metrics.
 
 ## BlobsProtocol ALPN
 
 ```rust
 // iroh-blobs/src/net_protocol.rs
-pub const ALPN: &[u8] = b"/iroh-blobs/1";
+pub const ALPN: &[u8] = b"/iroh-bytes/4";
 ```
 
 Source: `iroh-blobs/src/net_protocol.rs:1` — Registered with the iroh Router.

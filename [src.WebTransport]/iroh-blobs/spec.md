@@ -12,7 +12,7 @@ workspace: iroh-blobs
 - **Location:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.WebTransport/src.n0-computer/iroh-blobs`
 - **Language:** Rust
 - **Edition:** 2021
-- **Rust Version:** 1.91
+- **Rust Version:** 1.85
 - **License:** MIT OR Apache-2.0
 - **Version:** 0.91.0
 - **Remote:** `git@github.com:n0-computer/iroh-blobs`

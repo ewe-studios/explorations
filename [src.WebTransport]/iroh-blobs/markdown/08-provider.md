@@ -27,18 +27,18 @@ Source: `iroh-blobs/src/net_protocol.rs:1` — `BlobsProtocol` implements iroh's
 
 ```rust
 // iroh-blobs/src/provider.rs
-pub async fn handle_connection<S>(conn: Connection, store: &S) -> Result<()> {
-    let request = read_request(&mut conn).await?;
-    match request {
-        Request::Get(req) => handle_get(conn, req, store).await,
-        Request::GetMany(req) => handle_get_many(conn, req, store).await,
-        Request::Push(req) => handle_push(conn, req, store).await,
-        Request::Observe(req) => handle_observe(conn, req, store).await,
-    }
+pub async fn handle_connection<S>(
+    conn: Connection,
+    store: &S,
+    progress: EventSender,
+) -> Result<()> {
+    // Authorization step before accepting requests
+    // ...
+    handle_stream(conn, store, progress).await?;
 }
 ```
 
-Source: `iroh-blobs/src/provider.rs:1` — `handle_connection` reads the request and dispatches to the appropriate handler.
+Source: `iroh-blobs/src/provider.rs:1` — `handle_connection` includes an authorization step and dispatches through `handle_stream`. Push requests require explicit authorization via `authorize_push_request`. Reserved slots (Slot2-Slot7) fall through to `anyhow::bail!("unsupported request")`.
 
 ## handle_get
 
@@ -107,16 +107,28 @@ Source: `iroh-blobs/src/provider.rs:1` — Progress events are sent through a ch
 ```rust
 // iroh-blobs/src/provider.rs
 pub enum Event {
-    /// Client connected.
-    Connected {
-        connection_id: u64,
-    },
-    /// Transfer started.
-    TransferStarted {
-        hash: Hash,
-    },
-    /// Chunk sent.
-    ChunkSent {
+    /// A client connected to the provider.
+    ClientConnected { connection: Connection },
+    /// The connection was closed.
+    ConnectionClosed { connection_id: u64 },
+    /// A Get request was received.
+    GetRequestReceived { hash: Hash },
+    /// A GetMany request was received.
+    GetManyRequestReceived { hashes: Vec<Hash> },
+    /// A Push request was received.
+    PushRequestReceived { hash: Hash },
+    /// A transfer has started.
+    TransferStarted { hash: Hash },
+    /// Progress update during transfer.
+    TransferProgress { offset: u64, size: u64 },
+    /// Transfer completed successfully.
+    TransferCompleted { hash: Hash, stats: TransferStats },
+    /// Transfer was aborted.
+    TransferAborted { hash: Hash },
+}
+```
+
+Source: `iroh-blobs/src/provider.rs:1` — 9 event variants tracking the full provider lifecycle.
         offset: u64,
         size: u64,
     },
@@ -140,10 +152,12 @@ Source: `iroh-blobs/src/provider.rs:1` — Events track the lifecycle of each tr
 ```rust
 // iroh-blobs/src/provider.rs
 pub struct TransferStats {
-    /// Bytes sent.
-    pub bytes_sent: u64,
-    /// Chunks sent.
-    pub chunks_sent: u64,
+    /// Payload bytes sent (blob content + outboard).
+    pub payload_bytes_sent: u64,
+    /// Non-payload bytes sent (protocol overhead).
+    pub other_bytes_sent: u64,
+    /// Bytes read from store.
+    pub bytes_read: u64,
     /// Transfer duration.
     pub duration: Duration,
 }

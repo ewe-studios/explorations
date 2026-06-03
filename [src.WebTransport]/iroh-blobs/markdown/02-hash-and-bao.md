@@ -74,7 +74,7 @@ Source: `iroh-blobs/src/store/fs/bao_file.rs:1` — `BaoFileStorage` stores cont
 
 ```rust
 // iroh-blobs/src/store/mod.rs
-pub const IROH_BLOCK_SIZE: u32 = 16 * 1024; // 16 KiB
+pub const IROH_BLOCK_SIZE: BlockSize = BlockSize::from_chunk_log(4); // 16 KiB
 ```
 
 Source: `iroh-blobs/src/store/mod.rs:1` — Bao uses 16 KiB chunks. Each chunk is independently verifiable against the root hash via the outboard.

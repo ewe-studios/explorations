@@ -123,10 +123,10 @@ Source: `iroh-blobs/src/api/downloader.rs:1` — The `ContentDiscovery` trait fi
 ```rust
 // iroh-blobs/src/api/downloader.rs
 pub enum SplitStrategy {
-    /// Download from a single node.
-    Single,
-    /// Split across multiple nodes.
-    Shuffled,
+    /// No splitting — download from single source.
+    None,
+    /// Split chunks across multiple nodes.
+    Split,
 }
 ```
 
@@ -152,26 +152,21 @@ Source: `iroh-blobs/src/api/remote.rs:1` — `Remote` provides single-node downl
 
 ```rust
 // iroh-blobs/src/api.rs
+/// The primary error type — wraps an io::Error.
 pub enum Error {
-    /// Store error.
-    Store(StoreError),
-    /// Protocol error.
-    Protocol(ProtocolError),
-    /// Network error.
-    Network(NetworkError),
+    Io(io::Error),
 }
 
+/// Errors from RPC requests via irpc.
 pub enum RequestError {
-    /// Remote doesn't have the blob.
-    NotFound,
-    /// Protocol violation.
-    BadRequest,
-    /// Network error.
-    Io,
+    /// Error from the irpc transport layer.
+    Rpc { source: irpc::Error },
+    /// Inner error from the API layer.
+    Inner { source: Error },
 }
 ```
 
-Source: `iroh-blobs/src/api.rs:1` — Error types for API, request, and protocol failures.
+Source: `iroh-blobs/src/api.rs:1` — `Error` is a single-variant wrapping `io::Error`. `RequestError` wraps irpc and inner API errors.
 
 ## Related Documents
 

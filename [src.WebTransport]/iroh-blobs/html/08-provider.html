@@ -149,17 +149,17 @@ impl&lt;S&gt; ProtocolHandler for BlobsProtocol&lt;S&gt; {
 <p>Source: <code>iroh-blobs/src/net_protocol.rs:1</code> — <code>BlobsProtocol</code> implements iroh's <code>ProtocolHandler</code>, dispatching to <code>handle_connection</code>.</p>
 <h2>Connection Handler</h2>
 <pre><code class="language-rust">// iroh-blobs/src/provider.rs
-pub async fn handle_connection&lt;S&gt;(conn: Connection, store: &amp;S) -&gt; Result&lt;()&gt; {
-    let request = read_request(&amp;mut conn).await?;
-    match request {
-        Request::Get(req) =&gt; handle_get(conn, req, store).await,
-        Request::GetMany(req) =&gt; handle_get_many(conn, req, store).await,
-        Request::Push(req) =&gt; handle_push(conn, req, store).await,
-        Request::Observe(req) =&gt; handle_observe(conn, req, store).await,
-    }
+pub async fn handle_connection&lt;S&gt;(
+    conn: Connection,
+    store: &amp;S,
+    progress: EventSender,
+) -&gt; Result&lt;()&gt; {
+    // Authorization step before accepting requests
+    // ...
+    handle_stream(conn, store, progress).await?;
 }
 </code></pre>
-<p>Source: <code>iroh-blobs/src/provider.rs:1</code> — <code>handle_connection</code> reads the request and dispatches to the appropriate handler.</p>
+<p>Source: <code>iroh-blobs/src/provider.rs:1</code> — <code>handle_connection</code> includes an authorization step and dispatches through <code>handle_stream</code>. Push requests require explicit authorization via <code>authorize_push_request</code>. Reserved slots (Slot2-Slot7) fall through to <code>anyhow::bail!("unsupported request")</code>.</p>
 <h2>handle_get</h2>
 <p>Serves a single blob to the client:</p>
 <ol><li>Read the blob from store (content + outboard)</li><li>Send blob header (hash, size)</li><li>Stream chunks according to the requested ranges</li><li>Close connection</li></ol>
@@ -192,39 +192,40 @@ pub struct ProgressReader {
 <h2>Event Types</h2>
 <pre><code class="language-rust">// iroh-blobs/src/provider.rs
 pub enum Event {
-    /// Client connected.
-    Connected {
-        connection_id: u64,
-    },
-    /// Transfer started.
-    TransferStarted {
-        hash: Hash,
-    },
-    /// Chunk sent.
-    ChunkSent {
-        offset: u64,
-        size: u64,
-    },
-    /// Transfer completed.
-    TransferCompleted {
-        hash: Hash,
-        stats: TransferStats,
-    },
-    /// Transfer aborted.
-    TransferAborted {
-        hash: Hash,
-        error: String,
-    },
+    /// A client connected to the provider.
+    ClientConnected { connection: Connection },
+    /// The connection was closed.
+    ConnectionClosed { connection_id: u64 },
+    /// A Get request was received.
+    GetRequestReceived { hash: Hash },
+    /// A GetMany request was received.
+    GetManyRequestReceived { hashes: Vec&lt;Hash&gt; },
+    /// A Push request was received.
+    PushRequestReceived { hash: Hash },
+    /// A transfer has started.
+    TransferStarted { hash: Hash },
+    /// Progress update during transfer.
+    TransferProgress { offset: u64, size: u64 },
+    /// Transfer completed successfully.
+    TransferCompleted { hash: Hash, stats: TransferStats },
+    /// Transfer was aborted.
+    TransferAborted { hash: Hash },
 }
 </code></pre>
-<p>Source: <code>iroh-blobs/src/provider.rs:1</code> — Events track the lifecycle of each transfer.</p>
-<h2>TransferStats</h2>
-<pre><code class="language-rust">// iroh-blobs/src/provider.rs
+<p>Source: <code>iroh-blobs/src/provider.rs:1</code> — 9 event variants tracking the full provider lifecycle.         offset: u64,         size: u64,     },     /// Transfer completed.     TransferCompleted {         hash: Hash,         stats: TransferStats,     },     /// Transfer aborted.     TransferAborted {         hash: Hash,         error: String,     }, }</p>
+<pre><code class="language-">Source: `iroh-blobs/src/provider.rs:1` — Events track the lifecycle of each transfer.
+
+## TransferStats
+
+```rust
+// iroh-blobs/src/provider.rs
 pub struct TransferStats {
-    /// Bytes sent.
-    pub bytes_sent: u64,
-    /// Chunks sent.
-    pub chunks_sent: u64,
+    /// Payload bytes sent (blob content + outboard).
+    pub payload_bytes_sent: u64,
+    /// Non-payload bytes sent (protocol overhead).
+    pub other_bytes_sent: u64,
+    /// Bytes read from store.
+    pub bytes_read: u64,
     /// Transfer duration.
     pub duration: Duration,
 }
