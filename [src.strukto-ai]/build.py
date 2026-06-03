@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Convert markdown files to HTML. Zero dependencies -- stdlib only.
+"""Convert exploration.md files to HTML. Zero dependencies -- stdlib only.
 
 Usage:
-    python3 build.py [PROJECT_DIR]
+    python3 build.py
 
-Where PROJECT_DIR is like 'documentation/pi' or 'documentation/hermes'.
-Defaults to the directory this script lives in.
+Builds HTML from exploration.md files in each subdirectory.
 """
 
 import re
@@ -15,8 +14,6 @@ from html import escape
 from pathlib import Path
 
 
-# ── HTML template ────────────────────────────────────────────────────────────
-
 HTML_TEMPLATE = """\
 <!DOCTYPE html>
 <html lang="en" data-theme="light">
@@ -24,7 +21,7 @@ HTML_TEMPLATE = """\
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{title}</title>
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="../styles.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
   <script>
     (function() {{
@@ -59,7 +56,6 @@ HTML_TEMPLATE = """\
       }}
       await render();
       new MutationObserver(render).observe(document.documentElement, {{ attributes: true, attributeFilter: ['data-theme'] }});
-      // ── Diagram zoom/pan modal ──────────────────────────────
       var overlay = null, container = null, svg = null;
       var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
       function openModal(src) {{
@@ -191,7 +187,7 @@ INDEX_TEMPLATE = """\
 
   <hr>
   <p style="color: var(--fg-soft); font-size: 0.85rem;">
-    Generated from markdown. Mermaid diagrams require JavaScript. Dark mode supported.
+    Generated from exploration markdown. Mermaid diagrams require JavaScript. Dark mode supported.
   </p>
   <script>function toggleTheme(){{var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}}</script>
 </body>
@@ -199,15 +195,11 @@ INDEX_TEMPLATE = """\
 """
 
 
-# ── Markdown → HTML converter ───────────────────────────────────────────────
-
 class Md2Html:
-    """Minimal markdown-to-HTML converter. Handles the subset our docs use."""
+    """Minimal markdown-to-HTML converter."""
 
     def convert(self, text: str) -> str:
         self._mermaid_counter = 0
-
-        # Extract fenced code blocks first to protect them from other processing
         parts = []
         last_end = 0
         for m in re.finditer(r'^```(mermaid)?(\w+)?\s*\n(.*?)^```\s*$', text, re.DOTALL | re.MULTILINE):
@@ -273,26 +265,16 @@ class Md2Html:
 
         while i < len(lines):
             line = lines[i]
-
-            # Empty line -- flush any open block
             if not line.strip():
-                flush_table()
-                flush_list()
-                flush_bq()
-                in_table = False
-                in_list = False
-                in_blockquote = False
+                flush_table(); flush_list(); flush_bq()
+                in_table = False; in_list = False; in_blockquote = False
                 i += 1
                 continue
-
-            # Horizontal rule
             if re.match(r'^-{3,}$', line):
                 flush_table(); flush_list(); flush_bq()
                 result.append('<hr>')
                 i += 1
                 continue
-
-            # Headings
             h = re.match(r'^(#{1,4})\s+(.+)', line)
             if h:
                 flush_table(); flush_list(); flush_bq()
@@ -300,59 +282,43 @@ class Md2Html:
                 result.append(f'<h{level}>{self._inline(h.group(2))}</h{level}>')
                 i += 1
                 continue
-
-            # Table row
             if '|' in line and i + 1 < len(lines) and re.match(r'^\|[\s\-:|]+\|', lines[i + 1]):
                 flush_list(); flush_bq()
                 in_table = True
                 table_rows.append(line)
-                i += 2  # skip separator line
-                # Collect remaining rows
+                i += 2
                 while i < len(lines) and '|' in lines[i] and not lines[i].strip().startswith('###'):
                     table_rows.append(lines[i])
                     i += 1
                 flush_table()
                 in_table = False
                 continue
-
             if '|' in line and in_table:
                 table_rows.append(line)
                 i += 1
                 continue
-
-            # Blockquote
             if line.startswith('> '):
                 flush_table(); flush_list()
                 in_blockquote = True
                 bq_lines.append(line[2:])
                 i += 1
                 continue
-
-            # List item
             list_match = re.match(r'^(\s*)([\*\-]|(\d+)\.)\s+(.*)', line)
             if list_match:
                 flush_table(); flush_bq()
-                indent = list_match.group(1)
                 num = list_match.group(3)
                 item = list_match.group(4)
                 if num:
-                    if list_type != 'ol':
-                        flush_list()
-                        list_type = 'ol'
-                    in_list = True
+                    if list_type != 'ol': flush_list()
+                    list_type = 'ol'
                 else:
-                    if list_type != 'ul':
-                        flush_list()
-                        list_type = 'ul'
-                    in_list = True
+                    if list_type != 'ul': flush_list()
+                    list_type = 'ul'
+                in_list = True
                 list_items.append(item)
                 i += 1
                 continue
-
-            # Normal paragraph text
-            flush_table(); flush_bq()
-            flush_list()
-            # Collect consecutive non-special lines into one paragraph
+            flush_table(); flush_bq(); flush_list()
             para_lines = [line]
             i += 1
             while i < len(lines):
@@ -369,49 +335,27 @@ class Md2Html:
         return '\n'.join(result)
 
     def _inline(self, text: str) -> str:
-        # Inline code
         text = re.sub(r'`([^`]+)`', r'<code>\1</code>', text)
-        # Bold
         text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
-        # Italic
         text = re.sub(r'\*(.+?)\*', r'<em>\1</em>', text)
-        # Links
         text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', text)
-        # Relative md links in docs: ../markdown/XX-slug.md → XX-slug.html
-        text = re.sub(r'\[([^\]]+)\]\((\.+/)*markdown/([^)]+\.md)\)',
-                      lambda m: f'<a href="{os.path.splitext(m.group(3))[0]}.html">{m.group(1)}</a>',
-                      text)
         return text
 
 
-# ── Build logic ──────────────────────────────────────────────────────────────
-
-def build(project_dir: str):
-    project_dir = Path(project_dir).resolve()
-    md_dir = project_dir / 'markdown'
-    html_dir = project_dir / 'html'
-    if not md_dir.exists():
-        print(f"Error: {md_dir} does not exist")
-        sys.exit(1)
-
+def build():
+    """Build HTML from exploration.md files in each subdirectory."""
+    base = Path(__file__).resolve().parent
+    html_dir = base / 'html'
     html_dir.mkdir(parents=True, exist_ok=True)
     converter = Md2Html()
-    project_name = project_dir.name
-    print(f"Building {project_name} docs: {md_dir} → {html_dir}")
+    project_name = base.name.lstrip('[').rstrip(']')
 
-    # Discover markdown files
-    md_files = sorted(md_dir.glob('*.md'))
-    if not md_files:
-        print("No markdown files found.")
-        return
-
-    # Build each markdown file to HTML
-    file_map = {}  # slug → (filename, title)
-    for md_file in md_files:
+    # Find all exploration.md files in subdirectories
+    file_map = {}
+    for md_file in sorted(base.glob('*/exploration.md')):
+        slug = md_file.parent.name
         with open(md_file) as f:
             content = f.read()
-
-        # Extract title from frontmatter or first heading
         fm = re.match(r'^---\s*\n(.*?)\n---\s*\n', content, re.DOTALL)
         title = ''
         if fm:
@@ -423,53 +367,46 @@ def build(project_dir: str):
             if h:
                 title = h.group(1).strip()
         if not title:
-            title = md_file.stem
+            title = slug
+        file_map[slug] = (md_file, title)
 
-        slug = md_file.stem  # e.g., "00-overview"
-        file_map[slug] = (md_file.name, title)
+    if not file_map:
+        print(f"No exploration.md files found in {base}")
+        return
 
-    # Pre-compute ordered slug list for prev/next navigation
+    print(f"Building {project_name} docs: {len(file_map)} projects")
+
     all_slugs = list(file_map.keys())
 
-    for md_file in md_files:
+    for slug, (md_file, title) in file_map.items():
         with open(md_file) as f:
             content = f.read()
 
-        # Extract title (already computed above, but needed for content)
         fm = re.match(r'^---\s*\n(.*?)\n---\s*\n', content, re.DOTALL)
-        slug = md_file.stem
-        title = file_map[slug][1]
-
-        # Convert markdown to HTML
-        body = content
-        if fm:
-            body = content[fm.end():]  # Strip frontmatter
+        body = content[fm.end():] if fm else content
 
         html_body = converter.convert(body)
 
-        # Navigation: breadcrumbs, index btn, prev btn, next btn
         idx = all_slugs.index(slug)
 
-        # Breadcrumbs: last 3 pages before current one
         breadcrumbs = ''
         for p in all_slugs[max(0, idx-3):idx]:
             breadcrumbs += f'<a href="{p}.html" class="nav-breadcrumb">{file_map[p][1]}</a>'
 
-        # Previous button
         if idx > 0:
             prev_slug = all_slugs[idx - 1]
             prev_btn = f'<a href="{prev_slug}.html" class="nav-btn" title="Previous: {file_map[prev_slug][1]}">← prev</a>'
         else:
             prev_btn = ''
 
-        # Next button
         if idx < len(all_slugs) - 1:
             next_slug = all_slugs[idx + 1]
             next_btn = f'<a href="{next_slug}.html" class="nav-btn nav-btn-next" title="Next: {file_map[next_slug][1]}">next →</a>'
         else:
             next_btn = ''
 
-        html_content = HTML_TEMPLATE.format(
+        # Fix relative paths: exploration.md is in subdir, so ../styles.css
+        html_content = HTML_TEMPLATE.replace('../styles.css', 'styles.css').format(
             title=f"{title} -- {project_name}",
             project=project_name,
             content=html_body,
@@ -489,26 +426,8 @@ def build(project_dir: str):
         links_html += f'<li><a href="{slug}.html">{title}</a></li>\n'
 
     descriptions = {
-        'pi': "Modular AI agent framework. 7 TypeScript packages for LLM APIs, agent runtimes, and applications.",
-        'hermes': "Self-improving AI agent. Python framework with 40+ tools, 10+ messaging platforms, and pluggable memory.",
-        'autoresearch': "Autonomous AI research system. AI agent experiments with LLM training code overnight, ~100 experiments/night.",
-        'open-pencil': "Open-source design editor. Opens .fig/.pen files, 100+ AI tools, MCP server, WebRTC collaboration, headless CLI + Vue SDK.",
-        'paperclip': "Open-source AI company orchestration. Org charts, budgets, governance, and coordination for multi-agent teams.",
-        'graphify': "Knowledge graph extraction tool. Turns mixed-media corpora into queryable graphs via tree-sitter AST, Whisper transcription, and Claude semantic extraction. 71.5x token reduction, 25 languages, 14 platform integrations.",
-        'mastra': "TypeScript-first AI agent framework. Unified model router, workflow-based agentic loop, built-in memory, processor pipeline, and multi-model fallbacks.",
-        'resonate': "Distributed computing framework. Durable execution, task coordination, and event-driven workflows for reliable background processing.",
-        'webgl': "3D browser flight adventure game. Three.js rendering, procedural terrain, multiplayer via Socket.IO, quests, progression, atmospheric VFX.",
-        'rust-authz': "Four Rust crates: Zanzibar-style FGA authorization engine (authz-core), PostgreSQL extension (pgauthz), auto-generated REST API for databases (dbrest), and telemetry ingestion platform (zradar).",
-        'aipack': "Jeremy Chone's Rust crate collection: genai (19 AI providers), rpc-router (JSON-RPC 2.0), sqlb (SQL builder), modql (query language), agentic (MCP protocol), udiffx (diff parser), and 7 utility crates.",
-        'voice-agent-server': "Voice AI assistant server. Express.js REST API managing Vapi voice assistants and phone numbers with 11Labs synthesis.",
-        'mirage': "Unified Virtual File System for AI agents. Mounts 30+ services (S3, GDrive, Slack, GitHub, MongoDB, SSH) as a single filesystem tree. Agents use Unix commands (ls, grep, cat) across all backends. Python + TypeScript SDKs with two-layer cache.",
-        'iii-engine': "Rust-based serverless engine collapsing queues, cron, HTTP, state, pub/sub, observability, and sandboxed execution into one system. Built on Worker/Function/Trigger primitives. microVM sandbox with userspace TCP/IP.",
-        'agentmemory': "Persistent memory for AI coding agents. 53 MCP tools, triple-stream retrieval (BM25+Vector+Graph), 4-tier memory consolidation. Built on iii engine.",
-        'spec-forge': "UI spec generation worker. Natural language to UI via Claude API with component catalogs, dual cache (SHA-256 + TF-IDF), collaborative sessions.",
-        'iii-workers': "Collection of self-contained iii worker modules: database, shell, storage, MCP bridge, LSP, image-resize, ACP, and more. Rust primary, some Node.js/Python.",
-        'iii-cli-tooling': "Rust workspace providing iii-tools and motia CLIs for project management. Shared scaffolder-core library with template support and optional TUI.",
-        'iii-skills-validation': "Doc rendering and validation for iii workers. Renders markdown partials, validates with Vale (prose) and Anthropic AI (semantic). GitHub Action + pre-commit.",
-        'iii-examples': "Standalone iii SDK examples across TypeScript (Bun, pnpm) and Python (uv): AI chat, human-in-the-loop, property search, todo app.",
+        'src.strukto-ai': "Structo AI projects. Mirage: Unified Virtual File System for AI agents mounting 30+ services as a single filesystem.",
+        'src.iii': "iii ecosystem. Serverless engine (Rust) with Worker/Function/Trigger primitives. SDKs, workers, tooling, and examples.",
     }
     desc = descriptions.get(project_name, f"Documentation for {project_name}.")
 
@@ -525,7 +444,7 @@ def build(project_dir: str):
     # Copy shared CSS if not already present
     css_file = html_dir / 'styles.css'
     if not css_file.exists():
-        css = (Path(__file__).resolve().parent / 'styles.css').read_text()
+        css = (Path(__file__).resolve().parent.parent / 'styles.css').read_text()
         css_file.write_text(css)
         print(f"  ✓ styles.css")
 
@@ -533,13 +452,4 @@ def build(project_dir: str):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) > 1:
-        build(sys.argv[1])
-    else:
-        # Default: build pi, hermes, open-pencil, and autoresearch from this directory
-        base = Path(__file__).resolve().parent
-        for proj in ['pi', 'hermes', 'open-pencil', 'autoresearch', 'paperclip', 'voice-agent-server', 'graphify', 'mastra', 'resonate', 'rust-authz', 'aipack', 'webgl', 'mirage', 'iii-engine', 'agentmemory', 'spec-forge', 'iii-workers', 'iii-cli-tooling', 'iii-skills-validation', 'iii-examples']:
-            p = base / proj
-            if p.exists():
-                build(str(p))
-                print()
+    build()
