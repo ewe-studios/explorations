@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Architecture — Protocol Layers, State Machine Design, and Module Map -- iroh-gossip</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/iroh-gossip/docs</span>
+    <div class="nav-actions">
+      <a href="00-overview.html" class="nav-breadcrumb">Overview — What iroh-gossip Is and Why Epidemic Broadcast Trees</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="00-overview.html" class="nav-btn" title="Previous: Overview — What iroh-gossip Is and Why Epidemic Broadcast Trees">← prev</a>
+      <a href="02-hyparview.html" class="nav-btn nav-btn-next" title="Next: HyParView — Swarm Membership Protocol">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Architecture — Protocol Layers, State Machine Design, and Module Map</h1>
+<p>Iroh-gossip is organized as a layered architecture: pure protocol state machine → networking → high-level API.</p>
+<h2>Full Dependency Graph</h2>
+<div class="mermaid">
+flowchart TD
+    subgraph &quot;Application Layer&quot;
+        Chat[Chat example]
+        Setup[Setup example]
+    end
+
+    subgraph &quot;API (api.rs)&quot;
+        GossipApi[GossipApi: send/receive commands]
+        GossipTopic[GossipTopic: per-topic handle]
+        Events[Event: Received, Joined, NeighborUp, NeighborDown]
+    end
+
+    subgraph &quot;Networking (net.rs)&quot;
+        Actor[Actor: main event loop]
+        ConnLoop[Connection loop: per-peer message handling]
+        Dialer[Dialer: outbound connection attempts]
+        AddrLookup[GossipAddressLookup: peer address caching]
+    end
+
+    subgraph &quot;Protocol (proto/)&quot;
+        TopicState[Topic state: combines HyParView + PlumTree]
+        HyParView[HyParView: membership management]
+        PlumTree[PlumTree: broadcast tree]
+        Util[IndexSet, TimerMap, TimeBoundCache]
+    end
+
+    Chat --&gt; GossipTopic
+    Setup --&gt; GossipApi
+    GossipApi --&gt; Events
+    GossipApi --&gt; Actor
+    GossipTopic --&gt; Actor
+    Actor --&gt; ConnLoop
+    Actor --&gt; Dialer
+    Actor --&gt; AddrLookup
+    ConnLoop --&gt; TopicState
+    Dialer --&gt; TopicState
+    TopicState --&gt; HyParView
+    TopicState --&gt; PlumTree
+    TopicState --&gt; Util
+
+</div>
+<h2>Layer Stack</h2>
+<pre><code class="language-">┌───────────────────────────────────────────────────────┐
+│  Application: publish to GossipTopic, consume Events  │
+├───────────────────────────────────────────────────────┤
+│  API (api.rs): GossipApi, GossipTopic, command queue  │
+│  Request/Response, Event stream, message signing      │
+├───────────────────────────────────────────────────────┤
+│  Networking (net.rs): Actor, ConnectionLoop, Dialer   │
+│  Iroh connections, frame encoding, timers,            │
+│  address lookup, topic subscriber stream              │
+├───────────────────────────────────────────────────────┤
+│  Protocol State (proto/): IO-less state machine       │
+│  HyParView (membership) + PlumTree (broadcast tree)   │
+│  InEvents → State → OutEvents                         │
+├───────────────────────────────────────────────────────┤
+│  Iroh: QUIC connections, raw public key TLS           │
+└───────────────────────────────────────────────────────┘
+</code></pre>
+<p><strong>Aha:</strong> The critical architectural decision is the <code>proto/</code> module having ZERO I/O. It is a pure state machine: <code>handle(in_event) → (state_changes, out_events)</code>. This makes the protocol trivially testable, simulatable, and portable — the <code>net/</code> module is just an adapter that translates between Iroh connections and the protocol's InEvent/OutEvent interface.</p>
+<h2>Protocol Event Flow</h2>
+<div class="mermaid">
+flowchart LR
+    In[InEvent] --&gt; Handle[handle()]
+    Handle --&gt; State[State mutation]
+    State --&gt; Out[OutEvents]
+
+    subgraph &quot;OutEvent Types&quot;
+        SendMessage[SendMessage: to peer]
+        SetTimer[SetTimer: delayed action]
+        EmitEvent[EmitEvent: to application]
+        ConnectTo[ConnectTo: dial peer]
+        DisconnectFrom[DisconnectFrom: close peer]
+    end
+
+    Out --&gt; SendMessage
+    Out --&gt; SetTimer
+    Out --&gt; EmitEvent
+    Out --&gt; ConnectTo
+    Out --&gt; DisconnectFrom
+
+    SendMessage --&gt; Net
+    SetTimer --&gt; Net
+    ConnectTo --&gt; Net
+    DisconnectTo --&gt; Net
+    Net --&gt;|&quot;result becomes&quot;| In
+
+</div>
+<p>Source: <code>iroh-gossip/src/proto/state.rs:1</code> — <code>State<PI, R>::handle()</code> processes InEvents and produces OutEvents.</p>
+<h2>Key Types</h2>
+<h3>TopicId</h3>
+<pre><code class="language-rust">// iroh-gossip/src/proto.rs
+pub struct TopicId([u8; 32]);  // BLAKE3 hash of topic name
+</code></pre>
+<p>Source: <code>iroh-gossip/src/proto.rs:1</code> — Topics are identified by their 32-byte BLAKE3 hash.</p>
+<h3>PeerIdentity</h3>
+<pre><code class="language-rust">// iroh-gossip/src/proto.rs
+pub trait PeerIdentity: Clone + Debug + Eq + Hash + Send + Sync + &#x27;static {
+    type Data: PeerData;
+}
+</code></pre>
+<p>Source: <code>iroh-gossip/src/proto.rs:1</code> — Generic peer identity trait. In practice, <code>iroh_base::NodeId</code> (Ed25519 public key) implements this.</p>
+<h3>PeerData</h3>
+<pre><code class="language-rust">// iroh-gossip/src/proto.rs
+pub struct PeerData {
+    /// Direct addresses (IP:port) for connecting to this peer.
+    pub direct_addresses: BTreeSet&lt;SocketAddr&gt;,
+    /// Relay URL for this peer.
+    pub relay_url: Option&lt;RelayUrl&gt;,
+    /// Additional application-specific data.
+    pub extra: Bytes,
+}
+</code></pre>
+<p>Source: <code>iroh-gossip/src/proto.rs:1</code> — Peer data includes connection addresses and extra bytes for application use (e.g., address hints gossiped between peers).</p>
+<h2>Serialization</h2>
+<p>All protocol messages use <strong>postcard</strong> (a no_std-compatible serde format):</p>
+<pre><code class="language-rust">// iroh-gossip/src/proto/state.rs
+pub fn encode_message&lt;PI: PeerIdentity&gt;(msg: &amp;Message&lt;PI&gt;) -&gt; Bytes {
+    postcard::to_allocvec(msg).unwrap().into()
+}
+
+pub fn decode_message&lt;PI: PeerIdentity&gt;(data: &amp;[u8]) -&gt; Result&lt;Message&lt;PI&gt;&gt; {
+    postcard::from_bytes(data).map_err(Into::into)
+}
+</code></pre>
+<p>Source: <code>iroh-gossip/src/proto/state.rs:1</code> — Postcard is chosen for its compactness and no_std compatibility, making the protocol suitable for embedded/WASM targets.</p>
+<h2>Maximum Message Size</h2>
+<pre><code class="language-rust">// iroh-gossip/src/proto.rs
+pub const DEFAULT_MAX_MESSAGE_SIZE: usize = 64 * 1024 * 1024;  // 64 MB
+pub const MIN_MAX_MESSAGE_SIZE: usize = 64 * 1024;              // 64 KB
+</code></pre>
+<p>Source: <code>iroh-gossip/src/proto.rs:1</code> — Configurable message size with a 64KB minimum floor.</p>
+<h2>Metrics</h2>
+<pre><code class="language-rust">// iroh-gossip/src/metrics.rs
+pub struct Metrics {
+    // Control messages
+    pub msgs_ctrl_sent: Counter,
+    pub msgs_ctrl_recv: Counter,
+    pub msgs_ctrl_sent_size: Counter,
+    pub msgs_ctrl_recv_size: Counter,
+    // Data messages
+    pub msgs_data_sent: Counter,
+    pub msgs_data_recv: Counter,
+    pub msgs_data_sent_size: Counter,
+    pub msgs_data_recv_size: Counter,
+    // Neighbor changes
+    pub neighbor_up: Counter,
+    pub neighbor_down: Counter,
+    // Actor ticks
+    pub actor_tick_main: Counter,
+    pub actor_tick_rx: Counter,
+    pub actor_tick_endpoint: Counter,
+    pub actor_tick_dialer: Counter,
+    pub actor_tick_dialer_success: Counter,
+    pub actor_tick_dialer_failure: Counter,
+    pub actor_tick_in_event_rx: Counter,
+    pub actor_tick_timers: Counter,
+}
+</code></pre>
+<p>Source: <code>iroh-gossip/src/metrics.rs:1</code> — 18 Prometheus counters covering control/data traffic, neighbor changes, and actor loop iterations.</p>
+<h2>Related Documents</h2>
+<ul><li><a href="../markdown/00-overview.md">Overview</a> — What iroh-gossip is</li><li><a href="../markdown/02-hyparview.md">HyParView</a> — Membership protocol</li><li><a href="../markdown/03-plumtree.md">PlumTree</a> — Broadcast tree protocol</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
