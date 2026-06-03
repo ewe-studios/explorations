@@ -11,7 +11,7 @@ language: Rust (primary), Go, Swift, TypeScript, JavaScript, Python
 
 MoqDev is the **Media over QUIC (MoQ) ecosystem** — an IETF draft protocol and its full implementation stack for low-latency live media streaming. MoQ broadcasts media as a collection of tracks (audio/video), each composed of groups of ordered frames, delivered over WebTransport on QUIC.
 
-The project is a polyglot workspace: a Rust core with 18 crates, Go bindings, Swift bindings, C FFI, an OBS Studio fork with MoQ capture, a GStreamer plugin, a Next.js live streaming app, and cross-language smoke tests in Go, JavaScript, Python, and Swift.
+The project is a polyglot workspace: a Rust core with 17 crates, Go bindings, Swift bindings, C FFI, an OBS Studio fork with MoQ capture, a GStreamer plugin, a SolidJS live streaming app with Cloudflare Workers API, and cross-language smoke tests in C, Go, JavaScript, Kotlin, Python, and Swift.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -51,7 +51,7 @@ src.MoqDev/
 ├── doc.moq.dev/                  # Built documentation site (VitePress)
 ├── drafts/                       # IETF MoQ protocol drafts (XML specs)
 ├── gst/                          # GStreamer plugin for MoQ (deprecated)
-├── hang.live/                    # Live streaming web app (Next.js + Cloudflare Workers)
+├── hang.live/                    # Live streaming web app (SolidJS/Vite + Cloudflare Workers)
 ├── moq/                          # ── Core MoQ Rust Workspace ──
 │   ├── Cargo.toml                # 18-crate workspace, rust-version = "1.85"
 │   ├── rs/
@@ -187,13 +187,13 @@ The core networking layer. Defines the MoQ data model and session management.
 
 | Level | Description | Ordering |
 |-------|-------------|----------|
-| **Origin** | Collection of broadcasts, produced by sessions | Unordered |
-| **Broadcast** | Collection of tracks from a single publisher | Unordered |
+| **Origin** | 62-bit varint identity for a relay/session | Identity |
+| **Broadcast** | Collection of tracks with hop chain (`OriginList`) | Unordered tracks |
 | **Track** | Collection of groups, out-of-order until expired | Out-of-order |
 | **Group** | Collection of frames, in-order until cancelled | In-order |
 | **Frame** | Chunks with upfront size | In-order |
 
-Key responsibilities: session stats tracking, protocol negotiation, draft version forwarding.
+Key responsibilities: session stats tracking, protocol negotiation, draft version forwarding (drafts 14–18, plus moq-lite variants Lite01–Lite05Wip).
 
 ### 2. moq-relay — Media Relay Server (v0.12.4)
 
@@ -301,9 +301,9 @@ JWT token generation and validation for relay authentication.
 
 ### hang.live — Production Web App
 
-- **File:** `hang.live/` (Next.js + Cloudflare Workers)
-- **Description:** Live streaming web application
-- **Flow:** Browser connects via WebSocket fallback → subscribes to MoQ broadcast → renders WebCodecs video/audio
+- **File:** `hang.live/` (Bun workspaces: SolidJS app + Cloudflare Workers API)
+- **Description:** Live streaming web application built with SolidJS and Vite 8
+- **Flow:** Browser connects via Cloudflare Workers API → subscribes to MoQ broadcast → renders WebCodecs video/audio; uses Tauri for desktop OAuth integration (`@fabianlars/tauri-plugin-oauth`)
 
 ## External Integrations
 
