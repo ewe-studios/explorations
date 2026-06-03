@@ -30,7 +30,7 @@ examples/
 
 ### 1. AI Chat Agent
 
-**Stack:** TypeScript (pnpm)
+**Stack:** TypeScript (pnpm lockfile, Bun runtime)
 
 AI chat application demonstrating:
 - Message streams
@@ -43,12 +43,15 @@ ai-chat-agent/
 ├── iii-config.yaml
 ├── src/
 │   └── index.ts
+├── esbuild.config.ts
+├── tsconfig.json
+├── pnpm-lock.yaml
 └── README.md
 ```
 
 ### 2. Human-in-the-Loop
 
-**Stack:** TypeScript (Bun)
+**Stack:** TypeScript (pnpm lockfile, Bun runtime)
 
 Order workflow demonstrating:
 - Human approval gates
@@ -61,12 +64,16 @@ human-in-the-loop/
 ├── iii-config.yaml
 ├── src/
 │   └── index.ts
+├── esbuild.config.ts
+├── tsconfig.json
+├── pnpm-lock.yaml
+├── test-htl-flow.sh
 └── README.md
 ```
 
 ### 3. Property Search Agent
 
-**Stack:** Python (uv)
+**Stack:** Python (uv), Python >= 3.11
 
 Multi-step property search agent demonstrating:
 - Python SDK usage
@@ -75,16 +82,15 @@ Multi-step property search agent demonstrating:
 
 ```
 property-search-agent/
-├── pyproject.toml
+├── pyproject.toml          # iii-sdk==0.11.0, agno>=0.1.0, openai>=1.0.0, firecrawl-py>=0.1.0
 ├── iii-config.yaml
 ├── src/
-│   └── ...
 └── README.md
 ```
 
 ### 4. Todo App
 
-**Stack:** TypeScript (Bun)
+**Stack:** TypeScript (pnpm lockfile, Bun runtime)
 
 Todo REST API demonstrating:
 - Streams
@@ -97,6 +103,10 @@ todo-app/
 ├── iii-config.yaml
 ├── src/
 │   └── index.ts
+├── esbuild.config.ts
+├── tsconfig.json
+├── pnpm-lock.yaml
+├── test-todo-flow.sh
 └── README.md
 ```
 
@@ -111,6 +121,8 @@ todo-app/
 | **Human approval** | human-in-the-loop |
 | **Multi-step workflows** | human-in-the-loop, property-search-agent |
 | **LLM integration** | ai-chat-agent, property-search-agent |
+
+> **Note:** Pattern assignments inferred from iii-config.yaml trigger definitions in each example.
 
 ## Key Insights
 

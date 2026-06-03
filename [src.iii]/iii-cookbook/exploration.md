@@ -12,16 +12,10 @@ language: TypeScript, Python, Rust (planned)
 The iii Cookbook is a **planned collection of runnable iii SDK samples** across IoT, Edge, Agents, Backend APIs, and more. The repository defines the structure and conventions for future examples but currently contains no actual scenario content — it is a freshly initialized skeleton repository.
 
 ```
-iii-cookbook/          # ── Planned structure ──
-├── README.md          # Conventions and instructions
-├── LICENSE            # Apache-2.0
-├── agents/            # (planned) Agent scenarios
-├── iot/               # (planned) IoT scenarios
-├── edge/              # (planned) Edge deployment scenarios
-├── backend-api/       # (planned) REST API scenarios
-├── data-pipelines/    # (planned) Data processing scenarios
-├── realtime/          # (planned) Real-time/streaming scenarios
-└── workflows/         # (planned) Workflow orchestration scenarios
+iii-cookbook/          # ── Skeleton repository (directories planned, not created) ──
+├── README.md          # Conventions, install instructions, contributing guide
+└── LICENSE            # Apache-2.0 (Copyright 2026 iii-hq)
+# Planned: agents/, iot/, edge/, backend-api/, data-pipelines/, realtime/, workflows/
 ```
 
 ## Repository
@@ -42,6 +36,8 @@ iii-cookbook/
 No scenario subdirectories or example code exist yet. The repository contains only the README and LICENSE.
 
 ## Planned Structure (from README)
+
+> **Note:** The scenario directories below do NOT exist yet. The repository contains only `README.md` and `LICENSE`. The directory tree below shows the intended future structure.
 
 ### Layout Convention
 

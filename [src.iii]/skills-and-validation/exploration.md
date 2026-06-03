@@ -44,16 +44,16 @@ skills-and-validation/
 ├── .skill-check.yaml               # Config file
 ├── action.yml                      # 30KB — composite GitHub Action
 ├── content/                        # Project rules and styles
-│   ├── Vale styles/                # Vale linting rules
-│   ├── skill bundles/              # Reusable skill bundles
+│   ├── styles/Diataxis/            # 10 Diataxis structure rule files (.yml)
+│   ├── styles/Terminology/         # 8 terminology rule files (.yml)
+│   ├── skills/                     # iii-doc-authoring/, iii-skill-authoring/
+│   ├── project-rules/              # 11 markdown files (cli, config, docs, sdks, voice, workers, ...)
 │   └── .vale.ini                   # Vale configuration
 ├── templates/                      # Templates
-│   ├── .skill-check.yaml.template  # Config template
-│   └── example worker/             # Example worker docs
-├── fixtures/                       # Test fixtures
-│   └── (intentionally broken workers for testing)
-├── scripts/                        # Shared scripts
-│   └── (used by GitHub Action and pre-commit hook)
+│   ├── .skill-check.yaml           # Config template
+│   └── example-worker/             # Example worker docs (config.yaml, docs/, iii.worker.yaml)
+├── fixtures/                       # Test fixtures (4: bad-concept-worker, bad-sdk-worker, broken-worker, example-docs)
+├── scripts/                        # 14 shared scripts (annotate.sh, augment-summary-drift.sh, ci-install.sh, install.sh, pr-comment.sh, pre-commit-hook.sh, summary.sh, verify-docs.sh, verifyworkers.sh, test-e2e.sh, ...)
 └── crates/
     ├── iii-skill-core/             # ── Shared library ──
     │   ├── Cargo.toml
@@ -80,8 +80,15 @@ Shared library used by both binaries. Contains modules for:
 | `structure` | Document structure analysis |
 | `vale` | Vale integration for prose linting |
 | `ai` | Anthropic AI integration for semantic checks |
+| `ai_cache` | AI check result caching |
 | `config` | `.skill-check.yaml` parsing |
 | `bundle` | Skill bundle management |
+| `docs` | Document processing utilities |
+| `human_only` | Human-only validation mode |
+| `llm_only` | LLM-only validation mode |
+| `introspect` | Document introspection |
+| `source_map` | Source mapping for rendered output |
+| `update_check` | Update detection logic |
 
 ### 2. iii-skill-render (binary)
 
@@ -114,6 +121,7 @@ Composite GitHub Action that runs the skill check pipeline.
 | `anthropic-api-key` | Anthropic API key for AI validation |
 | `write` | Whether to write rendered output |
 | `scope` | Validation scope |
+| `target-branch` | Push target branch for auto-render commits |
 
 ### Usage Modes
 

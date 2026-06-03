@@ -119,8 +119,12 @@ Registers functions and HTTP triggers:
 | `refine` | HTTP | Refine an existing spec |
 | `validate` | HTTP | Validate spec against catalog |
 | `prompt` | HTTP | Build LLM prompt |
-| `stats` | HTTP | Worker statistics |
-| `health` | HTTP | Health check |
+| `stats` | HTTP GET | Worker statistics |
+| `health` | HTTP GET | Health check |
+| `catalogs` | HTTP GET | List available catalogs |
+| `join-session` | HTTP | Join collaborative session |
+| `leave-session` | HTTP | Leave collaborative session |
+| `push-patch` | HTTP | Push session patches |
 
 HTTP server listens on port **3111**.
 
@@ -215,18 +219,36 @@ Constructs LLM prompts with:
 ### iii-config.yaml
 
 ```yaml
-http:
-  port: 3111
-state:
-  backend: file_based
-queue: {}
-pubsub: {}
-cron: {}
-stream: {}
-observability:
-  exporter: memory
-  sample_rate: 0.1
+# Actual spec-forge/iii-config.yaml structure
+workers:
+  - name: iii-http
+    module: RestApiModule
+    port: 3111
+  - name: iii-state
+    module: StateModule
+    store_method: in_memory        # NOT file_based
+  - name: iii-observability
+    module: OtelModule
+    enabled: false                 # Disabled, no exporter or sampling
+  - name: iii-pubsub
+    module: PubSubModule
+    adapter: LocalAdapter
+  - name: iii-cron
+    module: CronModule
+    adapter: KvCronAdapter
+  - name: iii-stream
+    module: StreamModule
+    port: 3113
+    kv_store: file_based           # file_based belongs HERE, not to state
+  - name: iii-worker
+    module: WorkerModule
+    port: 49134
+  - name: iii-worker-rbac
+    module: WorkerModule
+    port: 49135
 ```
+
+> **Key correction:** The StateModule uses `in_memory` storage, not `file_based`. The `file_based` KV store actually belongs to the **StreamModule** (line 3113). The OtelModule is **disabled** (`enabled: false`) — there is no memory exporter or 0.1 sampling configuration. There is no queue module in this config.
 
 ### Environment Variables
 

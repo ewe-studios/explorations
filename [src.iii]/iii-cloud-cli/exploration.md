@@ -45,10 +45,12 @@ The repository has 24 version tags indicating active development:
 
 | Version Range | Notes |
 |--------------|-------|
-| `v0.2.8` — `v0.9.x` | Early development, many patch releases in 0.9.x series |
-| `v0.10.0` — `v0.13.1` | Maturing feature set |
+| `v0.2.8`, `v0.3.0`, `v0.3.1`, `v0.4.0` | Early releases |
+| `v0.7.1`, `v0.8.0`, `v0.8.1` | Mid-development |
+| `v0.9.0`–`v0.9.12` | 13 patch releases — stabilization period |
+| `v0.10.0`, `v0.11.1`, `v0.12.0`, `v0.13.1` | Maturing feature set |
 
-The high number of patch releases in the v0.9.x series suggests a stabilization period before the v0.10.0 release.
+> **Note:** Versions `v0.5.x` and `v0.6.x` have no tags — they are gaps in the release sequence.
 
 ## Installation
 

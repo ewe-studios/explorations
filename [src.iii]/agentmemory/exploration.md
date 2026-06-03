@@ -64,7 +64,7 @@ agentmemory/
 │   ├── cursor/
 │   ├── gemini-cli/
 │   └── ...                         # 15+ agent integrations
-├── hooks/                          # Auto-capture hooks (12 event types)
+├── hooks/                          # Auto-capture hooks (15 event types)
 ├── eval/                           # Evaluation harness
 ├── benchmark/                      # Benchmark results
 ├── deploy/                         # Deployment templates
@@ -164,7 +164,7 @@ AgentMemory exposes 53 MCP (Model Context Protocol) tools covering:
 - Team memory operations
 - Git snapshot operations
 
-### 2. Auto-Capture Hooks (12 event types)
+### 2. Auto-Capture Hooks (15 event types)
 
 | Event | When triggered |
 |-------|---------------|
@@ -172,7 +172,17 @@ AgentMemory exposes 53 MCP (Model Context Protocol) tools covering:
 | `UserPromptSubmit` | User sends a prompt |
 | `PreToolUse` | Before a tool is used |
 | `PostToolUse` | After a tool is used |
-| (8 more) | Various agent lifecycle events |
+| `PreCompact` | Before context compaction |
+| `PromptSubmit` | Prompt submission |
+| `SdkGuard` | SDK guard activation |
+| `SubagentStart` | Sub-agent starts |
+| `SubagentStop` | Sub-agent stops |
+| `TaskCompleted` | Task completion |
+| `Notification` | Notification received |
+| `PostCommit` | Post-commit hook |
+| `PostToolFailure` | Tool execution failure |
+| `SessionEnd` | Agent session ends |
+| `Stop` | Session termination |
 
 ### 3. 4-Tier Memory Model
 

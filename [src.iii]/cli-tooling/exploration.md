@@ -67,17 +67,29 @@ Core library for project scaffolding with template support.
 
 | Feature | Dependencies | Purpose |
 |---------|-------------|---------|
-| **default** | — | Basic scaffolding |
+| **default** | `tui` | TUI enabled by default |
 | **tui** | `cliclack`, `console`, `ctrlc` | Interactive terminal UI |
+
+> **Note:** `tui` is in the `default` features, so it's always enabled unless explicitly disabled.
 
 | Dependency | Purpose |
 |------------|---------|
 | `tokio` | Async runtime |
-| `serde` | Serialization |
+| `serde` + `serde_derive` | Serialization |
+| `serde_yaml` | YAML parsing |
+| `serde_json` | JSON handling |
 | `reqwest` | HTTP client (template downloads) |
 | `zip` | Template archive handling |
 | `clap` | CLI argument parsing |
 | `walkdir` | Directory traversal |
+| `url` | URL parsing |
+| `anyhow` | Error handling |
+| `thiserror` | Error type derive |
+| `semver` | Version parsing |
+| `open` | Open files/URLs |
+| `colored` | Terminal colors |
+| `dirs` | Directory discovery |
+| `uuid` | Unique identifiers |
 | `cliclack` (tui) | Progress indicators, prompts |
 | `console` (tui) | Terminal formatting |
 | `ctrlc` (tui) | Signal handling |
@@ -106,7 +118,7 @@ CLI for managing Motia projects with iii integration. Depends on `scaffolder-cor
 
 **Location:** `config.yaml`
 
-CLI configuration file for default settings, template locations, and project defaults.
+iii-engine module configuration (not a CLI config). Defines runtime module settings for the engine: StreamModule, StateModule, RestApiModule, OtelModule, QueueModule, PubSubModule, CronModule, and ExecModule. This config is used when the CLI initializes a project's engine instance.
 
 ## Templates
 

@@ -11,7 +11,9 @@ language: Python (primary), TypeScript (secondary), Rust (planned)
 
 Mirage is a **Unified Virtual File System for AI Agents**. It mounts disparate services — S3, Google Drive, Slack, Gmail, GitHub, Linear, Notion, MongoDB, Redis, SSH, and more — as a single filesystem tree. AI agents interact with every backend using the same Unix shell commands (`ls`, `grep`, `cat`, `find`, `cp`, etc.) rather than learning a new API vocabulary per service.
 
-The project ships as a dual Python/TypeScript SDK with an optional FUSE mount, two-layer caching (RAM/Redis), and integrations for six major agent frameworks (LangChain, OpenAI Agents, Pydantic AI, OpenHands, CAMEL, Vercel AI SDK).
+The project ships as a dual Python/TypeScript SDK with an optional FUSE mount, two-layer caching (RAM/Redis), and integrations for five Python agent frameworks (LangChain, OpenAI Agents, Pydantic AI, OpenHands, CAMEL) plus six TypeScript agent integrations (LangChain, Mastra, OpenAI, OpenCode, Pi, Vercel AI SDK).
+
+> **Note:** The Python package version is `mirage-ai` v0.0.2a0 per `pyproject.toml`, but `__init__.py` reports `__version__ = "0.0.1alpha"` — an internal version mismatch.
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -194,31 +196,43 @@ flowchart TD
 
 The `Workspace` is the central abstraction. It represents a mounted tree of resources from different backends. Agents execute commands against the workspace via `ws.execute("ls /mount/path")`.
 
-**Key exports from `mirage.__init__`:**
+**Key exports from `mirage.__init__` (`__all__` has 12 items):**
 
 ```python
 # python/mirage/__init__.py
-from .config import Workspace, WorkspaceRunner
-from .types import RAMResource, DiskResource
-# ... plus accessor-specific resource types
+__all__ = [
+    "Workspace", "WorkspaceRunner", "RAMResource", "DiskResource",
+    "ConsistencyPolicy", "ExecutionHistory", "ExecutionNode",
+    "ExecutionRecord", "FileStat", "MountMode", "command",
+]
 ```
+
+Core types:
+- `Workspace`, `WorkspaceRunner` — VFS abstraction and execution runner
+- `RAMResource`, `DiskResource` — built-in resource types
+- `ConsistencyPolicy` — cache consistency configuration
+- `ExecutionHistory`, `ExecutionNode`, `ExecutionRecord` — execution tracking
+- `FileStat` — file metadata
+- `MountMode` — mount configuration
+- `command` — command decorator
 
 The workspace supports:
 - **Mounting** multiple resources at different tree paths
 - **Snapshot / clone / versioning** (git-style workspace versioning)
 - **Session management** (daemon mode with persistent state)
 
-### 2. Accessor Layer — 30+ Service Adapters
+### 2. Accessor Layer — 28 Service Adapters
 
 **Location:** `python/mirage/accessor/`
 
-Each accessor translates the unified VFS API to a specific backend's API. The accessors cover:
+Each accessor translates the unified VFS API to a specific backend's API. 28 accessor files cover 42 resource directories (including cloud provider variants like aliyun, backblaze, ceph, digitalocean, minio, oci, qingstor, r2, scaleway, supabase, tencent, wasabi, dev):
 
 | Category | Services |
 |----------|----------|
 | **Storage / Object stores** | `disk`, `ram`, `s3`, `redis`, `databricks_volume`, `mongodb`, `postgres` |
+| **Cloud provider variants** | `aliyun`, `backblaze`, `ceph`, `digitalocean`, `minio`, `oci`, `qingstor`, `r2`, `scaleway`, `supabase`, `tencent`, `wasabi`, `dev` |
 | **Google Suite** | `gdocs`, `gdrive`, `gmail`, `gsheets`, `gslides` |
-| **Dev / Collaboration** | `github`, `linear`, `notion`, `trello`, `slack`, `discord`, `email`, `ssh`, `nextcloud` |
+| **Dev / Collaboration** | `github`, `github_ci`, `linear`, `notion`, `trello`, `slack`, `discord`, `email`, `ssh`, `nextcloud` |
 | **AI / ML Platforms** | `hf_buckets`, `hf_datasets`, `hf_models`, `hf_spaces`, `dify` |
 | **Observability** | `langfuse` |
 
@@ -255,6 +269,8 @@ Both layers support RAM (in-process, thread-safe) or Redis (distributed, async) 
 
 **Location:** `python/mirage/agents/`
 
+**Python frameworks (5):**
+
 | Integration | Module | What it provides |
 |-------------|--------|-----------------|
 | **OpenAI Agents SDK** | `agents/openai_agents.py` | Mirage tools for OpenAI agent framework |
@@ -262,7 +278,10 @@ Both layers support RAM (in-process, thread-safe) or Redis (distributed, async) 
 | **Pydantic AI** | `agents/pydantic_ai.py` | Pydantic AI integration |
 | **OpenHands** | `agents/openhands.py` | OpenHands agent integration |
 | **CAMEL** | `agents/camel.py` | CAMEL framework integration |
-| **Prompts** | `agents/prompts.py` | Agent prompt templates |
+
+**TypeScript integrations (6):** LangChain, Mastra, OpenAI, OpenCode, Pi, Vercel AI SDK.
+
+**Prompts:** `agents/prompts.py` — Agent prompt templates.
 
 ### 6. CLI
 
@@ -270,15 +289,24 @@ Both layers support RAM (in-process, thread-safe) or Redis (distributed, async) 
 
 Entry point: `mirage = mirage.cli.main:app` (via `pyproject.toml` `[project.scripts]`)
 
-CLI subcommands: `main`, `daemon`, `execute`, `job`, `output`, `provision`, `session`, `settings`, `workspace`
+CLI subcommands (6 via typer):
 
-Built with `typer` — provides a rich terminal interface for managing workspaces, executing commands, and running jobs.
+| Command | Purpose |
+|---------|---------|
+| `workspace` | Manage workspace mounts and resources |
+| `session` | Manage persistent sessions |
+| `job` | Manage background jobs |
+| `execute` | Execute commands against the VFS |
+| `provision` | Provision new resources |
+| `daemon` | Run the API server (daemon mode) |
+
+Built with `typer` — provides a rich terminal interface. The server (daemon mode) exposes routes for workspaces, execute, jobs, sessions, versions, and health (`health.py`).
 
 ### 7. TypeScript Monorepo
 
 **Location:** `typescript/`
 
-Built as a pnpm monorepo with 5 packages:
+Built as a pnpm monorepo with 6 packages:
 
 | Package | Name | Purpose |
 |---------|------|---------|
@@ -287,7 +315,7 @@ Built as a pnpm monorepo with 5 packages:
 | `node` | `@struktoai/mirage-node` | Node.js SDK |
 | `agents` | `@struktoai/mirage-agents` | Agent framework adapters |
 | `cli` | `@struktoai/mirage-cli` | CLI package |
-| `server` | (server package) | Server/daemon package |
+| `server` | `@struktoai/mirage-server` | Server/daemon package |
 
 Package manager: `pnpm 10.32.1`. Build toolchain: `tsup`, `vitest 3.0.0`, `@changesets/cli`.
 
@@ -332,6 +360,8 @@ sequenceDiagram
 | `aiohttp` | Async HTTP client |
 | `fastapi` + `uvicorn` | API server for daemon mode |
 | `httpx` | HTTP client |
+| `python-multipart` | Form data parsing |
+| `python-dotenv` | Environment variable loading |
 | `typer` | CLI framework |
 | `tree-sitter` + `tree-sitter-bash` | Bash command parsing |
 | `numpy` | Numerical operations |
@@ -359,7 +389,9 @@ sequenceDiagram
 | `anthropic` / `openai` | LLM integrations |
 | `pydantic-ai` / `deepagents` / `openhands` / `camel` | Agent frameworks |
 | `daytona` | Sandbox integration |
-| `all` | Meta-extra combining most options (note: `camel` conflicts with `openai`, `openhands`, `pydantic-ai`, `all`) |
+| `all` | Meta-extra combining most options |
+
+**Package conflicts** (`tool.uv.conflicts`): `camel` conflicts with `openai`, `openhands`, `pydantic-ai`, and `all`.
 
 ## Configuration
 

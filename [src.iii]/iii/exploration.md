@@ -53,7 +53,7 @@ The engine is built on three primitives: **Worker**, **Function**, **Trigger**. 
 iii/
 ├── engine/                         # ── Rust Engine ──
 │   ├── Cargo.toml                  # iii v0.18.0-next.1, edition 2024
-│   ├── benches/                    # 15 criterion benchmarks
+│   ├── benches/                    # 17 criterion benchmarks
 │   ├── examples/                   # Usage examples
 │   ├── tests/                      # Integration tests
 │   └── src/
@@ -67,7 +67,10 @@ iii/
 │       ├── condition.rs            # Trigger condition evaluation
 │       ├── logging.rs              # Logging infrastructure
 │       ├── telemetry.rs            # OpenTelemetry integration
-│       └── update_ops.rs           # Hot update operations
+│       ├── update_ops.rs           # Hot update operations
+│       └── worker_connections/     # Worker connection traits and state
+│           ├── mod.rs
+│           └── traits.rs
 ├── sdk/                            # ── SDKs ──
 │   ├── packages/rust/iii/          # Rust SDK crate (iii v0.18.0-next.1)
 │   ├── packages/rust/iii-example/  # Rust SDK example
@@ -167,6 +170,8 @@ flowchart TD
 ```
 
 ### Workspace Crate Breakdown
+
+**Note:** The workspace default edition is `2024`, but `console/packages/console-rust` explicitly overrides to `edition = "2021"`.
 
 | Crate | Type | Purpose |
 |-------|------|---------|
@@ -285,6 +290,13 @@ flowchart LR
 | **Queue** | `queue: { name }` | Consumes queue messages, invokes functions |
 | **Pub/Sub** | `pubsub: { topic }` | Subscribes to topics, invokes functions on publish |
 | **Stream** | WebSocket | Real-time bidirectional communication |
+| **Durable Subscriber** | `durable:subscriber` | Durable message delivery with offsets |
+| **Subscribe** | `subscribe` | Topic subscription (lightweight pub/sub) |
+| **State** | `state` | Triggered on state key changes |
+| **Stream:Join** | `stream:join` | Fired when a peer joins a stream |
+| **Stream:Leave** | `stream:leave` | Fired when a peer leaves a stream |
+| **Log** | `log` | Log-based triggers |
+| **Configuration** | `configuration` | Triggered on config changes |
 
 ## State / KV Store
 
@@ -308,7 +320,7 @@ Redis-backed queue with FIFO ordering. Workers push messages; consumers pull and
 
 **Location:** `engine/benches/`
 
-15 criterion benchmarks covering:
+17 criterion benchmarks covering:
 
 | Benchmark Area | What it measures |
 |---------------|-----------------|
@@ -317,6 +329,14 @@ Redis-backed queue with FIFO ordering. Workers push messages; consumers pull and
 | **KV store** | Get/set throughput |
 | **Pub/Sub fanout** | Multi-subscriber message delivery |
 | **WS roundtrip** | WebSocket latency |
+| **Queue** | Enqueue/dequeue throughput |
+| **State adapter** | State storage performance |
+| **Worker invocation tracking** | Tracking overhead |
+| **Protocol serde** | Serialization performance |
+| **HTTP routes** | Single/many routes, concurrency |
+| **Concurrent invocation** | Parallel invocation scaling |
+| **Control plane churn** | Worker connect/disconnect handling |
+| **Worker cleanup** | Resource cleanup performance |
 
 ## Console
 
@@ -343,22 +363,37 @@ SDKs provide APIs for:
 
 ## iii-config.yaml
 
-Workers define their configuration in `iii-config.yaml`:
+Workers and the engine define their configuration in `iii-config.yaml` with worker-level modules:
 
 ```yaml
-# Typical iii-config.yaml structure
-http:
-  port: 3111
-state:
-  backend: file_based
-queue: {}
-pubsub: {}
-cron: {}
-stream: {}
-observability:
-  exporter: memory
-  sample_rate: 0.1
+# Engine config: workers list with module configurations
+workers:
+  - name: iii-stream
+    module: StreamModule
+    port: 3112
+  - name: iii-state
+    module: StateModule
+    store_method: in_memory
+  - name: iii-observability
+    module: OtelModule
+    # OTEL config
+  - name: iii-queue
+    module: QueueModule
+  - name: iii-pubsub
+    module: PubSubModule
+    adapter: LocalAdapter
+  - name: iii-cron
+    module: CronModule
+    adapter: KvCronAdapter
+  - name: iii-http
+    module: RestApiModule
+    port: 3111
+  - name: configuration
+    module: ConfigurationModule
+  # Commented-out (optional): iii-bridge, iii-sandbox
 ```
+
+The config uses a `workers:` list with named module definitions — there is no top-level `modules:` key. State defaults to `in_memory` (not `file_based`), and observability can be disabled (`enabled: false`).
 
 ## CI/CD
 
@@ -372,7 +407,7 @@ observability:
 - **Unit tests:** Inline `#[cfg(test)]` modules in engine source files
 - **Integration tests:** `engine/tests/` directory
 - **SDK examples:** `sdk/packages/rust/iii-example/` serves as a working example
-- **Benchmark tests:** 15 criterion benchmarks in `engine/benches/`
+- **Benchmark tests:** 17 criterion benchmarks in `engine/benches/`
 - **Worker testing:** `wiremock` for HTTP mock testing, `serial_test` for sequential test execution
 
 ## External Integrations
