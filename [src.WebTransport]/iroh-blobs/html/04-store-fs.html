@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>File Store — FsStore with redb Metadata and Garbage Collection -- iroh-blobs</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/iroh-blobs/docs</span>
+    <div class="nav-actions">
+      <a href="01-architecture.html" class="nav-breadcrumb">Architecture — Layer Diagram, Module Map, and Dependency Graph</a><a href="02-hash-and-bao.html" class="nav-breadcrumb">Hash and Bao — BLAKE3 Hashing and Verified Streaming</a><a href="03-protocol.html" class="nav-breadcrumb">Protocol — Wire Format for Get, GetMany, Push, Observe</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="03-protocol.html" class="nav-btn" title="Previous: Protocol — Wire Format for Get, GetMany, Push, Observe">← prev</a>
+      <a href="05-store-mem.html" class="nav-btn nav-btn-next" title="Next: Memory Store — MemStore and ReadonlyMemStore">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>File Store — FsStore with redb Metadata and Garbage Collection</h1>
+<p>The FsStore is the production file-based store using redb for metadata and a two-actor architecture for concurrent access.</p>
+<h2>Architecture</h2>
+<div class="mermaid">
+flowchart TD
+    subgraph &quot;FsStore&quot;
+        MainActor[Main Actor: blob operations]
+        DbActor[Database Actor: redb transactions]
+    end
+
+    subgraph &quot;Storage&quot;
+        BlobDir[Blob files: data + outboard]
+        TempDir[Temp files for imports]
+    end
+
+    subgraph &quot;redb Tables&quot;
+        BlobsTable[blobs-0: EntryState per hash]
+        TagsTable[tags-0: tag → hash mapping]
+        InlineData[inline-data-0: small inline content]
+        InlineOB[inline-outboard-0: small inline outboards]
+    end
+
+    MainActor --&gt; BlobDir
+    MainActor --&gt; TempDir
+    MainActor --&gt;|&quot;commands&quot;| DbActor
+    DbActor --&gt; BlobsTable
+    DbActor --&gt; TagsTable
+    DbActor --&gt; InlineData
+    DbActor --&gt; InlineOB
+
+</div>
+<p>Source: <code>iroh-blobs/src/store/fs.rs:1</code> — Two-actor architecture.</p>
+<p><strong>Aha:</strong> The two-actor design means the main actor can serve reads (blob content, outboard) directly from the filesystem without blocking on redb transactions. The database actor only handles metadata operations (create, update, delete entries). Commands flow through channels from main to database actor.</p>
+<h2>EntryState</h2>
+<pre><code class="language-rust">// iroh-blobs/src/store/fs/entry_state.rs
+pub enum EntryState {
+    /// Blob is completely stored.
+    Complete {
+        size: u64,
+        data_location: DataLocation,
+        outboard_location: OutboardLocation,
+    },
+    /// Blob is partially stored.
+    Partial {
+        size_info: SizeInfo,
+        data_location: DataLocation,
+        outboard_location: OutboardLocation,
+    },
+}
+</code></pre>
+<p>Source: <code>iroh-blobs/src/store/fs/entry_state.rs:1</code> — Each blob entry is either Complete or Partial.</p>
+<h2>DataLocation</h2>
+<pre><code class="language-rust">// iroh-blobs/src/store/fs/entry_state.rs
+pub enum DataLocation {
+    /// Data is inline in the redb database (small blobs).
+    Inline,
+    /// Data is in a separate file.
+    Owned(BaoFilePart),
+    /// Data is external (not managed by the store).
+    External(PathBuf),
+}
+</code></pre>
+<p>Source: <code>iroh-blobs/src/store/fs/entry_state.rs:1</code> — Three data locations: inline in redb, owned file, or external reference.</p>
+<h2>BaoFileStorage</h2>
+<pre><code class="language-rust">// iroh-blobs/src/store/fs/bao_file.rs
+pub enum BaoFileStorage {
+    /// Partial storage in memory (small blobs).
+    PartialMem(PartialMemStorage),
+    /// Partial storage on disk.
+    Partial(PartialFileStorage),
+    /// Complete storage on disk.
+    Complete(CompleteStorage),
+    /// Storage is poisoned (import failed).
+    Poisoned,
+}
+</code></pre>
+<p>Source: <code>iroh-blobs/src/store/fs/bao_file.rs:1</code> — <code>BaoFileStorage</code> tracks the state of a blob during and after import.</p>
+<h2>Import Pipeline</h2>
+<pre><code class="language-rust">// iroh-blobs/src/store/fs/import.rs
+pub enum ImportSource {
+    /// Import from a temporary file (content written to temp first).
+    TempFile(PathBuf),
+    /// Import from an external file (hardlink or copy).
+    External(PathBuf),
+    /// Import from memory (Bytes buffer).
+    Memory(Bytes),
+}
+</code></pre>
+<p>Source: <code>iroh-blobs/src/store/fs/import.rs:1</code> — Three import sources.</p>
+<h3>Import Process</h3>
+<ol><li>Content is written to a temp file or provided from memory/external path</li><li>BLAKE3 hash and outboard are computed</li><li>Content is moved to the blob directory</li><li>EntryState is written to redb</li></ol>
+<p>Source: <code>iroh-blobs/src/store/fs/import.rs:1</code> — <code>import_path</code>, <code>import_bytes</code>, <code>import_byte_stream</code>.</p>
+<h2>Garbage Collection</h2>
+<pre><code class="language-rust">// iroh-blobs/src/store/fs/gc.rs
+pub fn gc_mark_task(...) -&gt; MarkResult { ... }
+pub fn gc_sweep_task(...) -&gt; SweepResult { ... }
+</code></pre>
+<p>The GC uses mark-sweep:</p>
+<ol><li><strong>Mark</strong>: Walk all tags and mark reachable blobs</li><li><strong>Sweep</strong>: Delete unmarked blobs</li></ol>
+<p>Source: <code>iroh-blobs/src/store/fs/gc.rs:1</code> — <code>gc_mark_task</code> and <code>gc_sweep_task</code>.</p>
+<h2>Metadata Database</h2>
+<pre><code class="language-rust">// iroh-blobs/src/store/fs/meta/tables.rs
+pub struct Tables&lt;&#x27;db&gt; {
+    pub blobs: Table&lt;&#x27;db, &#x27;static, &amp;&#x27;static Hash, EntryState&gt;,
+    pub tags: Table&lt;&#x27;db, &#x27;static, &amp;&#x27;static Tag, Hash&gt;,
+    pub inline_data: Table&lt;&#x27;db, &#x27;static, &amp;&#x27;static Hash, &amp;&#x27;static [u8]&gt;,
+    pub inline_outboard: Table&lt;&#x27;db, &#x27;static, &amp;&#x27;static Hash, &amp;&#x27;static [u8]&gt;,
+}
+</code></pre>
+<p>Source: <code>iroh-blobs/src/store/fs/meta/tables.rs:1</code> — Four redb tables.</p>
+<h2>Configuration</h2>
+<pre><code class="language-rust">// iroh-blobs/src/store/fs/options.rs
+pub struct Options {
+    pub path: PathOptions,
+    pub inline: InlineOptions,
+    pub batch: BatchOptions,
+    pub gc: GcConfig,
+}
+
+pub struct InlineOptions {
+    /// Max size for inline data (default: 16 KiB).
+    pub max_data_inlined: u64,
+    /// Max size for inline outboard (default: 16 KiB).
+    pub max_outboard_inlined: u64,
+}
+</code></pre>
+<p>Source: <code>iroh-blobs/src/store/fs/options.rs:1</code> — Default inline threshold is 16 KiB (matching the blob chunk size).</p>
+<h2>Safe Deletion</h2>
+<pre><code class="language-rust">// iroh-blobs/src/store/fs/delete_set.rs
+pub struct DeleteSet {
+    /// Files pending deletion.
+    pending: HashSet&lt;BaoFilePart&gt;,
+}
+</code></pre>
+<p>Source: <code>iroh-blobs/src/store/fs/delete_set.rs:1</code> — <code>DeleteSet</code> batches file deletions safely using <code>FileTransaction</code> to avoid deleting files that are still in use.</p>
+<h2>Related Documents</h2>
+<ul><li><a href="../markdown/01-architecture.md">Architecture</a> — Module map</li><li><a href="../markdown/02-hash-and-bao.md">Hash and Bao</a> — Bao outboards</li><li><a href="../markdown/05-store-mem.md">Memory Store</a> — In-memory alternative</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
