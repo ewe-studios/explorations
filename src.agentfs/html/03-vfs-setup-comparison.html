@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VFS Setup Comparison — iii-filesystem vs AgentFS -- src.agentfs</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.agentfs/docs</span>
+    <div class="nav-actions">
+      <a href="00-overview.html" class="nav-breadcrumb">AgentFS — SQLite-Backed Filesystem for AI Agents</a><a href="01-sqlite-vfs.html" class="nav-breadcrumb">SQLite VFS — Tables, Chunks, Inode Mapping</a><a href="02-syscall-interception.html" class="nav-breadcrumb">Syscall Interception — How AgentFS Intercepts System Calls</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="02-syscall-interception.html" class="nav-btn" title="Previous: Syscall Interception — How AgentFS Intercepts System Calls">← prev</a>
+      <a href="04-overlayfs.html" class="nav-btn nav-btn-next" title="Next: OverlayFS — Copy-on-Write Implementation">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>VFS Setup Comparison — iii-filesystem vs AgentFS</h1>
+<p><strong>iii-filesystem and AgentFS set up their virtual filesystems in fundamentally different ways — one bridges kernel-to-kernel via virtio-fs, the other intercepts user-space syscalls via FUSE or reverie.</strong></p>
+<h2>The Core Difference</h2>
+<div class="mermaid">
+flowchart TB
+    subgraph iii[&quot;iii-filesystem: Kernel-to-Kernel Bridge&quot;]
+        direction TB
+        G1[&quot;Guest kernel (FUSE client)&quot;]
+        R1[&quot;virtio-fs ring buffers&quot;]
+        H1[&quot;Host: libkrun NetWorker&quot;]
+        
+        G1 --&gt;|&quot;FUSE ops via&quot;| R1
+        R1 --&gt;|&quot;Shared memory&quot;| H1
+        H1 --&gt;|&quot;Linux syscalls&quot;| H2[&quot;Host filesystem&quot;]
+    end
+
+    subgraph agentfs[&quot;AgentFS: User-Space Interception&quot;]
+        direction TB
+        A1[&quot;Agent process&quot;]
+        F1[&quot;FUSE daemon / NFS server&quot;]
+        S1[&quot;SQLite database&quot;]
+        
+        A1 --&gt;|&quot;Kernel VFS&quot;| F1
+        F1 --&gt;|&quot;SQL queries&quot;| S1
+    end
+
+</div>
+<p><strong>iii-filesystem</strong> bridges the <strong>guest kernel</strong> to the <strong>host filesystem</strong> via virtio-fs ring buffers. The guest kernel's FUSE client talks to iii-init's PassthroughFs, which makes real Linux syscalls. No userspace interception — it's kernel-to-kernel.</p>
+<p><strong>AgentFS</strong> intercepts at the <strong>userspace level</strong> — either via a FUSE daemon (kernel forwards to userspace) or via reverie syscall interception (ptrace/seccomp). The interception layer translates operations to SQLite queries.</p>
+<h2>Detailed VFS Setup Comparison</h2>
+<h3>1. Where the VFS Layer Lives</h3>
+<table><tr><th>Aspect</th><th>iii-filesystem</th><th>AgentFS</th></tr><tr><td>**VFS location**</td><td>Inside guest kernel (FUSE client) + iii-init (host userspace)</td><td>Userspace FUSE daemon / reverie tracer</td></tr><tr><td>**Who initiates**</td><td>Guest kernel mounts virtio-fs as root filesystem</td><td>Userspace mounts via `agentfs mount`</td></tr><tr><td>**Protocol**</td><td>virtio-fs (kernel protocol over shared memory rings)</td><td>FUSE (kernel-to-userspace) or NFS v3 (userspace TCP)</td></tr><tr><td>**Ring buffers**</td><td>Yes — rx_ring and tx_ring</td><td>No — syscalls or TCP</td></tr></table>
+<h3>2. How File Operations Flow</h3>
+<h4>iii-filesystem Flow</h4>
+<pre><code class="language-">Guest app: open(&quot;/etc/config.yaml&quot;)
+    ↓
+Guest kernel: VFS → FUSE client → virtio-fs driver
+    ↓
+Shared memory: rx_ring (guest → host)
+    ↓
+libkrun NetWorker thread: reads frame
+    ↓
+iii-init PassthroughFs: translate FUSE op → Linux syscall
+    ↓
+Host kernel: open(&quot;/host/path/etc/config.yaml&quot;)
+    ↓
+Host filesystem: returns fd
+    ↓
+iii-init: write response to tx_ring
+    ↓
+Shared memory: tx_ring (host → guest)
+    ↓
+Guest kernel: returns fd to guest app
+</code></pre>
+<h4>AgentFS FUSE Flow</h4>
+<pre><code class="language-">Agent app: open(&quot;/mnt/agent/hello.txt&quot;)
+    ↓
+Kernel VFS: recognizes FUSE mount → forwards to FUSE daemon
+    ↓
+/dev/fuse: FUSE daemon reads request
+    ↓
+AgentFS FUSE handler: parse path → query SQLite
+    ↓
+SQLite: SELECT * FROM fs_inode WHERE path = &#x27;/hello.txt&#x27;
+    ↓
+FUSE daemon: write response to /dev/fuse
+    ↓
+Kernel VFS: returns fd to agent app
+</code></pre>
+<h4>AgentFS Sandbox (reverie) Flow</h4>
+<pre><code class="language-">Sandboxed process: openat(AT_FDCWD, &quot;/agent/hello.txt&quot;)
+    ↓
+Kernel: syscall trapped by ptrace/seccomp
+    ↓
+Reverie: intercept syscall, pass to handler
+    ↓
+MountTable.resolve(&quot;/agent/hello.txt&quot;)
+    ↓
+If virtual (AgentFS): vfs.open() → SQLite query
+If passthrough (BindVfs): translate path → inject to kernel
+    ↓
+Handler: return virtual FD or inject real syscall
+    ↓
+Sandboxed process: receives fd
+</code></pre>
+<h3>3. Inode Management</h3>
+<table><tr><th>Aspect</th><th>iii-filesystem</th><th>AgentFS</th></tr><tr><td>**Inode source**</td><td>Host filesystem inodes</td><td>SQLite AUTOINCREMENT</td></tr><tr><td>**Mapping**</td><td>`MultikeyBTreeMap` (FUSE inode ↔ host ino+dev+mnt_id)</td><td>Direct: SQLite row ID = inode number</td></tr><tr><td>**Deduplication**</td><td>Dual-key: FUSE inode number AND host identity</td><td>None needed — SQLite is the source</td></tr><tr><td>**Persistence**</td><td>Volatile (recreated on VM boot)</td><td>Persistent (stored in SQLite)</td></tr></table>
+<h3>4. Mount Setup Sequence</h3>
+<h4>iii-filesystem Setup (at VM boot)</h4>
+<pre><code class="language-">1. libkrun creates VM with virtio-fs device
+2. VM boots, iii-init runs as PID 1
+3. pivot_to_tmpfs_root() — replace virtiofs root with tmpfs
+4. Bind-mount all rootfs entries from virtiofs into tmpfs
+5. Mount devtmpfs, proc, sysfs, etc.
+6. PassthroughFs is now the guest&#x27;s root filesystem
+7. User worker process runs inside this environment
+</code></pre>
+<h4>AgentFS Setup (FUSE mount)</h4>
+<pre><code class="language-">1. User runs: agentfs mount my-agent ./mnt
+2. CLI daemon opens SQLite database
+3. FUSE daemon starts, mounts at ./mnt
+4. Kernel routes filesystem ops for ./mnt to FUSE daemon
+5. FUSE daemon translates ops to SQLite queries
+6. User accesses files via standard filesystem API
+</code></pre>
+<h4>AgentFS Setup (Sandbox with reverie)</h4>
+<pre><code class="language-">1. User runs: agentfs run --agent my-agent /bin/bash
+2. CLI creates MountTable with AgentFS at /agent, BindVfs at /project
+3. Reverie starts tracing the sandboxed process
+4. Process starts, all syscalls intercepted
+5. MountTable resolves each path to appropriate VFS
+6. Process runs with mixed virtual + passthrough filesystems
+</code></pre>
+<h3>5. Performance Characteristics</h3>
+<table><tr><th>Metric</th><th>iii-filesystem</th><th>AgentFS FUSE</th><th>AgentFS Sandbox</th></tr><tr><td>**Syscall overhead**</td><td>None (direct host syscalls)</td><td>FUSE context switch + userspace</td><td>Ptrace overhead per syscall</td></tr><tr><td>**Data copy**</td><td>Zero-copy via ring buffers</td><td>Copy via /dev/fuse</td><td>Copy via reverie</td></tr><tr><td>**I/O path length**</td><td>Guest kernel → host kernel (2 hops)</td><td>Kernel → userspace → SQLite (3 hops)</td><td>Userspace → reverie → kernel/SQLite (3-4 hops)</td></tr><tr><td>**Best for**</td><td>High-throughput VM workloads</td><td>Host-level file access</td><td>Sandboxed agent execution</td></tr></table>
+<h3>6. Threading Model</h3>
+<table><tr><th>Aspect</th><th>iii-filesystem</th><th>AgentFS</th></tr><tr><td>**Main thread**</td><td>Dedicated OS thread (smoltcp poll)</td><td>FUSE daemon thread or reverie tracer</td></tr><tr><td>**I/O handling**</td><td>Sync (Linux syscalls)</td><td>Async (tokio for SDK) / sync (FUSE)</td></tr><tr><td>**Concurrent ops**</td><td>DashMap for handles, RwLock for inodes</td><td>SQLite WAL mode for concurrent reads</td></tr></table>
+<h2>Key Architectural Insight</h2>
+<p><strong>iii-filesystem is a bridge, AgentFS is a filter.</strong></p>
+<div class="mermaid">
+flowchart LR
+    A[Guest app] --&gt; B[iii-filesystem: transparent bridge]
+    B --&gt; C[Host filesystem]
+    
+    D[Agent app] --&gt; E[AgentFS: intercepting filter]
+    E --&gt; F{Record it?}
+    F --&gt;|Yes| G[SQLite audit log]
+    F --&gt;|No| H[Forward to backend]
+
+</div>
+<p>iii-filesystem's job is to make the guest VM see exactly what's on the host — it's a transparent bridge. The guest has full access to host files (bounded by the root pivot's allowlist). There's no transformation, no audit, no isolation beyond the VM boundary.</p>
+<p><strong>Aha:</strong> This is why iii-filesystem cannot answer "what files did the worker create?" — it has no audit trail. The interception layer is where the magic happens, and iii-filesystem deliberately doesn't have one. AgentFS, by contrast, records every operation in SQLite.</p>
+<p>AgentFS's job is to <strong>intercept and transform</strong> — every file operation goes through the interception layer, which can:</p>
+<ul><li>Record it in SQLite (auditability)</li><li>Redirect it to a different layer (OverlayFS copy-on-write)</li><li>Block it (sandbox restrictions)</li><li>Transform it (path translation)</li></ul>
+<p>This is why AgentFS can answer "what files did the agent create?" with a SQL query, while iii-filesystem cannot — the interception layer is where the magic happens.</p>
+<h2>What's Next</h2>
+<ul><li><a href="03-overlayfs.md">03 — OverlayFS</a> — AgentFS copy-on-write implementation</li><li><a href="01-sqlite-vfs.md">01 — SQLite VFS</a> — Return to SQLite VFS</li><li><a href="00-overview.md">00 — Overview</a> — Return to overview</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
