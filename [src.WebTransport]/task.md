@@ -13,7 +13,7 @@
 ## Projects: Not Documented (73 src.n0-computer repos)
 
 ### Core Ecosystem — Priority 1
-- [ ] `iroh-docs` (v0.35.0) — Eventually-consistent KV store on iroh-blobs
+- [x] `iroh-docs` (v0.35.0) — ✅ DONE: 11 docs + spec, 5,018 lines
 - [ ] `iroh-sync` (v0.4.1) — Set reconciliation, signature verification
 - [ ] `iroh-car` (v0.5.0) — CAR file support (IPFS-compatible)
 - [ ] `iroh-ffi` (v0.35.0) — FFI bindings for Python, etc.
