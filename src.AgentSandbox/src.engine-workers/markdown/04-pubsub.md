@@ -65,6 +65,27 @@ Redis pub/sub for distributed messaging:
 
 ## Trigger Registration
 
+```mermaid
+sequenceDiagram
+    participant Worker as SDK Worker
+    participant Engine as Engine
+    participant PubSub as PubSubWorker
+    participant Adapter as Adapter
+
+    Worker->>Engine: registerTrigger(subscribe, topic=orders)
+    Engine->>PubSub: subscribe to topic "orders"
+    PubSub->>Adapter: subscribe("orders")
+    Adapter-->>PubSub: receiver channel
+    
+    Note over Worker,Adapter: Later, publish event
+    Worker->>Engine: trigger(pubsub::publish, {topic: "orders", data: ...})
+    Engine->>PubSub: publish
+    PubSub->>Adapter: publish("orders", data)
+    Adapter-->>PubSub: deliver to subscriber
+    PubSub->>Engine: invoke subscribed function
+    Engine->>Worker: InvokeFunction
+```
+
 Source: `workers/pubsub/pubsub.rs:70-`
 
 The `subscribe` trigger type connects a topic to a function:
