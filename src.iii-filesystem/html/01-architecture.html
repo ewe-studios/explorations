@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Architecture — FUSE Protocol, VM Integration, Component Relationships -- src.iii-filesystem</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.iii-filesystem/docs</span>
+    <div class="nav-actions">
+      <a href="00-overview.html" class="nav-breadcrumb">iii-filesystem — VFS for Worker VM Sandboxes</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="00-overview.html" class="nav-btn" title="Previous: iii-filesystem — VFS for Worker VM Sandboxes">← prev</a>
+      <a href="02-passthrough-fs.html" class="nav-btn nav-btn-next" title="Next: PassthroughFs — Core Struct, Configuration, Builder, and Lifecycle">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Architecture — FUSE Protocol, VM Integration, Component Relationships</h1>
+<p><strong>iii-filesystem sits between the virtio-fs protocol and the host filesystem, translating guest FUSE operations into host syscalls.</strong> This document covers the full architecture, from the guest kernel's FUSE requests through the VMM to the PassthroughFs backend.</p>
+<h2>FUSE Protocol Flow</h2>
+<div class="mermaid">
+sequenceDiagram
+    participant App as Guest Application
+    participant GKernel as Guest Kernel
+    participant VMM as VMM (libkrun)
+    participant Passthrough as PassthroughFs
+    participant Inodes as Inode Table
+    participant HostFS as Host Filesystem
+
+    App-&gt;&gt;GKernel: open(&quot;/file.txt&quot;)
+    GKernel-&gt;&gt;VMM: FUSE_LOOKUP(parent=1, name=&quot;file.txt&quot;)
+    VMM-&gt;&gt;Passthrough: lookup(ctx, parent=1, name=&quot;file.txt&quot;)
+
+    Passthrough-&gt;&gt;Passthrough: validate_name(&quot;file.txt&quot;)
+    Passthrough-&gt;&gt;Passthrough: get_inode_fd(parent=1)
+    Passthrough-&gt;&gt;Passthrough: open_beneath(parent_fd, &quot;file.txt&quot;, O_PATH)
+    Passthrough-&gt;&gt;Passthrough: statx(fd, AT_EMPTY_PATH)
+    Passthrough-&gt;&gt;Inodes: check host identity (ino+dev+mnt_id)
+
+    alt Inode already tracked
+        Inodes--&gt;&gt;Passthrough: bump refcount, return entry
+    else New inode
+        Passthrough-&gt;&gt;Inodes: allocate FUSE inode, insert
+    end
+
+    Passthrough--&gt;&gt;VMM: Entry {inode=3, attr=stat64}
+    VMM--&gt;&gt;GKernel: FUSE_LOOKUP response
+    GKernel-&gt;&gt;App: fd for /file.txt
+
+    App-&gt;&gt;GKernel: read(fd, buf, size)
+    GKernel-&gt;&gt;VMM: FUSE_READ(inode=3, handle=0, offset=0, size=4096)
+    VMM-&gt;&gt;Passthrough: read(ctx, ino=3, handle=0, writer, size=4096, offset=0)
+    Passthrough-&gt;&gt;HostFS: preadv64(fd, offset=0)
+    HostFS--&gt;&gt;Passthrough: data bytes
+    Passthrough--&gt;&gt;VMM: write_to(writer, data)
+    VMM--&gt;&gt;GKernel: FUSE_READ response
+    GKernel--&gt;&gt;App: data in buf
+
+</div>
+<h2>Component Architecture</h2>
+<div class="mermaid">
+graph TB
+    subgraph LibExports[&quot;Public API (lib.rs)&quot;]
+        E1[&quot;DynFileSystem trait&quot;]
+        E2[&quot;PassthroughFs&quot;]
+        E3[&quot;PassthroughConfig&quot;]
+        E4[&quot;CachePolicy&quot;]
+    end
+
+    subgraph Core[&quot;PassthroughFs Core&quot;]
+        C1[&quot;root_fd: File&quot;]
+        C2[&quot;inodes: RwLock&lt;MultikeyBTreeMap&gt;&quot;]
+        C3[&quot;handles: DashMap&lt;u64, HandleData&gt;&quot;]
+        C4[&quot;init_file: File (memfd)&quot;]
+        C5[&quot;next_inode: AtomicU64&quot;]
+        C6[&quot;next_handle: AtomicU64&quot;]
+    end
+
+    subgraph Operations[&quot;FUSE Operations&quot;]
+        O1[&quot;lookup/forget&quot;]
+        O2[&quot;open/read/write/release&quot;]
+        O3[&quot;opendir/readdir/readdirplus&quot;]
+        O4[&quot;mkdir/create/symlink/link&quot;]
+        O5[&quot;unlink/rmdir/rename&quot;]
+        O6[&quot;getattr/setattr/access&quot;]
+        O7[&quot;fsync/statfs&quot;]
+    end
+
+    subgraph Shared[&quot;Shared Infrastructure&quot;]
+        S1[&quot;inode_table.rs&lt;br/&gt;MultikeyBTreeMap, InodeData&quot;]
+        S2[&quot;init_binary.rs&lt;br/&gt;Virtual /init.krun&quot;]
+        S3[&quot;platform.rs&lt;br/&gt;Error translation, stat helpers&quot;]
+        S4[&quot;name_validation.rs&lt;br/&gt;Path traversal protection&quot;]
+    end
+
+    E1 --&gt; Core
+    Core --&gt; Operations
+    Operations --&gt; Shared
+
+</div>
+<h2>How It Integrates with iii-worker</h2>
+<p>The <code>iii-worker</code> crate (42,998 LOC) manages krun-based VMs for sandboxed workers. Each VM needs a filesystem backend to access host files. <code>iii-filesystem</code> provides that backend:</p>
+<div class="mermaid">
+flowchart LR
+    subgraph IIIWorker[&quot;iii-worker (42,998 LOC)&quot;]
+        W1[&quot;VM Manager&quot;]
+        W2[&quot;krun VM Instance&quot;]
+    end
+
+    subgraph IIIFilesystem[&quot;iii-filesystem (4,421 LOC)&quot;]
+        F1[&quot;PassthroughFs&quot;]
+        F2[&quot;PassthroughFsBuilder&quot;]
+    end
+
+    subgraph Krun[&quot;libkrun&quot;]
+        K1[&quot;virtio-fs server&quot;]
+        K2[&quot;DynFileSystem trait&quot;]
+    end
+
+    W1 --&gt;|creates VM with| W2
+    W2 --&gt;|uses| F1
+    F1 --&gt;|implements| K2
+    K2 --&gt;|served by| K1
+    K1 --&gt;|FUSE protocol| W2
+
+</div>
+<h2>Inode Numbering</h2>
+<p>The FUSE protocol uses synthetic inode numbers that iii-filesystem manages independently from the host:</p>
+<table><tr><th>Inode</th><th>Purpose</th><th>Notes</th></tr><tr><td>1</td><td>Root directory</td><td>Always the configured `root_dir`</td></tr><tr><td>2</td><td>`/init.krun`</td><td>Virtual file with embedded init binary (only when `embed-init` feature enabled)</td></tr><tr><td>3+</td><td>Real files/dirs</td><td>Monotonically allocated via `next_inode`</td></tr></table>
+<p><strong>Aha:</strong> When init is NOT embedded (no <code>embed-init</code> feature or binary unavailable), inode 2 and handle 0 are available for real files. The code uses a conditional <code>start_inode</code>/<code>start_handle</code> to avoid wasting synthetic inode numbers:</p>
+<p>Source: <code>backends/passthroughfs/mod.rs:182-186</code></p>
+<pre><code class="language-rust">let (start_inode, start_handle) = if init_binary::has_init() {
+    (3u64, 1u64)
+} else {
+    (2u64, 0u64)
+};
+</code></pre>
+<p>Since <code>has_init()</code> is a const fn checking <code>INIT_BYTES.len()</code>, the compiler optimizes away the dead branch entirely.</p>
+<h2>What's Next</h2>
+<ul><li><a href="02-passthrough-fs.md">02 — PassthroughFs</a> — The core struct, configuration, builder, and lifecycle</li><li><a href="03-inode-management.md">03 — Inode Management</a> — Dual-key lookup, lookup collapse, reference counting</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

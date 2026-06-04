@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Platform Abstraction — Errno Translation, Stat Helpers, openat2 -- src.iii-filesystem</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.iii-filesystem/docs</span>
+    <div class="nav-actions">
+      <a href="04-file-operations.html" class="nav-breadcrumb">File Operations — Open, Read, Write, Flush, Release</a><a href="05-directory-operations.html" class="nav-breadcrumb">Directory Operations — Opendir, Readdir, Readdirplus, Tracked Leak</a><a href="06-init-binary.html" class="nav-breadcrumb">Init Binary — Virtual /init.krun File Serving</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="06-init-binary.html" class="nav-btn" title="Previous: Init Binary — Virtual /init.krun File Serving">← prev</a>
+      <a href="08-cross-cutting.html" class="nav-btn nav-btn-next" title="Next: Cross-Cutting Concerns — Security, Build System, Testing, Integration">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h2>Platform Abstraction — Errno Translation, Stat Helpers, openat2</h2>
+<p><strong>The platform module provides cross-platform abstractions for Linux and macOS, translating BSD errno values to Linux errno, wrapping stat syscalls, and implementing <code>openat2(RESOLVE_BENEATH)</code> for kernel-enforced path containment.</strong></p>
+<h2>Errno Translation Flow</h2>
+<div class="mermaid">
+flowchart LR
+    A[Host syscall fails] --&gt; B{Host OS?}
+    B --&gt;|Linux| C[Return error unchanged]
+    B --&gt;|macOS| D[Map BSD errno → Linux errno]
+    D --&gt; E[Return io::Error with Linux errno]
+    C --&gt; E
+    E --&gt; F[FUSE protocol receives Linux errno]
+
+</div>
+<p><strong>Aha:</strong> The entire errno translation table has 80+ mappings because macOS uses different errno numbers than Linux. For example, macOS <code>ENOATTR</code> (attribute not found) maps to Linux <code>ENODATA</code> (61), and <code>EOPNOTSUPP</code> is 102 on macOS but 95 on Linux. Without this translation, the guest kernel would receive invalid errno values and misinterpret errors.</p>
+<h2>Errno Translation</h2>
+<p>Source: <code>backends/shared/platform.rs:224-327</code></p>
+<p>The FUSE protocol always expects Linux errno values. On Linux, errors pass through unchanged. On macOS, BSD errno values are mapped to their Linux equivalents:</p>
+<pre><code class="language-rust">#[cfg(target_os = &quot;macos&quot;)]
+fn linux_errno_raw(errno: i32) -&gt; i32 {
+    match errno {
+        libc::EPERM =&gt; LINUX_EPERM,        // 1
+        libc::ENOENT =&gt; LINUX_ENOENT,      // 2
+        libc::EIO =&gt; LINUX_EIO,            // 5
+        libc::EBADF =&gt; LINUX_EBADF,        // 9
+        libc::EACCES =&gt; LINUX_EACCES,      // 13
+        libc::EINVAL =&gt; LINUX_EINVAL,      // 22
+        libc::ELOOP =&gt; LINUX_ELOOP,        // 40
+        libc::ENOATTR =&gt; LINUX_ENODATA,    // 61 (macOS-specific)
+        // ... 80+ mappings
+    }
+}
+</code></pre>
+<p>All filesystem operations must wrap OS errors with <code>linux_error()</code>:</p>
+<pre><code class="language-rust">let ret = unsafe { libc::openat(...) };
+if ret &lt; 0 {
+    return Err(platform::linux_error(io::Error::last_os_error()));
+}
+</code></pre>
+<h2>Error Helper Functions</h2>
+<p>Source: <code>backends/shared/platform.rs:330-432</code></p>
+<p>Convenience functions create <code>io::Error</code> with the correct Linux errno:</p>
+<pre><code class="language-rust">pub(crate) fn eio() -&gt; io::Error { io::Error::from_raw_os_error(LINUX_EIO) }
+pub(crate) fn ebadf() -&gt; io::Error { io::Error::from_raw_os_error(LINUX_EBADF) }
+pub(crate) fn einval() -&gt; io::Error { io::Error::from_raw_os_error(LINUX_EINVAL) }
+pub(crate) fn eperm() -&gt; io::Error { io::Error::from_raw_os_error(LINUX_EPERM) }
+pub(crate) fn enoent() -&gt; io::Error { io::Error::from_raw_os_error(LINUX_ENOENT) }
+pub(crate) fn eacces() -&gt; io::Error { io::Error::from_raw_os_error(LINUX_EACCES) }
+pub(crate) fn eloop() -&gt; io::Error { io::Error::from_raw_os_error(LINUX_ELOOP) }
+// ... 15+ more
+</code></pre>
+<h2>openat2 and RESOLVE_BENEATH</h2>
+<p>Source: <code>backends/shared/platform.rs:530-620</code></p>
+<p><code>openat2</code> (Linux 5.6+) provides kernel-enforced path containment:</p>
+<div class="mermaid">
+flowchart TD
+    A[open_beneath called] --&gt; B{has_openat2?}
+    B --&gt;|Yes| C[openat2 syscall]
+    B --&gt;|No| D[openat O_NOFOLLOW fallback]
+    C --&gt; E{syscall result?}
+    E --&gt;|Success| F[Return fd]
+    E --&gt;|ENOSYS| G[Fall through to openat]
+    E --&gt;|Other error| H[Return error]
+    G --&gt; D
+    D --&gt; F
+
+</div>
+
+<pre><code class="language-rust">#[repr(C)]
+pub(crate) struct OpenHow {
+    flags: u64,
+    mode: u64,
+    resolve: u64,
+}
+
+pub(crate) const RESOLVE_BENEATH: u64 = 0x08;           // Block .. traversal
+pub(crate) const RESOLVE_NO_SYMLINKS: u64 = 0x04;       // Block symlink traversal
+pub(crate) const RESOLVE_NO_MAGICLINKS: u64 = 0x02;     // Block procfs magic links
+
+const OPENAT2_RESOLVE_FLAGS: u64 =
+    RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS;
+</code></pre>
+<p>Availability is probed at init time:</p>
+<pre><code class="language-rust">pub(crate) fn probe_openat2() -&gt; bool {
+    let how = OpenHow { flags: O_CLOEXEC | O_PATH, mode: 0, resolve: OPENAT2_RESOLVE_FLAGS };
+    let ret = libc::syscall(SYS_OPENAT2, AT_FDCWD, c&quot;.&quot;.as_ptr(), &amp;how, size_of::&lt;OpenHow&gt;());
+    if ret &gt;= 0 { unsafe { libc::close(ret as i32) }; true }
+    else { !matches!(io::Error::last_os_error().raw_os_error(), Some(ENOSYS | EINVAL)) }
+}
+</code></pre>
+<p>Fallback path when <code>openat2</code> is unavailable:</p>
+<pre><code class="language-rust">pub(crate) fn open_beneath(dirfd: RawFd, name: *const c_char, flags: i32,
+    use_openat2: bool) -&gt; RawFd {
+    if use_openat2 {
+        // Try openat2 first
+        let ret = libc::syscall(SYS_OPENAT2, dirfd, name, &amp;how, size_of::&lt;OpenHow&gt;());
+        if ret &gt;= 0 || io::Error::last_os_error().raw_os_error() != Some(ENOSYS) {
+            return ret as i32;
+        }
+    }
+    // Fall back to regular openat(O_NOFOLLOW)
+    unsafe { libc::openat(dirfd, name, flags | libc::O_CLOEXEC) }
+}
+</code></pre>
+<h2>statx to stat64 Conversion</h2>
+<p>Source: <code>backends/shared/platform.rs:627-646</code></p>
+<p>Used in the Linux lookup collapse optimization:</p>
+<pre><code class="language-rust">pub(crate) fn statx_to_stat64(stx: &amp;libc::statx) -&gt; stat64 {
+    let mut st: stat64 = unsafe { std::mem::zeroed() };
+    st.st_dev = makedev(stx.stx_dev_major, stx.stx_minor);
+    st.st_ino = stx.stx_ino;
+    st.st_nlink = stx.stx_nlink as _;
+    st.st_mode = stx.stx_mode as _;
+    st.st_uid = stx.stx_uid;
+    st.st_gid = stx.stx_gid;
+    st.st_rdev = makedev(stx.stx_rdev_major, stx.stx_rdev_minor);
+    st.st_size = stx.stx_size as _;
+    st.st_blksize = stx.stx_blksize as _;
+    st.st_blocks = stx.stx_blocks as _;
+    st.st_atime = stx.stx_atime.tv_sec;
+    st.st_atime_nsec = stx.stx_atime.tv_nsec as _;
+    st.st_mtime = stx.stx_mtime.tv_sec;
+    st.st_mtime_nsec = stx.stx_mtime.tv_nsec as _;
+    st.st_ctime = stx.stx_ctime.tv_sec;
+    st.st_ctime_nsec = stx.stx_ctime.tv_nsec as _;
+    st
+}
+</code></pre>
+<p>The <code>makedev</code> function uses the Linux glibc formula:</p>
+<pre><code class="language-rust">fn makedev(major: u32, minor: u32) -&gt; u64 {
+    ((major as u64 &amp; 0xfffff000) &lt;&lt; 32)
+        | ((major as u64 &amp; 0x00000fff) &lt;&lt; 8)
+        | ((minor as u64 &amp; 0xffffff00) &lt;&lt; 12)
+        | (minor as u64 &amp; 0x000000ff)
+}
+</code></pre>
+<h2>Platform Constants</h2>
+<p>Source: <code>backends/shared/platform.rs:116-185</code></p>
+<p>All mode bits, dirent types, and access constants are defined with platform-specific casting:</p>
+<pre><code class="language-rust">#[cfg(target_os = &quot;linux&quot;)]
+pub(crate) const MODE_TYPE_MASK: u32 = libc::S_IFMT;
+#[cfg(target_os = &quot;macos&quot;)]
+pub(crate) const MODE_TYPE_MASK: u32 = libc::S_IFMT as u32;
+
+pub(crate) const MODE_REG: u32 = libc::S_IFREG;    // Regular file
+pub(crate) const MODE_DIR: u32 = libc::S_IFDIR;    // Directory
+pub(crate) const MODE_LNK: u32 = libc::S_IFLNK;    // Symlink
+pub(crate) const MODE_SETUID: u32 = libc::S_ISUID; // SUID bit
+pub(crate) const MODE_SETGID: u32 = libc::S_ISGID; // SGID bit
+
+pub(crate) const DIRENT_REG: u32 = libc::DT_REG as u32;
+pub(crate) const DIRENT_DIR: u32 = libc::DT_DIR as u32;
+pub(crate) const DIRENT_LNK: u32 = libc::DT_LNK as u32;
+</code></pre>
+<h2>Setattr Timespec Building</h2>
+<p>Source: <code>backends/shared/platform.rs:192-217</code></p>
+<p>Builds a <code>futimens</code>-compatible timespec array from FUSE setattr flags:</p>
+<pre><code class="language-rust">pub(crate) fn build_timespecs(attr: stat64, valid: SetattrValid) -&gt; [libc::timespec; 2] {
+    let mut times = [libc::timespec { tv_sec: 0, tv_nsec: libc::UTIME_OMIT }; 2];
+
+    if valid.contains(SetattrValid::ATIME) {
+        if valid.contains(SetattrValid::ATIME_NOW) {
+            times[0].tv_nsec = libc::UTIME_NOW;
+        } else {
+            times[0].tv_sec = attr.st_atime;
+            times[0].tv_nsec = attr.st_atime_nsec;
+        }
+    }
+    // ... MTIME handling
+    times
+}
+</code></pre>
+<h2>What's Next</h2>
+<ul><li><a href="08-cross-cutting.md">08 — Cross-Cutting</a> — Security, build system, testing</li><li><a href="03-inode-management.md">03 — Inode Management</a> — Return to inode management</li><li><a href="00-overview.md">00 — Overview</a> — Return to overview</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
