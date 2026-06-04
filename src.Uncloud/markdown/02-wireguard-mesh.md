@@ -103,6 +103,8 @@ Containers on different machines communicate directly through the WireGuard mesh
 
 ## Platform-Specific Implementation
 
+**Aha:** The WireGuard keepalive interval of 25 seconds is specifically chosen because it works with the widest range of firewalls — too short and it wastes bandwidth, too long and stateful firewalls drop the connection. This is a battle-tested value from the WireGuard project.
+
 | File | Platform | Purpose |
 |------|----------|---------|
 | `wireguard.go` | All | Core WireGuard logic |

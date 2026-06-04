@@ -76,6 +76,20 @@ Schema: `internal/machine/store/schema.sql`
 
 Source: `internal/machine/cluster/` (620 LOC)
 
+```mermaid
+sequenceDiagram
+    participant New as New Machine
+    participant Existing as Existing Machine
+    participant Corrosion as Corrosion Network
+
+    New->>Existing: Join request (public key, endpoint)
+    Existing->>Corrosion: Add machine to cluster state
+    Corrosion-->>Existing: Replicated to all machines
+    Existing-->>New: Join accepted (cluster state)
+    New->>Corrosion: Start syncing state
+    Corrosion-->>New: Full cluster state
+```
+
 Manages:
 - Machine join/leave
 - Peer discovery
@@ -86,6 +100,8 @@ Manages:
 Source: `internal/machine/corromigrate/` (515 LOC)
 
 Handles database schema migrations for Corrosion — ensuring all machines run compatible schema versions.
+
+**Aha:** The clusterController manages 8 different subsystems (WireGuard, gRPC, Corrosion, Docker, Caddy, DNS, Unregistry, metrics) from a single goroutine — the errgroup ensures all subsystems start cleanly or the entire controller fails fast.
 
 ## Corrosion Service
 
