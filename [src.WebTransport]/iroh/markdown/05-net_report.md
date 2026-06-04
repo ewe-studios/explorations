@@ -28,29 +28,27 @@ Source: `iroh/src/net_report.rs:1`
 ```rust
 // iroh/src/net_report/report.rs
 pub struct Report {
-    /// Can we reach the public internet via UDP IPv4?
-    pub ipv4_can_send: bool,
-    /// Can we reach the public internet via UDP IPv6?
-    pub ipv6_can_send: bool,
-    /// Are OS default routes usable?
-    pub os_has_ipv4: bool,
-    pub os_has_ipv6: bool,
-    /// Have we detected a captive portal?
-    pub captive_portal: Option<bool>,
+    /// Can we send UDP via IPv4?
+    pub udp_v4: bool,
+    /// Can we send UDP via IPv6?
+    pub udp_v6: bool,
+    /// Does our port mapping vary by destination?
+    pub mapping_varies_by_dest_ipv4: Option<bool>,
+    pub mapping_varies_by_dest_ipv6: Option<bool>,
     /// The preferred relay server (lowest latency).
     pub preferred_relay: Option<RelayUrl>,
     /// Per-relay latency measurements.
-    pub relay_latencies: RelayLatencies,
-    /// Our observed global IPv4 address (via relay).
-    pub global_ipv4: Option<Ipv4Addr>,
-    /// Our observed global IPv6 address (via relay).
-    pub global_ipv6: Option<Ipv6Addr>,
-    /// How much did our port mapping change?
-    pub mapping_var: Option<u16>,
+    pub relay_latency: RelayLatencies,
+    /// Our observed global IPv4 address.
+    pub global_v4: Option<SocketAddrV4>,
+    /// Our observed global IPv6 address.
+    pub global_v6: Option<SocketAddrV6>,
+    /// Have we detected a captive portal?
+    pub captive_portal: Option<bool>,
 }
 ```
 
-Source: `iroh/src/net_report/report.rs:1` — The `Report` captures all network conditions in a single snapshot.
+Source: `iroh/src/net_report/report.rs:1` — The `Report` struct. Note: there are NO `ipv4_can_send`, `ipv6_can_send`, `os_has_ipv4`, `os_has_ipv6`, `global_ipv4`, `global_ipv6`, or `mapping_var` fields — the actual field names differ.
 
 ## Probe Types
 
@@ -103,14 +101,16 @@ Source: `iroh/src/net_report/reportgen.rs` — The actor manages probe execution
 ```rust
 // iroh/src/net_report/report.rs
 pub struct RelayLatencies {
-    /// Per-relay HTTPS latency (IPv4).
-    https_ipv4: BTreeMap<RelayUrl, Duration>,
-    /// Per-relay HTTPS latency (IPv6).
-    https_ipv6: BTreeMap<RelayUrl, Duration>,
+    /// IPv4 relay latencies.
+    pub ipv4: BTreeMap<RelayUrl, Duration>,
+    /// IPv6 relay latencies.
+    pub ipv6: BTreeMap<RelayUrl, Duration>,
+    /// HTTPS relay latencies.
+    pub https: BTreeMap<RelayUrl, Duration>,
 }
 ```
 
-Source: `iroh/src/net_report/report.rs:1` — Tracks latency per relay per IP version.
+Source: `iroh/src/net_report/report.rs:1` — Three fields (ipv4, ipv6, https), not two.
 
 ## Hysteresis: Avoiding Relay Flapping
 
