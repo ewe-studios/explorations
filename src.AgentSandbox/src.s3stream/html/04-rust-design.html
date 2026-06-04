@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rust Design — Condensed s3Stream Implementation -- src.s3stream</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.s3stream/docs</span>
+    <div class="nav-actions">
+      <a href="01-read-path.html" class="nav-breadcrumb">Read Path — LogCache → DataBlockCache → Footer-First S3 Reads</a><a href="02-s3-object-format.html" class="nav-breadcrumb">S3 Object Format — Self-Describing Objects with Footer-First Reads</a><a href="03-caching.html" class="nav-breadcrumb">Caching — LogCache Merge, DataBlockCache Eviction, Readahead</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="03-caching.html" class="nav-btn" title="Previous: Caching — LogCache Merge, DataBlockCache Eviction, Readahead">← prev</a>
+      <a href="README.html" class="nav-btn nav-btn-next" title="Next: s3Stream Documentation">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Rust Design — Condensed s3Stream Implementation</h1>
+<p><strong>Here's how to implement s3Stream in Rust — condensed, without Java verbosity. The Java version is 46,458 lines. The Rust equivalent for the core is ~2,000 lines.</strong></p>
+<h2>What Java Does That Rust Doesn't Need</h2>
+<table><tr><th>Java Pattern</th><th>Rust Replacement</th><th>Lines Saved</th></tr><tr><td>Netty ByteBuf + ref counting</td><td>`bytes::Bytes` (Arc-based)</td><td>~2,000</td></tr><tr><td>CompletableFuture chains</td><td>`async/await`</td><td>~1,500</td></tr><tr><td>20+ Exception classes</td><td>One `Error` enum</td><td>~500</td></tr><tr><td>ReentrantReadWriteLock</td><td>`RwLock` / channels</td><td>~300</td></tr><tr><td>OTEL annotations</td><td>`tracing` crate</td><td>~1,000</td></tr><tr><td>Factory methods + interfaces</td><td>Constructors + traits</td><td>~1,000</td></tr><tr><td>Factory + builder patterns</td><td>`Default` + builder derive</td><td>~500</td></tr><tr><td>Null checks everywhere</td><td>`Option<T>`</td><td>~500</td></tr><tr><td>**Total**</td><td>**~7,300 lines**</td></tr></table>
+<h2>Core Types</h2>
+<pre><code class="language-rust">use bytes::Bytes;
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Footer — always the last 48 bytes of an S3 object.
+#[derive(Clone, Debug)]
+pub struct Footer {
+    pub index_position: u64,
+    pub index_length: u32,
+}
+
+impl Footer {
+    pub const SIZE: usize = 48;
+    pub const MAGIC: u64 = 0x88e241b785f4cff8;
+
+    pub fn encode(&amp;self, buf: &amp;mut Vec&lt;u8&gt;) {
+        buf.extend_from_slice(&amp;self.index_position.to_be_bytes());
+        buf.extend_from_slice(&amp;self.index_length.to_be_bytes());
+        buf.resize(32, 0);
+        buf.extend_from_slice(&amp;Self::MAGIC.to_be_bytes());
+    }
+
+    pub fn decode(buf: &amp;[u8]) -&gt; Result&lt;Self, Error&gt; {
+        if buf.len() != Self::SIZE {
+            return Err(Error::InvalidFooter);
+        }
+        if u64::from_be_bytes(buf[40..48].try_into().unwrap()) != Self::MAGIC {
+            return Err(Error::InvalidMagic);
+        }
+        Ok(Self {
+            index_position: u64::from_be_bytes(buf[0..8].try_into().unwrap()),
+            index_length: u32::from_be_bytes(buf[8..12].try_into().unwrap()),
+        })
+    }
+}
+
+/// Index entry for a data block — 36 bytes.
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct DataBlockIndex {
+    pub stream_id: u64,
+    pub start_offset: u64,
+    pub end_offset_delta: u32,
+    pub record_count: u32,
+    pub position: u64,
+    pub size: u32,
+}
+
+impl DataBlockIndex {
+    pub const SIZE: usize = 36;
+
+    pub fn end_offset(&amp;self) -&gt; u64 { self.start_offset + self.end_offset_delta as u64 }
+    pub fn end_position(&amp;self) -&gt; u64 { self.position + self.size as u64 }
+
+    pub fn encode(&amp;self, buf: &amp;mut Vec&lt;u8&gt;) {
+        buf.extend_from_slice(&amp;self.stream_id.to_be_bytes());
+        buf.extend_from_slice(&amp;self.start_offset.to_be_bytes());
+        buf.extend_from_slice(&amp;self.end_offset_delta.to_be_bytes());
+        buf.extend_from_slice(&amp;self.record_count.to_be_bytes());
+        buf.extend_from_slice(&amp;self.position.to_be_bytes());
+        buf.extend_from_slice(&amp;self.size.to_be_bytes());
+    }
+
+    pub fn decode(buf: &amp;[u8]) -&gt; Self {
+        Self {
+            stream_id: u64::from_be_bytes(buf[0..8].try_into().unwrap()),
+            start_offset: u64::from_be_bytes(buf[8..16].try_into().unwrap()),
+            end_offset_delta: u32::from_be_bytes(buf[16..20].try_into().unwrap()),
+            record_count: u32::from_be_bytes(buf[20..24].try_into().unwrap()),
+            position: u64::from_be_bytes(buf[24..32].try_into().unwrap()),
+            size: u32::from_be_bytes(buf[32..36].try_into().unwrap()),
+        }
+    }
+}
+</code></pre>
+<h2>The LogCache</h2>
+<pre><code class="language-rust">use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
+
+/// In-memory buffer for records before S3 upload.
+pub struct LogCache {
+    capacity: usize,
+    block_max_size: usize,
+    blocks: Vec&lt;LogCacheBlock&gt;,
+    active: LogCacheBlock,
+}
+
+impl LogCache {
+    pub fn new(capacity: usize, block_max_size: usize) -&gt; Self {
+        Self {
+            capacity,
+            block_max_size,
+            blocks: Vec::new(),
+            active: LogCacheBlock::new(block_max_size),
+        }
+    }
+
+    /// Put a record batch. Returns true if the active block is full.
+    pub fn put(&amp;mut self, batch: RecordBatch) -&gt; bool {
+        let full = self.active.put(batch);
+        if full {
+            let sealed = std::mem::replace(
+                &amp;mut self.active,
+                LogCacheBlock::new(self.block_max_size),
+            );
+            self.blocks.push(sealed);
+        }
+        self.size() &gt;= self.capacity
+    }
+
+    /// Get records for a stream offset range.
+    pub fn get(&amp;self, stream_id: u64, start: u64, end: u64) -&gt; Vec&lt;RecordBatch&gt; {
+        let mut result = Vec::new();
+        for block in &amp;self.blocks {
+            if let Some(records) = block.get(stream_id, start, end) {
+                result.extend(records);
+                if result.last().map_or(false, |r| r.last_offset() &gt;= end) {
+                    break;
+                }
+            }
+        }
+        result
+    }
+
+    /// Seal the active block and return all blocks for upload.
+    pub fn seal(&amp;mut self) -&gt; Vec&lt;LogCacheBlock&gt; {
+        let mut all = std::mem::take(&amp;mut self.blocks);
+        let sealed = std::mem::replace(
+            &amp;mut self.active,
+            LogCacheBlock::new(self.block_max_size),
+        );
+        all.push(sealed);
+        all
+    }
+
+    pub fn size(&amp;self) -&gt; usize {
+        self.blocks.iter().map(|b| b.size()).sum::&lt;usize&gt;() + self.active.size()
+    }
+}
+
+/// A sealed or active block within the LogCache.
+pub struct LogCacheBlock {
+    max_size: usize,
+    streams: HashMap&lt;u64, StreamCache&gt;,
+    size: usize,
+}
+
+impl LogCacheBlock {
+    pub fn new(max_size: usize) -&gt; Self {
+        Self { max_size, streams: HashMap::new(), size: 0 }
+    }
+
+    pub fn put(&amp;mut self, batch: RecordBatch) -&gt; bool {
+        let stream = self.streams.entry(batch.stream_id).or_insert_with(StreamCache::new);
+        self.size += batch.size();
+        stream.add(batch);
+        self.size &gt;= self.max_size || self.streams.len() &gt;= 10_000
+    }
+
+    pub fn get(&amp;self, stream_id: u64, start: u64, end: u64) -&gt; Option&lt;Vec&lt;RecordBatch&gt;&gt; {
+        self.streams.get(&amp;stream_id)?.get(start, end)
+    }
+
+    pub fn size(&amp;self) -&gt; usize { self.size }
+}
+
+/// Per-stream record cache with offset→index lookup.
+struct StreamCache {
+    records: Vec&lt;RecordBatch&gt;,
+    start_offset: u64,
+    end_offset: u64,
+    offset_index: HashMap&lt;u64, usize&gt;,  // offset → index in records
+}
+
+impl StreamCache {
+    fn new() -&gt; Self {
+        Self {
+            records: Vec::new(),
+            start_offset: u64::MAX,
+            end_offset: 0,
+            offset_index: HashMap::new(),
+        }
+    }
+
+    fn add(&amp;mut self, batch: RecordBatch) {
+        let offset = batch.base_offset();
+        self.offset_index.insert(offset, self.records.len());
+        self.records.push(batch);
+        self.start_offset = self.start_offset.min(offset);
+        self.end_offset = self.records.last().unwrap().last_offset();
+    }
+
+    fn get(&amp;self, start: u64, end: u64) -&gt; Option&lt;Vec&lt;RecordBatch&gt;&gt; {
+        if self.end_offset &lt;= start || self.start_offset &gt;= end {
+            return None;
+        }
+        // Fast path: use offset index
+        let idx = *self.offset_index.get(&amp;start)?;
+        Some(self.records[idx..].iter()
+            .take_while(|r| r.base_offset() &lt; end)
+            .cloned()
+            .collect())
+    }
+}
+</code></pre>
+<h2>The S3 Object Writer</h2>
+<pre><code class="language-rust">/// Writes records to an S3 object with index and footer.
+pub struct S3ObjectWriter {
+    data: Vec&lt;u8&gt;,
+    indexes: Vec&lt;DataBlockIndex&gt;,
+    stream_id: u64,
+    next_offset: u64,
+}
+
+impl S3ObjectWriter {
+    pub fn new() -&gt; Self {
+        Self {
+            data: Vec::with_capacity(64 * 1024 * 1024),
+            indexes: Vec::new(),
+            stream_id: 0,
+            next_offset: 0,
+        }
+    }
+
+    pub fn append(&amp;mut self, batch: &amp;RecordBatch) -&gt; Result&lt;(), Error&gt; {
+        if self.indexes.is_empty() {
+            self.stream_id = batch.stream_id();
+            self.next_offset = batch.base_offset();
+        } else if batch.stream_id() != self.stream_id || batch.base_offset() != self.next_offset {
+            return Err(Error::NonContiguous);
+        }
+        let position = self.data.len() as u64;
+        let size = batch.data().len() as u32;
+        self.data.extend_from_slice(batch.data());
+        self.indexes.push(DataBlockIndex {
+            stream_id: batch.stream_id(),
+            start_offset: batch.base_offset(),
+            end_offset_delta: (batch.last_offset() - batch.base_offset()) as u32,
+            record_count: batch.record_count(),
+            position,
+            size,
+        });
+        self.next_offset = batch.last_offset();
+        Ok(())
+    }
+
+    /// Finalize: data + index + footer → single buffer ready for S3 PUT.
+    pub fn finalize(self) -&gt; Bytes {
+        let mut buf = Vec::with_capacity(
+            self.data.len() + self.indexes.len() * 36 + Footer::SIZE + 5,
+        );
+
+        // Header
+        buf.push(0x52); // magic
+        buf.extend_from_slice(&amp;(self.indexes.len() as u32).to_be_bytes());
+        buf.extend_from_slice(&amp;self.data);
+
+        // Index block
+        let index_position = buf.len() as u64;
+        buf.extend_from_slice(&amp;(self.indexes.len() as u32).to_be_bytes());
+        for idx in &amp;self.indexes {
+            idx.encode(&amp;mut buf);
+        }
+
+        // Footer
+        let index_length = (buf.len() - index_position) as u32;
+        Footer { index_position, index_length }.encode(&amp;mut buf);
+
+        buf.into()
+    }
+}
+</code></pre>
+<h2>The Footer-First Reader</h2>
+<pre><code class="language-rust">/// S3 object reader — footer-first approach.
+pub struct S3Reader&lt;S: ObjectStorage&gt; {
+    storage: S,
+    key: String,
+    size: u64,
+}
+
+impl&lt;S: ObjectStorage&gt; S3Reader&lt;S&gt; {
+    /// Read records for a stream offset range. Exactly 2-3 S3 range reads.
+    pub async fn fetch(
+        &amp;self,
+        stream_id: u64,
+        start: u64,
+        end: u64,
+    ) -&gt; Result&lt;Vec&lt;RecordBatch&gt;, Error&gt; {
+        // Step 1: Read footer (48 bytes)
+        let footer_bytes = self.storage
+            .range_read(&amp;self.key, self.size - Footer::SIZE as u64, self.size)
+            .await?;
+        let footer = Footer::decode(&amp;footer_bytes)?;
+
+        // Step 2: Read index block
+        let index_bytes = self.storage
+            .range_read(&amp;self.key, footer.index_position,
+                footer.index_position + footer.index_length as u64)
+            .await?;
+
+        // Step 3: Parse index entries
+        let count = u32::from_be_bytes(index_bytes[0..4].try_into().unwrap()) as usize;
+        let mut pos = 4;
+        let mut matching = Vec::new();
+        for _ in 0..count {
+            let idx = DataBlockIndex::decode(&amp;index_bytes[pos..pos + 36]);
+            pos += 36;
+            if idx.stream_id == stream_id &amp;&amp; idx.start_offset &lt; end &amp;&amp; idx.end_offset() &gt; start {
+                matching.push(idx);
+            }
+        }
+
+        // Step 4: Read data blocks (can batch into one call if contiguous)
+        let mut records = Vec::new();
+        for idx in matching {
+            let data = self.storage
+                .range_read(&amp;self.key, idx.position, idx.end_position())
+                .await?;
+            records.push(RecordBatch::decode(idx.stream_id, idx.start_offset, &amp;data)?);
+        }
+        Ok(records)
+    }
+}
+</code></pre>
+<h2>The DataBlockCache</h2>
+<pre><code class="language-rust">use std::collections::HashMap;
+use tokio::sync::Semaphore;
+
+/// DataBlockCache — like Linux page cache for S3 data blocks.
+pub struct DataBlockCache {
+    shards: Vec&lt;CacheShard&gt;,
+    size_limiter: Arc&lt;Semaphore&gt;,
+    max_size: usize,
+}
+
+impl DataBlockCache {
+    pub fn new(max_size: usize, num_shards: usize) -&gt; Self {
+        let shard_size = max_size / num_shards;
+        Self {
+            shards: (0..num_shards).map(|_| CacheShard::new(shard_size)).collect(),
+            size_limiter: Arc::new(Semaphore::new(max_size)),
+            max_size,
+        }
+    }
+
+    fn shard(&amp;self, stream_id: u64) -&gt; &amp;CacheShard {
+        &amp;self.shards[(stream_id as usize) % self.shards.len()]
+    }
+
+    pub async fn get(&amp;self, key: CacheKey, reader: &amp;ObjectReader) -&gt; Result&lt;DataBlock, Error&gt; {
+        self.shard(key.stream_id).get(key, reader, &amp;self.size_limiter).await
+    }
+}
+
+/// Per-shard cache with LRU eviction.
+struct CacheShard {
+    blocks: RwLock&lt;HashMap&lt;CacheKey, Arc&lt;DataBlock&gt;&gt;&gt;,
+    lru: RwLock&lt;VecDeque&lt;CacheKey&gt;&gt;,
+    max_size: usize,
+}
+
+struct CacheKey {
+    object_id: u64,
+    stream_id: u64,
+    start_offset: u64,
+}
+</code></pre>
+<h2>Key Design Differences from Java</h2>
+<table><tr><th>Aspect</th><th>Java (AutoMQ)</th><th>Rust (Proposed)</th></tr><tr><td>Buffer management</td><td>Netty ByteBuf + ref count</td><td>`bytes::Bytes` (automatic)</td></tr><tr><td>Async</td><td>CompletableFuture chains</td><td>`async/await`</td></tr><tr><td>Concurrency</td><td>EventLoops + ReentrantLock</td><td>`RwLock` + `tokio::sync`</td></tr><tr><td>Error handling</td><td>20+ Exception classes</td><td>`enum Error`</td></tr><tr><td>Cache eviction</td><td>LRU + TTL + semaphore</td><td>LRU + `tokio::sync::Semaphore`</td></tr><tr><td>Object encoding</td><td>Manual ByteBuf writes</td><td>`Vec<u8>` + `extend_from_slice`</td></tr></table>
+<p><strong>Aha:</strong> The Java version needs Netty's ByteBuf for zero-copy because Java's <code>byte[]</code> is always a copy. Rust's <code>Bytes</code> type is already reference-counted and supports zero-copy slicing — no Netty needed.</p>
+<h2>What's Next</h2>
+<ul><li><a href="00-overview.md">00 — Overview</a> — Return to overview</li><li><a href="03-caching.md">03 — Caching</a> — Return to caching</li><li><a href="01-read-path.md">01 — Read Path</a> — Return to read path</li></ul>
+<h2>Complete Write-Read Cycle</h2>
+<div class="mermaid">
+flowchart LR
+    A[RecordBatch] --&gt; B[&quot;LogCache.put&quot;]
+    B --&gt; C[&quot;S3ObjectWriter.append&quot;]
+    C --&gt; D[&quot;S3ObjectWriter.finalize&quot;]
+    D --&gt; E[&quot;S3 PUT&quot;]
+    E --&gt; F[(S3 Object)]
+    F --&gt; G[&quot;S3Reader.fetch&quot;]
+    G --&gt; H[Footer: 48 bytes]
+    H --&gt; I[Index: variable]
+    I --&gt; J[Data: range read]
+    J --&gt; K[RecordBatch]
+
+</div>
+<h2>What's Next</h2>
+<h2>Complete Write-Read Cycle</h2>
+<div class="mermaid">
+flowchart LR
+    A[RecordBatch] --&gt; B[LogCache.put]
+    B --&gt; C[S3ObjectWriter.finalize]
+    C --&gt; D[S3 PUT]
+    D --&gt; E[(S3 Object)]
+    E --&gt; F[S3Reader.fetch]
+    F --&gt; G[RecordBatch]
+
+</div>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

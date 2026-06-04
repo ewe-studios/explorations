@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Read Path — LogCache → DataBlockCache → Footer-First S3 Reads -- src.s3stream</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.s3stream/docs</span>
+    <div class="nav-actions">
+      <a href="00-overview.html" class="nav-breadcrumb">s3Stream — S3 Performance Deep Dive</a><a href="00-write-path.html" class="nav-breadcrumb">Write Path — WAL → LogCache → Batched S3 Upload</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="00-write-path.html" class="nav-btn" title="Previous: Write Path — WAL → LogCache → Batched S3 Upload">← prev</a>
+      <a href="02-s3-object-format.html" class="nav-btn nav-btn-next" title="Next: S3 Object Format — Self-Describing Objects with Footer-First Reads">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Read Path — LogCache → DataBlockCache → Footer-First S3 Reads</h1>
+<p><strong>The read path has three layers, each avoiding S3 calls when possible: LogCache (in-memory recent writes) → DataBlockCache (cached S3 data blocks) → S3 Object (footer-first range reads).</strong></p>
+<h2>Read Path Overview</h2>
+<div class="mermaid">
+flowchart TD
+    A[&quot;fetch(streamId, startOffset, endOffset)&quot;] --&gt; B{In LogCache?}
+    B --&gt;|Yes, fully| C[Return from LogCache]
+    B --&gt;|Yes, partially| D[Return partial, continue]
+    B --&gt;|No| E{In DataBlockCache?}
+    E --&gt;|Yes| F[Return from cache]
+    E --&gt;|No| G[Find S3 objects for range]
+    G --&gt; H[For each object: footer-first read]
+    H --&gt; I[Range read: footer (48 bytes)]
+    I --&gt; J[Parse footer → index position]
+    J --&gt; K[Range read: index block]
+    K --&gt; L[Find matching data blocks]
+    L --&gt; M[Range read: data blocks]
+    M --&gt; N[Parse records]
+    
+    C --&gt; O[Return records]
+    D --&gt; E
+    F --&gt; O
+    N --&gt; O
+
+</div>
+<h2>Layer 1: LogCache (Zero S3 Calls)</h2>
+<p>Source: <code>LogCache.java:147</code></p>
+<p>The fastest path — records that were recently appended:</p>
+<pre><code class="language-java">// LogCache.get() — search active + sealed blocks
+for (LogCacheBlock block : blocks) {
+    List&lt;StreamRecordBatch&gt; records = block.get(streamId, startOffset, endOffset, maxBytes);
+    if (!records.isEmpty()) {
+        result.addAll(records);
+        if (fulfilled) return result;
+    }
+}
+</code></pre>
+<p><strong>Smart intersection logic:</strong></p>
+<ul><li>If the requested range is fully in the cache → return all records</li><li>If the range partially overlaps → return only the continuous portion (simplifies block cache logic)</li><li>If no overlap → return empty, fall through to DataBlockCache</li></ul>
+<table><tr><th>Query</th><th>Cached: [0,10], [100,200]</th><th>Result</th></tr><tr><td>[0,10]</td><td>Full overlap</td><td>[0,10] ✓</td></tr><tr><td>[0,11]</td><td>Left intersect</td><td>[] (let block cache handle)</td></tr><tr><td>[5,20]</td><td>Left intersect</td><td>[] (let block cache handle)</td></tr><tr><td>[90,110]</td><td>Right intersect</td><td>[100,110]</td></tr><tr><td>[40,50]</td><td>No overlap</td><td>[]</td></tr></table>
+<p><strong>Aha:</strong> The "left intersect" behavior — returning empty when the start is cached but the end is not — is a deliberate simplification. Instead of returning partial data and coordinating between cache layers, it lets the block cache handle the entire range. This avoids complex coordination logic at the cost of occasionally re-reading data that's in the LogCache.</p>
+<h2>Layer 2: DataBlockCache (Like Linux Page Cache)</h2>
+<p>Source: <code>DataBlockCache.java</code> (305 lines)</p>
+<p>The DataBlockCache is "like Linux's page cache" — it caches data blocks from S3 objects:</p>
+<pre><code class="language-java">// DataBlockCache.getBlock() — check cache, fetch from S3 on miss
+DataBlock dataBlock = blocks.get(key);  // key = (objectId, dataBlockIndex)
+if (dataBlock == null) {
+    dataBlock = new DataBlock(objectId, dataBlockIndex);
+    blocks.put(key, dataBlock);
+    readFromS3(objectReader, dataBlock);  // Async read
+}
+return dataBlock.dataFuture();
+</code></pre>
+<h3>DataBlockCache Architecture</h3>
+<div class="mermaid">
+flowchart TD
+    A[&quot;DataBlockCache (maxSize: configurable)&quot;] --&gt; B[&quot;Cache per EventLoop&quot;]
+    B --&gt; C[&quot;EventLoop 0: blocks + LRU&quot;]
+    B --&gt; D[&quot;EventLoop 1: blocks + LRU&quot;]
+    B --&gt; E[&quot;... EventLoop N&quot;]
+    
+    C --&gt; F[&quot;key → DataBlock (HashMap)&quot;]
+    C --&gt; G[&quot;LRU for eviction&quot;]
+    C --&gt; H[&quot;AsyncSemaphore for size limiting&quot;]
+
+</div>
+<table><tr><th>Component</th><th>Purpose</th></tr><tr><td>`Cache[]` (one per EventLoop)</td><td>Sharded by streamId for concurrent access</td></tr><tr><td>`HashMap<DataBlockGroupKey, DataBlock>`</td><td>Fast lookup</td></tr><tr><td>`LRUCache`</td><td>Eviction order</td></tr><tr><td>`AsyncSemaphore`</td><td>Size limiting with async waiting</td></tr></table>
+<h3>Eviction Policy</h3>
+<pre><code class="language-java">// evict0() — evict LRU blocks when:
+// 1. Block is expired (TTL &gt; 1 minute)
+// 2. Size limiter needs permits
+while (true) {
+    entry = lru.peek();  // Least recently used
+    if (entry == null) break;
+    if (!dataBlock.isExpired() &amp;&amp; !sizeLimiter.requiredRelease()) break;
+    lru.pop();
+    dataBlock.free();  // Releases permits back to semaphore
+}
+</code></pre>
+<p><strong>Eviction triggers:</strong></p>
+<ul><li>Block TTL expired (1 minute)</li><li>Size semaphore has waiting tasks (need permits)</li><li>After S3 read completes (if semaphore needs release)</li></ul>
+<h3>Readahead</h3>
+<p>The StreamReader (which uses DataBlockCache) implements adaptive readahead:</p>
+<pre><code class="language-java">// StreamReader.Readahead
+static final int READAHEAD_SIZE_UNIT = 512 KB;
+static final int MAX_READAHEAD_SIZE = 32 MB;
+
+// When reading sequentially, prefetch more data
+if (readingSequentially) {
+    readaheadSize = min(readaheadSize * 2, MAX_READAHEAD_SIZE);
+} else {
+    readaheadSize = READAHEAD_SIZE_UNIT;  // Reset on random access
+}
+</code></pre>
+<p><strong>Readahead is triggered</strong> when the next read is expected to be sequential (offsets are increasing). The prefetched data goes into the DataBlockCache, so the next read is a cache hit.</p>
+<h2>Layer 3: S3 Object Read (Footer-First)</h2>
+<p>Source: <code>CompositeObjectReader.java</code> (659 lines)</p>
+<p>When data is not in any cache, read directly from S3 using the footer-first approach:</p>
+<h3>Step 1: Read Footer (48 bytes)</h3>
+<pre><code class="language-">GET object[object_size - 48 .. object_size]
+</code></pre>
+<p>Parse the footer:</p>
+<pre><code class="language-">index_position (u64) = where the index block starts
+index_length   (u32) = size of the index block
+magic          (u64) = 0x88e241b785f4cff8 (verify valid object)
+</code></pre>
+<h3>Step 2: Read Index Block</h3>
+<pre><code class="language-">GET object[index_position .. index_position + index_length]
+</code></pre>
+<p>Parse the index entries (36 bytes each):</p>
+<pre><code class="language-">stream_id     (u64)
+start_offset  (u64)
+end_delta     (u32)  → end = start + delta
+record_count  (u32)
+position      (u64)  → byte offset in objects block
+size          (u32)
+</code></pre>
+<h3>Step 3: Find Matching Data Blocks</h3>
+<p>Binary search (or linear scan) through index entries to find blocks matching <code>(streamId, startOffset, endOffset)</code>.</p>
+<h3>Step 4: Range-Read Data Blocks</h3>
+<pre><code class="language-">GET object[position .. position + size]
+</code></pre>
+<p>Only the exact bytes needed are downloaded. For a 64MB object, you might only need 1KB of data.</p>
+<h3>Total S3 Calls</h3>
+<table><tr><th>Scenario</th><th>S3 Calls</th><th>Data Transferred</th></tr><tr><td>LogCache hit</td><td>0</td><td>0</td></tr><tr><td>DataBlockCache hit</td><td>0</td><td>0</td></tr><tr><td>Cache miss (1 block)</td><td>3</td><td>48 + index + 1 block</td></tr><tr><td>Cache miss (5 blocks)</td><td>3</td><td>48 + index + 5 blocks</td></tr></table>
+<p><strong>Aha:</strong> Multiple data blocks from the same object can be fetched in one range read (if they're contiguous). The index tells you the positions, so you can merge adjacent blocks into a single S3 GET.</p>
+<h2>StreamReader: Putting It All Together</h2>
+<p>Source: <code>StreamReader.java</code> (678 lines)</p>
+<p>The StreamReader coordinates all three layers:</p>
+<pre><code class="language-java">read(startOffset, endOffset, maxBytes)
+  → Try LogCache
+  → If partial/miss: try DataBlockCache
+  → If miss: find S3 objects → footer-first read
+  → Merge results from all layers
+  → Trigger readahead for next read
+</code></pre>
+<p>The StreamReader also manages:</p>
+<ul><li><strong>Block epoch</strong>: When blocks are reset (e.g., after compaction), the epoch increases to invalidate stale reads</li><li><strong>Retry</strong>: If a read fails (e.g., object was compacted), reset blocks and retry</li><li><strong>Readahead reset</strong>: After 1 minute of inactivity, readahead size resets to 512KB</li></ul>
+<h2>What's Next</h2>
+<ul><li><a href="02-s3-object-format.md">02 — S3 Object Format</a> — Detailed object layout</li><li><a href="03-caching.md">03 — Caching</a> — LogCache merge, DataBlockCache eviction, readahead</li><li><a href="00-overview.md">00 — Overview</a> — Return to overview</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

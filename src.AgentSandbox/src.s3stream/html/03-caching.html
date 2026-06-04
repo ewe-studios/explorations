@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Caching — LogCache Merge, DataBlockCache Eviction, Readahead -- src.s3stream</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.s3stream/docs</span>
+    <div class="nav-actions">
+      <a href="00-write-path.html" class="nav-breadcrumb">Write Path — WAL → LogCache → Batched S3 Upload</a><a href="01-read-path.html" class="nav-breadcrumb">Read Path — LogCache → DataBlockCache → Footer-First S3 Reads</a><a href="02-s3-object-format.html" class="nav-breadcrumb">S3 Object Format — Self-Describing Objects with Footer-First Reads</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="02-s3-object-format.html" class="nav-btn" title="Previous: S3 Object Format — Self-Describing Objects with Footer-First Reads">← prev</a>
+      <a href="04-rust-design.html" class="nav-btn nav-btn-next" title="Next: Rust Design — Condensed s3Stream Implementation">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Caching — LogCache Merge, DataBlockCache Eviction, Readahead</h1>
+<p><strong>s3Stream has two caches: LogCache for writes (in-memory buffer before S3 upload) and DataBlockCache for reads (cached S3 data blocks). Both are tuned for maximum throughput.</strong></p>
+<h2>LogCache: Write-Side Caching</h2>
+<p>Source: <code>LogCache.java</code> (696 lines)</p>
+<h3>Block Lifecycle</h3>
+<div class="mermaid">
+flowchart TD
+    A[&quot;New activeBlock&quot;] --&gt; B[&quot;accepting writes&quot;]
+    B --&gt; C{Full? (64MB or 10K streams)}
+    C --&gt;|No| B
+    C --&gt;|Yes| D[&quot;Seal block&quot;]
+    D --&gt; E[&quot;Create new activeBlock&quot;]
+    E --&gt; F[&quot;Add sealed to blocks list&quot;]
+    F --&gt; G{List &gt; 64 blocks?}
+    G --&gt;|Yes| H[&quot;Force upload + merge&quot;]
+    G --&gt;|No| I[&quot;Continue writing&quot;]
+    H --&gt; J[&quot;Upload oldest sealed blocks&quot;]
+    J --&gt; K[&quot;Merge adjacent free blocks&quot;]
+    K --&gt; I
+
+</div>
+<h3>Block Merging</h3>
+<p>When there are many sealed blocks (> 8), the LogCache merges adjacent free blocks:</p>
+<pre><code class="language-java">// tryMerge() — merge adjacent free blocks to speed up reads
+for (int i = 0; i &lt; blocks.size() - 1; i++) {
+    left = blocks.get(i);
+    right = blocks.get(i + 1);
+    if (left.free &amp;&amp; right.free &amp;&amp; left.size() + right.size() &lt; cacheBlockMaxSize) {
+        if (!isDiscontinuous(left, right)) {  // Offsets are continuous
+            // Merge OUT of the lock
+            LogCacheBlock merged = mergeBlock(left, right);
+            // Swap IN the lock
+            lock.writeLock().lock();
+            blocks.set(i, merged);
+            blocks.remove(i + 1);
+            lock.writeLock().unlock();
+        }
+    }
+}
+</code></pre>
+<p><strong>Aha:</strong> The merge operation (<code>isDiscontinuous</code>, <code>mergeBlock</code>) is costly because it iterates over all streams. These operations run OUTSIDE the write lock. The lock is only used to check eligibility and swap blocks. This minimizes write contention.</p>
+<h3>Async Free Listener</h3>
+<p>When a block is uploaded to S3, it's marked as "free":</p>
+<pre><code class="language-java">// markFree() — called after successful upload
+block.free = true;
+LOG_CACHE_ASYNC_EXECUTOR.execute(() -&gt; {
+    tryMerge();  // Try to merge adjacent free blocks
+    removed.forEach(b -&gt; b.free());  // Release memory
+});
+</code></pre>
+<p>The free operation runs on an async executor, not the write path, to avoid blocking writes.</p>
+<h2>DataBlockCache: Read-Side Caching</h2>
+<p>Source: <code>DataBlockCache.java</code> (305 lines)</p>
+<h3>Sharded by EventLoop</h3>
+<p>The DataBlockCache is sharded across multiple EventLoops (one per CPU core):</p>
+<pre><code class="language-java">// DataBlockCache constructor
+this.caches = new Cache[eventLoops.length];  // e.g., 8 caches for 8 cores
+for (int i = 0; i &lt; eventLoops.length; i++) {
+    caches[i] = new Cache(eventLoops[i]);  // Each has its own LRU + HashMap
+}
+
+// Stream-to-cache mapping
+private Cache cache(long streamId) {
+    return caches[(int) Math.abs(streamId % caches.length)];
+}
+</code></pre>
+<p>This avoids lock contention — different streams go to different caches, each with its own EventLoop.</p>
+<h3>AsyncSemaphore for Size Limiting</h3>
+<pre><code class="language-java">// AsyncSemaphore — like a counting semaphore, but async
+sizeLimiter = new AsyncSemaphore(maxSize);  // e.g., 1GB
+
+// When reading from S3:
+boolean acquired = sizeLimiter.acquire(dataBlockSize, () -&gt; {
+    reader.read(dataBlockIndex).whenComplete((rst, ex) -&gt; {
+        // Data loaded, release permits
+    });
+    return dataBlock.freeFuture();  // Release when data block is freed
+}, eventLoop);
+if (!acquired) {
+    evict();  // Force eviction to free permits
+}
+</code></pre>
+<p><strong>Aha:</strong> The AsyncSemaphore ensures the cache never exceeds its configured size, even under heavy load. If the cache is full, new reads wait until old data blocks are evicted or freed.</p>
+<h3>Eviction: LRU + TTL</h3>
+<pre><code class="language-java">// evict0() — evict LRU blocks
+long expiredTimestamp = now - DATA_TTL;  // 1 minute TTL
+while (true) {
+    entry = lru.peek();  // Least recently used
+    if (entry == null) break;
+    // Evict if: expired OR size limiter needs permits
+    if (!dataBlock.isExpired(expiredTimestamp) &amp;&amp; !sizeLimiter.requiredRelease()) break;
+    lru.pop();
+    dataBlock.free();  // Releases permits
+}
+</code></pre>
+<p>Eviction criteria:</p>
+<ul><li><strong>TTL expired</strong>: Block hasn't been accessed in 1 minute</li><li><strong>Size pressure</strong>: AsyncSemaphore has waiting tasks (need permits)</li></ul>
+<h3>Read Statistics</h3>
+<table><tr><th>Stat</th><th>Purpose</th></tr><tr><td>`blockCacheHit`</td><td>Cache hit count</td></tr><tr><td>`blockCacheBlockMiss`</td><td>Data block not in cache</td></tr><tr><td>`blockCacheReadaheadThroughput`</td><td>Readahead bytes fetched</td></tr><tr><td>`blockCacheBlockEvictThroughput`</td><td>Evicted bytes</td></tr><tr><td>`blockCacheReadS3Throughput`</td><td>Bytes read from S3</td></tr></table>
+<h2>StreamReader Readahead</h2>
+<p>Source: <code>StreamReader.java</code> (678 lines)</p>
+<p>The StreamReader implements adaptive readahead for sequential reads:</p>
+<pre><code class="language-java">// Readahead parameters
+static final int READAHEAD_SIZE_UNIT = 512 KB;     // Initial readahead
+static final int MAX_READAHEAD_SIZE = 32 MB;       // Maximum readahead
+static final long READAHEAD_RESET_COLD_DOWN_MILLS = 1 minute;
+</code></pre>
+<h3>How Readahead Works</h3>
+<div class="mermaid">
+flowchart TD
+    A[&quot;Read(offset 0..100)&quot;] --&gt; B{Sequential?}
+    B --&gt;|Yes| C[&quot;Double readahead size&quot;]
+    B --&gt;|No| D[&quot;Reset to 512KB&quot;]
+    C --&gt; E[&quot;Prefetch next 1MB&quot;]
+    D --&gt; F[&quot;Read only requested range&quot;]
+    E --&gt; G{Still sequential?}
+    G --&gt;|Yes| C
+    G --&gt;|No| D
+
+</div>
+<ul><li>On sequential reads: readahead size doubles (512KB → 1MB → 2MB → ... → 32MB max)</li><li>On random access: readahead resets to 512KB</li><li>After 1 minute of inactivity: readahead resets</li></ul>
+<h3>Readahead Throttling</h3>
+<p>Readahead uses a lower-priority throttle strategy:</p>
+<pre><code class="language-java">ThrottleStrategy throttleStrategy = readahead ? ThrottleStrategy.CATCH_UP : ThrottleStrategy.BYPASS;
+</code></pre>
+<ul><li>Normal reads: <code>BYPASS</code> — no throttling, highest priority</li><li>Readahead reads: <code>CATCH_UP</code> — throttled if the system is under load</li></ul>
+<p><strong>Aha:</strong> This ensures readahead doesn't compete with normal reads for S3 bandwidth. If the system is busy, readahead is throttled, but normal reads proceed at full speed.</p>
+<h2>What's Next</h2>
+<ul><li><a href="04-rust-design.md">04 — Rust Design</a> — Condensed Rust implementation</li><li><a href="00-write-path.md">00 — Write Path</a> — Return to write path</li><li><a href="01-read-path.md">01 — Read Path</a> — Return to read path</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

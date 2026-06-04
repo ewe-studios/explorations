@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Write Path — WAL → LogCache → Batched S3 Upload -- src.s3stream</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.s3stream/docs</span>
+    <div class="nav-actions">
+      <a href="00-overview.html" class="nav-breadcrumb">s3Stream — S3 Performance Deep Dive</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="00-overview.html" class="nav-btn" title="Previous: s3Stream — S3 Performance Deep Dive">← prev</a>
+      <a href="01-read-path.html" class="nav-btn nav-btn-next" title="Next: Read Path — LogCache → DataBlockCache → Footer-First S3 Reads">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Write Path — WAL → LogCache → Batched S3 Upload</h1>
+<p><strong>The write path turns thousands of small appends into one large S3 PUT. Records go through three stages: WAL (durability) → LogCache (buffering) → S3 upload (batching).</strong></p>
+<div class="mermaid">
+flowchart TD
+    A[record arrives] --&gt; B[&quot;WAL: local disk write&quot;]
+    B --&gt; C[&quot;LogCache: in-memory buffer&quot;]
+    C --&gt; D{Cache full?}
+    D --&gt;|No| E[Zero S3 calls]
+    D --&gt;|Yes| F[&quot;Encode S3 object&quot;]
+    F --&gt; G[&quot;S3 PUT: one call for thousands of records&quot;]
+    G --&gt; H[&quot;Commit object metadata&quot;]
+    H --&gt; I[&quot;Ack to caller&quot;]
+
+</div>
+<h2>Stage 1: WAL — Write-Ahead Log</h2>
+<p>Source: <code>S3Storage.java:120</code></p>
+<p>Every record is first persisted to a local WAL:</p>
+<pre><code class="language-">append(streamId, recordBatch)
+  → deltaWAL.append(recordBatch)
+    → Write to local disk
+    → Return RecordOffset (position in WAL)
+</code></pre>
+<p><strong>Why WAL?</strong> If the process crashes before the S3 upload completes, the WAL is recovered on restart. Un-uploaded records are flushed to S3. This guarantees durability without paying S3 latency on every write.</p>
+<p><strong>WAL characteristics:</strong></p>
+<ul><li>Local disk, sequential writes (fast)</li><li>Low IOPS cost (one append per record, no S3)</li><li>Recovered on startup: continuous records are loaded into LogCache, discontinuous records are discarded (gap = data loss indicator)</li></ul>
+<h2>Stage 2: LogCache — In-Memory Buffering</h2>
+<p>Source: <code>LogCache.java</code> (696 lines)</p>
+<p>After WAL persistence, records go into the <code>LogCache</code>:</p>
+<pre><code class="language-">deltaWALCache.put(recordBatch)
+  → activeBlock.put(recordBatch)
+    → StreamCache.add(recordBatch)  // Per-stream list
+    → size += recordBatch.occupiedSize()
+    → Return true if block is full
+</code></pre>
+<h3>LogCache Structure</h3>
+<div class="mermaid">
+flowchart TD
+    A[&quot;LogCache (capacity: 256MB)&quot;] --&gt; B[&quot;activeBlock (max: 64MB)&quot;]
+    A --&gt; C[&quot;sealed Block 1&quot;]
+    A --&gt; D[&quot;sealed Block 2&quot;]
+    A --&gt; E[&quot;... sealed Block N (max 64 blocks)&quot;]
+    
+    B --&gt; F[&quot;stream → StreamCache&quot;]
+    F --&gt; G[&quot;stream 1: [records 0..99]&quot;]
+    F --&gt; H[&quot;stream 2: [records 0..49]&quot;]
+    F --&gt; I[&quot;stream N: [records 0..199]&quot;]
+
+</div>
+<table><tr><th>Parameter</th><th>Default</th><th>Purpose</th></tr><tr><td>`capacity`</td><td>256 MB</td><td>Total cache size before forced upload</td></tr><tr><td>`cacheBlockMaxSize`</td><td>64 MB</td><td>Max size per block before sealing</td></tr><tr><td>`maxCacheBlockStreamCount`</td><td>10,000</td><td>Max streams per block</td></tr><tr><td>`MAX_BLOCKS_COUNT`</td><td>64</td><td>Max sealed blocks before forced merge</td></tr><tr><td>`MERGE_BLOCK_THRESHOLD`</td><td>8</td><td>Min blocks before merging starts</td></tr></table>
+<h3>How LogCache Gets Fast</h3>
+<p><strong>Aha:</strong> The LogCache uses a per-stream <code>StreamCache</code> with an <code>offsetIndexMap</code> — a HashMap that maps offset → index in the records list. On the first lookup of an offset, binary search is used (<code>StreamRecordBatchList.search</code>). On subsequent lookups, the index is cached in the map with a reference count. This makes repeated reads of the same offsets O(1) instead of O(log n).</p>
+<pre><code class="language-java">// StreamCache.get() — fast path with index cache
+int searchStartIndex(long startOffset) {
+    IndexAndCount indexAndCount = offsetIndexMap.get(startOffset);
+    if (indexAndCount != null) {
+        unmap(startOffset, indexAndCount);  // Decrement refcount
+        return indexAndCount.index;          // O(1) lookup
+    } else {
+        // slow path — binary search
+        return new StreamRecordBatchList(records).search(startOffset);
+    }
+}
+</code></pre>
+<h3>Block Sealing and Upload Pipeline</h3>
+<p>When a block fills up (64MB or 10,000 streams):</p>
+<pre><code class="language-">1. activeBlock → sealed (read-only)
+2. New activeBlock created
+3. Sealed block → walPrepareQueue
+4. Background thread: encode → walCommitQueue
+5. Upload thread: S3 PUT → inflightWALUploadTasks
+6. On ack: mark block as &quot;free&quot; → can be garbage collected
+</code></pre>
+<p><strong>Three-stage pipeline:</strong></p>
+<pre><code class="language-">walPrepareQueue → walCommitQueue → inflightWALUploadTasks
+   (encoding)       (uploading)      (waiting for ack)
+</code></pre>
+<p>While one block is being encoded (CPU-bound), another is being uploaded (I/O-bound), and another is waiting for acknowledgment. The WAL never blocks on S3 latency.</p>
+<h3>Upload Triggers</h3>
+<table><tr><th>Trigger</th><th>Config</th><th>Effect</th></tr><tr><td>Size threshold</td><td>`walUploadThreshold` (64MB)</td><td>Block is full → seal and upload</td></tr><tr><td>Time interval</td><td>`walUploadIntervalMs` (100ms)</td><td>Periodic flush, even if not full</td></tr><tr><td>Capacity</td><td>`capacity` (256MB)</td><td>Total cache too big → force upload oldest blocks</td></tr><tr><td>Force</td><td>`forceUpload()`</td><td>Explicit flush (e.g., before shutdown)</td></tr></table>
+<h3>Block Merging</h3>
+<p>When there are too many sealed blocks (> 8), the LogCache merges adjacent free blocks:</p>
+<pre><code class="language-java">// tryMerge() — merge adjacent free blocks to speed up reads
+if (left.free &amp;&amp; right.free &amp;&amp; left.size() + right.size() &lt; cacheBlockMaxSize) {
+    if (!isDiscontinuous(left, right)) {  // Offsets are continuous
+        LogCacheBlock merged = mergeBlock(left, right);
+        blocks.replace(left, right, merged);
+    }
+}
+</code></pre>
+<p><strong>Aha:</strong> Merging is done out of the lock — the lock is only used to check eligibility and swap the blocks. The costly merge operation (<code>mergeBlock</code>) runs outside the lock to minimize contention.</p>
+<h2>Stage 3: S3 Upload — One PUT for Thousands of Records</h2>
+<p>Source: <code>CompositeObjectWriter.java</code> (227 lines)</p>
+<p>When a sealed block is uploaded:</p>
+<pre><code class="language-">CompositeObjectWriter
+  → For each stream in block:
+    → Write data blocks (raw records)
+    → Build DataBlockIndex entries (36 bytes each)
+  → close():
+    → Write objects block (with magic + count header)
+    → Write index block (count + all index entries)
+    → Write footer (index_position + index_length + magic)
+  → S3 PUT (single call, 64MB object)
+</code></pre>
+<h3>What Gets Uploaded</h3>
+<p>One S3 object contains:</p>
+<ul><li><strong>Objects block</strong>: Raw record data (e.g. 64MB)</li><li><strong>Index block</strong>: 36 bytes per data block (~108KB for 3,000 blocks)</li><li><strong>Footer</strong>: 48 bytes (always at the end)</li></ul>
+<p><strong>One 64MB S3 PUT replaces ~100,000 individual S3 PUTs.</strong></p>
+<h2>What's Next</h2>
+<ul><li><a href="01-read-path.md">01 — Read Path</a> — LogCache → DataBlockCache → footer-first</li><li><a href="03-caching.md">03 — Caching</a> — LogCache merge, DataBlockCache eviction, readahead</li><li><a href="02-s3-object-format.md">02 — S3 Object Format</a> — Return to object format</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
