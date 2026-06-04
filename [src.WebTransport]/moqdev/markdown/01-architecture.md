@@ -39,6 +39,7 @@ flowchart TD
     end
 
     subgraph "WebTransport"
+        wttrait[web-transport-trait]
         wtproto[web-transport-proto]
         wtquinn[web-transport-quinn]
         wtiroh[web-transport-iroh]
@@ -54,12 +55,16 @@ flowchart TD
     hang --> moqmux
     moqmux --> kio
     kio --> moqnet
-    moqnet --> wtproto
-    wtproto --> wtquinn
-    wtproto --> wtiroh
-    wtproto --> wtquiche
-    wtproto --> wtnoq
-    wtproto --> wtwasm
+    moqnet --> wttrait
+    wttrait --> wtquinn
+    wttrait --> wtiroh
+    wttrait --> wtquiche
+    wttrait --> wtnoq
+    wttrait --> wtwasm
+    wtquinn --> wtproto
+    wtiroh --> wtproto
+    wtquiche --> wtproto
+    wtnoq --> wtproto
     moqrelay --> moqnet
     moqrelay --> moqtoken
     moqnet --> moqnative
@@ -80,7 +85,7 @@ flowchart TD
 | `moq-boy` | 0.2.15 | Game Boy emulator streaming |
 | `moq-cli` | — | CLI tool |
 | `moq-ffi` | — | UniFFI bindings |
-| `moq-gst` | — | GStreamer plugin |
+| `moq-gst` | — | GStreamer plugin (edition 2021, not 2024) |
 | `moq-loc` | 0.1.0 | LOC frame encoding |
 | `moq-msf` | 0.2.0 | MSF catalog types |
 | `moq-mux` | 0.5.2 | Media muxers/demuxers |
@@ -111,7 +116,7 @@ Source: `moq/Cargo.toml:1` — Workspace members list.
 
 Source: `web-transport/Cargo.toml:1` — Workspace members list.
 
-**Aha:** The `web-transport-trait` crate defines a `StreamTransport` trait that every QUIC backend implements. This means the entire MoQ stack works identically whether running over Quinn, Iroh, QUICHE, noq, or WASM — the only code that changes is the trait implementation. Adding a new QUIC backend requires implementing `StreamTransport` and nothing else in the MoQ stack.
+**Aha:** The `Session` trait (in `web-transport-trait`) defines the WebTransport abstraction that every QUIC backend implements. This means the entire MoQ stack works identically whether running over Quinn, Iroh, QUICHE, noq, or WASM — the only code that changes is the trait implementation. Adding a new QUIC backend requires implementing `Session` and nothing else in the MoQ stack.
 
 Source: `web-transport/rs/web-transport-trait/src/` — Trait definitions.
 

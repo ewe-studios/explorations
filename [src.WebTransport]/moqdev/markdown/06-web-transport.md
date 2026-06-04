@@ -26,19 +26,39 @@ flowchart TD
 
 Source: `web-transport/rs/web-transport-trait/src/` — Trait definitions.
 
-## StreamTransport Trait
+## Session Trait
 
 ```rust
 // web-transport/rs/web-transport-trait/src/
-pub trait StreamTransport: Send + Sync + 'static {
-    async fn open_bi(&self) -> Result<(SendStream, RecvStream)>;
-    async fn accept_bi(&self) -> Result<(SendStream, RecvStream)>;
+pub trait Session: Send + Sync + 'static {
+    type SendStream: ...;
+    type RecvStream: ...;
+    type Error: ...;
+
+    async fn accept_uni(&self) -> Result<Self::RecvStream>;
+    async fn accept_bi(&self) -> Result<(Self::SendStream, Self::RecvStream)>;
+    async fn open_bi(&self) -> Result<(Self::SendStream, Self::RecvStream)>;
+    async fn open_uni(&self) -> Result<Self::SendStream>;
     async fn send_datagram(&self, data: Bytes) -> Result<()>;
     async fn recv_datagram(&self) -> Result<Bytes>;
+    fn max_datagram_size(&self) -> Result<usize>;
+    fn protocol(&self) -> &[u8];
+    fn close(&self, code: u32, reason: &[u8]);
+    fn closed(&self) -> impl Future<Output = ()>;
+    fn stats(&self) -> Stats;
 }
 ```
 
-Source: `web-transport/rs/web-transport-trait/src/` — Core trait interface.
+Source: `web-transport/rs/web-transport-trait/src/lib.rs:1` — Core trait interface with 12+ methods.
+
+### Companion Traits
+
+| Trait | Purpose |
+|-------|---------|
+| `SendStream` | Outbound stream operations |
+| `RecvStream` | Inbound stream operations |
+| `Stats` | Connection statistics |
+| `Error` | Error type for the session |
 
 ## Backends
 

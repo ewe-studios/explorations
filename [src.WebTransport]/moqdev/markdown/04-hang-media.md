@@ -25,17 +25,22 @@ Source: `moq/rs/hang/src/` — Media encoding implementation.
 
 | Codec | Support |
 |-------|---------|
-| H.264 | Encoder/decoder |
-| H.265 | Encoder/decoder |
-| AV1 | Encoder/decoder |
+| H.264 | Catalog metadata (profile/level) |
+| H.265 | Catalog metadata (profile/level) |
+| AV1 | Catalog metadata (profile/level/bitdepth) |
+| VP9 | Catalog metadata (profile/level/bitdepth/colorSpace/chromaSubsampling) |
+| AAC | Catalog metadata (profile) |
 | Opus | Audio codec |
+
+> **Note:** hang defines catalog metadata structs (mimetype/profile information) and container frame types — it does NOT implement encoder/decoder logic. It has exactly 3 modules: `error`, `catalog`, `container`. The actual codec encoding/decoding happens elsewhere in the MoQ stack.
 
 Source: `moq/rs/hang/src/codec/` — Codec implementations.
 
 ## Container Format
 
-hang supports two container formats:
+hang supports three container formats defined in `hang/src/catalog/container.rs`:
 - **CMAF** (fMP4) — Common Media Application Format
+- **Loc** — LOC container format
 - **Legacy** — Simplified container for backward compatibility
 
 Source: `moq/rs/hang/src/container/` — Container implementations.

@@ -20,17 +20,15 @@ Source: `moq/rs/moq-mux/src/codec/` — Codec implementations.
 
 ## Supported Containers
 
-| Container | Parse | Mux |
-|-----------|-------|-----|
-| fMP4 (CMAF) | ✅ | ✅ |
-| WebM | ✅ | ✅ |
-| MP4 | ✅ | ✅ |
-| MKV | ✅ | ✅ |
-| HLS (M3U8) | ✅ | — |
-| LOC | ✅ | ✅ |
-| Legacy | ✅ | ✅ |
+| Container | Parse | Mux | Module |
+|-----------|-------|-----|--------|
+| fMP4 (CMAF) | ✅ | ✅ | `fmp4/` |
+| HLS (M3U8) | ✅ | — | `hls/` |
+| Legacy | ✅ | ✅ | `legacy/` |
+| LOC | ✅ | ✅ | `loc/` |
+| MKV/WebM | ✅ | ✅ | `mkv/` |
 
-Source: `moq/rs/moq-mux/src/container/` — Container implementations.
+> **Note:** 5 container modules. MP4 and WebM are NOT standalone containers — fMP4 handles CMAF/fMP4, and WebM is handled inside the `mkv/` module (MKV/WebM share the Matroska format).
 
 ## Catalog Support
 

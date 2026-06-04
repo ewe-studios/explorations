@@ -64,6 +64,22 @@ The moqdev docs cover all 28 crates at overview level. Deep-dive docs exist for:
 
 ---
 
-## Grandfather Review Discrepancies — moqdev
+## Grandfather Review Discrepancies — moqdev ✅ FIXED
 
-Waiting on review agent `ab335e4ddf2f2f309` to complete.
+All discrepancies fixed and committed:
+
+### FIXED - CRITICAL/HIGH
+- ✅ **hang codec table**: Added VP9 and AAC (6 codecs total, not 4)
+- ✅ **hang container table**: Added Loc (3 containers total, not 2)
+- ✅ **hang encoder/decoder claim**: Clarified hang defines catalog metadata only, no encoder/decoder
+- ✅ **WebTransport trait name**: `StreamTransport` → `Session` with all 12+ methods documented
+- ✅ **moq-mux container count**: 7→5 containers, MP4/WebM removed as standalone
+- ✅ **moq-net dependency**: Fixed diagram to show moq-net → web-transport-trait (not web-transport-proto)
+
+### FIXED - MEDIUM
+- ✅ **moq-gst edition**: Noted edition 2021 exception (workspace default is 2024)
+- ✅ **hang.live Tauri**: Added Tauri desktop shell mention
+
+### Remaining HIGH PRIORITY items
+- [ ] Individual crate deep dives (20 crates listed below)
+- [ ] Application deep dives (moqbs, hang.live, smoke tests, drafts, web)

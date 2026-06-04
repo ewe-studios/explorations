@@ -91,7 +91,7 @@ flowchart TD
 | **moq-swift** | Swift bindings (v0.3.0) |
 | **moqbs** | OBS Studio fork with MoQ capture |
 | **obs** | OBS Studio plugin for MoQ publishing |
-| **hang.live** | SolidJS/Vite 8 live streaming app |
+| **hang.live** | SolidJS/Vite 8 live streaming app with Tauri desktop shell |
 | **moq.dev** | Project website (Astro) |
 | **smoke** | Cross-language smoke tests (C, Go, JS, Kotlin, Python, Swift) |
 
