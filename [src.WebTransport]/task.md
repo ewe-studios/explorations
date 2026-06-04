@@ -161,18 +161,47 @@
 
 ---
 
-## Grandfather Review Discrepancies — iroh (pending)
+## Grandfather Review Discrepancies — iroh-blobs ✅ FIXED
 
-Waiting on review agent `a6db144534fb7f6fe` to complete.
+All 20 CRITICAL/HIGH discrepancies fixed and committed (commit f4e6546).
 
-## Grandfather Review Discrepancies — iroh-gossip (pending)
+## Grandfather Review Discrepancies — websocket ✅ FIXED
 
-Waiting on review agent `a907139c3f4861a02` to complete.
+All 9 discrepancies fixed and committed (commit 20401b6).
 
-## Grandfather Review Discrepancies — moqdev (pending)
+## Grandfather Review Discrepancies — moqdev ✅ FIXED
 
-Waiting on review agent `ab335e4ddf2f2f309` to complete.
+All 9 discrepancies fixed and committed (commit 63e0bcc).
 
-## Grandfather Review Discrepancies — websocket (pending)
+## Grandfather Review Discrepancies — iroh ⏳ PENDING
 
-Waiting on review agent `a30c1624ec42635ce` to complete.
+Review complete (28 discrepancies found). CRITICAL issues:
+- Report struct fields completely wrong (net_report doc)
+- EndpointAddr struct fields completely wrong
+- AcceptError variants completely wrong
+- Probe enum has no data fields
+- Endpoint::accept() return type wrong
+- Endpoint::online() return type wrong
+- Relay QUIC port 7842, not 443
+- ws_stream_wasm dependency does not exist
+- Default relay hostnames completely wrong (regional canary domains, not relays.iroh.link)
+- 15 missing source files in module map
+- ProtocolMap BTreeMap prefix-match reasoning false
+
+## Grandfather Review Discrepancies — iroh-gossip ⏳ PENDING
+
+Review complete (65+ discrepancies). CRITICAL issues - many fabricated types/structs:
+- PeerData struct: 3 fields vs. actual newtype(Bytes)
+- IO trait: 4 methods (sign/verify/encode/decode) vs. actual 1 method (push)
+- GossipApi: sender/receiver vs. actual irpc Client
+- GossipTopic: publish/next vs. actual broadcast/broadcast_neighbors
+- Command enum: 4 wrong variants vs. 3 actual
+- ApiError: 4 wrong variants vs. 2 actual
+- Message struct: 4 wrong fields vs. 3 actual
+- HyParView Config: 5 wrong fields/values vs. 9 actual
+- Plumtree Config: 4 wrong fields vs. 7 actual
+- StreamHeader: 2 wrong fields vs. 1 actual
+- DEFAULT_MAX_MESSAGE_SIZE: 64MB vs. 4096
+- MIN_MAX_MESSAGE_SIZE: 64KB vs. 512
+- active_view_capacity: 30 claimed vs. 5 actual
+- passive_view_capacity: 50 claimed vs. 30 actual
