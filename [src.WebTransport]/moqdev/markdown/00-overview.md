@@ -60,22 +60,17 @@ flowchart TD
     end
 
     OBS --> hang
-    CLI --> Negotiator
+    CLI --> moqnet
     Web --> hang
     hang --> mux
     mux --> kio
-    kio --> Negotiator
-    Negotiator --> Lite
-    Negotiator --> IETF
-    Lite --> Quinn
-    IETF --> Quinn
-    Lite --> Iroh
-    IETF --> Iroh
-    Lite --> QUICHE
-    IETF --> QUICHE
-    Lite --> noq
-    IETF --> noq
-    Lite --> WASM
+    kio --> moqnet
+    moqnet --> wttrait
+    wttrait --> Quinn
+    wttrait --> Iroh
+    wttrait --> QUICHE
+    wttrait --> noq
+    wttrait --> WASM
     Quinn --> Relay
     Iroh --> Relay
     Relay --> Token

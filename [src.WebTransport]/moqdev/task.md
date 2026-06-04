@@ -79,6 +79,8 @@ All discrepancies fixed and committed:
 ### FIXED - MEDIUM
 - ✅ **moq-gst edition**: Noted edition 2021 exception (workspace default is 2024)
 - ✅ **hang.live Tauri**: Added Tauri desktop shell mention
+- ✅ **kio "throughout" claim**: Fixed to specify moq-net and moq-mux only (not entire stack)
+- ✅ **Overview diagram**: Simplified to show moqnet → wttrait → backends (removed per-backend Lite/IETF arrows)
 
 ### Remaining HIGH PRIORITY items
 - [ ] Individual crate deep dives (20 crates listed below)

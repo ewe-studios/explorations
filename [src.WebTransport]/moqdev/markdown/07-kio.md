@@ -28,7 +28,7 @@ Only dependency: `smallvec` for inline storage.
 
 Source: `moq/rs/kio/Cargo.toml:1` — Only dependency is `smallvec`.
 
-**Aha:** kio's minimal design (single dependency) is intentional — it's used throughout the MoQ stack for async channels between protocol layers. A heavyweight dependency like `tokio::sync::mpsc` would pull in the entire tokio runtime, but kio lets the MoQ stack remain runtime-agnostic.
+**Aha:** kio's minimal design (single dependency) is intentional — it's used by moq-net and moq-mux for async channels between protocol layers. A heavyweight dependency like `tokio::sync::mpsc` would pull in the entire tokio runtime, but kio lets these crates remain runtime-agnostic.
 
 ## Related Documents
 
