@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Object Assembly — From In-Memory to S3 Object -- src.s3stream</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.s3stream/docs</span>
+    <div class="nav-actions">
+      <a href="02-s3-object-format.html" class="nav-breadcrumb">S3 Object Format — Self-Describing Objects with Footer-First Reads</a><a href="03-caching.html" class="nav-breadcrumb">Caching — LogCache Merge, DataBlockCache Eviction, Readahead</a><a href="04-rust-design.html" class="nav-breadcrumb">Rust Design — Condensed s3Stream Implementation</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="04-rust-design.html" class="nav-btn" title="Previous: Rust Design — Condensed s3Stream Implementation">← prev</a>
+      <a href="06-rust-implementation.html" class="nav-btn nav-btn-next" title="Next: Rust Implementation — In-Memory Block Structure with Zero-Copy">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Object Assembly — From In-Memory to S3 Object</h1>
+<p><strong>s3Stream builds S3 objects incrementally via multipart upload. Data blocks are streamed as they fill up, then the index and footer are appended at the end. Zero-copy <code>CompositeByteBuf</code> assembles all pieces without copying the underlying data.</strong></p>
+<h2>The Three-Layer In-Memory Structure</h2>
+<div class="mermaid">
+flowchart TD
+    A[&quot;LogCache (256MB total)&quot;] --&gt; B[&quot;LogCacheBlock 1 (64MB)&quot;]
+    A --&gt; C[&quot;LogCacheBlock 2 (64MB)&quot;]
+    A --&gt; D[&quot;activeBlock (growing)&quot;]
+    
+    B --&gt; E[&quot;StreamCache stream=1&quot;]
+    B --&gt; F[&quot;StreamCache stream=2&quot;]
+    
+    E --&gt; G[&quot;StreamRecordBatch[offset=0]&quot;]
+    E --&gt; H[&quot;StreamRecordBatch[offset=1]&quot;]
+    E --&gt; I[&quot;StreamRecordBatch[offset=2]&quot;]
+    
+    E --&gt; J[&quot;offsetIndexMap: {0→0, 1→1, 2→2}&quot;]
+
+</div>
+<h3>Layer 1: LogCache</h3>
+<table><tr><th>Component</th><th>Purpose</th></tr><tr><td>`capacity` (256MB)</td><td>Total cache size before forced upload</td></tr><tr><td>`blocks` (list)</td><td>Sealed, read-only blocks waiting for upload</td></tr><tr><td>`activeBlock`</td><td>Currently accepting writes</td></tr></table>
+<h3>Layer 2: LogCacheBlock</h3>
+<table><tr><th>Component</th><th>Purpose</th></tr><tr><td>`map<streamId, StreamCache>`</td><td>Per-stream record storage</td></tr><tr><td>`size`</td><td>Current block size (max 64MB)</td></tr><tr><td>`maxStreamCount` (10,000)</td><td>Max streams per block</td></tr></table>
+<h3>Layer 3: StreamCache</h3>
+<table><tr><th>Component</th><th>Purpose</th></tr><tr><td>`records` (List<StreamRecordBatch>)</td><td>Ordered records for this stream</td></tr><tr><td>`startOffset`, `endOffset`</td><td>Range of offsets covered</td></tr><tr><td>`offsetIndexMap` (HashMap)</td><td>offset → index in records list for O(1) lookup</td></tr></table>
+<h2>Sealing the Block</h2>
+<p>When <code>activeBlock</code> hits 64MB or 10,000 streams:</p>
+<pre><code class="language-">1. activeBlock → sealed (read-only)
+2. New activeBlock created
+3. Sealed block → walPrepareQueue
+4. Background thread: create UploadWriteAheadLogTask
+</code></pre>
+<h2>The Upload Task</h2>
+<p>Source: <code>DefaultUploadWriteAheadLogTask.java</code></p>
+<p>The upload task takes the sealed block's records (<code>Map<streamId, List<StreamRecordBatch>></code>) and decides how to write them:</p>
+<div class="mermaid">
+flowchart TD
+    A[Sealed LogCacheBlock] --&gt; B[&quot;UploadWriteAheadLogTask&quot;]
+    B --&gt; C[&quot;Sort streams by ID&quot;]
+    C --&gt; D{For each stream}
+    D --&gt; E{Single stream? Size &gt;= threshold?}
+    E --&gt;|Yes| F[&quot;Dedicated StreamObject&quot;]
+    E --&gt;|No| G[&quot;Shared StreamSetObject&quot;]
+    F --&gt; H[&quot;Separate S3 object for this stream&quot;]
+    G --&gt; I[&quot;Batched into shared S3 object&quot;]
+    H --&gt; J[&quot;Commit metadata&quot;]
+    I --&gt; J
+
+</div>
+<table><tr><th>Decision</th><th>Threshold</th><th>Result</th></tr><tr><td>Single stream only</td><td>`forceSplit`</td><td>One dedicated StreamObject</td></tr><tr><td>Stream size >= `streamSplitSize`</td><td>Default: configurable</td><td>Dedicated StreamObject</td></tr><tr><td>Stream size < `streamSplitSize`</td><td>—</td><td>Shared StreamSetObject</td></tr></table>
+<h2>The ObjectWriter: Incremental Build</h2>
+<p>Source: <code>ObjectWriter.java</code> (381 lines)</p>
+<p>The <code>DefaultObjectWriter</code> builds the S3 object incrementally via <strong>multipart upload</strong>:</p>
+<div class="mermaid">
+flowchart LR
+    A[&quot;write(streamId, records)&quot;] --&gt; B[&quot;Create DataBlock&quot;]
+    B --&gt; C[&quot;Add to waitingUploadBlocks&quot;]
+    C --&gt; D{Size &gt;= partSizeThreshold?}
+    D --&gt;|Yes| E[&quot;tryUploadPart()&quot;]
+    D --&gt;|No| F[&quot;Wait for more&quot;]
+    E --&gt; G[&quot;CompositeByteBuf of all blocks&quot;]
+    G --&gt; H[&quot;S3 multipart upload part&quot;]
+    H --&gt; I[&quot;completedBlocks&quot;]
+    
+    J[&quot;close()&quot;] --&gt; K[&quot;Flush waitingUploadBlocks&quot;]
+    K --&gt; L[&quot;Build IndexBlock from completedBlocks&quot;]
+    L --&gt; M[&quot;Build Footer (48 bytes)&quot;]
+    M --&gt; N[&quot;Write [Index][Footer] as final part&quot;]
+    N --&gt; O[&quot;Complete multipart upload&quot;]
+
+</div>
+<h2>DataBlock: The Unit of Storage</h2>
+<p>Each <code>DataBlock</code> wraps a batch of records with a header:</p>
+<pre><code class="language-">DataBlock = [Header][Record 0][Record 1]...[Record N]
+
+Header (10 bytes):
+  magic      (1 byte)   = 0x5A
+  flag       (1 byte)   = 0x02 (default)
+  recordCount (4 bytes) = number of records
+  dataLength  (4 bytes) = size of record data (filled after encoding)
+</code></pre>
+<p>The <code>CompositeByteBuf</code> for a DataBlock holds references to the header and each record's encoded buffer — <strong>no data copying</strong>.</p>
+<h2>Multipart Upload: Streaming Data as It Fills</h2>
+<pre><code class="language-java">// DefaultObjectWriter.write()
+public void write(long streamId, List&lt;StreamRecordBatch&gt; records) {
+    List&lt;List&lt;StreamRecordBatch&gt;&gt; blocks = groupByBlock(records);
+    for (List&lt;StreamRecordBatch&gt; blockRecords : blocks) {
+        DataBlock block = new DataBlock(streamId, blockRecords);
+        waitingUploadBlocks.add(block);
+        waitingUploadBlocksSize += block.size();
+    }
+    if (waitingUploadBlocksSize &gt;= partSizeThreshold) {
+        tryUploadPart();  // Stream to S3
+    }
+}
+</code></pre>
+<p>When <code>waitingUploadBlocksSize</code> reaches <code>partSizeThreshold</code> (e.g. 5MB), the accumulated data blocks are streamed to S3 as a <strong>multipart upload part</strong>:</p>
+<pre><code class="language-java">private void tryUploadPart() {
+    CompositeByteBuf partBuf = ByteBufAlloc.compositeByteBuffer();
+    for (DataBlock block : uploadBlocks) {
+        partBuf.addComponent(true, block.buffer());  // Zero-copy reference
+    }
+    writer.write(partBuf);  // Upload part to S3
+    completedBlocks.addAll(uploadBlocks);
+    waitingUploadBlocks.removeIf(uploadBlocks::contains);
+}
+</code></pre>
+<p><strong>Aha:</strong> This is the key performance optimization. The writer doesn't wait until all records are collected. It streams data blocks to S3 as they accumulate, using multipart upload parts. The final part (index + footer) is uploaded last. This means memory usage stays bounded — you don't need to hold the entire 64MB object in memory.</p>
+<h2>The Close Sequence: Index + Footer</h2>
+<p>When the writer is closed:</p>
+<pre><code class="language-java">public synchronized CompletableFuture&lt;Void&gt; close() {
+    CompositeByteBuf buf = ByteBufAlloc.compositeByteBuffer();
+
+    // 1. Flush remaining data blocks
+    for (DataBlock block : waitingUploadBlocks) {
+        buf.addComponent(true, block.buffer());
+        completedBlocks.add(block);
+    }
+
+    // 2. Build index block from ALL completed blocks
+    indexBlock = new IndexBlock();  // IndexBlock iterates completedBlocks
+    buf.addComponent(true, indexBlock.buffer());
+
+    // 3. Build footer with computed index position
+    Footer footer = new Footer(indexBlock.position(), indexBlock.size());
+    buf.addComponent(true, footer.buffer());
+
+    // 4. Write final part (index + footer)
+    writer.write(buf.duplicate());
+    return writer.close();  // Complete multipart upload
+}
+</code></pre>
+<h3>IndexBlock Construction</h3>
+<pre><code class="language-java">class IndexBlock {
+    private final ByteBuf buf;
+    private final long position;
+
+    public IndexBlock() {
+        long nextPosition = 0;
+        int indexBlockSize = DataBlockIndex.BLOCK_INDEX_SIZE * completedBlocks.size();
+        buf = ByteBufAlloc.byteBuffer(indexBlockSize, WRITE_INDEX_BLOCK);
+        for (DataBlock block : completedBlocks) {
+            ObjectStreamRange streamRange = block.getStreamRange();
+            new DataBlockIndex(
+                streamRange.getStreamId(),
+                streamRange.getStartOffset(),
+                (int) (streamRange.getEndOffset() - streamRange.getStartOffset()),
+                block.recordCount(),
+                nextPosition,  // Position in the objects block
+                block.size()
+            ).encode(buf);
+            nextPosition += block.size();
+        }
+        position = nextPosition;
+    }
+}
+</code></pre>
+<p>The <code>indexBlock.position()</code> is the total size of all data blocks — this becomes the <code>index_position</code> in the footer. <strong>Computed, not tracked.</strong></p>
+<h2>The Final Object Layout</h2>
+<pre><code class="language-">Multipart Upload Parts:
+  Part 1: [DataBlock 1][DataBlock 2]...[DataBlock N]   (streamed)
+  Part 2: [DataBlock N+1]...[DataBlock M]               (streamed)
+  ...
+  Part K: [DataBlock ...][IndexBlock][Footer]           (final part)
+
+Final Object on S3:
+  [DataBlock 1][DataBlock 2]...[DataBlock M][IndexBlock][Footer]
+  ↑                                                    ↑
+  Position 0                                  Last 48 bytes
+</code></pre>
+<h2>Memory Efficiency: Zero-Copy Throughout</h2>
+<table><tr><th>Stage</th><th>Memory Usage</th><th>Copy?</th></tr><tr><td>LogCache</td><td>Record objects + ByteBuf refs</td><td>No</td></tr><tr><td>DataBlock creation</td><td>Header + refs to record buffers</td><td>No</td></tr><tr><td>Multipart part</td><td>CompositeByteBuf refs</td><td>No</td></tr><tr><td>IndexBlock</td><td>New ByteBuf (36 bytes per block)</td><td>Yes (small)</td></tr><tr><td>Footer</td><td>New ByteBuf (48 bytes)</td><td>Yes (small)</td></tr></table>
+<p>The 64MB of record data is never copied. Only the small index and footer are newly allocated.</p>
+<h2>What's Next</h2>
+<ul><li><a href="04-rust-design.md">04 — Rust Design</a> — How to implement this in Rust</li><li><a href="03-caching.md">03 — Caching</a> — Return to caching</li><li><a href="00-overview.md">00 — Overview</a> — Return to overview</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

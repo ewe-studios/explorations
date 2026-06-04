@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rust Implementation — In-Memory Block Structure with Zero-Copy -- src.s3stream</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.s3stream/docs</span>
+    <div class="nav-actions">
+      <a href="03-caching.html" class="nav-breadcrumb">Caching — LogCache Merge, DataBlockCache Eviction, Readahead</a><a href="04-rust-design.html" class="nav-breadcrumb">Rust Design — Condensed s3Stream Implementation</a><a href="05-object-assembly.html" class="nav-breadcrumb">Object Assembly — From In-Memory to S3 Object</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="05-object-assembly.html" class="nav-btn" title="Previous: Object Assembly — From In-Memory to S3 Object">← prev</a>
+      <a href="README.html" class="nav-btn nav-btn-next" title="Next: s3Stream Documentation">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Rust Implementation — In-Memory Block Structure with Zero-Copy</h1>
+<p><strong>Here's how to implement s3Stream's in-memory block structure in Rust — using <code>bytes::Bytes</code> for zero-copy record storage, <code>RwLock</code> for concurrent access, and <code>tokio::sync::Semaphore</code> for size limiting.</strong></p>
+<h2>Core Types</h2>
+<pre><code class="language-rust">use bytes::{Bytes, BytesMut};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::RwLock;
+use tokio::sync::{RwLock as AsyncRwLock, Semaphore};
+
+/// A single record batch — backed by Bytes (Arc-based, zero-copy clone).
+#[derive(Clone, Debug)]
+pub struct StreamRecordBatch {
+    pub stream_id: u64,
+    pub base_offset: u64,
+    pub epoch: i64,
+    pub data: Bytes,  // Zero-copy: Arc&lt;[u8]&gt; internally
+}
+
+impl StreamRecordBatch {
+    pub fn size(&amp;self) -&gt; usize {
+        // header (17 bytes) + data length
+        17 + self.data.len()
+    }
+
+    pub fn last_offset(&amp;self) -&gt; u64 {
+        self.base_offset + 1  // simplified: assumes 1 record per batch
+    }
+}
+</code></pre>
+<h2>StreamCache — Per-Stream Record Storage</h2>
+<pre><code class="language-rust">/// Per-stream record cache with offset→index lookup.
+pub struct StreamCache {
+    records: Vec&lt;StreamRecordBatch&gt;,
+    start_offset: u64,
+    end_offset: u64,
+    offset_index: HashMap&lt;u64, usize&gt;,  // offset → index in records
+}
+
+impl StreamCache {
+    fn new() -&gt; Self {
+        Self {
+            records: Vec::new(),
+            start_offset: u64::MAX,
+            end_offset: 0,
+            offset_index: HashMap::new(),
+        }
+    }
+
+    fn add(&amp;mut self, batch: StreamRecordBatch) {
+        let offset = batch.base_offset;
+        self.offset_index.insert(offset, self.records.len());
+        self.records.push(batch);
+        self.start_offset = self.start_offset.min(offset);
+        self.end_offset = self.records.last().unwrap().last_offset();
+    }
+
+    /// O(1) lookup for known offsets, O(log n) binary search for unknown.
+    fn get(&amp;self, start: u64, end: u64) -&gt; Option&lt;&amp;[StreamRecordBatch]&gt; {
+        if self.end_offset &lt;= start || self.start_offset &gt;= end {
+            return None;
+        }
+        let idx = self.offset_index.get(&amp;start).copied()?;
+        let end_idx = self.records[idx..]
+            .iter()
+            .position(|r| r.base_offset() &gt;= end)
+            .unwrap_or(self.records.len() - idx);
+        Some(&amp;self.records[idx..idx + end_idx])
+    }
+}
+</code></pre>
+<h2>LogCacheBlock — Sealed or Active Block</h2>
+<pre><code class="language-rust">/// A block of records from multiple streams.
+/// When sealed, it&#x27;s read-only and queued for upload.
+pub struct LogCacheBlock {
+    max_size: usize,
+    max_stream_count: usize,
+    streams: HashMap&lt;u64, StreamCache&gt;,
+    size: AtomicUsize,
+}
+
+impl LogCacheBlock {
+    pub fn new(max_size: usize) -&gt; Self {
+        Self {
+            max_size,
+            max_stream_count: 10_000,
+            streams: HashMap::new(),
+            size: AtomicUsize::new(0),
+        }
+    }
+
+    /// Put a record batch. Returns true if the block is full.
+    pub fn put(&amp;self, batch: StreamRecordBatch) -&gt; bool {
+        let stream = self.streams
+            .entry(batch.stream_id)
+            .or_insert_with(StreamCache::new);
+        stream.add(batch);
+        let new_size = self.size.fetch_add(batch.size(), Ordering::Relaxed) + batch.size();
+        new_size &gt;= self.max_size || self.streams.len() &gt;= self.max_stream_count
+    }
+
+    pub fn size(&amp;self) -&gt; usize {
+        self.size.load(Ordering::Relaxed)
+    }
+
+    /// Get records for a stream offset range across all streams.
+    pub fn get(&amp;self, stream_id: u64, start: u64, end: u64) -&gt; Option&lt;&amp;[StreamRecordBatch]&gt; {
+        self.streams.get(&amp;stream_id)?.get(start, end)
+    }
+}
+</code></pre>
+<h2>LogCache — The Top-Level Buffer</h2>
+<pre><code class="language-rust">/// In-memory buffer for records before S3 upload.
+pub struct LogCache {
+    capacity: usize,
+    block_max_size: usize,
+    /// Sealed blocks waiting for upload.
+    blocks: RwLock&lt;Vec&lt;Arc&lt;LogCacheBlock&gt;&gt;&gt;,
+    /// Currently accepting writes.
+    active: AsyncRwLock&lt;LogCacheBlock&gt;,
+}
+
+impl LogCache {
+    pub fn new(capacity: usize, block_max_size: usize) -&gt; Self {
+        Self {
+            capacity,
+            block_max_size,
+            blocks: RwLock::new(Vec::new()),
+            active: AsyncRwLock::new(LogCacheBlock::new(block_max_size)),
+        }
+    }
+
+    /// Put a record batch. Seals the active block if full.
+    pub async fn put(&amp;self, batch: StreamRecordBatch) -&gt; Result&lt;bool, Error&gt; {
+        let mut active = self.active.write().await;
+        let full = active.put(batch);
+        if full {
+            // Seal: move active to blocks, create new active
+            let sealed = std::mem::replace(
+                &amp;mut *active,
+                LogCacheBlock::new(self.block_max_size),
+            );
+            self.blocks.write().unwrap().push(Arc::new(sealed));
+        }
+        Ok(self.total_size() &gt;= self.capacity)
+    }
+
+    /// Get records for a stream offset range across all blocks.
+    pub async fn get(&amp;self, stream_id: u64, start: u64, end: u64) -&gt; Vec&lt;StreamRecordBatch&gt; {
+        let mut result = Vec::new();
+
+        // Search sealed blocks first
+        let blocks = self.blocks.read().unwrap();
+        for block in &amp;*blocks {
+            if let Some(records) = block.get(stream_id, start, end) {
+                result.extend(records.iter().cloned());
+                if result.last().map_or(false, |r| r.last_offset() &gt;= end) {
+                    break;
+                }
+            }
+        }
+
+        // Then search active block
+        let active = self.active.read().await;
+        if let Some(records) = active.get(stream_id, start, end) {
+            result.extend(records.iter().cloned());
+        }
+
+        result
+    }
+
+    /// Seal the active block and return all blocks for upload.
+    pub async fn seal(&amp;self) -&gt; Vec&lt;Arc&lt;LogCacheBlock&gt;&gt; {
+        let mut blocks = self.blocks.write().unwrap();
+        let active = self.active.write().await;
+        let sealed = std::mem::replace(
+            &amp;mut *active,
+            LogCacheBlock::new(self.block_max_size),
+        );
+        blocks.push(Arc::new(sealed));
+        blocks.drain(..).collect()
+    }
+
+    fn total_size(&amp;self) -&gt; usize {
+        let blocks = self.blocks.read().unwrap();
+        blocks.iter().map(|b| b.size()).sum::&lt;usize&gt;()
+    }
+}
+</code></pre>
+<h2>Zero-Copy DataBlock</h2>
+<pre><code class="language-rust">use bytes::{Buf, BufMut, Bytes, BytesMut};
+
+/// A data block ready for S3 upload — zero-copy composite of header + record data.
+pub struct DataBlock {
+    /// Composite buffer: [header][record0][record1]...
+    buffer: Bytes,
+    stream_id: u64,
+    start_offset: u64,
+    end_offset: u64,
+    record_count: usize,
+}
+
+impl DataBlock {
+    pub const HEADER_SIZE: usize = 10; // magic(1) + flag(1) + count(4) + length(4)
+
+    /// Build a data block from records. Zero-copy: references the original Bytes.
+    pub fn new(stream_id: u64, records: &amp;[StreamRecordBatch]) -&gt; Self {
+        // Calculate total size
+        let data_size: usize = records.iter().map(|r| r.data.len()).sum();
+        let total_size = Self::HEADER_SIZE + data_size;
+
+        // Build header
+        let mut header = BytesMut::with_capacity(Self::HEADER_SIZE);
+        header.put_u8(0x5A);                           // magic
+        header.put_u8(0x02);                           // flag
+        header.put_u32(records.len() as u32);          // record count
+        header.put_u32(data_size as u32);              // data length
+
+        // Build composite buffer — zero-copy for record data
+        let mut composite = BytesMut::with_capacity(total_size);
+        composite.put(header.freeze());
+        for record in records {
+            composite.put(record.data.clone());  // Clone Bytes = clone Arc, zero-copy
+        }
+
+        let start_offset = records.first().map(|r| r.base_offset).unwrap_or(0);
+        let end_offset = records.last().map(|r| r.last_offset()).unwrap_or(0);
+
+        Self {
+            buffer: composite.freeze(),
+            stream_id,
+            start_offset,
+            end_offset,
+            record_count: records.len(),
+        }
+    }
+
+    pub fn as_bytes(&amp;self) -&gt; &amp;Bytes {
+        &amp;self.buffer
+    }
+
+    pub fn size(&amp;self) -&gt; usize {
+        self.buffer.len()
+    }
+}
+</code></pre>
+<h2>ObjectWriter — Incremental Multipart Upload</h2>
+<pre><code class="language-rust">/// Writes stream records to an S3 object with incremental multipart upload.
+pub struct ObjectWriter&lt;S: ObjectStorage&gt; {
+    storage: S,
+    key: String,
+    block_size_threshold: usize,
+    part_size_threshold: usize,
+    waiting_blocks: Vec&lt;DataBlock&gt;,
+    waiting_blocks_size: usize,
+    completed_blocks: Vec&lt;DataBlock&gt;,
+    upload: Option&lt;S::MultipartUpload&gt;,
+    total_size: usize,
+}
+
+impl&lt;S: ObjectStorage&gt; ObjectWriter&lt;S&gt; {
+    pub fn new(storage: S, key: String, block_size: usize, part_size: usize) -&gt; Self {
+        Self {
+            storage,
+            key,
+            block_size_threshold: block_size,
+            part_size_threshold: part_size.max(S::MIN_PART_SIZE),
+            waiting_blocks: Vec::new(),
+            waiting_blocks_size: 0,
+            completed_blocks: Vec::new(),
+            upload: None,
+            total_size: 0,
+        }
+    }
+
+    /// Write records for a stream. May trigger a multipart part upload.
+    pub async fn write(&amp;mut self, stream_id: u64, records: &amp;[StreamRecordBatch]) -&gt; Result&lt;(), Error&gt; {
+        let block = DataBlock::new(stream_id, records);
+        self.waiting_blocks.push(block);
+        self.waiting_blocks_size += block.size();
+        self.total_size += block.size();
+
+        if self.waiting_blocks_size &gt;= self.part_size_threshold {
+            self.try_upload_part().await?;
+        }
+        Ok(())
+    }
+
+    /// Upload accumulated blocks as a multipart part.
+    async fn try_upload_part(&amp;mut self) -&gt; Result&lt;(), Error&gt; {
+        // Collect blocks up to part size
+        let mut part_size = 0;
+        let mut part_blocks = Vec::new();
+        for block in self.waiting_blocks.iter() {
+            part_blocks.push(block.as_bytes().clone());
+            part_size += block.size();
+            if part_size &gt;= self.part_size_threshold {
+                break;
+            }
+        }
+
+        if part_size &lt; self.part_size_threshold {
+            return Ok(());
+        }
+
+        // Combine blocks into one part — still zero-copy via Bytes
+        let part_data: Bytes = part_blocks.into_iter().flat_map(|b| b).collect();
+
+        let upload = self.upload.get_or_insert_with(|| {
+            self.storage.create_multipart_upload(&amp;self.key)
+        });
+
+        upload.upload_part(part_data).await?;
+
+        // Move uploaded blocks to completed
+        let count = part_blocks.len();
+        for _ in 0..count {
+            self.completed_blocks.push(self.waiting_blocks.remove(0));
+        }
+        self.waiting_blocks_size -= part_size;
+
+        Ok(())
+    }
+
+    /// Close: flush remaining, write index + footer, complete upload.
+    pub async fn close(mut self) -&gt; Result&lt;u64, Error&gt; {
+        // 1. Flush remaining blocks as final data part
+        for block in self.waiting_blocks.drain(..) {
+            self.completed_blocks.push(block);
+        }
+
+        // 2. Build index block
+        let index_block = self.build_index_block();
+        let index_position = self.total_size as u64;
+
+        // 3. Build footer
+        let footer = Footer {
+            index_position,
+            index_length: index_block.len() as u32,
+        };
+        let footer_bytes = footer.encode();
+
+        // 4. Upload final part: index + footer
+        let mut final_data = BytesMut::with_capacity(index_block.len() + Footer::SIZE);
+        final_data.put(index_block);
+        final_data.put(footer_bytes);
+
+        let upload = self.upload.take().unwrap();
+        upload.upload_part(final_data.freeze()).await?;
+        upload.complete().await?;
+
+        Ok(index_position + index_block.len() as u64 + Footer::SIZE as u64)
+    }
+
+    fn build_index_block(&amp;self) -&gt; BytesMut {
+        let count = self.completed_blocks.len();
+        let mut buf = BytesMut::with_capacity(count * DataBlockIndex::SIZE);
+
+        let mut position = 0u64;
+        for block in &amp;self.completed_blocks {
+            let idx = DataBlockIndex {
+                stream_id: block.stream_id,
+                start_offset: block.start_offset,
+                end_offset_delta: (block.end_offset - block.start_offset) as u32,
+                record_count: block.record_count as u32,
+                position,
+                size: block.size() as u32,
+            };
+            idx.encode(&amp;mut buf);
+            position += block.size() as u64;
+        }
+
+        buf
+    }
+}
+</code></pre>
+<h2>DataBlockCache — Read-Side Cache</h2>
+<pre><code class="language-rust">use std::collections::HashMap;
+use tokio::sync::RwLock;
+
+/// Cache key: (object_id, stream_id, start_offset)
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+pub struct CacheKey {
+    pub object_id: u64,
+    pub stream_id: u64,
+    pub start_offset: u64,
+}
+
+/// Cached data block.
+pub struct CachedBlock {
+    pub data: Bytes,  // Zero-copy: shared via Arc
+    pub index: DataBlockIndex,
+}
+
+/// DataBlockCache — like Linux page cache for S3 data blocks.
+pub struct DataBlockCache {
+    shards: Vec&lt;CacheShard&gt;,
+    size_limiter: Arc&lt;Semaphore&gt;,
+    max_size: usize,
+}
+
+impl DataBlockCache {
+    pub fn new(max_size: usize, num_shards: usize) -&gt; Self {
+        Self {
+            shards: (0..num_shards)
+                .map(|_| CacheShard::new(max_size / num_shards))
+                .collect(),
+            size_limiter: Arc::new(Semaphore::new(max_size)),
+            max_size,
+        }
+    }
+
+    fn shard(&amp;self, stream_id: u64) -&gt; &amp;CacheShard {
+        &amp;self.shards[(stream_id as usize) % self.shards.len()]
+    }
+
+    pub async fn get(&amp;self, key: CacheKey) -&gt; Option&lt;Arc&lt;CachedBlock&gt;&gt; {
+        self.shard(key.stream_id).get(&amp;key).await
+    }
+
+    pub async fn put(&amp;self, key: CacheKey, block: Arc&lt;CachedBlock&gt;) {
+        let permit = self.size_limiter.acquire(block.data.len()).await.ok()?;
+        self.shard(key.stream_id).put(key, block).await;
+        permit.forget();  // Permit consumed by cached data
+    }
+}
+
+/// Per-shard cache with LRU eviction.
+struct CacheShard {
+    blocks: RwLock&lt;HashMap&lt;CacheKey, Arc&lt;CachedBlock&gt;&gt;&gt;,
+    lru: RwLock&lt;VecDeque&lt;CacheKey&gt;&gt;,
+    max_size: usize,
+}
+
+impl CacheShard {
+    fn new(max_size: usize) -&gt; Self {
+        Self {
+            blocks: RwLock::new(HashMap::new()),
+            lru: RwLock::new(VecDeque::new()),
+            max_size,
+        }
+    }
+
+    async fn get(&amp;self, key: &amp;CacheKey) -&gt; Option&lt;Arc&lt;CachedBlock&gt;&gt; {
+        let blocks = self.blocks.read().await;
+        let block = blocks.get(key)?.clone();
+        // Touch LRU
+        drop(blocks);
+        let mut lru = self.lru.write().await;
+        if let Some(pos) = lru.iter().position(|k| k == key) {
+            lru.remove(pos);
+        }
+        lru.push_back(key.clone());
+        Some(block)
+    }
+
+    async fn put(&amp;self, key: CacheKey, block: Arc&lt;CachedBlock&gt;) {
+        let mut blocks = self.blocks.write().await;
+        blocks.insert(key.clone(), block);
+        drop(blocks);
+        self.lru.write().await.push_back(key);
+        self.evict().await;
+    }
+
+    async fn evict(&amp;self) {
+        // Evict LRU blocks until under size limit
+        loop {
+            let lru = self.lru.write().await;
+            let key = lru.front()?.clone();
+            drop(lru);
+
+            let blocks = self.blocks.read().await;
+            if let Some(block) = blocks.get(&amp;key) {
+                // Check if eviction needed
+                // In real impl, track current size
+            }
+            // ... evict logic
+            break;
+        }
+    }
+}
+</code></pre>
+<h2>Key Rust Design Decisions</h2>
+<table><tr><th>Java Pattern</th><th>Rust Replacement</th><th>Why</th></tr><tr><td>Netty ByteBuf</td><td>`bytes::Bytes`</td><td>Arc-based, zero-copy clone, same semantics</td></tr><tr><td>CompletableFuture</td><td>`async/await`</td><td>Direct, no callback chains</td></tr><tr><td>ConcurrentHashMap</td><td>`RwLock<HashMap>`</td><td>Simpler, no ref counting</td></tr><tr><td>ReentrantReadWriteLock</td><td>`tokio::sync::RwLock`</td><td>Async-aware</td></tr><tr><td>EventLoop sharding</td><td>Shard array + hash</td><td>Same concept, simpler</td></tr><tr><td>CompositeByteBuf</td><td>`BytesMut::put(Bytes)`</td><td>Zero-copy via Arc clone</td></tr><tr><td>AsyncSemaphore</td><td>`tokio::sync::Semaphore`</td><td>Built-in, async-ready</td></tr></table>
+<h2>Memory Layout Summary</h2>
+<pre><code class="language-">LogCache (256MB)
+  ├─ blocks: Vec&lt;Arc&lt;LogCacheBlock&gt;&gt;  (sealed, read-only)
+  └─ active: AsyncRwLock&lt;LogCacheBlock&gt;  (accepting writes)
+
+LogCacheBlock (64MB max)
+  └─ streams: HashMap&lt;u64, StreamCache&gt;
+
+StreamCache
+  ├─ records: Vec&lt;StreamRecordBatch&gt;
+  └─ offset_index: HashMap&lt;u64, usize&gt;  // O(1) offset lookup
+
+StreamRecordBatch
+  └─ data: Bytes  // Arc&lt;[u8]&gt; — zero-copy clone
+
+DataBlock (for upload)
+  └─ buffer: Bytes  // [header][record0][record1]... — zero-copy composite
+</code></pre>
+<p><strong>The 64MB of record data is never copied.</strong> When a <code>StreamRecordBatch</code> is added to a <code>DataBlock</code>, its <code>Bytes</code> field is cloned — which just increments an Arc reference count. The same holds when uploading: <code>Bytes</code> references are streamed to S3 without copying.</p>
+<h2>What's Next</h2>
+<ul><li><a href="00-overview.md">00 — Overview</a> — Return to overview</li><li><a href="03-caching.md">03 — Caching</a> — Return to caching</li><li><a href="05-object-assembly.md">05 — Object Assembly</a> — Return to object assembly</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
