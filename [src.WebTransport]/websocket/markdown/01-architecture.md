@@ -32,7 +32,7 @@ title: Architecture — tungstenite-rs Layer Diagram and Module Map
 | `lib.rs` | Crate root, re-exports |
 | `buffer/` | Read buffer utilities |
 | `client/` | Client handshake |
-| `server/` | Server accept logic |
+| `server/` | Server accept logic (private: `mod server`, not `pub mod`) |
 | `handshake/` | Client/server handshake protocol |
 | `protocol/` | WebSocket protocol (Message, WebSocket) |
 | `stream/` | Stream abstractions |
@@ -50,6 +50,8 @@ Source: `tungstenite-rs/src/lib.rs:1`
 | `connect.rs` | Async connect + handshake |
 | `stream.rs` | MaybeTlsStream wrapper |
 | `tls.rs` | TLS configuration |
+| `compat.rs` | AllowStd wrapper, ContextWaker, cvt helper |
+| `handshake.rs` | client_handshake, server_handshake, without_handshake |
 
 Source: `tokio-tungstenite/src/lib.rs:1`
 
@@ -98,7 +100,8 @@ Source: `tokio-tungstenite/Cargo.toml:1`
 | `byteorder` | tungstenite-rs | Byte-level parsing |
 | `bytes` | tungstenite-rs | Buffer management |
 | `thiserror` | tungstenite-rs | Error type derive |
-| `http` | tungstenite-rs | HTTP handshake |
+| `data-encoding` | tungstenite-rs | Sec-WebSocket-Key computation (handshake feature) |
+| `rand` | tungstenite-rs | Mask key generation |
 | `httparse` | tungstenite-rs | HTTP header parsing |
 | `utf-8` | tungstenite-rs | UTF-8 validation |
 | `tokio` | tokio-tungstenite | Async runtime |

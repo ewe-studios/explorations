@@ -35,10 +35,12 @@ pub enum Message {
     Pong(Vec<u8>),
     /// Close frame with code and reason.
     Close(Option<CloseFrame<'static>>),
+    /// Raw frame. Note: you won't get this value while reading messages.
+    Frame(Frame),
 }
 ```
 
-Source: `tungstenite-rs/src/protocol/message.rs:1` — Five message types matching RFC6455 frame opcodes.
+Source: `tungstenite-rs/src/protocol/message.rs:1` — Six message variants. The `Frame` variant is for raw frame access but is not used during normal message reading.
 
 ## Client Connection
 

@@ -52,7 +52,12 @@ Source: `websocat/Cargo.toml:1`, `websocat/src/`
 │                                          │
 │  Specifiers:                             │
 │  ws://, wss://, tcp:, udp:, unix:,       │
-│  exec:, mirror:, autoreconnect:          │
+│  exec:, mirror:, autoreconnect:, crypto:,│
+│  file:, foreachmsg:, http:, jsonrpc:,    │
+│  lengthprefixed:, line:, process:,       │
+│  prometheus:, reconnect:, session:,      │
+│  socks5:, ssl:, stdio:, timestamp:,      │
+│  ws-client:, ws-server:, ws-lowlevel:    │
 └──────────────────────────────────────────┘
 ```
 

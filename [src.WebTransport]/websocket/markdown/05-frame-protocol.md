@@ -81,7 +81,10 @@ Source: `tungstenite-rs/src/protocol/frame/mod.rs:1` — Payload length encoding
 | 1006 | Reserved | Abnormal close |
 | 1008 | Policy Violation | Message violated policy |
 | 1009 | Too Big | Message too large |
-| 1011 | Internal Error | Server error |
+| 1010 | Extension | Expected extension not negotiated |
+| 1011 | Internal Error | Server encountered unexpected condition |
+| 1012 | Restart | Service restarting |
+| 1013 | Again | Try again later |
 | 1015 | Reserved | TLS handshake failure |
 
 Source: `tungstenite-rs/src/protocol/frame/close.rs:1` — Close code definitions.
