@@ -14,6 +14,7 @@
 
 ### Core Ecosystem — Priority 1
 - [x] `iroh-docs` (v0.35.0) — ✅ DONE: 11 docs + spec, 5,018 lines
+- [x] `irpc` (v0.5.0) — ✅ DONE: 10 docs + spec, 3,300 lines
 - [ ] `iroh-sync` (v0.4.1) — Set reconciliation, signature verification
 - [ ] `iroh-car` (v0.5.0) — CAR file support (IPFS-compatible)
 - [ ] `iroh-ffi` (v0.35.0) — FFI bindings for Python, etc.

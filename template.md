@@ -8,6 +8,9 @@ All must follow our markdown engineering directive, writing the markdown and bui
 
 **CRITICAL: Depth is non-negotiable.** A 200-line markdown for a large, multi-file project is unacceptable. The purpose of exploration is to teach. Read every source file. Document every significant function, type, algorithm, and data structure. Include actual code snippets with file paths. Length is not a constraint — write as much as needed to fully teach the project. If a project needs 50 pages, write 50 pages. Short documents are a failure of thoroughness, not a virtue. Grandfather review is mandatory, not optional.
 
+Do it one by one, ensure you finished each, done grandfather review and have fixed all issues before moving to the next one.
+
+
 **Directory Structure:** Each project's exploration lives in a subdirectory named after the project itself within the parent exploration directory. For example, the datastar source at `src.datastar/datastar/` produces documentation at `./src.datastar/datastar/` with its own `spec.md`, `markdown/`, and `html/` inside. Same for orbitinghail (`./src.orbitinghail/orbitinghail/`) and ui (`./src.ui/ui/`). A central `index.html` at the parent level (`./src.datastar/html/index.html`) points to each project's documentation.
 
 Review tasks.md and fix markdown as well before starting.

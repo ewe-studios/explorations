@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Workers System — Trait, In-Process vs External, Hot Reload, RBAC, Adapters -- src.iii</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.iii/docs</span>
+    <div class="nav-actions">
+      <a href="01-architecture.html" class="nav-breadcrumb">Architecture — Dependency Graph, Layers, and Module Map</a><a href="02-engine-core.html" class="nav-breadcrumb">Engine Core — Struct, Registries, Message Routing, and Lifecycle</a><a href="03-protocol-websocket.html" class="nav-breadcrumb">Protocol & WebSocket — Message Types, Binary Frames, Connection Lifecycle</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="03-protocol-websocket.html" class="nav-btn" title="Previous: Protocol & WebSocket — Message Types, Binary Frames, Connection Lifecycle">← prev</a>
+      <a href="05-functions-triggers.html" class="nav-btn nav-btn-next" title="Next: Functions & Triggers — Registry, Trigger Types, Schema Validation, Invocation Flow">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Workers System — Trait, In-Process vs External, Hot Reload, RBAC, Adapters</h1>
+<p><strong>Every capability in iii is a worker.</strong> In-process workers are compiled into the engine binary and communicate via direct function calls. External workers connect over WebSocket and use the same message protocol as SDK clients. This document covers the Worker trait, the hot reload system, RBAC sessions, and the adapter pattern for pluggable backends.</p>
+<h2>The Worker Trait</h2>
+<p>Source: <code>engine/src/workers/traits.rs:46-90</code></p>
+<p>All workers implement the <code>Worker</code> trait:</p>
+<pre><code class="language-rust">#[async_trait::async_trait]
+pub trait Worker: Send + Sync {
+    fn name(&amp;self) -&gt; &amp;&#x27;static str;
+
+    async fn create(engine: Arc&lt;Engine&gt;, config: Option&lt;Value&gt;)
+        -&gt; anyhow::Result&lt;Box&lt;dyn Worker&gt;&gt; where Self: Sized;
+
+    fn make_worker(engine: Arc&lt;Engine&gt;, config: Option&lt;Value&gt;) -&gt; WorkerFuture
+        where Self: Sized + &#x27;static { Self::create(engine, config) }
+
+    async fn initialize(&amp;self) -&gt; anyhow::Result&lt;()&gt;;
+
+    async fn start_background_tasks(
+        &amp;self,
+        _shutdown_rx: tokio::sync::watch::Receiver&lt;bool&gt;,
+        _shutdown_tx: tokio::sync::watch::Sender&lt;bool&gt;,
+    ) -&gt; anyhow::Result&lt;()&gt; { Ok(()) }
+
+    async fn destroy(&amp;self) -&gt; anyhow::Result&lt;()&gt; { Ok(()) }
+
+    async fn is_alive(&amp;self) -&gt; bool { true }
+
+    fn is_external_process(&amp;self) -&gt; bool { false }
+
+    fn register_functions(&amp;self, engine: Arc&lt;Engine&gt;);
+}
+</code></pre>
+<p>The lifecycle is:</p>
+<div class="mermaid">
+stateDiagram-v2
+    [*] --&gt; Create: Worker::create()
+    Create --&gt; Initialize: Worker::initialize()
+    Initialize --&gt; RegisterFuncs: register_functions()
+    RegisterFuncs --&gt; StartBg: start_background_tasks()
+    StartBg --&gt; Running: Worker is active
+
+    Running --&gt; Destroy: Engine shutdown or config reload
+    Destroy --&gt; [*]
+
+    Running --&gt; CheckAlive: is_alive()
+    CheckAlive --&gt; Running: alive = true
+    CheckAlive --&gt; Destroy: alive = false
+
+</div>
+<h3>Method Responsibilities</h3>
+<table><tr><th>Method</th><th>When Called</th><th>Purpose</th></tr><tr><td>`create()`</td><td>EngineBuilder.build()</td><td>Construct the worker with engine reference and config</td></tr><tr><td>`initialize()`</td><td>After create()</td><td>Set up internal state, create connection pools, etc.</td></tr><tr><td>`register_functions()`</td><td>After initialize()</td><td>Register the worker's functions with the engine</td></tr><tr><td>`start_background_tasks()`</td><td>After register_functions()</td><td>Start background loops (cron schedules, queue consumers, etc.)</td></tr><tr><td>`is_alive()`</td><td>Periodically + on reload</td><td>Report whether the worker's backing process/state is healthy</td></tr><tr><td>`destroy()`</td><td>Config reload or shutdown</td><td>Clean up resources, close connections</td></tr></table>
+<h2>In-Process vs External Workers</h2>
+<h3>In-Process Workers</h3>
+<p>In-process workers are compiled into the engine binary. They communicate via direct function calls with zero serialization overhead:</p>
+<pre><code class="language-rust">// EngineBuilder creates in-process workers directly
+let worker = T::make_worker(engine.clone(), config).await?;
+worker.initialize().await?;
+worker.register_functions(engine.clone());
+</code></pre>
+<p>Built-in in-process workers:</p>
+<table><tr><th>Worker</th><th>Source Location</th><th>Lines</th><th>Purpose</th></tr><tr><td>`iii-queue`</td><td>`workers/queue/`</td><td>2,557</td><td>Durable topic-based queue</td></tr><tr><td>`iii-cron`</td><td>`workers/cron/`</td><td>—</td><td>Scheduled execution</td></tr><tr><td>`iii-http`</td><td>`workers/http_functions/`</td><td>—</td><td>HTTP endpoint routing</td></tr><tr><td>`iii-state`</td><td>`workers/state/`</td><td>1,354</td><td>KV state store</td></tr><tr><td>`iii-stream`</td><td>`workers/stream/`</td><td>2,076</td><td>WebSocket streaming channels</td></tr><tr><td>`iii-pubsub`</td><td>`workers/pubsub/`</td><td>—</td><td>Pub/sub messaging</td></tr><tr><td>`iii-observability`</td><td>`workers/observability/`</td><td>6,101</td><td>OpenTelemetry integration</td></tr><tr><td>`iii-worker-manager`</td><td>`workers/worker/`</td><td>—</td><td>External worker spawning</td></tr></table>
+<h3>External Workers</h3>
+<p>External workers are separate processes that connect over WebSocket. They use the same protocol as SDK clients:</p>
+<div class="mermaid">
+flowchart LR
+    subgraph External[&quot;External Workers&quot;]
+        S[&quot;shell&lt;br/&gt;(Rust binary)&quot;]
+        D[&quot;database&lt;br/&gt;(Rust binary)&quot;]
+        H[&quot;harness&lt;br/&gt;(Node.js)&quot;]
+        A[&quot;agentmemory&lt;br/&gt;(Node.js)&quot;]
+        SF[&quot;spec-forge&lt;br/&gt;(Rust binary)&quot;]
+    end
+
+    subgraph Engine[&quot;iii Engine&quot;]
+        WS[&quot;WebSocket Server :49134&quot;]
+    end
+
+    S --&gt;|WebSocket| WS
+    D --&gt;|WebSocket| WS
+    H --&gt;|WebSocket| WS
+    A --&gt;|WebSocket| WS
+    SF --&gt;|WebSocket| WS
+
+</div>
+<p>External workers are spawned by the <code>iii-worker-manager</code>:</p>
+<p>Source: <code>workers/registry_worker.rs</code> — <code>ExternalWorkerProcess::spawn</code></p>
+<pre><code class="language-rust">pub struct ExternalWorkerProcess {
+    pub name: String,
+    pub process: Option&lt;Child&gt;,
+    // ...
+}
+</code></pre>
+<p>The manager:</p>
+<ol><li>Downloads worker binary from the registry (or uses local path)</li><li>Spawns the process with <code>--url ws://localhost:PORT</code></li><li>Waits for WebSocket connection and <code>WorkerRegistered</code> response</li><li>Monitors process health and restarts on failure</li></ol>
+<h2>ConfigurableWorker and Adapter Pattern</h2>
+<p>Source: <code>engine/src/workers/traits.rs:109</code></p>
+<p>The <code>ConfigurableWorker</code> trait extends <code>Worker</code> with adapter-based configuration:</p>
+<pre><code class="language-rust">#[async_trait::async_trait]
+pub trait ConfigurableWorker: Worker {
+    async fn register_with_adapter(
+        &amp;self,
+        engine: Arc&lt;Engine&gt;,
+        registration: AdapterRegistrationEntry,
+    ) -&gt; anyhow::Result&lt;()&gt;;
+}
+</code></pre>
+<p>This allows workers to use pluggable backends:</p>
+<pre><code class="language-yaml"># Using Redis adapter for state
+workers:
+  - name: iii-state
+    config:
+      adapter:
+        name: redis
+        config:
+          url: redis://localhost:6379
+
+# Using in-memory adapter (default)
+workers:
+  - name: iii-state
+    config:
+      adapter:
+        name: memory
+</code></pre>
+<p>The queue worker supports three adapters:</p>
+<table><tr><th>Adapter</th><th>Source</th><th>Purpose</th></tr><tr><td>`builtin`</td><td>`workers/queue/adapters/builtin/`</td><td>In-memory queue (default)</td></tr><tr><td>`redis`</td><td>`workers/queue/adapters/redis/`</td><td>Redis-based durable queue</td></tr><tr><td>`rabbitmq`</td><td>`workers/queue/adapters/rabbitmq/`</td><td>RabbitMQ integration</td></tr></table>
+<p><strong>Aha:</strong> The adapter pattern means the engine's queue API is identical regardless of backend. A worker publishes to a topic without knowing whether it's backed by in-memory storage, Redis, or RabbitMQ. The adapter handles the translation.</p>
+<h2>Hot Reload System</h2>
+<p>Source: <code>workers/reload.rs</code></p>
+<p>The engine watches its config file for changes and hot-reloads without downtime:</p>
+<pre><code class="language-rust">pub struct ReloadManager {
+    config_path: PathBuf,
+    engine: Arc&lt;Engine&gt;,
+    watcher: Option&lt;notify::RecommendedWatcher&gt;,
+}
+</code></pre>
+<p>The reload flow:</p>
+<ol><li><strong>Watch</strong> — <code>notify::RecommendedWatcher</code> detects config file changes</li><li><strong>Debounce</strong> — Wait 500ms to avoid reloading during file writes</li><li><strong>Parse</strong> — Load and validate the new configuration</li><li><strong>Diff</strong> — Compare new config with current state:</li></ol>
+<ul><li><code>added</code> — New workers not currently running</li><li><code>removed</code> — Currently running workers no longer in config</li><li><code>changed</code> — Workers with modified configuration</li></ul>
+<ol><li><strong>Apply</strong> — Execute changes:</li></ol>
+<ul><li>Added workers: create → initialize → register → start</li><li>Removed workers: stop background tasks → destroy → cleanup registrations</li><li>Changed workers: destroy old → create new (atomic swap)</li></ul>
+<h3>Scope-Based Registration Tracking</h3>
+<p>Source: <code>engine/src/engine/mod.rs:248</code></p>
+<p>During reload, the engine uses <code>ScopeBuilder</code> to track which registrations belong to which worker:</p>
+<pre><code class="language-rust">pub struct ScopeBuilder {
+    pub worker_name: String,
+    pub function_ids: Vec&lt;String&gt;,
+    pub trigger_ids: Vec&lt;String&gt;,
+}
+</code></pre>
+<p>When a worker registers functions during its scope, the IDs are appended to <code>function_ids</code>. On removal, the engine removes exactly those IDs.</p>
+<h2>RBAC Session System</h2>
+<p>Source: <code>workers/worker/rbac_session.rs</code></p>
+<p>Workers can connect with an RBAC session that controls access:</p>
+<pre><code class="language-rust">pub struct Session {
+    pub function_registration_prefix: Option&lt;String&gt;,
+    pub allowed_functions: Option&lt;Vec&lt;String&gt;&gt;,
+    pub forbidden_functions: Option&lt;Vec&lt;String&gt;&gt;,
+    pub allowed_trigger_types: Option&lt;Vec&lt;String&gt;&gt;,
+    // ...
+}
+</code></pre>
+<h3>Function Registration Prefix</h3>
+<p>When a session has a <code>function_registration_prefix</code>, all function IDs are auto-prefixed:</p>
+<p>Source: <code>engine/src/engine/mod.rs:257-267</code></p>
+<pre><code class="language-rust">fn resolve_registration_id(worker: &amp;WorkerConnection, id: &amp;str) -&gt; String {
+    if let Some(prefix) = worker
+        .session
+        .as_ref()
+        .and_then(|s| s.function_registration_prefix.as_ref())
+    {
+        format!(&quot;{prefix}::{id}&quot;)
+    } else {
+        id.to_string()
+    }
+}
+</code></pre>
+<p>This enables multi-tenancy: Worker A (prefix <code>tenant_a</code>) registers <code>greet</code> → it becomes <code>tenant_a::greet</code> in the global registry.</p>
+<h3>Function Access Control</h3>
+<p>The session's <code>allowed_functions</code> and <code>forbidden_functions</code> control which functions a worker can invoke:</p>
+<pre><code class="language-yaml"># RBAC session configuration
+session:
+  allowed_functions:
+    - &quot;state::*&quot;
+    - &quot;greet&quot;
+  forbidden_functions:
+    - &quot;shell::exec&quot;
+    - &quot;database::execute&quot;
+</code></pre>
+<p><strong>Aha:</strong> The RBAC system operates at the WebSocket connection level, not the function level. This means a single compromised worker connection cannot access functions outside its session scope, regardless of what it tries to invoke.</p>
+<h2>Channel Manager for Streaming</h2>
+<p>Source: <code>workers/worker/channels.rs</code></p>
+<p>The <code>ChannelManager</code> handles WebSocket-based data channels for real-time streaming:</p>
+<pre><code class="language-rust">pub struct ChannelManager {
+    channels: Arc&lt;DashMap&lt;Uuid, Channel&gt;&gt;,
+}
+</code></pre>
+<p>Channels are used by:</p>
+<ul><li><strong>iii-stream</strong> worker for real-time data updates</li><li><strong>spec-forge</strong> for JSONL patch streaming</li><li><strong>agentmemory</strong> for live observation streams</li></ul>
+<p>A channel flow:</p>
+<div class="mermaid">
+sequenceDiagram
+    participant Writer as ChannelWriter
+    participant Mgr as ChannelManager
+    participant Reader as ChannelReader (Browser)
+
+    Writer-&gt;&gt;Mgr: create_channel() → channel_id
+    Mgr-&gt;&gt;Reader: {channel_id, access_key}
+    Reader-&gt;&gt;Mgr: connect to /channels/{id}
+
+    Writer-&gt;&gt;Mgr: write(data)
+    Mgr-&gt;&gt;Reader: ChannelData {data}
+
+    Writer-&gt;&gt;Mgr: close()
+    Mgr-&gt;&gt;Reader: ChannelClosed
+
+</div>
+<h2>Worker Manifest (<code>iii.worker.yaml</code>)</h2>
+<p>External workers define their metadata in <code>iii.worker.yaml</code>:</p>
+<pre><code class="language-yaml">iii: v1
+name: shell
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-shell
+description: &quot;Unix shell execution with filesystem operations&quot;
+
+targets:
+  - x86_64-unknown-linux-gnu
+  - aarch64-apple-darwin
+
+runtime:
+  kind: rust
+
+env:
+  III_URL: &quot;ws://localhost:49134&quot;
+</code></pre>
+<h2>What's Next</h2>
+<ul><li><a href="05-functions-triggers.md">05 — Functions & Triggers</a> — Function registry, trigger types, schema validation</li><li><a href="06-observability.md">06 — Observability</a> — OTEL integration, metrics, traces, logs</li><li><a href="08-ecosystem-workers.md">08 — Ecosystem Workers</a> — 17+ workers deep dive</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
