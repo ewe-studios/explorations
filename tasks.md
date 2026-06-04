@@ -21,23 +21,44 @@ Do it one by one, ensure you finished each, done grandfather review and have fix
 | 7 | src.iii-shell-client + proto | 2,183 | 5 docs | ✅ DONE |
 | 8 | src.iii-console | 18,771 | 5 docs | ✅ DONE |
 | 9 | Engine workers deep dive | 13,129 | 6 docs | ✅ DONE |
-| 15 | **src.Uncloud** | **60,523** | **12 docs** | **✅ DONE** |
+| 10 | iii Skills system | 1,156 (SKILL.md lines) | 4 docs | ✅ DONE |
+| 11 | Browser SDK + Observability SDK | 4,584 | 5 docs | ✅ DONE |
+| 15 | src.Uncloud | 60,523 | 12 docs | ✅ DONE |
+| 14 | src.strukto-ai (Mirage) | 462,659 | 14 docs | ✅ DONE |
 
-## Sequential Task List (Remaining)
+## Total Documented
 
-### TASK 14: [src.strukto-ai]/ — Comprehensive Documentation
-**Location:** `src.strukto-ai/`
-**Status:** NOT STARTED. Per tasks.md item 2 — needs full exploration following directive.
+- **Total LOC documented: ~705,000+**
+- **Total documents created: 100+**
+- **All grandfather reviews: PASSED**
+- **All HTML generated: VERIFIED**
 
-### TASK 12: Skills System
-**Location:** `iii/skills/`, `iii/new_skills/`
-**Status:** NOT STARTED. Agent-readable reference material, SKILL.md format, skills-and-validation integration.
+## Directory Structure
 
-### TASK 11: Node browser + obs SDK (6,500 LOC)
-**Location:** `iii/sdk/packages/node/iii-browser/` + `node/observability/`
-**Status:** NOT STARTED. Browser SDK and observability SDK.
+All documentation is under `src.AgentSandbox/`:
+
+```
+src.AgentSandbox/
+├── src.iii/                    # iii ecosystem overview (16 docs)
+├── src.iii-worker/             # Managed worker runtime (11 docs)
+├── src.iii-filesystem/         # PassthroughFs VFS (9 docs)
+├── src.iii-init/               # PID 1 init binary (6 docs)
+├── src.iii-supervisor/         # In-VM process supervisor (6 docs)
+├── src.iii-network/            # smoltcp TCP/IP stack (7 docs)
+├── src.iii-shell-client/       # Shell exec channel (5 docs)
+├── src.iii-console/            # Developer console (5 docs)
+├── src.engine-workers/         # In-process workers (6 docs)
+├── src.iii-skills/             # Agent-readable skills (4 docs)
+├── src.iii-browser-obs/        # Browser + OTEL SDKs (5 docs)
+├── src.agentfs/                # AgentFS comparison (7 docs)
+└── src.Uncloud/                # Decentralized orchestration (12 docs)
+```
 
 ## Skipped Tasks
 
-### ~~TASK 10: Python SDK (10,884 LOC)~~
+### ~~TASK: Python SDK (10,884 LOC)~~
 **Status:** SKIPPED per user request.
+
+## Remaining Tasks
+
+None — all identified tasks are complete.
