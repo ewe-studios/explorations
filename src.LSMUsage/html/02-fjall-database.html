@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>fjall Database — Journal, Keyspaces, Transactions -- src.LSMUsage</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.LSMUsage/docs</span>
+    <div class="nav-actions">
+      <a href="00-overview.html" class="nav-breadcrumb">LSM Usage — fjall, cacache-rs, scru128, and xs</a><a href="01-lsm-tree-internals.html" class="nav-breadcrumb">LSM Tree Internals — Memtable, SST Files, Compaction</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="01-lsm-tree-internals.html" class="nav-btn" title="Previous: LSM Tree Internals — Memtable, SST Files, Compaction">← prev</a>
+      <a href="03-cacache-rs.html" class="nav-btn nav-btn-next" title="Next: cacache-rs — Content-Addressable Storage">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>fjall Database — Journal, Keyspaces, Transactions</h1>
+<p><strong>fjall (12,196 lines) wraps lsm-tree into a full database with a write-ahead log (journal), multiple keyspaces (column families), atomic cross-keyspace batches, and optimistic concurrency control. This document covers how each piece works.</strong></p>
+<h2>Why fjall Exists</h2>
+<p>The <code>lsm-tree</code> crate is a primitive LSM implementation — it has <strong>no WAL</strong>, so writes aren't durable until manually flushed. <code>fjall</code> adds:</p>
+<table><tr><th>Feature</th><th>lsm-tree</th><th>fjall</th></tr><tr><td>WAL / Journal</td><td>No</td><td>Yes (append-only journal)</td></tr><tr><td>Multiple keyspaces</td><td>No (single tree)</td><td>Yes (column families)</td></tr><tr><td>Atomic batches</td><td>No</td><td>Yes (cross-keyspace)</td></tr><tr><td>Transactions</td><td>No</td><td>Yes (OCC + single-writer)</td></tr><tr><td>Recovery</td><td>Manual</td><td>Automatic (journal replay)</td></tr></table>
+<h2>Database Architecture</h2>
+<div class="mermaid">
+flowchart TB
+    subgraph fjall[&quot;fjall Database&quot;]
+        DB[&quot;Database&quot;] --&gt; J[&quot;Journal (WAL)&quot;]
+        DB --&gt; MK[&quot;Meta Keyspace&quot;]
+        DB --&gt; KS1[&quot;Keyspace A (LSM-tree)&quot;]
+        DB --&gt; KS2[&quot;Keyspace B (LSM-tree)&quot;]
+        DB --&gt; FM[&quot;Flush Manager&quot;]
+        DB --&gt; CW[&quot;Compaction Worker&quot;]
+    end
+
+    subgraph journal[&quot;Journal (Write-Ahead Log)&quot;]
+        J --&gt; JW[&quot;Journal Writer (append-only)&quot;]
+        J --&gt; JR[&quot;Journal Reader&quot;]
+        J --&gt; JM[&quot;Journal Manager (rotation)&quot;]
+    end
+
+    subgraph recovery[&quot;Recovery Flow&quot;]
+        MK --&gt; R1[&quot;Read sealed memtables&quot;]
+        J --&gt; R2[&quot;Read journal entries&quot;]
+        R1 --&gt; R3[&quot;Replay unflushed entries&quot;]
+        R2 --&gt; R3
+        R3 --&gt; R4[&quot;Recover full state&quot;]
+    end
+
+</div>
+<h2>The Journal (Write-Ahead Log)</h2>
+<p>Source: <code>fjall/src/journal/</code></p>
+<p>Every write goes through the journal first — this is what makes fjall durable.</p>
+<h3>Journal Entry Format</h3>
+<pre><code class="language-rust">pub enum JournalEntry {
+    Insert { keyspace: KeyspaceKey, key: Vec&lt;u8&gt;, value: Vec&lt;u8&gt; },
+    Remove { keyspace: KeyspaceKey, key: Vec&lt;u8&gt; },
+}
+</code></pre>
+<p>The journal is an append-only file. Each entry is serialized and appended:</p>
+<pre><code class="language-">Journal File:
+  ┌─────────────────────────────────────┐
+  │ Entry 0: Insert{keyspace=0, ...}    │
+  ├─────────────────────────────────────┤
+  │ Entry 1: Insert{keyspace=1, ...}    │
+  ├─────────────────────────────────────┤
+  │ Entry 2: Remove{keyspace=0, ...}    │
+  ├─────────────────────────────────────┤
+  │ ...                                 │
+  └─────────────────────────────────────┘
+</code></pre>
+<h3>Write Path</h3>
+<div class="mermaid">
+sequenceDiagram
+    participant Client
+    participant DB as Database
+    participant Journal as Journal Writer
+    participant Memtable as Keyspace Memtable
+
+    Client-&gt;&gt;DB: insert(keyspace, key, value)
+    DB-&gt;&gt;Journal: append(Insert{keyspace, key, value})
+    Journal--&gt;&gt;DB: persisted
+    DB-&gt;&gt;Memtable: insert(internal_key, value)
+    DB--&gt;&gt;Client: success
+
+</div>
+<p><strong>Aha:</strong> The journal is persisted <strong>before</strong> the memtable is updated. This means if the process crashes after the journal write but before the memtable update, recovery will replay the journal entry and restore the write. This is the classic WAL protocol.</p>
+<h3>Journal Rotation</h3>
+<p>Source: <code>fjall/src/journal/manager.rs</code></p>
+<p>The journal grows unbounded. To prevent it from consuming all disk space, it is rotated when all its entries have been flushed to SST files:</p>
+<pre><code class="language-rust">// After memtable flush completes
+fn on_flush_complete(&amp;self, sealed_memtable: &amp;SealedMemtable) {
+    // The sealed memtable&#x27;s journal entries are now in SST files
+    // The journal can be truncated up to the sealed memtable&#x27;s max seqno
+    self.journal_manager.advance_safe_seqno(sealed_memtable.max_seqno);
+}
+</code></pre>
+<h2>Keyspaces (Column Families)</h2>
+<p>Source: <code>fjall/src/keyspace/</code></p>
+<p>A single fjall database can have multiple keyspaces, each with its own LSM-tree:</p>
+<pre><code class="language-rust">let db = Database::builder(&quot;./my-db&quot;).open()?;
+let items = db.keyspace(&quot;my_items&quot;, KeyspaceCreateOptions::default)?;
+let config = db.keyspace(&quot;config&quot;, KeyspaceCreateOptions::default)?;
+</code></pre>
+<p>Each keyspace:</p>
+<ul><li>Has its own memtable and SST files</li><li>Can have different block sizes, compression, filter settings</li><li>Shares the same journal (atomic writes across keyspaces)</li></ul>
+<h3>Keyspace Configuration</h3>
+<pre><code class="language-rust">KeyspaceCreateOptions {
+    max_memtable_size: 64 * 1024 * 1024,          // 64 MiB
+    data_block_size_policy: BlockSizePolicy::all(4096),  // 4 KiB blocks
+    data_block_hash_ratio_policy: HashRatioPolicy::all(1.0),  // Hash index
+    compression: CompressionType::Lz4,
+    filter: FilterType::Bloom { bits_per_key: 10.0 },
+    compaction: CompactionStrategy::Leveled { ... },
+}
+</code></pre>
+<p><strong>Aha:</strong> Each keyspace is independently tunable. For xs's stream store, the <code>stream</code> keyspace uses a hash index (fast point reads by scru128 ID), while the <code>idx_topic</code> keyspace uses a binary index (fast prefix scans for hierarchical topic queries).</p>
+<h2>Atomic Cross-Keyspace Batches</h2>
+<p>Source: <code>fjall/src/batch/</code></p>
+<pre><code class="language-rust">let mut batch = db.batch();
+batch.insert(&amp;items, &quot;key1&quot;, &quot;value1&quot;);
+batch.insert(&amp;config, &quot;setting&quot;, &quot;true&quot;);
+batch.commit()?;  // Atomic: all or nothing
+</code></pre>
+<p>The batch writes to the journal atomically — all entries are appended to the journal in a single operation. If any operation fails, none are applied.</p>
+<p><strong>How it works:</strong></p>
+<ol><li>Collect all operations in the batch</li><li>Write all entries to the journal atomically</li><li>Apply all operations to their respective memtables</li><li>Return success</li></ol>
+<p>If step 2 succeeds but step 3 fails, recovery will replay the journal and complete the operations.</p>
+<h2>Transactions: Optimistic Concurrency Control</h2>
+<p>Source: <code>fjall/src/tx/optimistic/</code></p>
+<p>fjall supports optimistic concurrency control (OCC) for multi-writer scenarios:</p>
+<div class="mermaid">
+sequenceDiagram
+    participant Tx as Transaction
+    participant Oracle as Oracle
+    participant DB as Database
+
+    Tx-&gt;&gt;Oracle: begin_transaction
+    Oracle-&gt;&gt;Oracle: record read_set (keys read)
+    Tx-&gt;&gt;DB: read(key)
+    DB--&gt;&gt;Tx: value
+    Tx-&gt;&gt;DB: write(key, value)
+    Tx-&gt;&gt;Oracle: commit_transaction
+    Oracle-&gt;&gt;Oracle: check conflicts (read_set vs write_set)
+    alt No conflicts
+        Oracle--&gt;&gt;Tx: commit success
+    else Conflicts detected
+        Oracle--&gt;&gt;Tx: abort (retry)
+    end
+
+</div>
+<h3>The Oracle</h3>
+<pre><code class="language-rust">pub struct Oracle {
+    read_maps: Mutex&lt;Vec&lt;HashMap&lt;KeyspaceKey, SeqNo&gt;&gt;&gt;,
+    write_map: Mutex&lt;HashMap&lt;KeyspaceKey, SeqNo&gt;&gt;,
+}
+</code></pre>
+<p>The oracle tracks the latest sequence number for each key. At commit time, it checks if any key the transaction read has been modified by another transaction (i.e., its sequence number has increased). If so, the transaction aborts.</p>
+<p><strong>Aha:</strong> OCC is optimistic — it assumes conflicts are rare and validates at commit time. This works well for read-heavy workloads. For write-heavy workloads, fjall also offers a <code>SingleWriterDatabase</code> mode with no conflict detection (single thread, no overhead).</p>
+<h2>Flush Manager</h2>
+<p>Source: <code>fjall/src/flush/</code></p>
+<p>The flush manager coordinates memtable rotation:</p>
+<ol><li>Memtable reaches size threshold → flag for rotation</li><li>Flush manager creates a new memtable</li><li>Old memtable is sealed and flushed to SST in background</li><li>SST file is added to the LSM-tree's version</li><li>Journal is advanced (entries up to sealed memtable's max seqno can be truncated)</li></ol>
+<h2>Compaction Worker</h2>
+<p>Source: <code>fjall/src/compaction/worker.rs</code></p>
+<p>Background thread that runs compaction:</p>
+<ol><li>Check if any level needs compaction</li><li>Pick the minimal compaction set (via the compaction strategy)</li><li>Merge files into the next level</li><li>Update the LSM-tree's version (atomic swap)</li></ol>
+<p><strong>Aha:</strong> Compaction runs in the background and doesn't block writes. Writes always go to the active memtable, regardless of compaction state. This is why LSM trees have O(1) write complexity — compaction is always async.</p>
+<h2>Recovery</h2>
+<p>Source: <code>fjall/src/recovery.rs</code></p>
+<p>On startup, fjall:</p>
+<ol><li><strong>Load the meta keyspace</strong>: Contains the manifest (which SST files exist)</li><li><strong>Load sealed memtables</strong>: SST files already on disk</li><li><strong>Read the journal</strong>: All entries not yet flushed to SST</li><li><strong>Replay journal entries</strong>: Reconstruct the active memtable state</li><li><strong>Database is ready</strong>: Full state recovered</li></ol>
+<pre><code class="language-rust">pub fn recover_keyspaces(...) -&gt; Result&lt;RecoveryResult&gt; {
+    // 1. Load manifest from meta keyspace
+    let manifest = Manifest::load(&amp;meta_keyspace)?;
+
+    // 2. Load existing SST files
+    let segments = manifest.load_segments()?;
+
+    // 3. Read journal
+    let journal_entries = journal::read_all(&amp;journal_path)?;
+
+    // 4. Replay unflushed entries
+    let memtable = replay_journal(journal_entries, segments)?;
+
+    Ok(RecoveryResult { memtable, segments })
+}
+</code></pre>
+<h2>Persist Modes</h2>
+<pre><code class="language-rust">pub enum PersistMode {
+    /// Don&#x27;t persist — data is in memory only
+    None,
+    /// Buffer writes (journal in memory, flushed periodically)
+    Buffer,
+    /// Sync journal to disk after every write
+    SyncJournal,
+    /// Sync journal and SST files to disk
+    SyncAll,
+}
+</code></pre>
+<p>xs uses <code>PersistMode::SyncAll</code> for its stream store — every frame append is synced to disk immediately.</p>
+<h2>What's Next</h2>
+<ul><li><a href="03-cacache-rs.md">03 — cacache-rs</a> — Content-addressable storage</li><li><a href="01-lsm-tree-internals.md">01 — LSM Tree Internals</a> — Return to LSM internals</li><li><a href="05-xs-stream-store.md">05 — xs Stream Store</a> — How xs uses fjall</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

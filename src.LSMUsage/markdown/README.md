@@ -4,19 +4,27 @@ title: LSM Usage Documentation
 
 # LSM Usage Documentation
 
-Deep dive into how xs uses fjall (LSM-tree database), cacache-rs (content-addressable storage), and scru128 (sortable IDs) to build a high-performance append-only stream store.
+Deep dive into LSM trees, fjall, cacache-rs, scru128, and xs — with comprehensive data structure implementations from scratch in Rust.
 
 ## Documents
 
-### Core Concepts
+### Foundations
 
-- [**00 — LSM, fjall, cacache, scru128**](00-lsm-fjall-cacache-scru128.md) — How each library works, how xs uses them, scru128 vs Snowflake
-- [**01 — SST Format & Block Structure**](01-sst-format-block-structure.md) — SST file format, block structure, bloom filters, xs's fjall configuration
+- [**00 — Overview**](00-overview.md) — The full stack, why it works, source libraries
+- [**01 — LSM Tree Internals**](01-lsm-tree-internals.md) — Memtable (SkipList), SST files, blocks, prefix compression, bloom filters, compaction
+- [**02 — fjall Database**](02-fjall-database.md) — WAL/journal, keyspaces, cross-keyspace batches, OCC transactions, recovery
+- [**03 — cacache-rs**](03-cacache-rs.md) — Content-addressable storage, index layer, content layer, atomic writes, integrity verification
 
-## Key Takeaways
+### Data Structures Master Guide
 
-1. **LSM trees** turn random writes into sequential writes via memtables and SST files
-2. **fjall** wraps lsm-tree with a WAL (journal), keyspaces, and transactions
-3. **cacache-rs** provides content-addressable storage with integrity guarantees
-4. **scru128** provides sortable, unpredictable IDs — unlike Snowflake, no machine ID needed
-5. **xs** uses fjall for metadata (frames) and cacache for content (bytes), with scru128 IDs for ordering
+- [**04 — Data Structures Master**](04-data-structures-master.md) — SkipList, SST files, Bloom filters, block indexes, WAL, content-addressable storage, scru128 — with full Rust implementations from scratch, edge cases, and disk storage patterns
+
+### scru128 IDs
+
+- [**04 — scru128**](04-scru128.md) — Sortable, unpredictable IDs, comparison with Twitter Snowflake, implementation from scratch
+
+### Integration
+
+- [**05 — xs Stream Store**](05-xs-stream-store.md) — How xs ties fjall, cacache-rs, and scru128 together into an append-only stream store
+- [**06 — fjall Patterns**](06-fjall-patterns.md) — Alternative usage patterns: simple KV, multi-tenant, event log, session store, config store, time-series
+- [**07 — S3 Sync**](07-s3-sync.md) — Syncing fjall and cacache to S3/object storage, architecture, challenges, alternatives

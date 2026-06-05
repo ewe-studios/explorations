@@ -1,7 +1,12 @@
 ---
 source_location: /home/darkvoid/Boxxed/@formulas/src.rust/src.ContentAddressable/
 explored_at: 2026-06-04
-documentation_goal: Document how xs uses fjall (LSM-tree), cacache-rs (content-addressable storage), and scru128 (sortable IDs), with deep dives into each underlying library.
+documentation_goal: >
+  Comprehensive documentation of how xs uses fjall (LSM-tree database), 
+  cacache-rs (content-addressable storage), and scru128 (sortable IDs) to build 
+  a high-performance append-only stream store. Covers each library's internals, 
+  how they integrate, scru128 vs Twitter Snowflake, alternative fjall usage 
+  patterns, and S3/object storage sync possibilities.
 ---
 
 # Spec: LSM Usage Documentation
@@ -18,14 +23,7 @@ documentation_goal: Document how xs uses fjall (LSM-tree), cacache-rs (content-a
 
 ## 2. What This Documents
 
-How xs uses fjall, cacache-rs, and scru128 to build a high-performance append-only stream store. Covers:
-- How LSM trees work (memtable, SST, compaction)
-- How fjall builds on lsm-tree (WAL, keyspaces, transactions)
-- How cacache-rs works (content-addressable storage)
-- How scru128 generates sortable IDs and differs from Twitter Snowflake
-- How xs ties them all together
-- How fjall can be used in different ways
-- Whether sync to S3/object storage is possible
+The full stack behind xs's stream store: how LSM trees work internally, how fjall wraps lsm-tree into a full database, how cacache-rs provides content-addressable storage, how scru128 generates sortable unpredictable IDs, and how xs ties them all together into an append-only stream store with TTL, GC, and hierarchical topic queries.
 
 ## 3. Documentation Structure
 
@@ -34,10 +32,18 @@ src.LSMUsage/
 ├── spec.md
 ├── markdown/
 │   ├── README.md
-│   ├── 00-lsm-fjall-cacache-scru128.md
-│   ├── 01-sst-format-block-structure.md
+│   ├── 00-overview.md
+│   ├── 01-lsm-tree-internals.md
+│   ├── 02-fjall-database.md
+│   ├── 03-cacache-rs.md
+│   ├── 04-data-structures-master.md
+│   ├── 04-scru128.md
+│   ├── 05-xs-stream-store.md
+│   ├── 06-fjall-patterns.md
+│   ├── 07-s3-sync.md
 ├── html/
-└── build.py
+├── build.py
+└── styles.css
 ```
 
 ## 4. Tasks
@@ -45,10 +51,23 @@ src.LSMUsage/
 | # | Document | Status |
 |---|----------|--------|
 | 0 | README.md | DONE |
-| 1 | 00-lsm-fjall-cacache-scru128.md | DONE |
-| 2 | 01-sst-format-block-structure.md | DONE |
-| 3 | Grandfather review | DONE |
-| 4 | Fix findings | DONE |
-| 5 | Generate HTML | DONE |
+| 1 | 00-overview.md | DONE |
+| 2 | 01-lsm-tree-internals.md | DONE |
+| 3 | 02-fjall-database.md | DONE |
+| 4 | 03-cacache-rs.md | DONE |
+| 5 | 04-data-structures-master.md | DONE |
+| 6 | 04-scru128.md | DONE |
+| 7 | 05-xs-stream-store.md | DONE |
+| 8 | 06-fjall-patterns.md | DONE |
+| 9 | 07-s3-sync.md | DONE |
+| 10 | Grandfather review | DONE |
+| 11 | Fix findings | DONE |
+| 12 | Generate HTML | DONE |
 
-Build via `python3 build.py .`. Grandfather review mandatory.
+## 5. Quality Requirements
+
+Follow all Iron Rules from the documentation directive. Grandfather review mandatory.
+
+## 6. Resume Point
+
+Continue writing markdown documents in order. After all documents written, run grandfather review, fix, generate HTML.

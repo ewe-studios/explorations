@@ -1,0 +1,906 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Data Structures Master Guide — SkipLists, SSTs, Bloom Filters, and More -- src.LSMUsage</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.LSMUsage/docs</span>
+    <div class="nav-actions">
+      <a href="01-lsm-tree-internals.html" class="nav-breadcrumb">LSM Tree Internals — Memtable, SST Files, Compaction</a><a href="02-fjall-database.html" class="nav-breadcrumb">fjall Database — Journal, Keyspaces, Transactions</a><a href="03-cacache-rs.html" class="nav-breadcrumb">cacache-rs — Content-Addressable Storage</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="03-cacache-rs.html" class="nav-btn" title="Previous: cacache-rs — Content-Addressable Storage">← prev</a>
+      <a href="04-scru128.html" class="nav-btn nav-btn-next" title="Next: scru128 — Sortable, Unpredictable Unique IDs">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Data Structures Master Guide — SkipLists, SSTs, Bloom Filters, and More</h1>
+<p><strong>This is a comprehensive guide to every data structure used in the LSM storage stack. For each structure, you'll learn what it is, how it works internally, how to implement it from scratch in Rust, edge cases to watch for, how to store it on disk efficiently, and how to guarantee correctness. After reading this, you'll understand the foundations of production storage engines.</strong></p>
+<h2>The Full Stack of Data Structures</h2>
+<p><strong>Aha:</strong> Each data structure in the stack serves a specific purpose: SkipLists for concurrent in-memory writes, SSTs for durable sorted storage on disk, Bloom filters for fast non-existence checks, and hash tables for index lookups. Together they form the foundation of any production LSM-based storage engine.</p>
+<div class="mermaid">
+flowchart TB
+    subgraph &quot;In-Memory&quot;
+        SL[&quot;SkipList (memtable)&quot;]
+        HT[&quot;Hash Tables (indexes)&quot;]
+        BF[&quot;Bloom Filter (probabilistic)&quot;]
+    end
+    subgraph &quot;On-Disk&quot;
+        SST[&quot;SST File (sorted blocks)&quot;]
+        WAL[&quot;WAL (append-only log)&quot;]
+        IDX[&quot;Index Buckets (append-only)&quot;]
+        CAC[&quot;Content Store (hash-addressed)&quot;]
+    end
+    SL --&gt;|flushed| SST
+    HT --&gt;|in SST footer| SST
+    BF --&gt;|in SST footer| SST
+    WAL --&gt;|replayed| SL
+    IDX --&gt;|points to| CAC
+
+</div>
+<hr>
+<h2>1. The SkipList</h2>
+<p><strong>Used in:</strong> Memtable (lsm-tree's in-memory write buffer)</p>
+<h3>What It Is</h3>
+<p>A SkipList is a probabilistic alternative to balanced trees (B-trees, AVL trees). It's a sorted linked list where each node has multiple "levels" of forward pointers, allowing O(log n) search, insert, and delete with high probability.</p>
+<pre><code class="language-">Level 3:  [head] ──────────────► [25] ──────► [50] ──► nil
+Level 2:  [head] ───► [10] ───► [25] ──► [35] ──► [50] ──► nil
+Level 1:  [head] ─► [5] ─► [10] ─► [15] ─► [25] ─► [30] ─► [35] ─► [50] ──► nil
+</code></pre>
+<p><strong>Aha:</strong> Unlike a B-tree which needs locks for concurrent access, a lock-free SkipList allows many readers and writers simultaneously. This is why lsm-tree uses it for the memtable — writes to the memtable never block reads.</p>
+<h3>How It Works</h3>
+<p>Each node has a random height (number of levels). The probability of a node having level k is p^k (typically p = 0.5). Search starts at the highest level and "drops down" when the next node is greater than the search key.</p>
+<h3>Implementing from Scratch in Rust</h3>
+<pre><code class="language-rust">use std::cmp::Ordering;
+use std::ptr::NonNull;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::Arc;
+
+const MAX_LEVEL: usize = 18;  // 2^18 &gt; 256K entries
+const P: f64 = 0.5;
+
+struct Node&lt;K, V&gt; {
+    key: K,
+    value: V,
+    /// forward[i] points to the next node at level i
+    forward: [Option&lt;NonNull&lt;Node&lt;K, V&gt;&gt;&gt;; MAX_LEVEL],
+}
+
+pub struct SkipList&lt;K, V&gt; {
+    head: NonNull&lt;Node&lt;K, V&gt;&gt;,
+    height: AtomicUsize,
+    len: AtomicUsize,
+}
+
+unsafe impl&lt;K: Send, V: Send&gt; Send for SkipList&lt;K, V&gt; {}
+unsafe impl&lt;K: Send, V: Send&gt; Sync for SkipList&lt;K, V&gt; {}
+
+impl&lt;K: Ord, V&gt; SkipList&lt;K, V&gt; {
+    pub fn new() -&gt; Self {
+        // Create sentinel head node with MAX_LEVEL forward pointers
+        let head = Box::new(Node {
+            key: unsafe { std::mem::zeroed() },  // Sentinel
+            value: unsafe { std::mem::zeroed() },
+            forward: [None; MAX_LEVEL],
+        });
+        let head = Box::into_raw(head);
+
+        Self {
+            head: unsafe { NonNull::new_unchecked(head) },
+            height: AtomicUsize::new(1),
+            len: AtomicUsize::new(0),
+        }
+    }
+
+    /// Generate a random level for a new node
+    fn random_level(&amp;self) -&gt; usize {
+        let mut level = 1;
+        while rand::random::&lt;f64&gt;() &lt; P &amp;&amp; level &lt; MAX_LEVEL {
+            level += 1;
+        }
+        level
+    }
+
+    pub fn get(&amp;self, key: &amp;K) -&gt; Option&lt;&amp;V&gt; {
+        unsafe {
+            let mut current = self.head;
+            // Start from the highest level
+            for i in (0..self.height.load(AtomicOrdering::Acquire)).rev() {
+                while let Some(next) = (*current).forward[i] {
+                    match (*next).key.cmp(key) {
+                        Ordering::Less =&gt; current = next,
+                        Ordering::Equal =&gt; return Some(&amp;(*next).value),
+                        Ordering::Greater =&gt; break,
+                    }
+                }
+            }
+            None
+        }
+    }
+
+    pub fn insert(&amp;self, key: K, value: V) -&gt; Option&lt;V&gt; {
+        // Find update positions at each level
+        let mut update: [Option&lt;NonNull&lt;Node&lt;K, V&gt;&gt;&gt;; MAX_LEVEL] = [None; MAX_LEVEL];
+        let mut current = self.head;
+
+        unsafe {
+            let height = self.height.load(AtomicOrdering::Acquire);
+            for i in (0..height).rev() {
+                while let Some(next) = (*current).forward[i] {
+                    match (*next).key.cmp(&amp;key) {
+                        Ordering::Less =&gt; current = next,
+                        Ordering::Equal =&gt; {
+                            // Key exists, update value at level 0
+                            let old = std::mem::replace(&amp;mut (*next).value, value);
+                            return Some(old);
+                        },
+                        Ordering::Greater =&gt; break,
+                    }
+                }
+                update[i] = Some(current);
+            }
+
+            let level = self.random_level();
+
+            // Update height if necessary
+            if level &gt; height {
+                for i in height..level {
+                    update[i] = Some(self.head);
+                }
+                self.height.store(level, AtomicOrdering::Release);
+            }
+
+            // Create new node
+            let new_node = Box::new(Node {
+                key,
+                value,
+                forward: [None; MAX_LEVEL],
+            });
+            let new_ptr = Box::into_raw(new_node);
+            let new_node = &amp;mut *new_ptr;
+
+            // Insert at each level
+            for i in 0..level {
+                if let Some(update_node) = update[i] {
+                    new_node.forward[i] = (*update_node).forward[i];
+                    (*update_node).forward[i] = Some(NonNull::new(new_ptr).unwrap());
+                }
+            }
+        }
+
+        self.len.fetch_add(1, AtomicOrdering::Relaxed);
+        None
+    }
+}
+
+impl&lt;K, V&gt; Drop for SkipList&lt;K, V&gt; {
+    fn drop(&amp;mut self) {
+        unsafe {
+            let mut current = (*self.head).forward[0];
+            drop(Box::from_raw(self.head));
+            while let Some(node) = current {
+                let next = (*node).forward[0];
+                drop(Box::from_raw(node));
+                current = next;
+            }
+        }
+    }
+}
+</code></pre>
+<h3>Edge Cases and Gotchas</h3>
+<ol><li><strong>Sentinel node</strong>: The head is a sentinel with an uninitialized key/value. Never dereference the key of the head node.</li><li><strong>Memory ordering</strong>: The height must be updated with Release ordering, and read with Acquire ordering, to ensure other threads see a consistent view.</li><li><strong>Lock-free vs concurrent</strong>: The simple implementation above is NOT thread-safe for concurrent writes. For production use, you need <code>crossbeam_skiplist</code> which uses epoch-based reclamation.</li><li><strong>Memory leaks</strong>: Every node allocated with <code>Box::into_raw</code> must be freed in <code>Drop</code>. Missing a node is a memory leak.</li></ol>
+<h3>Disk Storage</h3>
+<p>SkipLists are <strong>never stored on disk directly</strong>. They're flushed as sorted runs (SST files). The flush process:</p>
+<div class="mermaid">
+flowchart LR
+    A[&quot;Iterate SkipList (level-0)&quot;] --&gt; B[&quot;Write KV pairs sequentially&quot;]
+    B --&gt; C[&quot;Build block indexes&quot;]
+    C --&gt; D[&quot;Build bloom filter&quot;]
+    D --&gt; E[&quot;Atomic rename&quot;]
+
+</div>
+<p><strong>Aha:</strong> The SkipList-to-SST flush is why LSM trees have O(1) writes — all the expensive sorting and indexing happens during the background flush, not during the write.</p>
+<h3>Disk Storage</h3>
+<p>SkipLists are <strong>never stored on disk directly</strong>. They're flushed as sorted runs (SST files). The flush process:</p>
+<ol><li>Iterate the SkipList in order (follow level-0 pointers)</li><li>Write key-value pairs sequentially to a file</li><li>Build block indexes and bloom filters as you write</li><li>Atomically rename the file into place</li></ol>
+<hr>
+<h2>2. SST Files (Sorted String Tables)</h2>
+<p><strong>Used in:</strong> lsm-tree's on-disk storage</p>
+<h3>What It Is</h3>
+<p>An SST file is an immutable, sorted list of key-value pairs. It's the fundamental on-disk structure of any LSM tree.</p>
+<pre><code class="language-">SST File Layout:
+  ┌─────────────────────────────────────┐
+  │ Block 0: [k1:v1][k2:v2]...[kn:vn]   │
+  ├─────────────────────────────────────┤
+  │ Block 1: [kn+1:vn+1]...             │
+  ├─────────────────────────────────────┤
+  │ ...                                 │
+  ├─────────────────────────────────────┤
+  │ Bloom Filter (skip non-existent)    │
+  ├─────────────────────────────────────┤
+  │ Block Index (key → block offset)    │
+  ├─────────────────────────────────────┤
+  │ Footer (checksums, magic, offsets)  │
+  └─────────────────────────────────────┘
+</code></pre>
+<h3>How It Works</h3>
+<p>Each block contains:</p>
+<ol><li><strong>Header</strong>: block type, checksum, data length, uncompressed length</li><li><strong>Data</strong>: key-value pairs with prefix compression</li><li><strong>Trailer</strong>: restart points (full keys every N entries for binary search)</li></ol>
+<h3>Implementing an SST Writer from Scratch</h3>
+<pre><code class="language-rust">use std::fs::File;
+use std::io::{BufWriter, Write, Seek, SeekFrom};
+
+const BLOCK_SIZE: usize = 4096;
+const RESTART_INTERVAL: usize = 16;
+const MAGIC: u64 = 0xFB32109876543210;
+
+pub struct SstWriter {
+    file: BufWriter&lt;File&gt;,
+    block_data: Vec&lt;u8&gt;,
+    restart_points: Vec&lt;(u32, Vec&lt;u8&gt;)&gt;,  // (offset, key)
+    block_offsets: Vec&lt;BlockHandle&gt;,      // offset, size
+    key_count: u64,
+}
+
+#[derive(Debug)]
+struct BlockHandle {
+    offset: u64,
+    size: u64,
+}
+
+struct Footer {
+    meta_index_handle: BlockHandle,
+    index_handle: BlockHandle,
+    magic: u64,
+}
+
+impl SstWriter {
+    pub fn create(path: &amp;str) -&gt; std::io::Result&lt;Self&gt; {
+        let file = File::create(path)?;
+        Ok(Self {
+            file: BufWriter::new(file),
+            block_data: Vec::with_capacity(BLOCK_SIZE),
+            restart_points: Vec::new(),
+            block_offsets: Vec::new(),
+            key_count: 0,
+        })
+    }
+
+    /// Add a key-value pair. Keys MUST be added in sorted order.
+    pub fn add(&amp;mut self, key: &amp;[u8], value: &amp;[u8]) -&gt; std::io::Result&lt;()&gt; {
+        // Prefix compress the key
+        let shared = if self.key_count % RESTART_INTERVAL == 0 {
+            // Restart point: store full key
+            self.restart_points.push((
+                self.block_data.len() as u32,
+                key.to_vec(),
+            ));
+            0
+        } else {
+            // Prefix compression: count shared bytes with previous key
+            let prev_key = &amp;self.restart_points.last().unwrap().1;
+            key.iter()
+                .zip(prev_key.iter())
+                .take_while(|(a, b)| a == b)
+                .count()
+        };
+
+        // Write: shared_prefix_len | non_shared_len | value_len | non_shared_key | value
+        let non_shared = key.len() - shared;
+        self.block_data.push(shared as u8);
+        self.block_data.push(non_shared as u8);
+        self.write_varint(value.len() as u64);
+        self.block_data.extend_from_slice(&amp;key[shared..]);
+        self.block_data.extend_from_slice(value);
+
+        self.key_count += 1;
+
+        // Flush block if full
+        if self.block_data.len() &gt;= BLOCK_SIZE {
+            self.flush_block()?;
+        }
+
+        Ok(())
+    }
+
+    fn flush_block(&amp;mut self) -&gt; std::io::Result&lt;()&gt; {
+        let offset = self.file.stream_position()?;
+        self.file.write_all(&amp;self.block_data)?;
+
+        self.block_offsets.push(BlockHandle {
+            offset,
+            size: self.block_data.len() as u64,
+        });
+
+        self.block_data.clear();
+        self.restart_points.clear();
+        Ok(())
+    }
+
+    pub fn finish(mut self) -&gt; std::io::Result&lt;()&gt; {
+        // Flush final block
+        if !self.block_data.is_empty() {
+            self.flush_block()?;
+        }
+
+        // Write block index
+        let index_offset = self.file.stream_position()?;
+        for handle in &amp;self.block_offsets {
+            self.write_block_handle(handle)?;
+        }
+
+        // Write footer
+        let footer = Footer {
+            meta_index_handle: BlockHandle { offset: 0, size: 0 },  // Simplified
+            index_handle: BlockHandle {
+                offset: index_offset,
+                size: self.file.stream_position()? - index_offset,
+            },
+            magic: MAGIC,
+        };
+        self.write_footer(&amp;footer)?;
+
+        self.file.flush()?;
+        Ok(())
+    }
+
+    fn write_varint(&amp;mut self, mut val: u64) {
+        while val &gt; 0x7f {
+            self.block_data.push((val as u8) | 0x80);
+            val &gt;&gt;= 7;
+        }
+        self.block_data.push(val as u8);
+    }
+
+    fn write_block_handle(&amp;mut self, handle: &amp;BlockHandle) -&gt; std::io::Result&lt;()&gt; {
+        self.write_varint(handle.offset);
+        self.write_varint(handle.size);
+        Ok(())
+    }
+
+    fn write_footer(&amp;mut self, footer: &amp;Footer) -&gt; std::io::Result&lt;()&gt; {
+        self.write_block_handle(&amp;footer.meta_index_handle)?;
+        self.write_block_handle(&amp;footer.index_handle)?;
+        self.file.write_all(&amp;footer.magic.to_le_bytes())?;
+        Ok(())
+    }
+}
+</code></pre>
+<h3>Edge Cases and Gotchas</h3>
+<ol><li><strong>Sorted order</strong>: Keys MUST be added in sorted order. Adding out of order corrupts the file.</li><li><strong>Prefix compression</strong>: Only compresses within a block. Restart points store full keys so you can binary search within the block.</li><li><strong>Varint encoding</strong>: Numbers are encoded as variable-length integers. The MSB indicates continuation.</li><li><strong>Atomic file creation</strong>: Always write to a temp file, then atomically rename. A partial SST file is worse than no SST file.</li><li><strong>Checksums</strong>: Every block should have a checksum. Without it, disk corruption goes undetected.</li></ol>
+<h3>Disk Storage Best Practices</h3>
+<ol><li><strong>Block size</strong>: 4KB matches the OS page size. Larger blocks (64KB) reduce overhead but increase I/O for point lookups.</li><li><strong>Compression</strong>: LZ4 is fast enough that reading compressed data can be faster than reading uncompressed data (decompression speed > disk bandwidth).</li><li><strong>Bloom filters</strong>: Add a Bloom filter for each SST. With 10 bits per key, you get ~1% false positive rate, which means 99% of non-existent key lookups skip the file entirely.</li></ol>
+<hr>
+<h2>3. Bloom Filters</h2>
+<p><strong>Used in:</strong> SST files (skip non-existent keys)</p>
+<h3>What It Is</h3>
+<p>A Bloom filter is a probabilistic data structure that answers: "Is this element definitely NOT in the set, or might it be in the set?"</p>
+<ul><li><strong>"Definitely not"</strong>: 100% accurate — if it says "no", the element is NOT in the set</li><li><strong>"Maybe"</strong>: Can have false positives — if it says "yes", the element MIGHT be in the set</li></ul>
+<h3>How It Works</h3>
+<p>A Bloom filter is a bit array of size m, with k independent hash functions. To insert:</p>
+<ol><li>Hash the key with each of k hash functions → k bit positions</li><li>Set those k bits to 1</li></ol>
+<p>To query:</p>
+<ol><li>Hash the key with each of k hash functions</li><li>If ALL k bits are 1 → "maybe" (the key might exist)</li><li>If ANY bit is 0 → "definitely not" (the key doesn't exist)</li></ol>
+<h3>Implementing from Scratch</h3>
+<pre><code class="language-rust">use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
+pub struct BloomFilter {
+    bits: Vec&lt;bool&gt;,
+    k: usize,  // number of hash functions
+}
+
+impl BloomFilter {
+    /// Create a Bloom filter for n items with false positive rate p
+    pub fn with_capacity(n: usize, p: f64) -&gt; Self {
+        let m = optimal_m(n, p);
+        let k = optimal_k(n, m);
+        Self {
+            bits: vec![false; m],
+            k,
+        }
+    }
+
+    pub fn insert(&amp;mut self, item: &amp;[u8]) {
+        for i in 0..self.k {
+            let idx = hash_with_seed(item, i) % self.bits.len();
+            self.bits[idx] = true;
+        }
+    }
+
+    pub fn might_contain(&amp;self, item: &amp;[u8]) -&gt; bool {
+        for i in 0..self.k {
+            let idx = hash_with_seed(item, i) % self.bits.len();
+            if !self.bits[idx] {
+                return false;  // Definitely not
+            }
+        }
+        true  // Maybe
+    }
+}
+
+fn optimal_m(n: usize, p: f64) -&gt; usize {
+    // m = -n * ln(p) / (ln(2))^2
+    (-(n as f64) * p.ln() / (2.0_f64.ln().powi(2))).ceil() as usize
+}
+
+fn optimal_k(n: usize, m: usize) -&gt; usize {
+    // k = (m/n) * ln(2)
+    ((m as f64 / n as f64) * 2.0_f64.ln()).round() as usize
+}
+
+fn hash_with_seed(item: &amp;[u8], seed: usize) -&gt; usize {
+    let mut hasher = DefaultHasher::new();
+    seed.hash(&amp;mut hasher);
+    item.hash(&amp;mut hasher);
+    hasher.finish() as usize
+}
+</code></pre>
+<h3>Production Implementation: Double Hashing</h3>
+<p>For production, you don't need k independent hash functions. You can use <strong>double hashing</strong> (Kirsch-Mitzenmacher):</p>
+<pre><code class="language-rust">// Two hash functions: h1(x), h2(x)
+// k &quot;hashes&quot;: h_i(x) = h1(x) + i * h2(x)
+fn bloom_indices(item: &amp;[u8], k: usize, m: usize) -&gt; Vec&lt;usize&gt; {
+    let h1 = hash1(item) % m;
+    let h2 = hash2(item) % m;
+    (0..k).map(|i| (h1 + i * h2) % m).collect()
+}
+</code></pre>
+<h3>Edge Cases and Gotchas</h3>
+<ol><li><strong>No deletions</strong>: You can't remove items from a Bloom filter (setting a bit to 0 might remove other items). Use a Counting Bloom Filter if you need deletions.</li><li><strong>False positive rate grows</strong>: As you add more items than planned, the false positive rate increases. Design for the worst case.</li><li><strong>Serialization</strong>: Serialize as a bit vector. Don't serialize the <code>Vec<bool></code> — pack bits into bytes.</li><li><strong>Hash function quality</strong>: Poor hash functions cluster bits and increase false positives. Use a good hash like xxHash or MurmurHash.</li></ol>
+<h3>Disk Storage</h3>
+<p>A Bloom filter is stored as:</p>
+<ol><li><strong>Bit vector</strong>: Packed bits (8 bits per byte)</li><li><strong>Header</strong>: number of bits (m), number of hash functions (k)</li></ol>
+<p>For a 1M-item filter with 1% false positive rate: m ≈ 9.6M bits ≈ 1.2 MB.</p>
+<hr>
+<h2>4. Block Indexes</h2>
+<p><strong>Used in:</strong> SST files (locate blocks by key)</p>
+<h3>What It Is</h3>
+<p>A block index maps keys to block handles (offset + size in the file). There are two main types:</p>
+<ol><li><strong>Binary Index</strong>: Sorted list of (key, block_handle) pairs</li><li><strong>Hash Index</strong>: Hash table mapping keys to block handles</li></ol>
+<h3>Binary Index</h3>
+<pre><code class="language-">Index entries:
+  [key_16] → BlockHandle(offset=0, size=4096)
+  [key_32] → BlockHandle(offset=4096, size=4096)
+  [key_48] → BlockHandle(offset=8192, size=4096)
+</code></pre>
+<p>To find a key: binary search the index → find the block → read the block → search within the block.</p>
+<h3>Hash Index</h3>
+<pre><code class="language-">Hash table:
+  hash(key) → BlockHandle(offset, size)
+</code></pre>
+<p>To find a key: hash the key → get the block handle → read the block.</p>
+<h3>Implementing a Two-Level Index from Scratch</h3>
+<p>For large files, a single-level index can be too big. A two-level index solves this:</p>
+<pre><code class="language-rust">/// Two-level block index:
+/// Level 1: sparse index (one entry per block of blocks)
+/// Level 2: block index (full index within each block)
+pub struct TwoLevelIndex {
+    level1: Vec&lt;Level1Entry&gt;,  // (last_key_in_block, offset_of_block_index)
+}
+
+struct Level1Entry {
+    separator_key: Vec&lt;u8&gt;,  // Last key covered by this block&#x27;s index
+    block_index_offset: u64,  // Where to read the block index from
+}
+</code></pre>
+<p>To find a key:</p>
+<ol><li>Binary search level1 → find which block index to load</li><li>Read the block index from disk</li><li>Binary search the block index → find the data block</li><li>Read the data block from disk</li></ol>
+<h3>Edge Cases</h3>
+<ol><li><strong>Empty file</strong>: An SST with no keys still needs a valid footer (empty index, empty bloom filter).</li><li><strong>Single key</strong>: An SST with one key has one block with one entry. The index has one entry.</li><li><strong>Large keys</strong>: If keys are larger than a block, the block contains only one key. Handle this case in your reader.</li></ol>
+<hr>
+<h2>5. Write-Ahead Log (Journal)</h2>
+<p><strong>Used in:</strong> fjall (crash recovery)</p>
+<h3>What It Is</h3>
+<p>A WAL is an append-only log of all modifications. Before any change is applied to the in-memory data structure, it's first written to the WAL. On crash, the WAL is replayed to reconstruct the state.</p>
+<pre><code class="language-">WAL File:
+  ┌─────────────────────────────────────┐
+  │ Entry 0: Insert{keyspace=0, k=&quot;a&quot;, v=&quot;1&quot;} │
+  ├─────────────────────────────────────┤
+  │ Entry 1: Insert{keyspace=0, k=&quot;b&quot;, v=&quot;2&quot;} │
+  ├─────────────────────────────────────┤
+  │ Entry 2: Delete{keyspace=0, k=&quot;a&quot;}      │
+  ├─────────────────────────────────────┤
+  │ ...                                 │
+  └─────────────────────────────────────┘
+</code></pre>
+<h3>Implementing a WAL from Scratch</h3>
+<pre><code class="language-rust">use std::fs::{File, OpenOptions};
+use std::io::{Write, Read, Seek, SeekFrom};
+
+#[derive(Debug, Clone)]
+pub enum WalEntry {
+    Insert { keyspace: u32, key: Vec&lt;u8&gt;, value: Vec&lt;u8&gt; },
+    Delete { keyspace: u32, key: Vec&lt;u8&gt; },
+}
+
+pub struct WalWriter {
+    file: File,
+}
+
+impl WalWriter {
+    pub fn open(path: &amp;str) -&gt; std::io::Result&lt;Self&gt; {
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        Ok(Self { file })
+    }
+
+    pub fn write(&amp;mut self, entry: &amp;WalEntry) -&gt; std::io::Result&lt;()&gt; {
+        // Serialize: [type: 1 byte] [keyspace: 4 bytes] [key_len: 4 bytes] [key] [value_len: 4 bytes] [value]
+        let mut buf = Vec::new();
+        match entry {
+            WalEntry::Insert { keyspace, key, value } =&gt; {
+                buf.push(0);  // type
+                buf.extend_from_slice(&amp;keyspace.to_be_bytes());
+                buf.extend_from_slice(&amp;(key.len() as u32).to_be_bytes());
+                buf.extend_from_slice(key);
+                buf.extend_from_slice(&amp;(value.len() as u32).to_be_bytes());
+                buf.extend_from_slice(value);
+            }
+            WalEntry::Delete { keyspace, key } =&gt; {
+                buf.push(1);
+                buf.extend_from_slice(&amp;keyspace.to_be_bytes());
+                buf.extend_from_slice(&amp;(key.len() as u32).to_be_bytes());
+                buf.extend_from_slice(key);
+            }
+        }
+        self.file.write_all(&amp;buf)?;
+        self.file.sync_all()?;  // Force to disk
+        Ok(())
+    }
+}
+
+pub struct WalReader {
+    file: File,
+}
+
+impl WalReader {
+    pub fn open(path: &amp;str) -&gt; std::io::Result&lt;Self&gt; {
+        let file = File::open(path)?;
+        Ok(Self { file })
+    }
+
+    pub fn read_all(&amp;mut self) -&gt; std::io::Result&lt;Vec&lt;WalEntry&gt;&gt; {
+        let mut entries = Vec::new();
+        let mut buf = Vec::new();
+        self.file.read_to_end(&amp;mut buf)?;
+
+        let mut pos = 0;
+        while pos &lt; buf.len() {
+            let entry_type = buf[pos];
+            pos += 1;
+
+            let keyspace = u32::from_be_bytes([buf[pos], buf[pos+1], buf[pos+2], buf[pos+3]]);
+            pos += 4;
+
+            let key_len = u32::from_be_bytes([buf[pos], buf[pos+1], buf[pos+2], buf[pos+3]]) as usize;
+            pos += 4;
+            let key = buf[pos..pos + key_len].to_vec();
+            pos += key_len;
+
+            match entry_type {
+                0 =&gt; {
+                    let value_len = u32::from_be_bytes([buf[pos], buf[pos+1], buf[pos+2], buf[pos+3]]) as usize;
+                    pos += 4;
+                    let value = buf[pos..pos + value_len].to_vec();
+                    pos += value_len;
+                    entries.push(WalEntry::Insert { keyspace, key, value });
+                }
+                1 =&gt; {
+                    entries.push(WalEntry::Delete { keyspace, key });
+                }
+                _ =&gt; return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, &quot;unknown entry type&quot;)),
+            }
+        }
+
+        Ok(entries)
+    }
+}
+</code></pre>
+<h3>Edge Cases and Gotchas</h3>
+<ol><li><strong>fsync is mandatory</strong>: Without <code>sync_all()</code>, data may be in the OS page cache but not on disk. A crash loses the WAL entries.</li><li><strong>Partial writes</strong>: If the process crashes mid-write, the WAL may have a partial entry at the end. Your reader must detect and discard partial entries.</li><li><strong>WAL rotation</strong>: The WAL grows unbounded. After a checkpoint (memtable flushed to SST), entries up to the checkpoint can be discarded.</li><li><strong>Atomic checkpoint</strong>: The checkpoint marker must be written atomically. If the checkpoint marker is written but the SST isn't flushed, recovery will lose data.</li></ol>
+<h3>Disk Storage Best Practices</h3>
+<ol><li><strong>Append-only</strong>: Never modify existing WAL entries. Always append.</li><li><strong>Batch syncs</strong>: For performance, batch multiple writes before syncing. Trade-off: more data at risk on crash.</li><li><strong>Truncate carefully</strong>: After a checkpoint, truncate the WAL. But truncate AFTER the checkpoint is complete.</li></ol>
+<hr>
+<h2>6. Content-Addressable Storage</h2>
+<p><strong>Used in:</strong> cacache-rs (content deduplication)</p>
+<h3>What It Is</h3>
+<p>Content-addressable storage stores data by its hash, not by a name. The same content is stored only once, regardless of how many names point to it.</p>
+<pre><code class="language-">Content Store:
+  content-v2/
+    sha256/
+      ab/
+        cd/
+          abcdef1234567890...  ← Named by its hash
+</code></pre>
+<h3>Implementing from Scratch</h3>
+<pre><code class="language-rust">use sha2::{Sha256, Digest};
+use std::fs;
+use std::io::Write;
+use std::path::PathBuf;
+
+pub struct ContentStore {
+    root: PathBuf,
+}
+
+impl ContentStore {
+    pub fn new(root: &amp;str) -&gt; Self {
+        fs::create_dir_all(root).unwrap();
+        Self { root: PathBuf::from(root) }
+    }
+
+    /// Compute the hash of content
+    pub fn hash(content: &amp;[u8]) -&gt; String {
+        let mut hasher = Sha256::new();
+        hasher.update(content);
+        format!(&quot;{:x}&quot;, hasher.finalize())
+    }
+
+    /// Get the path for a given hash
+    fn content_path(&amp;self, hash: &amp;str) -&gt; PathBuf {
+        // content-v2/sha256/ab/cd/abcdef...
+        self.root
+            .join(&quot;sha256&quot;)
+            .join(&amp;hash[0..2])
+            .join(&amp;hash[2..4])
+            .join(hash)
+    }
+
+    /// Store content, return its hash
+    pub fn put(&amp;self, content: &amp;[u8]) -&gt; std::io::Result&lt;String&gt; {
+        let hash = Self::hash(content);
+        let path = self.content_path(&amp;hash);
+
+        // If already exists, skip (deduplication!)
+        if path.exists() {
+            return Ok(hash);
+        }
+
+        // Atomic write: temp file → rename
+        let tmp_path = path.with_extension(&quot;.tmp&quot;);
+        fs::create_dir_all(path.parent().unwrap())?;
+        let mut file = fs::File::create(&amp;tmp_path)?;
+        file.write_all(content)?;
+        file.sync_all()?;
+        fs::rename(&amp;tmp_path, &amp;path)?;
+
+        Ok(hash)
+    }
+
+    /// Retrieve content by hash
+    pub fn get(&amp;self, hash: &amp;str) -&gt; std::io::Result&lt;Vec&lt;u8&gt;&gt; {
+        let path = self.content_path(hash);
+        fs::read(&amp;path)
+    }
+
+    /// Retrieve and verify content by hash
+    pub fn get_verified(&amp;self, hash: &amp;str) -&gt; std::io::Result&lt;Vec&lt;u8&gt;&gt; {
+        let content = self.get(hash)?;
+        let actual_hash = Self::hash(&amp;content);
+        if actual_hash != hash {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(&quot;hash mismatch: expected {}, got {}&quot;, hash, actual_hash),
+            ));
+        }
+        Ok(content)
+    }
+}
+</code></pre>
+<h3>Edge Cases</h3>
+<ol><li><strong>Race condition on put</strong>: Two writers might try to write the same hash simultaneously. Use a temp file + atomic rename to avoid corruption.</li><li><strong>Garbage collection</strong>: Content is never deleted automatically. You need a GC process that finds unreachable content (not referenced by any index entry).</li><li><strong>Directory explosion</strong>: With 256 × 256 = 65,536 subdirectories, some filesystems may have issues. Use a shallower hierarchy if needed.</li></ol>
+<hr>
+<h2>7. scru128 IDs</h2>
+<p><strong>Used in:</strong> xs (sortable, unique IDs)</p>
+<h3>What It Is</h3>
+<p>scru128 is a 128-bit sortable unique ID:</p>
+<pre><code class="language-">  ┌──────────────┬───────────────────┬───────────────────┬──────────────────┐
+  │ 48-bit       │ 24-bit            │ 24-bit            │ 32-bit           │
+  │ timestamp    │ counter_hi        │ counter_lo        │ entropy          │
+  └──────────────┴───────────────────┴───────────────────┴──────────────────┘
+</code></pre>
+<h3>Bit Layout</h3>
+<table><tr><th>Field</th><th>Bits</th><th>Purpose</th></tr><tr><td>`timestamp`</td><td>48</td><td>Milliseconds since Unix epoch (usable until year 10889)</td></tr><tr><td>`counter_hi`</td><td>24</td><td>Random, refreshed every second</td></tr><tr><td>`counter_lo`</td><td>24</td><td>Counter within the same millisecond</td></tr><tr><td>`entropy`</td><td>32</td><td>Fully random — prevents prediction</td></tr></table>
+<h3>Implementing from Scratch</h3>
+<pre><code class="language-rust">use std::time::{SystemTime, UNIX_EPOCH};
+
+const MAX_TIMESTAMP: u64 = 0xffff_ffff_ffff;
+const MAX_COUNTER_HI: u32 = 0xff_ffff;
+const MAX_COUNTER_LO: u32 = 0xff_ffff;
+
+pub struct Scru128Generator {
+    timestamp: u64,
+    counter_hi: u32,
+    counter_lo: u32,
+    ts_counter_hi: u64,
+    rollback_allowance: u64,  // 10 seconds default
+}
+
+impl Scru128Generator {
+    pub fn new() -&gt; Self {
+        Self {
+            timestamp: 0,
+            counter_hi: 0,
+            counter_lo: 0,
+            ts_counter_hi: 0,
+            rollback_allowance: 10_000,
+        }
+    }
+
+    pub fn generate(&amp;mut self) -&gt; u128 {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        self.generate_with_ts(timestamp)
+    }
+
+    pub fn generate_with_ts(&amp;mut self, timestamp: u64) -&gt; u128 {
+        if timestamp &gt; self.timestamp {
+            self.timestamp = timestamp;
+            self.counter_lo = rand::random::&lt;u32&gt;() &amp; MAX_COUNTER_LO;
+        } else if timestamp + self.rollback_allowance &gt;= self.timestamp {
+            self.counter_lo += 1;
+            if self.counter_lo &gt; MAX_COUNTER_LO {
+                self.counter_lo = 0;
+                self.counter_hi += 1;
+                if self.counter_hi &gt; MAX_COUNTER_HI {
+                    self.counter_hi = 0;
+                    self.timestamp += 1;
+                    self.counter_lo = rand::random::&lt;u32&gt;() &amp; MAX_COUNTER_LO;
+                }
+            }
+        } else {
+            // Clock rollback too significant — reset
+            self.timestamp = 0;
+            self.counter_hi = 0;
+            self.counter_lo = 0;
+            return self.generate_with_ts(timestamp);
+        }
+
+        if self.timestamp - self.ts_counter_hi &gt;= 1_000 || self.ts_counter_hi == 0 {
+            self.ts_counter_hi = self.timestamp;
+            self.counter_hi = rand::random::&lt;u32&gt;() &amp; MAX_COUNTER_HI;
+        }
+
+        let entropy = rand::random::&lt;u32&gt;();
+        ((self.timestamp as u128) &lt;&lt; 80)
+            | ((self.counter_hi as u128) &lt;&lt; 56)
+            | ((self.counter_lo as u128) &lt;&lt; 32)
+            | (entropy as u128)
+    }
+}
+</code></pre>
+<h3>scru128 vs Twitter Snowflake</h3>
+<table><tr><th>Aspect</th><th>Snowflake</th><th>scru128</th></tr><tr><td>Total bits</td><td>64</td><td>128</td></tr><tr><td>Machine ID</td><td>10 bits (required)</td><td>None</td></tr><tr><td>Max IDs/ms</td><td>4,096</td><td>~281 trillion</td></tr><tr><td>Unpredictable</td><td>No</td><td>Yes (32-bit entropy)</td></tr><tr><td>Clock rollback</td><td>Blocks</td><td>Resets or aborts</td></tr></table>
+<p><strong>Aha:</strong> scru128 doesn't need a machine ID because the 32-bit entropy field ensures uniqueness across nodes. This means you don't need coordination (like ZooKeeper) to assign machine IDs.</p>
+<h3>Edge Cases</h3>
+<ol><li><strong>Clock rollback</strong>: If the system clock goes back more than 10 seconds, the generator resets. This prevents ID collisions.</li><li><strong>Counter overflow</strong>: At ~281 trillion IDs per millisecond, the counter won't overflow in practice. But if it does, the timestamp is incremented.</li><li><strong>Sortable</strong>: IDs are sortable as integers AND as strings (Base36). The timestamp is the most significant field, so later IDs sort after earlier ones.</li></ol>
+<hr>
+<h2>What's Next</h2>
+<ul><li><a href="05-xs-stream-store.md">05 — xs Stream Store</a> — How xs uses all these structures together</li><li><a href="06-fjall-patterns.md">06 — fjall Patterns</a> — Alternative usage patterns</li><li><a href="07-s3-sync.md">07 — S3 Sync</a> — Syncing to object storage</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

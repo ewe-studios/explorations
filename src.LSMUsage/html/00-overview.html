@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>LSM Usage Documentation -- src.LSMUsage</title>
+  <title>LSM Usage — fjall, cacache-rs, scru128, and xs -- src.LSMUsage</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
   <script>
@@ -124,25 +124,69 @@
   <nav class="nav">
     <span class="nav-brand">~/src.LSMUsage/docs</span>
     <div class="nav-actions">
-      <a href="05-xs-stream-store.html" class="nav-breadcrumb">xs Stream Store — How fjall, cacache-rs, and scru128 Work Together</a><a href="06-fjall-patterns.html" class="nav-breadcrumb">fjall Patterns — Alternative Usage Patterns</a><a href="07-s3-sync.html" class="nav-breadcrumb">S3 Sync — Syncing fjall and cacache to Object Storage</a>
-      <a href="index.html" class="nav-btn" title="Back to index">index</a>
-      <a href="07-s3-sync.html" class="nav-btn" title="Previous: S3 Sync — Syncing fjall and cacache to Object Storage">← prev</a>
       
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      
+      <a href="01-lsm-tree-internals.html" class="nav-btn nav-btn-next" title="Next: LSM Tree Internals — Memtable, SST Files, Compaction">next →</a>
       <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
     </div>
   </nav>
   <article class="prose">
-<h1>LSM Usage Documentation</h1>
-<p>Deep dive into LSM trees, fjall, cacache-rs, scru128, and xs — with comprehensive data structure implementations from scratch in Rust.</p>
-<h2>Documents</h2>
-<h3>Foundations</h3>
-<ul><li><a href="00-overview.md"><strong>00 — Overview</strong></a> — The full stack, why it works, source libraries</li><li><a href="01-lsm-tree-internals.md"><strong>01 — LSM Tree Internals</strong></a> — Memtable (SkipList), SST files, blocks, prefix compression, bloom filters, compaction</li><li><a href="02-fjall-database.md"><strong>02 — fjall Database</strong></a> — WAL/journal, keyspaces, cross-keyspace batches, OCC transactions, recovery</li><li><a href="03-cacache-rs.md"><strong>03 — cacache-rs</strong></a> — Content-addressable storage, index layer, content layer, atomic writes, integrity verification</li></ul>
-<h3>Data Structures Master Guide</h3>
-<ul><li><a href="04-data-structures-master.md"><strong>04 — Data Structures Master</strong></a> — SkipList, SST files, Bloom filters, block indexes, WAL, content-addressable storage, scru128 — with full Rust implementations from scratch, edge cases, and disk storage patterns</li></ul>
-<h3>scru128 IDs</h3>
-<ul><li><a href="04-scru128.md"><strong>04 — scru128</strong></a> — Sortable, unpredictable IDs, comparison with Twitter Snowflake, implementation from scratch</li></ul>
-<h3>Integration</h3>
-<ul><li><a href="05-xs-stream-store.md"><strong>05 — xs Stream Store</strong></a> — How xs ties fjall, cacache-rs, and scru128 together into an append-only stream store</li><li><a href="06-fjall-patterns.md"><strong>06 — fjall Patterns</strong></a> — Alternative usage patterns: simple KV, multi-tenant, event log, session store, config store, time-series</li><li><a href="07-s3-sync.md"><strong>07 — S3 Sync</strong></a> — Syncing fjall and cacache to S3/object storage, architecture, challenges, alternatives</li></ul>
+<h1>LSM Usage — fjall, cacache-rs, scru128, and xs</h1>
+<p><strong>This project documents the full storage stack behind xs's stream store: lsm-tree (the core LSM implementation), fjall (the database that wraps it), cacache-rs (content-addressable storage), and scru128 (sortable IDs). It covers how each library works internally, how xs integrates them, and how the same stack could be extended for S3 sync or used in different patterns.</strong></p>
+<h2>The Full Stack</h2>
+<div class="mermaid">
+flowchart TB
+    subgraph xs[&quot;xs Stream Store&quot;]
+        XS[&quot;Store: append/read frames&quot;]
+        XS --&gt; FJ[&quot;fjall Database&quot;]
+        XS --&gt; CC[&quot;cacache-rs&quot;]
+        XS --&gt; SC[&quot;scru128 IDs&quot;]
+    end
+
+    subgraph fjall[&quot;fjall (12,196 LOC)&quot;]
+        FJ --&gt; J[&quot;Journal (Write-Ahead Log)&quot;]
+        FJ --&gt; KS[&quot;Keyspaces (column families)&quot;]
+        FJ --&gt; TX[&quot;Transactions (OCC)&quot;]
+        FJ --&gt; LSM[&quot;lsm-tree (per keyspace)&quot;]
+    end
+
+    subgraph lsm[&quot;lsm-tree (29,740 LOC)&quot;]
+        LSM --&gt; MEM[&quot;Memtable (SkipMap)&quot;]
+        LSM --&gt; SST[&quot;SST Files (sorted)&quot;]
+        LSM --&gt; CMP[&quot;Compaction (leveled/tiered)&quot;]
+    end
+
+    subgraph cacache[&quot;cacache-rs (1,228 LOC)&quot;]
+        CC --&gt; IDX[&quot;Index (key → integrity)&quot;]
+        CC --&gt; CNT[&quot;Content (hash-addressed)&quot;]
+    end
+
+    subgraph scru128[&quot;scru128 (1,845 LOC)&quot;]
+        SC --&gt; TS[&quot;48-bit timestamp&quot;]
+        SC --&gt; CT[&quot;48-bit counter&quot;]
+        SC --&gt; EN[&quot;32-bit entropy&quot;]
+    end
+
+</div>
+<h2>Why This Stack?</h2>
+<div class="mermaid">
+flowchart LR
+    A[Write path: O(1)] --&gt; B[Memtable (SkipList)]
+    B --&gt; C[Flush to SST (sequential)]
+    C --&gt; D[Compaction (background)]
+    E[Read path: O(log n)] --&gt; F[Check memtable first]
+    F --&gt; G[Search SST files newest-first]
+    F --&gt; H[Bloom filter skip]
+
+</div>
+<p><strong>Aha:</strong> Each library in the stack solves one specific problem exceptionally well: lsm-tree handles O(1) writes, fjall adds durability (WAL) and transactions, cacache-rs provides deduplication (content-addressing), and scru128 gives sortable IDs without coordination. Together they form a complete storage engine without the complexity of a monolithic database.</p>
+<table><tr><th>Library</th><th>Location</th><th>Lines</th><th>Role</th></tr><tr><td>**lsm-tree**</td><td>`lsm-tree/src/`</td><td>29,740</td><td>Core LSM-tree: memtable, SST files, compaction</td></tr><tr><td>**fjall**</td><td>`fjall/src/`</td><td>12,196</td><td>Full database: journal, keyspaces, transactions</td></tr><tr><td>**cacache-rs**</td><td>`cacache-rs/src/`</td><td>1,228</td><td>Content-addressable cache with integrity</td></tr><tr><td>**xs**</td><td>`xs/src/`</td><td>13,083</td><td>Stream store tying everything together</td></tr><tr><td>**scru128**</td><td>`src.scru128/rust/src/`</td><td>1,845</td><td>Sortable, unpredictable unique IDs</td></tr></table>
+<h2>Why This Stack?</h2>
+<p><strong>Aha:</strong> Each library in the stack solves one specific problem exceptionally well: lsm-tree handles O(1) writes, fjall adds durability (WAL) and transactions, cacache-rs provides deduplication (content-addressing), and scru128 gives sortable IDs without coordination. Together they form a complete storage engine without the complexity of a monolithic database.</p>
+<table><tr><th>Requirement</th><th>Solution</th><th>Why</th></tr><tr><td>Fast appends</td><td>LSM tree (memtable + sequential writes)</td><td>O(1) writes</td></tr><tr><td>Durability</td><td>fjall journal (WAL)</td><td>Crash recovery</td></tr><tr><td>Content dedup</td><td>cacache-rs (hash-addressed)</td><td>Same content stored once</td></tr><tr><td>Integrity</td><td>SRI hashes on all content</td><td>Corrupt data detected on read</td></tr><tr><td>Ordering</td><td>scru128 IDs</td><td>Sortable by time, unique without coordination</td></tr><tr><td>Queries</td><td>fjall keyspaces with tuned indexes</td><td>Point reads + prefix scans</td></tr></table>
+<h2>What's Next</h2>
+<ul><li><a href="01-lsm-tree-internals.md">01 — LSM Tree Internals</a> — Memtable, SST files, blocks, compaction</li><li><a href="02-fjall-database.md">02 — fjall Database</a> — Journal, keyspaces, transactions, recovery</li><li><a href="03-cacache-rs.md">03 — cacache-rs</a> — Content-addressable storage architecture</li><li><a href="04-scru128.md">04 — scru128</a> — Sortable IDs, comparison with Twitter Snowflake</li><li><a href="05-xs-stream-store.md">05 — xs Stream Store</a> — How xs ties it all together</li><li><a href="06-fjall-patterns.md">06 — fjall Patterns</a> — Alternative usage patterns</li><li><a href="07-s3-sync.md">07 — S3 Sync</a> — Syncing to object storage</li></ul>
   </article>
   <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
 </body>
