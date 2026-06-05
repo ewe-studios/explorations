@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SST Format, Block Structure, and xs Usage Patterns -- src.LSMUsage</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.LSMUsage/docs</span>
+    <div class="nav-actions">
+      <a href="00-lsm-fjall-cacache-scru128.html" class="nav-breadcrumb">LSM Usage — fjall, cacache-rs, scru128, and xs</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="00-lsm-fjall-cacache-scru128.html" class="nav-btn" title="Previous: LSM Usage — fjall, cacache-rs, scru128, and xs">← prev</a>
+      <a href="README.html" class="nav-btn nav-btn-next" title="Next: LSM Usage Documentation">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>SST Format, Block Structure, and xs Usage Patterns</h1>
+<p><strong>This document covers the SST (Sorted String Table) file format used by lsm-tree, the block-level structure with compression and checksums, bloom filters, and how xs specifically configures fjall for its stream store workload.</strong></p>
+<h2>SST File Layout</h2>
+<p>Source: <code>lsm-tree/src/table/</code> (SST = Sorted String Table)</p>
+<p>An SST file is an immutable, sorted list of key-value pairs split into compressed blocks:</p>
+<pre><code class="language-">SST File:
+  ┌──────────────────────────────────────────────────┐
+  │ DATA BLOCK 0 (compressed key-value pairs)        │
+  ├──────────────────────────────────────────────────┤
+  │ DATA BLOCK 1                                     │
+  ├──────────────────────────────────────────────────┤
+  │ ...                                              │
+  ├──────────────────────────────────────────────────┤
+  │ DATA BLOCK N                                     │
+  ├──────────────────────────────────────────────────┤
+  │ BLOOM FILTER (skip non-existent keys)            │
+  ├──────────────────────────────────────────────────┤
+  │ BLOCK INDEX (binary or hash index)               │
+  ├──────────────────────────────────────────────────┤
+  │ META BLOCK (compression, format version)         │
+  ├──────────────────────────────────────────────────┤
+  │ RESTART INTERVALS (full keys for binary search)  │
+  ├──────────────────────────────────────────────────┤
+  │ FOOTER (checksum, magic number)                  │
+  └──────────────────────────────────────────────────┘
+</code></pre>
+<h2>Block Structure</h2>
+<p>Source: <code>lsm-tree/src/table/block/</code></p>
+<p>Each data block has:</p>
+<pre><code class="language-">Block:
+  ┌─────────────────────────────────────┐
+  │ Header (17 bytes):                  │
+  │   block_type    (1 byte)            │
+  │   checksum      (16 bytes, 128-bit) │
+  │   data_length   (4 bytes)           │
+  │   uncompressed_length (4 bytes)     │
+  ├─────────────────────────────────────┤
+  │ Data (compressed key-value pairs)   │
+  │   [key1→val1][key2→val2]...         │
+  ├─────────────────────────────────────┤
+  │ Trailer (restart points)            │
+  └─────────────────────────────────────┘
+</code></pre>
+<h3>Block Header</h3>
+<pre><code class="language-rust">pub struct Header {
+    pub block_type: BlockType,       // 1 byte: data, index, filter, or meta
+    pub checksum: Checksum,           // 16 bytes: 128-bit hash (xxHash128)
+    pub data_length: u32,             // 4 bytes: compressed data size
+    pub uncompressed_length: u32,     // 4 bytes: original data size
+}
+</code></pre>
+<p><strong>Aha:</strong> lsm-tree uses <strong>xxHash128</strong> for block checksums, not CRC32 or SHA-256. xxHash is a non-cryptographic hash that's extremely fast (can hash GB/s) while still providing excellent collision resistance. For a storage engine where you're checksumming millions of blocks, this matters.</p>
+<h3>Prefix Compression</h3>
+<p>Within a data block, keys use prefix compression. Since keys are sorted, consecutive keys share prefixes:</p>
+<pre><code class="language-">Block data (logical):
+  &quot;user:1&quot;        → &quot;Alice&quot;
+  &quot;user:2&quot;        → &quot;Bob&quot;
+  &quot;user:3&quot;        → &quot;Charlie&quot;
+  &quot;user:profile:1&quot; → &quot;Profile A&quot;
+
+Block data (encoded):
+  [6]&quot;user:1&quot;     → &quot;Alice&quot;     (full key)
+  [1]&quot;2&quot;          → &quot;Bob&quot;       (shared 5 bytes)
+  [1]&quot;3&quot;          → &quot;Charlie&quot;   (shared 5 bytes)
+  [11]&quot;user:profile:1&quot; → &quot;Profile A&quot; (full key - restart point)
+</code></pre>
+<p><strong>Restart intervals</strong>: Every N keys (default 16), a full key is stored. This allows binary search within the block without decompressing all keys.</p>
+<h3>Compression</h3>
+<p>Source: <code>lsm-tree/src/compression.rs</code></p>
+<p>Blocks can be compressed with LZ4:</p>
+<pre><code class="language-rust">pub enum CompressionType {
+    None,
+    #[cfg(feature = &quot;lz4&quot;)]
+    Lz4,
+}
+</code></pre>
+<p>LZ4 is chosen for its decompression speed — decompression is typically faster than memory bandwidth, so reading compressed data can be faster than reading uncompressed data.</p>
+<h2>Block Index</h2>
+<p>Source: <code>lsm-tree/src/table/block_index/</code></p>
+<p>The block index maps keys to block handles (offset + size in the file). There are two index types:</p>
+<h3>Binary Index (Default)</h3>
+<p>A sorted list of key-block_handle pairs. Binary search finds the block containing a key.</p>
+<pre><code class="language-">Index Block:
+  [key1] → BlockHandle(offset=0, size=1024)
+  [key16] → BlockHandle(offset=1024, size=1024)
+  [key32] → BlockHandle(offset=2048, size=1024)
+  ...
+</code></pre>
+<h3>Hash Index</h3>
+<p>Source: <code>lsm-tree/src/table/block_index/hash_index/</code></p>
+<p>A hash table mapping key hashes to block handles. Faster for point lookups, but doesn't support range scans.</p>
+<pre><code class="language-rust">// Configurable: hash_ratio = keys_per_bucket_entry
+// Default: 1.0 (one entry per key)
+// xs uses: 8.0 for point-read keyspace, 0.0 for prefix-scan keyspace
+</code></pre>
+<p><strong>Aha:</strong> xs tunes this per keyspace. The <code>stream</code> keyspace (point reads by scru128 ID) uses <code>hash_ratio = 8.0</code> — a hash index with 8 keys per bucket. The <code>idx_topic</code> keyspace (prefix scans) uses <code>hash_ratio = 0.0</code> — no hash index, just binary index for range scans.</p>
+<h2>Bloom Filters</h2>
+<p>Source: <code>lsm-tree/src/table/filter/</code></p>
+<p>Bloom filters let the LSM tree quickly determine if a key <strong>definitely does not exist</strong> in an SST file. This avoids reading data blocks for non-existent keys.</p>
+<pre><code class="language-rust">pub struct BloomFilterBuilder {
+    bits_per_key: f64,  // default: 10.0 (1% false positive rate)
+}
+</code></pre>
+<p><strong>How it works:</strong></p>
+<ol><li>For each key in the SST, add it to the Bloom filter (set bits in a bit array)</li><li>On lookup, check the Bloom filter:</li></ol>
+<ul><li>If bits are NOT all set → key definitely doesn't exist → skip this file</li><li>If bits ARE all set → key might exist → read the data block</li></ul>
+<p><strong>False positive rate:</strong> With 10 bits per key, the false positive rate is ~1%. This means 99% of lookups for non-existent keys skip the file entirely.</p>
+<h2>How xs Configures fjall</h2>
+<p>Source: <code>xs/src/store/mod.rs</code></p>
+<h3>Database Configuration</h3>
+<pre><code class="language-rust">let db = Database::builder(path.join(&quot;fjall&quot;))
+    .cache_size(32 * 1024 * 1024)  // 32 MiB block cache
+    .worker_threads(1)              // Single worker thread
+    .open()?;
+</code></pre>
+<p><strong>32 MiB cache:</strong> For a stream store, the working set is typically the most recent frames. A 32 MiB cache holds thousands of recent frames.</p>
+<p><strong>1 worker thread:</strong> xs does most I/O in its own threads (gc, broadcast). The fjall background thread is just for compaction.</p>
+<h3>Stream Keyspace (Point Reads)</h3>
+<pre><code class="language-rust">KeyspaceCreateOptions::default()
+    .max_memtable_size(8 * 1024 * 1024)     // 8 MiB memtable
+    .data_block_size_policy(BlockSizePolicy::all(16 * 1024))  // 16 KiB blocks
+    .data_block_hash_ratio_policy(HashRatioPolicy::all(8.0))  // Hash index
+    .expect_point_read_hits(true);
+</code></pre>
+<p><strong>8 MiB memtable:</strong> Large enough to batch many appends before flushing, but small enough to fit in memory.</p>
+<p><strong>16 KiB blocks:</strong> Small blocks for fast random access. When reading a single frame by scru128 ID, only one 16 KiB block needs to be read.</p>
+<p><strong>Hash index (ratio 8.0):</strong> For point reads, a hash index is faster than binary search. 8 keys per bucket means the index is 8x smaller than a full binary index.</p>
+<h3>Topic Index Keyspace (Prefix Scans)</h3>
+<pre><code class="language-rust">KeyspaceCreateOptions::default()
+    .max_memtable_size(8 * 1024 * 1024)
+    .data_block_size_policy(BlockSizePolicy::all(16 * 1024))
+    .data_block_hash_ratio_policy(HashRatioPolicy::all(0.0))  // No hash index
+    .expect_point_read_hits(true);
+</code></pre>
+<p><strong>Hash ratio 0.0:</strong> No hash index — the topic index is primarily used for prefix scans (e.g., "user.*" wildcard queries), where a binary index is more efficient.</p>
+<h3>Append Operation</h3>
+<pre><code class="language-rust">pub fn append(&amp;self, mut frame: Frame) -&gt; Result&lt;Frame, Error&gt; {
+    let _guard = self.append_lock.lock().unwrap();  // Serialize
+
+    frame.id = scru128::new();  // Sortable ID
+
+    if frame.ttl != Some(TTL::Ephemeral) {
+        self.insert_frame(&amp;frame)?;
+    }
+
+    let _ = self.broadcast_tx.send(frame.clone());
+    Ok(frame)
+}
+
+fn insert_frame(&amp;self, frame: &amp;Frame) -&gt; Result&lt;(), Error&gt; {
+    let encoded = serde_json::to_vec(&amp;frame)?;
+    let topic_key = idx_topic_key_from_frame(frame)?;
+    let prefix_keys = idx_topic_prefix_keys(&amp;frame.topic, &amp;frame.id);
+
+    let mut batch = self.db.batch();
+    batch.insert(&amp;self.stream, frame.id.as_bytes(), encoded);
+    batch.insert(&amp;self.idx_topic, topic_key, b&quot;&quot;);
+    for prefix_key in &amp;prefix_keys {
+        batch.insert(&amp;self.idx_topic, prefix_key, b&quot;&quot;);
+    }
+    batch.commit()?;
+    self.db.persist(PersistMode::SyncAll)?;
+    Ok(())
+}
+</code></pre>
+<p><strong>Aha:</strong> Each append is a <strong>cross-keyspace atomic batch</strong> — the frame goes into <code>stream</code>, the topic index goes into <code>idx_topic</code>, and prefix index keys also go into <code>idx_topic</code>. All are committed atomically via the journal.</p>
+<p><strong>PersistMode::SyncAll:</strong> After every append, the journal is synced to disk. This means every frame is durable immediately. For a stream store, this is the right trade-off — you don't want to lose messages.</p>
+<h3>Range Queries</h3>
+<pre><code class="language-rust">fn iter_frames(&amp;self, start: Option&lt;(&amp;Scru128Id, bool)&gt;) -&gt; Box&lt;dyn Iterator&lt;Item = Frame&gt; + &#x27;_&gt; {
+    let range = match start {
+        Some((id, true)) =&gt; (Bound::Included(id.as_bytes().to_vec()), Bound::Unbounded),
+        Some((id, false)) =&gt; (Bound::Excluded(id.as_bytes().to_vec()), Bound::Unbounded),
+        None =&gt; (Bound::Unbounded, Bound::Unbounded),
+    };
+
+    Box::new(self.stream.range(range).filter_map(|guard| {
+        let (key, value) = guard.into_inner().ok()?;
+        Some(deserialize_frame((key, value)))
+    }))
+}
+</code></pre>
+<p><strong>Reverse iteration:</strong> For <code>read --last N</code> (get the N most recent frames), xs iterates the stream keyspace in reverse order. Because scru128 IDs are sortable by time, reverse iteration gives you frames in reverse chronological order.</p>
+<h3>TTL and Garbage Collection</h3>
+<pre><code class="language-rust">enum GCTask {
+    Remove(Scru128Id),
+    CheckLastTTL { topic: String, keep: u32 },
+    Drain(tokio::sync::oneshot::Sender&lt;()&gt;),
+}
+</code></pre>
+<p><strong>TTL types:</strong></p>
+<ul><li><code>TTL::Time(ttl)</code>: Frame expires at a specific time</li><li><code>TTL::Last(n)</code>: Keep only the last N frames for this topic</li><li><code>TTL::Ephemeral</code>: Don't store the frame (only broadcast)</li></ul>
+<p>The GC worker runs on a dedicated thread and processes GCTask messages from the append path.</p>
+<h2>How fjall Differs from RocksDB</h2>
+<table><tr><th>Feature</th><th>RocksDB</th><th>fjall</th></tr><tr><td>Language</td><td>C++</td><td>100% Rust</td></tr><tr><td>Memory safety</td><td>Manual</td><td>Safe</td></tr><tr><td>Keyspaces</td><td>Column families</td><td>Keyspaces</td></tr><tr><td>Transactions</td><td>No built-in</td><td>OCC + single-writer</td></tr><tr><td>Compaction</td><td>Leveled, universal, FIFO</td><td>Leveled, tiered, FIFO, movedown, pulldown</td></tr><tr><td>Blob support</td><td>BlobDB</td><td>Built-in blob tree</td></tr><tr><td>API</td><td>C API + bindings</td><td>Native Rust</td></tr></table>
+<p><strong>Aha:</strong> fjall is designed to be simpler than RocksDB. It has fewer configuration knobs, which means fewer ways to misconfigure it. For xs's workload (append-only stream with point reads and prefix scans), fjall's defaults are already well-tuned.</p>
+<h2>What's Next</h2>
+<ul><li><a href="00-lsm-fjall-cacache-scru128.md">00 — LSM/fjall/cacache/scru128</a> — Return to overview</li><li><a href="01-architecture.md">01 — Architecture</a> — Return to architecture</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
