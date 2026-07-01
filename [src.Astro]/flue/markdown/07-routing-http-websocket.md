@@ -1,12 +1,12 @@
 ---
-title: Routing — HTTP API, Durable Streams, error envelopes
+title: Routing - HTTP API, WebSocket, Durable Streams, error envelopes
 ---
 
 # HTTP Routing: The `flue()` Sub-App
 
-Flue's HTTP API is exposed through a mountable Hono sub-app created by the `flue()` function. The sub-app registers routes for agent invocation (`/agents/:name/:id`), workflow invocation (`/workflows/:name`), agent abort (`/agents/:name/:id/abort`), agent attachment downloads (`/agents/:name/:id/attachments/:attachmentId`), custom channels (`/channels/:name`, `/channels/:name/:suffix{.+}`), and run stream reads (`/runs/:runId`). The routing layer is transport-agnostic -- the same middleware chain handles both agents and workflows, with per-target routing to Node handlers or Cloudflare Durable Objects. Agent and workflow GET/HEAD routes serve Durable Streams (DS) event reads, not WebSocket connections.
+Flue's HTTP API is exposed through a mountable Hono sub-app created by the `flue()` function. The sub-app registers routes for agent invocation (`/agents/:name/:id`), workflow invocation (`/workflows/:name`), and run inspection (`/runs/:runId`, `/runs/:runId/events`, `/runs/:runId/stream`). An OpenAPI document is served at `/openapi.json`. Agent and workflow routes also accept WebSocket upgrades for persistent streaming connections. The routing layer distinguishes between regular HTTP requests and WebSocket upgrades using the `upgrade: websocket` header, forwarding to per-target Node handlers or Cloudflare Durable Objects.
 
-This document covers the `flue()` sub-app architecture, the complete route table with HTTP method semantics, Durable Streams event format, error envelope format, and request validation.
+This document covers the `flue()` sub-app architecture, the complete route table with HTTP/WebSocket method semantics, Durable Streams event format, WebSocket protocol v1 message types, error envelope format, and request validation.
 
 For workflow handler semantics and the run lifecycle, see [06-workflows](06-workflows.html). For the SDK client that calls these routes, see [10-sdk-client](10-sdk-client.html). For the error framework implementation, see [15-cross-cutting](15-cross-cutting.html).
 
@@ -17,34 +17,51 @@ For workflow handler semantics and the run lifecycle, see [06-workflows](06-work
 The `flue()` function creates and configures a Hono application with all public routes. It is designed to be mounted at any path prefix by the host application:
 
 ```ts
-// Source: packages/runtime/src/runtime/flue-app.ts:178-218
+// Source: packages/runtime/src/runtime/flue-app.ts:270-318
 export function flue(): Hono {
   const app = new Hono();
 
+  app.get('/openapi.json', lazyOpenApiRouteHandler(app, publicOpenApiOptions()));
+
   app.post(
     '/workflows/:name',
+    describeRoute(workflowRouteSpec() as DescribeRouteOptions),
     validated('param', WorkflowRouteParamSchema),
-    validated('query', InvocationQuerySchema),
+    validated('query', WorkflowInvocationQuerySchema),
     workflowRouteHandler,
   );
+  app.get('/workflows/:name', workflowSocketRouteHandler);
   app.all('/workflows/:name', workflowRouteHandler);
 
   app.post(
     '/agents/:name/:id',
+    describeRoute(agentRouteSpec() as DescribeRouteOptions),
     validated('param', AgentRouteParamSchema),
-    validated('query', InvocationQuerySchema),
     agentRouteHandler,
   );
-  // Abort all in-flight/queued work for an agent instance.
-  app.all('/agents/:name/:id/abort', abortRouteHandler);
-  // Opt-in attachment byte download.
-  app.all('/agents/:name/:id/attachments/:attachmentId', attachmentsRouteHandler);
-  // Non-POSTs still reach the canonical Flue 405 envelope.
+  app.get('/agents/:name/:id', agentSocketRouteHandler);
+  // Non-POSTs still reach the canonical Flue 405 envelope instead of
+  // Hono's default 404 for unmatched methods.
   app.all('/agents/:name/:id', agentRouteHandler);
-  app.all('/channels/:name', channelRouteHandler);
-  app.all('/channels/:name/:suffix{.+}', channelRouteHandler);
-  // DS stream endpoints for run events.
-  app.all('/runs/:runId', runStreamReadHandler);
+  for (const [routePath, action] of RUN_ROUTES_BY_ID) {
+    if (action === 'events') {
+      app.get(
+        routePath,
+        describeRoute(runRouteSpec(action) as DescribeRouteOptions),
+        validated('param', RunIdParamSchema),
+        validated('query', RunEventsQuerySchema),
+        runByIdRouteHandler(action),
+      );
+    } else {
+      app.get(
+        routePath,
+        describeRoute(runRouteSpec(action) as DescribeRouteOptions),
+        validated('param', RunIdParamSchema),
+        runByIdRouteHandler(action),
+      );
+    }
+    app.all(routePath, runByIdRouteHandler(action));
+  }
 
   app.onError((err) => toHttpResponse(err));
 
@@ -52,12 +69,21 @@ export function flue(): Hono {
 }
 ```
 
-The route table has **no** `/openapi.json` endpoint. Run stream reads are served by a single `app.all('/runs/:runId', runStreamReadHandler)` -- there is no `RUN_ROUTES_BY_ID` constant and no separate `/events` or `/stream` sub-routes.
+The `RUN_ROUTES_BY_ID` constant defines the three run routes:
+
+```ts
+// Source: packages/runtime/src/runtime/flue-app.ts:156-160
+const RUN_ROUTES_BY_ID: ReadonlyArray<readonly [string, HandleRunRouteOptions['action']]> = [
+  ['/runs/:runId', 'get'],
+  ['/runs/:runId/events', 'events'],
+  ['/runs/:runId/stream', 'stream'],
+];
+```
 
 When no user-authored `app.ts` exists, `createDefaultFlueApp()` mounts `flue()` at `/` and adds a `notFound` handler that throws `RouteNotFoundError` with the request method and path:
 
 ```ts
-// Source: packages/runtime/src/runtime/flue-app.ts:222-233
+// Source: packages/runtime/src/runtime/flue-app.ts:332-343
 export function createDefaultFlueApp(): Hono {
   const app = new Hono();
   app.route('/', flue());
@@ -93,33 +119,60 @@ The complete route table with HTTP methods, handlers, and response shapes:
 
 | Route | Methods | Handler | Response |
 |-------|---------|---------|----------|
-| `POST /agents/:name/:id` | POST | `agentRouteHandler` | `{ result }` JSON or DS stream |
-| `GET/HEAD /agents/:name/:id` | GET, HEAD | `agentRouteHandler` | DS conversation stream read |
-| `ALL /agents/:name/:id` | ALL (catch-all) | `agentRouteHandler` | 405 for non-POST/GET/HEAD, 404 for unmatched |
-| `ALL /agents/:name/:id/abort` | ALL | `abortRouteHandler` | `{ aborted: boolean }` (POST only, 405 otherwise) |
-| `ALL /agents/:name/:id/attachments/:attachmentId` | ALL | `attachmentsRouteHandler` | Attachment bytes (GET only, requires opt-in `attachments` middleware) |
+| `POST /agents/:name/:id` | POST | `agentRouteHandler` | `{ result }` JSON or DS stream (Accept: text/event-stream) |
+| `GET /agents/:name/:id` | GET | `agentSocketRouteHandler` | WebSocket upgrade (if `upgrade: websocket`) or falls through |
+| `ALL /agents/:name/:id` | ALL (catch-all) | `agentRouteHandler` | 405 for non-POST, 404 for unmatched |
 | `POST /workflows/:name` | POST | `workflowRouteHandler` | `202 {status, runId}` or `200 {result}` or DS stream |
+| `GET /workflows/:name` | GET | `workflowSocketRouteHandler` | WebSocket upgrade (if `upgrade: websocket`) or falls through |
 | `ALL /workflows/:name` | ALL (catch-all) | `workflowRouteHandler` | 405 for non-POST, 404 for unmatched |
-| `ALL /channels/:name` | ALL | `channelRouteHandler` | Custom channel handler response |
-| `ALL /channels/:name/:suffix{.+}` | ALL | `channelRouteHandler` | Custom channel sub-route response |
-| `ALL /runs/:runId` | ALL | `runStreamReadHandler` | DS stream read (GET/HEAD only, 405 otherwise) or `RunRecord` JSON (`?meta`) |
+| `GET /runs/:runId` | GET | `runByIdRouteHandler('get')` | `RunRecord` JSON |
+| `GET /runs/:runId/events` | GET | `runByIdRouteHandler('events')` | Paginated event list JSON |
+| `GET /runs/:runId/stream` | GET | `runByIdRouteHandler('stream')` | DS stream (SSE) |
+| `ALL /runs/:runId` | ALL | `runByIdRouteHandler('get')` | 405 for non-GET |
+| `ALL /runs/:runId/events` | ALL | `runByIdRouteHandler('events')` | 405 for non-GET |
+| `ALL /runs/:runId/stream` | ALL | `runByIdRouteHandler('stream')` | 405 for non-GET |
+| `GET /openapi.json` | GET | `lazyOpenApiRouteHandler` | OpenAPI 3.1 document |
 
-**Note:** There is no `/openapi.json` endpoint. There are no `/runs/:runId/events` or `/runs/:runId/stream` sub-routes. There are no WebSocket upgrade routes. All "streaming" uses the Durable Streams (DS) protocol (catch-up, long-poll, SSE).
+```mermaid
+flowchart LR
+    A["flue()"] --> B["POST /agents/:name/:id"]
+    A --> C["GET /agents/:name/:id (WS upgrade)"]
+    A --> D["POST /workflows/:name"]
+    A --> E["GET /workflows/:name (WS upgrade)"]
+    A --> F["GET /runs/:runId"]
+    A --> G["GET /runs/:runId/events"]
+    A --> H["GET /runs/:runId/stream"]
+    A --> I["GET /openapi.json"]
+
+    B --> K["validateAgentRequest()"]
+    D --> L["validateWorkflowRequest()"]
+    F --> M["runByIdRouteHandler"]
+
+    K --> N["handleAgentRequest() (POST)"]
+    C --> O["agentSocketRouteHandler (WS upgrade)"]
+    L --> P["handleWorkflowRequest()"]
+    M --> Q["handleRunRouteRequest()"]
+
+    N --> R["toHttpResponse(err)"]
+    O --> R
+    P --> R
+    Q --> R
+```
 
 ### Agent Routes: `/agents/:name/:id`
 
 Agent routes require both a `name` (the discovered agent module name) and an `id` (an arbitrary instance identifier chosen by the caller). The `validateAgentRequest()` function in `errors.ts` enforces:
 
-- Method must be `POST`, `GET`, or `HEAD`
+- Method must be `POST`
 - `name` must be non-empty and not whitespace-only
 - `id` must be non-empty and not whitespace-only
 - `name` must be registered in the manifest
 
 ```ts
-// Source: packages/runtime/src/errors.ts (validateAgentRequest)
+// Source: packages/runtime/src/errors.ts:671-683 (validateAgentRequest)
 export function validateAgentRequest(opts: ValidateAgentRequestOptions): void {
-  if (opts.method !== 'POST' && opts.method !== 'GET' && opts.method !== 'HEAD') {
-    throw new MethodNotAllowedError({ method: opts.method, allowed: ['GET', 'HEAD', 'POST'] });
+  if (opts.method !== 'POST') {
+    throw new MethodNotAllowedError({ method: opts.method, allowed: ['POST'] });
   }
   if (opts.name.trim() === '' || opts.id.trim() === '') {
     throw new InvalidRequestError({
@@ -132,28 +185,45 @@ export function validateAgentRequest(opts: ValidateAgentRequestOptions): void {
 }
 ```
 
-The `agentRouteHandler` in `flue-app.ts` dispatches based on HTTP method:
-
-- **GET/HEAD**: Routes to Durable Streams conversation read (`handleAgentConversationRead` / `handleAgentConversationHead` on Node, or `routeAgentRequest` on Cloudflare).
-- **POST**: Routes to `handleAgentRequest` on Node (direct agent prompt) or `routeAgentRequest` on Cloudflare (DO forwarding).
-
-Agent requests with `X-Webhook: true` are rejected -- asynchronous delivery uses `dispatch()` instead.
+The `agentRouteHandler` in `flue-app.ts` handles POST requests. Non-POST methods fall through to the `app.all` catch-all which returns a 405 envelope via `agentRouteHandler`. WebSocket upgrades are handled separately by `agentSocketRouteHandler` registered on `app.get('/agents/:name/:id')`.
 
 The POST handler (`handleAgentRequest` in `handle-agent.ts`) parses the JSON body, rejects `X-Webhook: true` requests, and serves the request. The request can be served in two modes:
 
 - **Synchronous** (default): Returns `{ result }` JSON after the model operation completes
-- **DS Stream** (`?wait=result` query param): Returns a Durable Streams read of the conversation
+- **DS Stream** (`Accept: text/event-stream` header): Returns SSE-framed attached agent events
 
 The agent request body format is:
 
 ```json
 {
   "message": "string (required)",
-  "images": [  // optional array of image content blocks
-    { "type": "image", "data": "base64...", "mimeType": "image/png", "filename": "optional" }
-  ]
+  "session": "string (optional, defaults to 'default')"
 }
 ```
+
+The `DirectAgentPayload` type and `parseDirectAgentPayload()` function in `handle-agent.ts` enforce this shape:
+
+```ts
+// Source: packages/runtime/src/types.ts:40-43
+export interface DirectAgentPayload {
+  message: string;
+  session?: string;
+}
+
+// Source: packages/runtime/src/runtime/handle-agent.ts:178-203
+function parseDirectAgentPayload(payload: unknown): DirectAgentPayload {
+  const expected =
+    'Direct agent requests must use JSON object body { "message": string, "session"?: string }.';
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new InvalidRequestError({ reason: expected });
+  }
+  // ... validates message is string, session is non-empty string when provided
+  // ... rejects session names beginning with "task:"
+  return { message: value.message, session: value.session };
+}
+```
+
+Agent requests with `X-Webhook: true` are rejected -- asynchronous delivery uses `dispatch()` instead.
 
 ### Workflow Routes: `/workflows/:name`
 
@@ -165,7 +235,7 @@ Workflow routes require only a `name`. The `validateWorkflowRequest()` function 
 - `name` must be explicitly exposed for HTTP transport (workflows can opt out of HTTP exposure)
 
 ```ts
-// Source: packages/runtime/src/errors.ts (validateWorkflowRequest)
+// Source: packages/runtime/src/errors.ts:654-669 (validateWorkflowRequest)
 export function validateWorkflowRequest(opts: ValidateWorkflowRequestOptions): void {
   if (opts.method !== 'POST') {
     throw new MethodNotAllowedError({ method: opts.method, allowed: ['POST'] });
@@ -179,18 +249,14 @@ export function validateWorkflowRequest(opts: ValidateWorkflowRequestOptions): v
     throw new WorkflowNotFoundError({ name: opts.name, available: opts.registeredWorkflows });
   }
   if (!opts.httpWorkflows.includes(opts.name)) {
-    throw new WorkflowNotFoundError({
-      name: opts.name,
-      available: opts.registeredWorkflows,
-      notHttp: true,
-    });
+    throw new WorkflowNotHttpError({ name: opts.name });
   }
 }
 ```
 
-**Note:** `WorkflowNotHttpError` does NOT exist as a separate class. When a workflow is registered but not exposed over HTTP, `validateWorkflowRequest` throws `WorkflowNotFoundError` with `{ notHttp: true }`. The error class builds a different `dev` message for this case (explaining how to expose the workflow) while keeping the public `message`/`details` identical to the unknown-workflow case -- preventing public callers from enumerating internal-only workflow names.
+**Note:** `WorkflowNotHttpError` is a separate error class from `WorkflowNotFoundError`. When a workflow is registered but not exposed over HTTP, `validateWorkflowRequest` throws `WorkflowNotHttpError` with `type: "workflow_not_http"` and a distinct `dev` message explaining how to expose the workflow via route middleware. The public `message`/`details` remain identical to prevent callers from enumerating internal-only workflow names.
 
-The workflow request body is a free-form JSON object — the shape is defined by the workflow handler. Empty bodies are treated as `{}` by `parseJsonBody()`.
+The workflow request body is free-form JSON -- the shape is defined by the workflow handler. Empty bodies are treated as `{}` by `parseJsonBody()`.
 
 Three invocation modes are selected by request headers/parameters:
 
@@ -198,68 +264,45 @@ Three invocation modes are selected by request headers/parameters:
 |------|---------------|----------|
 | **Accepted** | Plain `POST` | `202 {status: "accepted", runId}` |
 | **Synchronous** | `?wait=result` query param | `200 {result, _meta: {runId}}` |
-| **DS Stream** | GET/HEAD on `/runs/:runId` | DS stream with `run_start`, events, `run_end` |
+| **DS Stream** | `Accept: text/event-stream` header | SSE stream with `run_start`, events, `run_end` |
 
 All three modes set the `X-Flue-Run-Id` response header, even on error responses.
 
-### Run Stream Route: `/runs/:runId`
+### Run Routes: `/runs/:runId`, `/runs/:runId/events`, `/runs/:runId/stream`
 
-There is a single run route (`/runs/:runId`) served by `runStreamReadHandler`. It does NOT use a `RUN_ROUTES_BY_ID` constant or `runByIdRouteHandler`. The handler supports:
+Three run routes are defined by `RUN_ROUTES_BY_ID`, each served by `runByIdRouteHandler` with a different `action`:
 
-- **GET**: Returns a Durable Streams event read (via `handleStreamRead` on Node, `routeRunRequest` on Cloudflare). If `?meta` is present, returns `RunRecord` JSON instead.
-- **HEAD**: Returns stream metadata only (via `handleStreamHead` on Node).
-- **Other methods**: Throws `MethodNotAllowedError` with `allowed: ['GET', 'HEAD']`.
+| Route | Action | Response |
+|-------|--------|----------|
+| `GET /runs/:runId` | `'get'` | `RunRecord` JSON |
+| `GET /runs/:runId/events` | `'events'` | `{ events: [...] }` paginated event list (query params: `after`, `types`, `limit`) |
+| `GET /runs/:runId/stream` | `'stream'` | SSE stream of live + historical events |
+
+The `runByIdRouteHandler` factory validates that the method is `GET` (throws `MethodNotAllowedError` otherwise), resolves the run ID, and dispatches to either the Node handler (`handleRunRouteRequest`) or Cloudflare DO forwarding (`routeRunRequest`).
 
 ```ts
-// Source: packages/runtime/src/runtime/flue-app.ts:348-390 (runStreamReadHandler)
-const runStreamReadHandler: MiddlewareHandler = async (c) => {
-  const rt = requiredRuntime();
-  const method = c.req.method;
-  const runId = c.req.param('runId') ?? '';
-  const pointer = await findRunPointer(rt, c.env, runId);
-  const workflow = pointer
-    ? rt.workflows.find((record) => record.name === pointer.workflowName)
-    : undefined;
-
-  if (!workflow || (!workflow.runs && !rt.temporaryLocalExposure)) {
-    throw new RunNotFoundError({ runId });
-  }
-
-  return runAttachedMiddleware(c, workflow.runs, async () => {
-    if (method !== 'GET' && method !== 'HEAD') {
-      throw new MethodNotAllowedError({ method, allowed: ['GET', 'HEAD'] });
+// Source: packages/runtime/src/runtime/flue-app.ts:689-719
+function runByIdRouteHandler(action: HandleRunRouteOptions['action']): MiddlewareHandler {
+  return async (c) => {
+    // ... runtime check ...
+    if (c.req.method !== 'GET') {
+      throw new MethodNotAllowedError({ method: c.req.method, allowed: ['GET'] });
     }
-
-    const wantsMeta = method === 'GET' && new URL(c.req.url).searchParams.has('meta');
-
-    if (rt.target === 'node') {
-      if (wantsMeta) {
-        return handleRunRouteRequest({
-          runStore: rt.runStore,
-          workflowName: workflow.name,
-          runId,
-        });
-      }
-      return nodeStreamReadResponse(rt, method, runStreamPath(runId), c.req.raw);
-    }
-
-    const response = await rt.routeRunRequest(c.req.raw, c.env, {
-      workflowName: workflow.name,
-      runId,
-    });
-    if (response) return response;
-    throw new RunNotFoundError({ runId });
-  });
-};
+    const runId = c.req.param('runId') || undefined;
+    // ... dispatches to handleRunById() ...
+  };
+}
 ```
 
-**`GET /runs/:runId?meta`** — Returns a `RunRecord` JSON object (via `handleRunRouteRequest`):
+**`GET /runs/:runId`** -- Returns a `RunRecord` JSON object:
 
 ```json
 {
   "runId": "workflow:my-workflow:01JXYZ...",
+  "owner": { "kind": "workflow", "workflowName": "my-workflow", "instanceId": "..." },
   "status": "active" | "completed" | "errored",
   "startedAt": "2025-01-15T10:30:00.000Z",
+  "payload": { ... },
   "endedAt": "...",
   "isError": false,
   "durationMs": 5230,
@@ -268,37 +311,145 @@ const runStreamReadHandler: MiddlewareHandler = async (c) => {
 }
 ```
 
-**`GET /runs/:runId`** — Returns a Durable Streams event read (catch-up + live tail). Uses `Last-Event-ID` for resume.
+**`GET /runs/:runId/events`** -- Returns paginated event list with query params `after` (event index cursor), `types` (comma-separated event type filter), and `limit` (1-1000, default 100):
 
-**`HEAD /runs/:runId`** — Returns stream metadata only (headers indicate stream state without body).
+```json
+{
+  "events": [
+    { "type": "run_start", "runId": "...", "eventIndex": 0, ... },
+    { "type": "log", "runId": "...", "eventIndex": 1, ... }
+  ]
+}
+```
 
-**Note:** There are NO `/runs/:runId/events` or `/runs/:runId/stream` sub-routes. The document previously claimed three separate run routes with a `RUN_ROUTES_BY_ID` constant -- neither exists in the source.
+**`GET /runs/:runId/stream`** -- Returns a Durable Streams event read (catch-up + live tail). Uses `Last-Event-ID` for resume. Emits SSE frames.
+
+---
+
+## WebSocket Protocol v1
+
+Flue supports WebSocket connections for both agents and workflows. WebSocket upgrades are detected by checking for `GET` method + `upgrade: websocket` header. Separate route handlers (`agentSocketRouteHandler`, `workflowSocketRouteHandler`) are registered on `app.get` for each target.
+
+### Protocol Message Types
+
+The types are exported from `types.ts`:
+
+**Agent WebSocket Client Messages** -- `AgentWebSocketClientMessage`:
+
+```ts
+// Source: packages/runtime/src/types.ts:68-80
+export type AgentWebSocketClientMessage =
+  | { version: 1; type: 'prompt'; requestId: string; message: string; session?: string }
+  | { version: 1; type: 'ping'; requestId?: string };
+```
+
+**Agent WebSocket Server Messages** -- `AgentWebSocketServerMessage`:
+
+```ts
+// Source: packages/runtime/src/types.ts:107-137
+export type AgentWebSocketServerMessage =
+  | { version: 1; type: 'ready'; target: 'agent'; name: string; instanceId: string }
+  | { version: 1; type: 'started'; requestId: string }
+  | { version: 1; type: 'event'; requestId: string; event: AttachedAgentEvent }
+  | { version: 1; type: 'result'; requestId: string; result: unknown }
+  | WebSocketErrorMessage
+  | { version: 1; type: 'pong'; requestId?: string };
+```
+
+**Workflow WebSocket Client Messages** -- `WorkflowWebSocketClientMessage`:
+
+```ts
+// Source: packages/runtime/src/types.ts:86-91
+export interface WorkflowWebSocketClientMessage {
+  version: 1;
+  type: 'invoke';
+  requestId: string;
+  payload?: unknown;
+}
+```
+
+**Workflow WebSocket Server Messages** -- `WorkflowWebSocketServerMessage`:
+
+```ts
+// Source: packages/runtime/src/types.ts:143-171
+export type WorkflowWebSocketServerMessage =
+  | { version: 1; type: 'ready'; target: 'workflow'; name: string }
+  | { version: 1; type: 'started'; requestId: string; runId: string }
+  | { version: 1; type: 'event'; requestId: string; runId: string; event: FlueEvent }
+  | { version: 1; type: 'result'; requestId: string; runId: string; result: unknown }
+  | WebSocketErrorMessage
+  | WorkflowRunWebSocketErrorMessage;
+```
+
+**Error Messages** -- `WebSocketErrorMessage`:
+
+```ts
+// Source: packages/runtime/src/types.ts:94-99
+export type WebSocketErrorMessage = {
+  version: 1;
+  type: 'error';
+  requestId?: string;
+  error: FluePublicError;
+};
+```
+
+### WebSocket Route Handlers
+
+The `agentSocketRouteHandler` in `flue-app.ts` (lines 550-577) handles agent WebSocket upgrades:
+
+```ts
+const agentSocketRouteHandler: MiddlewareHandler = async (c, next) => {
+  if (!isWebSocketUpgrade(c.req.raw)) return next();
+  const rt = requiredRuntime();
+  const name = c.req.param('name') ?? '';
+  const id = c.req.param('id') ?? '';
+  if (!registeredAgentsForTransport(rt, 'websocket').includes(name) || id.trim() === '') {
+    throw new RouteNotFoundError({ method: c.req.method, path: new URL(c.req.url).pathname });
+  }
+  return runAttachedMiddleware(c, rt.agentWebSocketMiddleware?.[name], async () => {
+    if (rt.target === 'node') {
+      if (!rt.nodeWebSocketAgentRoute)
+        throw new Error('[flue] Node runtime is missing WebSocket agent routing.');
+      return (await rt.nodeWebSocketAgentRoute(c, next)) ?? undefined;
+    }
+    // Cloudflare: forward to agent Durable Object
+    const response = await rt.routeAgentRequest(
+      normalizeAttachedRequest(c.req.raw, `/agents/${encodeURIComponent(name)}/${encodeURIComponent(id)}`),
+      c.env,
+      { agentName: name, instanceId: id },
+    );
+    if (response) return response;
+    throw new RouteNotFoundError({ method: c.req.method, path: new URL(c.req.url).pathname });
+  });
+};
+```
+
+The `workflowSocketRouteHandler` (lines 522-548) follows the same pattern for workflows, checking `registeredWorkflowsForTransport(rt, 'websocket')` and using `workflowWebSocketMiddleware` / `nodeWebSocketWorkflowRoute` / `routeWorkflowRequest`.
+
+Transport opt-in for WebSocket is determined by the `FlueManifest` -- agents and workflows must have `transports: { websocket?: true }` in their manifest entry to accept WebSocket connections.
 
 ---
 
 ## Durable Streams (DS) Protocol
 
-Flue uses the **Durable Streams (DS) protocol** for event reads -- not WebSocket. Both agent and workflow stream reads use the same DS protocol (catch-up, long-poll, SSE). The protocol is implemented in `event-stream-store.ts` and `handle-stream-routes.ts`.
+Flue uses the **Durable Streams (DS) protocol** for HTTP event reads. Both agent and workflow stream reads use the same DS protocol (catch-up, long-poll, SSE). The protocol is implemented in `event-stream-store.ts` and `handle-stream-routes.ts`.
 
 ### Stream Read Flow
 
-1. **Catch-up**: Historical events are replayed from the stream store starting at `fromIndex` (derived from `Last-Event-ID` header or `?after=` query param).
+1. **Catch-up**: Historical events are replayed from the run store starting at `fromIndex` (derived from `Last-Event-ID` header or `?after=` query param).
 2. **Long-poll**: If the run is still active, the handler subscribes to new events and waits.
 3. **SSE**: Events are emitted as Server-Sent Events with `event: <type>` and `id: <eventIndex>`.
 4. **Terminal**: When `run_end` (or equivalent terminal event) is emitted, the stream completes.
 
 ### Agent Stream Paths
 
-Agent streams use `agentStreamPath(name, id)` to derive the stream path. GET/HEAD on `/agents/:name/:id` routes to:
-
-- **Node**: `handleAgentConversationRead` / `handleAgentConversationHead` from `handle-conversation-routes.ts`
-- **Cloudflare**: `routeAgentRequest` forwarding to the agent Durable Object
+Agent streams are delivered via the attached agent SSE mode (`Accept: text/event-stream`) on `POST /agents/:name/:id`, or via WebSocket upgrade on `GET /agents/:name/:id`. The Node target uses `handleAgentConversationRead` / `handleAgentConversationHead` for conversation route reads.
 
 ### Workflow Run Streams
 
-Workflow run streams use `runStreamPath(runId)`. GET/HEAD on `/runs/:runId` routes to:
+Workflow run streams use `GET /runs/:runId/stream`. The handler routes to:
 
-- **Node**: `handleStreamRead` / `handleStreamHead` from `handle-stream-routes.ts`
+- **Node**: `handleRunRouteRequest` with `action: 'stream'`, which calls `streamRunEvents` from `handle-run-routes.ts`
 - **Cloudflare**: `routeRunRequest` forwarding to the registry Durable Object
 
 ### SSE Frame Format
@@ -321,8 +472,6 @@ data: {"type":"run_end","runId":"workflow:my-wf:...","result":null,"isError":fal
 
 The `id` field is the `eventIndex` for SSE resume via `Last-Event-ID` header.
 
-**Note:** There is NO WebSocket protocol v1 in the current source. The file `websocket-protocol.ts` does not exist. The types `AgentWebSocketClientMessage`, `AgentWebSocketServerMessage`, `WorkflowWebSocketClientMessage`, and `WorkflowWebSocketServerMessage` are not exported from `types.ts`. Agent and workflow streaming is handled entirely through the Durable Streams protocol (HTTP GET/HEAD with SSE).
-
 Terminal errors in the stream infrastructure use:
 
 ```
@@ -336,8 +485,6 @@ data: {"error":{"type":"validation_failed","message":"...","details":"..."}}
 ## Error Envelopes
 
 Flue's error framework has two audiences and produces a canonical wire envelope. The framework is defined in `errors.ts`:
-
-Source: [`packages/runtime/src/errors.ts:408-432`](https://github.com/earendil-works/flue/blob/main/packages/runtime/src/errors.ts#L408-L432)
 
 ```
 // Wire envelope (HTTP body + SSE data: payload for error events):
@@ -372,42 +519,35 @@ The framework defines these concrete error classes (all in `errors.ts`):
 
 | Class | HTTP Status | `type` | When thrown |
 |-------|------------|--------|-------------|
-| `RuntimeUnavailableError` | 503 | `runtime_unavailable` | Local runtime temporarily unavailable (loading/draining/failed) |
 | `MethodNotAllowedError` | 405 | `method_not_allowed` | Wrong HTTP method on endpoint. Sets `Allow` header. |
 | `UnsupportedMediaTypeError` | 415 | `unsupported_media_type` | Body present without `application/json` Content-Type |
 | `InvalidJsonError` | 400 | `invalid_json` | Body is present but not valid JSON |
 | `AgentNotFoundError` | 404 | `agent_not_found` | Agent name not in registered agents |
-| `WorkflowNotFoundError` | 404 | `workflow_not_found` | Workflow name not in registered workflows, OR not exposed over HTTP (with `notHttp: true`) |
+| `WorkflowNotFoundError` | 404 | `workflow_not_found` | Workflow name not in registered workflows |
+| `WorkflowNotHttpError` | 404 | `workflow_not_http` | Workflow is registered but not exposed over HTTP |
 | `RouteNotFoundError` | 404 | `route_not_found` | No route matches the request |
 | `RunNotFoundError` | 404 | `run_not_found` | Run ID not found |
-| `StreamNotFoundError` | 404 | `stream_not_found` | Event stream path not found |
-| `AttachmentsNotExposedError` | 404 | `route_not_found` | Attachment endpoint exists but agent didn't export `attachments` middleware |
-| `AttachmentNotFoundError` | 404 | `attachment_not_found` | Attachment ID not found |
 | `RunStoreUnavailableError` | 501 | `run_store_unavailable` | Run history endpoint without configured run store |
-| `InvalidRequestError` | 400 | `invalid_request` | Malformed request (URL shape, segment validation) |
-| `SessionNotFoundError` | N/A (internal) | `session_not_found` | Session does not exist in harness |
-| `SessionAlreadyExistsError` | N/A (internal) | `session_already_exists` | Session name already in use |
-| `SessionBusyError` | N/A (internal) | `session_busy` | Session has an active operation |
+| `RunRegistryUnavailableError` | 501 | `run_registry_unavailable` | Run lookup endpoint without configured run registry |
+| `RunEventTooLargeError` | N/A (internal) | N/A | Event payload exceeds 1 MB persistence limit (extends `Error`, not `FlueHttpError`) |
+| `InvalidRequestError` | 400 | `invalid_request` | Malformed request (URL shape, segment validation, payload validation) |
+| `ValidationError` | 400 | `validation_failed` | Schema validation failure (used by `validated()` helper) |
 
-**Note:** `WorkflowNotHttpError` does NOT exist. Non-HTTP workflows get `WorkflowNotFoundError` with `notHttp: true`. `RunRegistryUnavailableError` does NOT exist. `RunEventTooLargeError` is not in the source. `ValidationError` as a named class does NOT exist (validation issues use `InvalidRequestError` with `describeValidationIssues`). The error framework also defines many more internal error classes (persistence, sandbox, session, tool, workflow, submission errors) beyond the HTTP-facing ones listed above.
+**Note:** `WorkflowNotHttpError` is a separate class from `WorkflowNotFoundError`. The `RunRegistryUnavailableError` class exists (not `RuntimeUnavailableError`). `RunEventTooLargeError` exists in the source (extends plain `Error`, not `FlueHttpError`). `ValidationError` exists as a concrete class used by the `validated()` middleware helper.
 
 ### The `toHttpResponse()` Function
 
 All thrown errors are caught by `app.onError((err) => toHttpResponse(err))`. The function renders any thrown value into the canonical Flue error envelope:
 
 ```ts
-// Source: packages/runtime/src/errors.ts (toHttpResponse)
+// Source: packages/runtime/src/errors.ts:535-559
 export function toHttpResponse(err: unknown): Response {
-  // Browser security headers (DS protocol) — set on every error response
-  const baseHeaders: Record<string, string> = {
-    'content-type': 'application/json',
-    'x-content-type-options': 'nosniff',
-    'cross-origin-resource-policy': 'cross-origin',
-  };
   if (isFlueError(err)) {
     const isHttp = err instanceof FlueHttpError;
     const status = isHttp ? err.status : 500;
-    const headers = { ...baseHeaders };
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+    };
     if (isHttp && err.headers) {
       Object.assign(headers, err.headers);
     }
@@ -421,18 +561,18 @@ export function toHttpResponse(err: unknown): Response {
   flueLog.error(err);
   return new Response(JSON.stringify(GENERIC_INTERNAL), {
     status: 500,
-    headers: baseHeaders,
+    headers: { 'content-type': 'application/json' },
   });
 }
 ```
 
-**Note:** The actual source sets browser security headers (`x-content-type-options: nosniff`, `cross-origin-resource-policy: cross-origin`) on EVERY error response, including the 500 fallback. Non-HTTP FlueErrors (like `SessionBusyError`) are logged even though their message is rendered, since they weren't constructed with HTTP semantics in mind.
+**Note:** The actual source does NOT set browser security headers (`x-content-type-options`, `cross-origin-resource-policy`) on error responses. Only `content-type: application/json` is set. Non-HTTP FlueErrors (like internal errors extending `Error` rather than `FlueHttpError`) are logged via `flueLog.error()` even though their message is rendered on the wire.
 
-Non-Flue errors are logged in full and rendered as a generic 500 with no message leaked — `GENERIC_INTERNAL` is `{error: {type: "internal_error", message: "An internal error occurred.", details: "The server encountered an unexpected error..."}}`.
+Non-Flue errors are logged in full and rendered as a generic 500 with no message leaked -- `GENERIC_INTERNAL` is `{error: {type: "internal_error", message: "An internal error occurred.", details: "The server encountered an unexpected error..."}}`.
 
 ### Example Error Responses
 
-**404 — Agent not found (production):**
+**404 -- Agent not found (production):**
 
 ```json
 {
@@ -444,7 +584,7 @@ Non-Flue errors are logged in full and rendered as a generic 500 with no message
 }
 ```
 
-**404 — Agent not found (dev mode):**
+**404 -- Agent not found (dev mode):**
 
 ```json
 {
@@ -457,7 +597,20 @@ Non-Flue errors are logged in full and rendered as a generic 500 with no message
 }
 ```
 
-**415 — Unsupported media type:**
+**404 -- Workflow not HTTP:**
+
+```json
+{
+  "error": {
+    "type": "workflow_not_http",
+    "message": "Workflow \"internal-task\" is not web-accessible.",
+    "details": "This endpoint is not exposed over HTTP.",
+    "dev": "To expose it, export route middleware and call await next() to enter the workflow handler."
+  }
+}
+```
+
+**415 -- Unsupported media type:**
 
 ```json
 {
@@ -482,8 +635,9 @@ function validated(
 ): MiddlewareHandler {
   return validator(target, schema, (result) => {
     if (result.success) return;
-    throw new InvalidRequestError({
-      reason: `Invalid ${target} parameters: ${describeValidationIssues(result.error)}`,
+    throw new ValidationError({
+      details: `Invalid ${target} parameters.`,
+      issues: result.error,
     });
   }) as MiddlewareHandler;
 }
@@ -493,41 +647,54 @@ The schemas (from `schemas.ts`):
 
 ```ts
 // packages/runtime/src/runtime/schemas.ts
-export const DirectAgentPayloadSchema = v.object({
-  message: v.string(),
-  images: v.optional(v.array(DirectAgentImageSchema)),
-});
-
 export const WorkflowRouteParamSchema = v.object({ name: v.string() });
 
-/** Shared `?wait` query contract for agent and workflow invocation routes. */
-export const InvocationQuerySchema = v.object({
+export const WorkflowInvocationQuerySchema = v.object({
   wait: v.optional(v.literal('result')),
 });
 
 export const AgentRouteParamSchema = v.object({ name: v.string(), id: v.string() });
+
+export const RunIdParamSchema = v.object({ runId: v.string() });
+
+export const RunEventsQuerySchema = v.object({
+  after: v.optional(integerString('after must be a non-negative integer.')),
+  types: v.optional(
+    v.pipe(
+      v.string(),
+      v.regex(eventTypesPattern, 'types must be a comma-separated list of known event type names.'),
+    ),
+  ),
+  limit: v.optional(
+    v.pipe(
+      integerString('limit must be an integer between 1 and 1000.'),
+      v.transform(Number),
+      v.minValue(1, 'limit must be at least 1.'),
+      v.maxValue(1000, 'limit must be at most 1000.'),
+    ),
+  ),
+});
 ```
 
-**Note:** `InvocationQuerySchema` is shared between agent and workflow routes (both use `?wait=result`). There is no `WorkflowInvocationQuerySchema`.
+**Note:** There is no `InvocationQuerySchema` -- the query schema is `WorkflowInvocationQuerySchema` used on the workflow POST route. Agent routes do not validate a query schema. There is no `DirectAgentPayloadSchema` in `schemas.ts` -- agent payload validation is done at runtime by `parseDirectAgentPayload()` in `handle-agent.ts`.
 
 ---
 
 ## Routing Architecture: How Agents and Workflows Share the Middleware Chain
 
-The `flue-app.ts` routes both agents and workflows through the same structural pattern:
+The `flue-app.ts` routes both agents and workflows through similar structural patterns:
 
 ```ts
 // Agent route (simplified)
 app.post('/agents/:name/:id',
   validated('param', AgentRouteParamSchema),
-  validated('query', InvocationQuerySchema),
   agentRouteHandler,  // validates -> runAttachedMiddleware -> dispatches
 );
 
 // Workflow route (simplified)
 app.post('/workflows/:name',
   validated('param', WorkflowRouteParamSchema),
-  validated('query', InvocationQuerySchema),
+  validated('query', WorkflowInvocationQuerySchema),
   workflowRouteHandler,  // validates -> runAttachedMiddleware -> dispatches
 );
 ```
@@ -535,13 +702,13 @@ app.post('/workflows/:name',
 Both handlers follow the same three-phase pattern:
 
 1. **Validate** the request (method, name/id, registration, transport opt-in)
-2. **Run attached middleware** (`runAttachedMiddleware(c, record?.route, ...)`)
+2. **Run attached middleware** (`runAttachedMiddleware(c, middleware, ...)`)
 3. **Route to target** -- Node handler function or Cloudflare Durable Object forwarding
 
 The `runAttachedMiddleware()` function wraps per-agent or per-workflow middleware:
 
 ```ts
-// Source: packages/runtime/src/runtime/flue-app.ts:412-430
+// Source: packages/runtime/src/runtime/flue-app.ts:796-816
 async function runAttachedMiddleware(
   c: Parameters<MiddlewareHandler>[0],
   middleware: MiddlewareHandler | undefined,
@@ -565,74 +732,125 @@ async function runAttachedMiddleware(
 }
 ```
 
-This allows users to attach custom middleware (e.g., authentication, rate limiting, logging) to specific agents or workflows via the `route` field on `AgentRecord` and `WorkflowRecord`. The middleware must either return a `Response` or call `await next()` to continue to the handler.
+This allows users to attach custom middleware (e.g., authentication, rate limiting, logging) to specific agents or workflows via the `FlueRuntime` middleware maps (`agentRouteMiddleware`, `workflowRouteMiddleware`, `agentWebSocketMiddleware`, `workflowWebSocketMiddleware`).
 
 ---
 
-## Transport Registration
+## Transport Registration via FlueManifest
 
-Agents and workflows opt into HTTP transport at build time through their route middleware presence. The `AgentRecord` and `WorkflowRecord` interfaces track this:
+Agents and workflows opt into HTTP and WebSocket transport at build time through the `FlueManifest`. The manifest entries define a `transports` object:
 
 ```ts
-// Source: packages/runtime/src/runtime/flue-app.ts:41-57
-export interface AgentRecord {
-  name: string;
-  definition: AgentDefinition;
-  description?: string;
-  route?: MiddlewareHandler;
-  attachments?: MiddlewareHandler;  // opt-in gate for attachment downloads
-}
-
-export interface WorkflowRecord {
-  name: string;
-  definition: WorkflowDefinition;
-  route?: WorkflowRouteHandler;
-  runs?: WorkflowRunsHandler;
+// Source: packages/runtime/src/runtime/flue-app.ts:142-152
+export interface FlueManifest {
+  agents: Array<{
+    name: string;
+    transports: { http?: true; websocket?: true };
+    created: boolean;
+  }>;
+  workflows?: Array<{
+    name: string;
+    transports: { http?: boolean; websocket?: boolean };
+  }>;
 }
 ```
 
-The `registeredAgentsForTransport()` and `registeredWorkflowsForTransport()` functions filter by route presence (not by a `transports` object):
+The `registeredAgentsForTransport()` and `registeredWorkflowsForTransport()` functions filter by the `transports` object:
 
 ```ts
-// Source: packages/runtime/src/runtime/flue-app.ts:432-440
-function registeredAgentsForTransport(rt: FlueRuntime): readonly string[] {
-  return rt.agents
-    .filter((agent) => rt.temporaryLocalExposure || agent.route !== undefined)
+// Source: packages/runtime/src/runtime/flue-app.ts:828-844
+export function registeredAgentsForTransport(
+  rt: FlueRuntime,
+  transport: ExposedTransport,
+): readonly string[] {
+  return (rt.manifest?.agents ?? [])
+    .filter((agent) => agent.transports[transport] === true)
     .map((agent) => agent.name);
 }
 
-function registeredWorkflowsForTransport(rt: FlueRuntime): readonly string[] {
-  return rt.workflows
-    .filter((workflow) => rt.temporaryLocalExposure || workflow.route !== undefined)
+export function registeredWorkflowsForTransport(
+  rt: FlueRuntime,
+  transport: ExposedTransport,
+): readonly string[] {
+  return (rt.manifest?.workflows ?? [])
+    .filter((workflow) => workflow.transports[transport] === true)
     .map((workflow) => workflow.name);
 }
 ```
 
-**Note:** There is no `FlueManifest` interface with a `transports: { http?: true; websocket?: true }` shape. Transport opt-in is determined by whether the `route` field is set on the record. The `temporaryLocalExposure` flag (dev mode) exposes all agents and workflows regardless of route presence. The `AgentManifestEntry` type (exported for `listAgents()`) has `transports: { http?: true }` -- no WebSocket field.
+**Note:** The transport opt-in mechanism uses the `FlueManifest` with a `transports: { http?: true; websocket?: true }` shape -- NOT a `route !== undefined` check on records. An agent or workflow that doesn't set `transports.http = true` returns a `WorkflowNotFoundError` / `AgentNotFoundError` even though the entity exists.
 
-A workflow that doesn't set a `route` returns a `WorkflowNotFoundError` (with `notHttp: true`) even though the workflow exists. This allows workflows that are only accessible via internal dispatch.
+The `AgentManifestEntrySchema` in `schemas.ts` reflects this:
+
+```ts
+const AgentManifestEntrySchema = v.object({
+  name: v.string(),
+  transports: v.object({
+    http: v.optional(v.literal(true)),
+    websocket: v.optional(v.literal(true)),
+  }),
+  created: v.boolean(),
+});
+```
+
+---
+
+## OpenAPI Document
+
+The `flue()` sub-app exposes an OpenAPI 3.1 document at `GET /openapi.json`. The handler is lazily initialized via `lazyOpenApiRouteHandler`:
+
+```ts
+// Source: packages/runtime/src/runtime/flue-app.ts:764-769
+function lazyOpenApiRouteHandler(
+  app: Hono,
+  getOptions: () => ReturnType<typeof publicOpenApiOptions>,
+): MiddlewareHandler {
+  return (c, next) => openAPIRouteHandler(app, getOptions())(c, next);
+}
+```
+
+The OpenAPI document includes:
+- `info.title: "Flue Public API"`
+- Auto-discovered routes with `describeRoute()` metadata
+- Workflow invocation spec (`invokeWorkflow`) with `x-flue-invocation-modes: ['accepted', 'wait-result', 'stream']`
+- Agent invocation spec (`invokeAgent`) with `x-flue-invocation-modes: ['sync', 'stream']`
+- Run route specs (`getRun`, `listRunEvents`, `streamRunEvents`) with `x-flue-streaming: true` on streaming endpoints
+- Standard error responses (400, 404, 405, 415, 500, 501) on all endpoints
+
+---
+
+## `parseJsonBody()` Behavior
+
+The `parseJsonBody()` function in `errors.ts` (lines 574-629) parses request bodies:
+
+- Returns `{}` for genuinely empty bodies (`Content-Length: 0` or no Content-Length AND no Content-Type)
+- Throws `UnsupportedMediaTypeError` if a body is present without `application/json` Content-Type
+- Throws `InvalidJsonError` if the body is present but unparseable
+
+**Note:** Empty bodies return `{}`, NOT `undefined`. The code documents the trade-off explicitly: if a client sends a body but no Content-Length and no Content-Type, the body is silently ignored. This preserves the no-payload UX for invocations that don't require input.
 
 ---
 
 ## Aha Moments
 
-**Aha: Workflows and agents share the same route handler pattern.** The `flue()` function registers `/agents/:name/:id` and `/workflows/:name` routes that follow an identical structural pattern: validate the request against the manifest, run per-resource middleware, then dispatch to either a Node handler function or Cloudflare Durable Object forwarding. The middleware chain (`runAttachedMiddleware`) is shared code -- agent and workflow routes only differ in their validation schemas and the handler they dispatch to. This is why per-agent and per-workflow middleware share the same `MiddlewareHandler` type and the same guard against multiple `next()` calls.
+**Aha: WebSocket and HTTP share the same validation but diverge on transport.** The `flue()` function registers both POST routes for HTTP requests and GET routes for WebSocket upgrades. Agent and workflow WebSocket handlers (`agentSocketRouteHandler`, `workflowSocketRouteHandler`) check `isWebSocketUpgrade()` and fall through to `next()` if not a WS upgrade. Transport opt-in is checked against the manifest's `transports.websocket` field. The same `runAttachedMiddleware` pattern wraps both HTTP and WebSocket middleware.
 
-**Aha: The error framework has two audiences, enforced by required fields.** Every `FlueHttpError` constructor takes both `details` (caller-safe) and `dev` (developer-only) as required strings. This means it's impossible to accidentally put internal guidance in `details` -- the TypeScript compiler forces you to think about both audiences. The `dev` field is only rendered when `configureErrorRendering({ devMode: true })` is called, which the generated entry does for `flue dev` and `flue run` but not for production deployments. Even in dev mode, `dev` is omitted when the error class set it to `''` -- so its presence means "this error has dev-specific guidance" not "we're in dev mode."
+**Aha: The error framework has two audiences, enforced by required fields.** Every `FlueHttpError` constructor takes both `details` (caller-safe) and `dev` (developer-only) as required strings. This means it's impossible to accidentally put internal guidance in `details` -- the TypeScript compiler forces you to think about both audiences. The `dev` field is only rendered when `configureErrorRendering({ devMode: true })` is called, which the generated entry does for `flue dev` and `flue run` but not for production deployments.
 
-**Aha: Empty POST bodies are legal and treated as `undefined`.** The `parseJsonBody()` function returns `undefined` when the request has `Content-Length: 0` or when there's no `Content-Length` AND no `Content-Type` header. This means `curl -X POST http://localhost:3000/workflows/my-workflow` works without `-d '{}'`. The code documents the trade-off explicitly: if a client sends a body but no Content-Length and no Content-Type, the body is silently ignored. This preserves the no-payload UX for invocations that don't require input.
+**Aha: Empty POST bodies are legal and treated as `{}`.** The `parseJsonBody()` function returns `{}` when the request has `Content-Length: 0` or when there's no `Content-Length` AND no `Content-Type` header. This means `curl -X POST http://localhost:3000/workflows/my-workflow` works without `-d '{}'`. The code documents the trade-off explicitly: if a client sends a body but no Content-Length and no Content-Type, the body is silently ignored.
 
-**Aha: `toHttpResponse` sets browser security headers on ALL responses.** Every error response -- including the generic 500 fallback for non-Flue errors -- carries `x-content-type-options: nosniff` and `cross-origin-resource-policy: cross-origin`. This prevents browsers from MIME-snatching error responses.
+**Aha: Three run routes, not one.** The `RUN_ROUTES_BY_ID` constant defines `/runs/:runId`, `/runs/:runId/events`, and `/runs/:runId/stream` -- each with a different `action` ('get', 'events', 'stream'). The `'events'` action adds `RunEventsQuerySchema` validation for pagination query params. All three are GET-only with ALL catch-alls for 405.
 
-**Aha: Non-HTTP FlueErrors are logged even when rendered.** When a non-HTTP error (like `SessionBusyError`) bubbles up to the HTTP error handler, `toHttpResponse` logs it via `flueLog.error()` before rendering its typed envelope with status 500. This is deliberate: these errors weren't constructed with HTTP semantics, so it's worth surfacing them in logs even though their message is rendered on the wire.
+**Aha: WorkflowNotHttpError is a separate class.** When a workflow is registered but not exposed over HTTP, a distinct `WorkflowNotHttpError` is thrown (not `WorkflowNotFoundError` with a flag). The `type` wire value is `"workflow_not_http"` -- different from `"workflow_not_found"`. The public `message`/`details` stay parallel to prevent enumeration.
 
 ---
 
 ## Related Documents
 
-- [06-workflows](06-workflows.html) — Workflow handlers, run lifecycle, `dispatch()`, `dispatchId` vs `runId`
-- [15-cross-cutting](15-cross-cutting.html) — Error handling deep dive, provider config, usage tracking
-- [10-sdk-client](10-sdk-client.html) — `FlueClient` HTTP and WebSocket usage, admin routes
-- [08-cloudflare-target](08-cloudflare-target.html) — Durable Objects, registry, cross-deployment routing
+- [06-workflows](06-workflows.html) -- Workflow handlers, run lifecycle, `dispatch()`, `dispatchId` vs `runId`
+- [15-cross-cutting](15-cross-cutting.html) -- Error handling deep dive, provider config, usage tracking
+- [10-sdk-client](10-sdk-client.html) -- `FlueClient` HTTP and Durable Streams usage, admin routes
+- [08-cloudflare-target](08-cloudflare-target.html) -- Durable Objects, registry, cross-deployment routing
+- [09-node-target](09-node-target.html) -- Local sandbox, process lifetime, Durable Streams
 
 [Table of Contents](README.html)
