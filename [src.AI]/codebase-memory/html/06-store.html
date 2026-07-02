@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Store — SQLite Graph Storage, FTS5, Bulk Writes, Louvain -- codebase-memory</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/codebase-memory/docs</span>
+    <div class="nav-actions">
+      <a href="03-discovery.html" class="nav-breadcrumb">Discovery — File Discovery, Gitignore, Language Detection, User Config</a><a href="04-extraction.html" class="nav-breadcrumb">Extraction — Core Engine, Tree-Sitter AST, 158 Language Grammars</a><a href="05-pipeline.html" class="nav-breadcrumb">Pipeline — Three-Phase Parallel Indexing, 23+ Passes, Worker Pool</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="05-pipeline.html" class="nav-btn" title="Previous: Pipeline — Three-Phase Parallel Indexing, 23+ Passes, Worker Pool">← prev</a>
+      <a href="07-cypher.html" class="nav-btn nav-btn-next" title="Next: Cypher Query Engine — 90+ Tokens, Recursive Descent Parser, Planner, Executor">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Store: SQLite Graph Storage, FTS5, Bulk Writes, Louvain</h1>
+<p>The store module wraps SQLite3 (amalgamation) as a property graph database. It manages nodes, edges, full-text search via FTS5, bulk write optimization, breadth-first search, Louvain community detection, and layout position caching. The store provides the persistence layer for everything above it: the pipeline writes to it, the MCP tools query it, the Cypher engine reads from it.</p>
+<h2>Store Architecture</h2>
+<div class="mermaid">
+flowchart TD
+    A[&quot;Pipeline output\ngraph buffer&quot;] --&gt; B[&quot;Bulk write to SQLite\nsynchronous=OFF temporarily&quot;]
+    B --&gt; C[&quot;Nodes table\nid, label, name, qname, file, props&quot;]
+    B --&gt; D[&quot;Edges table\nid, source, target, type, props&quot;]
+    B --&gt; E[&quot;FTS5 virtual table\ncbm_camel_split tokenizer&quot;]
+
+    C --&gt; F[&quot;BFS traversal\ntrace_path tool&quot;]
+    D --&gt; F
+    E --&gt; G[&quot;FTS5 search\nsearch_graph tool&quot;]
+
+    C --&gt; H[&quot;Louvain clustering\ncommunity detection&quot;]
+    D --&gt; H
+
+    C --&gt; I[&quot;Layout cache\n3D positions for UI&quot;]
+    D --&gt; I
+    I --&gt; J[&quot;HTTP UI\nBarnes-Hut rendering&quot;]
+
+</div>
+<h2>Query Execution Flow</h2>
+<div class="mermaid">
+sequenceDiagram
+    participant Tool as MCP Tool
+    participant Store as store.c
+    participant SQLite as SQLite3
+    participant FTS5 as FTS5 Virtual Table
+
+    Tool-&gt;&gt;Store: cbm_store_search(project, query, filters)
+    Store-&gt;&gt;Store: Build prepared statement
+    Store-&gt;&gt;FTS5: SELECT rowid FROM nodes_fts&lt;br/&gt;WHERE nodes_fts MATCH ?
+    FTS5--&gt;&gt;Store: Matching rowids
+    Store-&gt;&gt;SQLite: SELECT * FROM nodes&lt;br/&gt;WHERE id IN (rowids) AND label IN (?)
+    SQLite--&gt;&gt;Store: Result rows
+    Store-&gt;&gt;Store: Build JSON response
+    Store--&gt;&gt;Tool: JSON array of nodes
+
+</div>
+<h2>SQLite Configuration</h2>
+<p>The store opens SQLite with specific pragmas optimized for bulk writes and read queries:</p>
+<p>Source: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.CodebaseMemory/codebase-memory-mcp/src/store/store.c</code></p>
+<pre><code class="language-c">// Open and configure SQLite database
+int cbm_store_open(cbm_store_t **store, const char *cache_dir) {
+    char db_path[CBM_PATH_MAX];
+    snprintf(db_path, sizeof(db_path), &quot;%s/graph.db&quot;, cache_dir);
+
+    sqlite3 *db;
+    int rc = sqlite3_open_v2(db_path, &amp;db,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL);
+
+    // WAL mode for crash safety + read concurrency
+    sqlite3_exec(db, &quot;PRAGMA journal_mode=WAL&quot;, NULL, NULL, NULL);
+
+    // mmap for read performance
+    int mmap_size = getenv_int(&quot;CBM_SQLITE_MMAP_SIZE&quot;, 67108864);  // 64MB default
+    char sql[128];
+    snprintf(sql, sizeof(sql), &quot;PRAGMA mmap_size=%d&quot;, mmap_size);
+    sqlite3_exec(db, sql, NULL, NULL, NULL);
+
+    // Cache size
+    sqlite3_exec(db, &quot;PRAGMA cache_size=-64000&quot;, NULL, NULL, NULL);  // 64MB page cache
+
+    // Prepare all statements
+    prepare_statements(db);
+
+    return 0;
+}
+</code></pre>
+<h2>Database Schema</h2>
+<p>The schema uses a simple property graph model:</p>
+<pre><code class="language-sql">-- Nodes table
+CREATE TABLE IF NOT EXISTS nodes (
+    id INTEGER PRIMARY KEY,
+    project TEXT NOT NULL,
+    label TEXT NOT NULL,           -- Function, Class, File, etc.
+    name TEXT NOT NULL,
+    qualified_name TEXT,
+    file_path TEXT,
+    start_line INTEGER,
+    end_line INTEGER,
+    properties_json TEXT           -- JSON blob for flexible properties
+);
+
+-- Edges table
+CREATE TABLE IF NOT EXISTS edges (
+    id INTEGER PRIMARY KEY,
+    project TEXT NOT NULL,
+    source_id INTEGER NOT NULL,
+    target_id INTEGER NOT NULL,
+    type TEXT NOT NULL,            -- CALLS, IMPORTS, USES, etc.
+    properties_json TEXT,
+    FOREIGN KEY (source_id) REFERENCES nodes(id),
+    FOREIGN KEY (target_id) REFERENCES nodes(id)
+);
+
+-- FTS5 full-text search index
+CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
+    name, qualified_name, file_path, properties_json,
+    content=&#x27;nodes&#x27;,
+    content_rowid=&#x27;id&#x27;,
+    tokenize=&#x27;cbm_camel_split&#x27;     -- Custom camelCase/snake_case tokenizer
+);
+
+-- FTS5 triggers for automatic sync
+CREATE TRIGGER IF NOT EXISTS nodes_fts_insert AFTER INSERT ON nodes
+BEGIN
+    INSERT INTO nodes_fts(rowid, name, qualified_name, file_path, properties_json)
+    VALUES (new.id, new.name, new.qualified_name, new.file_path, new.properties_json);
+END;
+
+-- Indexes for common query patterns
+CREATE INDEX IF NOT EXISTS idx_nodes_project ON nodes(project);
+CREATE INDEX IF NOT EXISTS idx_nodes_label ON nodes(label);
+CREATE INDEX IF NOT EXISTS idx_nodes_name ON nodes(name);
+CREATE INDEX IF NOT EXISTS idx_nodes_qname ON nodes(qualified_name);
+CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id);
+CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id);
+CREATE INDEX IF NOT EXISTS idx_edges_type ON edges(type);
+CREATE INDEX IF NOT EXISTS idx_edges_project ON edges(project);
+
+-- Layout positions for 3D visualization
+CREATE TABLE IF NOT EXISTS layout_positions (
+    project TEXT NOT NULL,
+    node_id INTEGER NOT NULL,
+    x REAL,
+    y REAL,
+    z REAL,
+    PRIMARY KEY (project, node_id)
+);
+
+-- File hashes for incremental indexing
+CREATE TABLE IF NOT EXISTS file_hashes (
+    project TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    PRIMARY KEY (project, file_path)
+);
+
+-- ADR table
+CREATE TABLE IF NOT EXISTS adr (
+    id INTEGER PRIMARY KEY,
+    project TEXT NOT NULL,
+    title TEXT NOT NULL,
+    status TEXT,
+    content TEXT,              -- Max 8000 chars
+    created_at TEXT,
+    updated_at TEXT
+);
+
+-- Semantic vectors table (int8 quantized)
+CREATE TABLE IF NOT EXISTS semantic_vectors (
+    node_id INTEGER PRIMARY KEY,
+    vector BLOB NOT NULL,      -- 768 bytes of int8
+    FOREIGN KEY (node_id) REFERENCES nodes(id)
+);
+</code></pre>
+<h2>Prepared Statements</h2>
+<p>The store manages 30+ prepared statements for performance:</p>
+<p>Source: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.CodebaseMemory/codebase-memory-mcp/src/store/store.c</code></p>
+<pre><code class="language-c">// Prepared statements (30+ total)
+typedef struct {
+    sqlite3_stmt *insert_node;
+    sqlite3_stmt *insert_edge;
+    sqlite3_stmt *select_node_by_id;
+    sqlite3_stmt *select_node_by_qname;
+    sqlite3_stmt *select_node_by_name;
+    sqlite3_stmt *select_edges_by_source;
+    sqlite3_stmt *select_edges_by_target;
+    sqlite3_stmt *select_edges_by_type;
+    sqlite3_stmt *select_edges_between;
+    sqlite3_stmt *select_nodes_by_label;
+    sqlite3_stmt *select_nodes_by_project;
+    sqlite3_stmt *select_nodes_by_file;
+    sqlite3_stmt *select_nodes_by_file_range;
+    sqlite3_stmt *fts_search;
+    sqlite3_stmt *count_nodes;
+    sqlite3_stmt *count_edges;
+    sqlite3_stmt *count_nodes_by_label;
+    sqlite3_stmt *delete_project;
+    sqlite3_stmt *insert_layout_position;
+    sqlite3_stmt *select_layout_positions;
+    sqlite3_stmt *insert_file_hash;
+    sqlite3_stmt *select_file_hash;
+    sqlite3_stmt *insert_adr;
+    sqlite3_stmt *update_adr;
+    sqlite3_stmt *select_adr;
+    sqlite3_stmt *delete_adr;
+    sqlite3_stmt *insert_semantic_vector;
+    sqlite3_stmt *select_semantic_vector;
+    sqlite3_stmt *bfs_outbound;
+    sqlite3_stmt *bfs_inbound;
+    sqlite3_stmt *degree_count;
+    // ... more
+} cbm_store_stmts_t;
+</code></pre>
+<h2>Bulk Write Optimization</h2>
+<p>The pipeline writes thousands of nodes and edges. To maximize throughput, the store temporarily disables journaling safety during bulk writes:</p>
+<pre><code class="language-c">// Begin bulk write mode
+int cbm_store_begin_bulk_write(cbm_store_t *store) {
+    // Disable synchronous for bulk writes
+    sqlite3_exec(store-&gt;db, &quot;PRAGMA synchronous=OFF&quot;, NULL, NULL, NULL);
+
+    // Drop indexes for faster inserts
+    sqlite3_exec(store-&gt;db, &quot;DROP INDEX IF EXISTS idx_nodes_project&quot;, NULL, NULL, NULL);
+    sqlite3_exec(store-&gt;db, &quot;DROP INDEX IF EXISTS idx_nodes_label&quot;, NULL, NULL, NULL);
+    sqlite3_exec(store-&gt;db, &quot;DROP INDEX IF EXISTS idx_edges_source&quot;, NULL, NULL, NULL);
+    sqlite3_exec(store-&gt;db, &quot;DROP INDEX IF EXISTS idx_edges_target&quot;, NULL, NULL, NULL);
+    sqlite3_exec(store-&gt;db, &quot;DROP INDEX IF EXISTS idx_edges_type&quot;, NULL, NULL, NULL);
+
+    return 0;
+}
+
+// End bulk write mode — restore safety
+int cbm_store_end_bulk_write(cbm_store_t *store) {
+    // Restore synchronous
+    sqlite3_exec(store-&gt;db, &quot;PRAGMA synchronous=NORMAL&quot;, NULL, NULL, NULL);
+
+    // Recreate indexes
+    sqlite3_exec(store-&gt;db, &quot;CREATE INDEX IF NOT EXISTS idx_nodes_project ON nodes(project)&quot;, NULL, NULL, NULL);
+    sqlite3_exec(store-&gt;db, &quot;CREATE INDEX IF NOT EXISTS idx_nodes_label ON nodes(label)&quot;, NULL, NULL, NULL);
+    sqlite3_exec(store-&gt;db, &quot;CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id)&quot;, NULL, NULL, NULL);
+    sqlite3_exec(store-&gt;db, &quot;CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id)&quot;, NULL, NULL, NULL);
+    sqlite3_exec(store-&gt;db, &quot;CREATE INDEX IF NOT EXISTS idx_edges_type ON edges(type)&quot;, NULL, NULL, NULL);
+
+    return 0;
+}
+</code></pre>
+<p>The bulk write mode is a critical optimization. Dropping indexes during insertion and recreating them afterward is faster than maintaining them incrementally because index maintenance is O(log N) per insert, while bulk index creation is O(N log N) total — but with a much smaller constant factor since the entire index is built in one pass.</p>
+<h2>FTS5 with Camel-Case Tokenizer</h2>
+<p>The FTS5 index uses a custom tokenizer that splits camelCase and snake_case identifiers into searchable tokens:</p>
+<pre><code class="language-c">// Custom FTS5 tokenizer: cbm_camel_split
+// Splits &quot;getUserName&quot; into [&quot;get&quot;, &quot;user&quot;, &quot;name&quot;]
+// Splits &quot;get_user_name&quot; into [&quot;get&quot;, &quot;user&quot;, &quot;name&quot;]
+// Splits &quot;HTTPServer&quot; into [&quot;http&quot;, &quot;server&quot;]
+static int cbm_camel_split(
+    const fts5_tokenizer_api *pApi,
+    fts5_tokenizer *pTokenizer,
+    const char *text, int nText,
+    int (*xToken)(void *pCtx, int tflags, const char *pToken, int nToken, int iStart, int iEnd)
+) {
+    int i = 0;
+    while (i &lt; nText) {
+        // Start of token
+        int start = i;
+
+        // Check for camelCase transition (lowercase followed by uppercase)
+        while (i &lt; nText) {
+            if (i &gt; start &amp;&amp; isupper(text[i]) &amp;&amp; islower(text[i+1])) {
+                break;  // Start of new camelCase word
+            }
+            if (text[i] == &#x27;_&#x27; || text[i] == &#x27;-&#x27; || text[i] == &#x27;.&#x27;) {
+                break;  // snake_case or kebab-case separator
+            }
+            i++;
+        }
+
+        // Emit token (lowercased)
+        if (i &gt; start) {
+            char token[256];
+            int len = i - start;
+            if (len &lt; 256) {
+                for (int j = 0; j &lt; len; j++) {
+                    token[j] = tolower(text[start + j]);
+                }
+                token[len] = &#x27;\0&#x27;;
+                xToken(pCtx, 0, token, len, start, i);
+            }
+        }
+
+        // Skip separator
+        if (i &lt; nText &amp;&amp; (text[i] == &#x27;_&#x27; || text[i] == &#x27;-&#x27; || text[i] == &#x27;.&#x27;)) {
+            i++;
+        }
+    }
+    return SQLITE_OK;
+}
+</code></pre>
+<p>This means searching for <code>get user</code> matches <code>getUserName</code>, <code>get_user_name</code>, <code>get-user-name</code>, and <code>getUser</code>. The tokenizer is essential for code search because identifiers are rarely single dictionary words.</p>
+<h2>Breadth-First Search</h2>
+<p>The <code>trace_path</code> tool uses BFS implemented directly in SQL:</p>
+<p>Source: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.CodebaseMemory/codebase-memory-mcp/src/store/store.c</code></p>
+<pre><code class="language-c">// BFS from a starting node, depth 1-5
+typedef struct {
+    int64_t start_id;
+    int direction;       // 0 = outbound, 1 = inbound, 2 = both
+    int max_depth;       // 1-5
+    char *edge_types;    // Filter by edge type (NULL = all)
+} cbm_bfs_query_t;
+
+// Execute BFS, return path tree as JSON
+int cbm_store_bfs(cbm_store_t *store, cbm_bfs_query_t *query, char **result_json) {
+    // Use recursive CTE for BFS
+    const char *sql =
+        &quot;WITH RECURSIVE bfs(path, depth, current_id) AS (&quot;
+        &quot;  VALUES (json_array(?1), 0, ?1)&quot;
+        &quot;  UNION ALL&quot;
+        &quot;  SELECT json_insert(bfs.path, &#x27;$[#]&#x27;, e.target_id),&quot;
+        &quot;         bfs.depth + 1,&quot;
+        &quot;         e.target_id&quot;
+        &quot;  FROM bfs&quot;
+        &quot;  JOIN edges e ON e.source_id = bfs.current_id&quot;
+        &quot;  WHERE bfs.depth &lt; ?2&quot;
+        &quot;    AND e.target_id NOT IN (SELECT json_extract(p.value, &#x27;$[-1]&#x27;)&quot;
+        &quot;                            FROM json_each(bfs.path) p)&quot;
+        &quot;) SELECT path FROM bfs ORDER BY depth LIMIT ?3&quot;;
+
+    sqlite3_stmt *stmt;
+    sqlite3_prepare_v2(store-&gt;db, sql, -1, &amp;stmt, NULL);
+    sqlite3_bind_int64(stmt, 1, query-&gt;start_id);
+    sqlite3_bind_int(stmt, 2, query-&gt;max_depth);
+    sqlite3_bind_int(stmt, 3, 1000);  // Max results
+
+    // Collect results
+    cbm_json_builder_t jb;
+    cbm_json_init(&amp;jb);
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char *path = (const char *)sqlite3_column_text(stmt, 0);
+        cbm_json_add_raw(&amp;jb, path);
+    }
+
+    *result_json = cbm_json_finish(&amp;jb);
+    sqlite3_finalize(stmt);
+    return 0;
+}
+</code></pre>
+<h2>Louvain Community Detection</h2>
+<p>The store implements Louvain community detection for grouping related nodes:</p>
+<pre><code class="language-c">// Louvain community detection on the graph
+// Returns {community_id: [node_ids]}
+int cbm_store_louvain(cbm_store_t *store, const char *project,
+                      cbm_hash_table_t **communities);
+</code></pre>
+<p>Louvain works by:</p>
+<ol><li>Starting with each node in its own community</li><li>Iteratively moving nodes to neighbor communities if it improves modularity</li><li>Aggregating communities into super-nodes</li><li>Repeating until modularity stops improving</li></ol>
+<p>This is used by the UI to color-code related node clusters and by the architecture tool to provide high-level overviews.</p>
+<h2>ADR Storage</h2>
+<p>Architecture Decision Records are stored in a dedicated table:</p>
+<pre><code class="language-c">// ADR operations
+int cbm_store_adr_create(cbm_store_t *store, const char *project,
+                         const char *title, const char *content,
+                         int64_t *new_id);
+int cbm_store_adr_update(cbm_store_t *store, int64_t id,
+                         const char *title, const char *content, const char *status);
+int cbm_store_adr_delete(cbm_store_t *store, int64_t id);
+int cbm_store_adr_list(cbm_store_t *store, const char *project,
+                       char **result_json);
+int cbm_store_adr_get(cbm_store_t *store, int64_t id, char **result_json);
+</code></pre>
+<p>ADR content are capped at 8,000 characters to prevent abuse.</p>
+<h2>Aha Moment</h2>
+<p><strong>Aha:</strong> The bulk write optimization drops all indexes, inserts everything, then recreates them — rather than maintaining indexes incrementally. This is a classic database optimization that most application code gets wrong. The reason it works: maintaining an index during insertion requires B-tree rebalancing per insert (O(log N) each), but building the entire index from scratch is a single sorted pass (O(N log N) total, but with tiny constants). For 500K nodes and 1M edges, this single optimization saves 30-60 seconds of index maintenance time.</p>
+<h2>Cross-References</h2>
+<ul><li><a href="05-pipeline.md">Pipeline</a> for how the pipeline writes to the store</li><li><a href="07-cypher.md">Cypher</a> for how the Cypher engine reads from the store</li><li><a href="08-mcp-tools.md">MCP Tools</a> for tools that query the store (search_graph, trace_path)</li><li><a href="11-graph-ui.md">Graph UI</a> for how layout positions are cached and read by the UI</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

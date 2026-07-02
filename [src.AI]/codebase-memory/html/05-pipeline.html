@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pipeline — Three-Phase Parallel Indexing, 23+ Passes, Worker Pool -- codebase-memory</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/codebase-memory/docs</span>
+    <div class="nav-actions">
+      <a href="02-foundation-layer.html" class="nav-breadcrumb">Foundation Layer — Arena, Slab, mimalloc, Hash Tables, String Interning</a><a href="03-discovery.html" class="nav-breadcrumb">Discovery — File Discovery, Gitignore, Language Detection, User Config</a><a href="04-extraction.html" class="nav-breadcrumb">Extraction — Core Engine, Tree-Sitter AST, 158 Language Grammars</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="04-extraction.html" class="nav-btn" title="Previous: Extraction — Core Engine, Tree-Sitter AST, 158 Language Grammars">← prev</a>
+      <a href="06-store.html" class="nav-btn nav-btn-next" title="Next: Store — SQLite Graph Storage, FTS5, Bulk Writes, Louvain">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Pipeline: Three-Phase Parallel Indexing, 23+ Passes, Worker Pool</h1>
+<p>The pipeline module orchestrates the entire indexing process across 23+ passes. At 22,049 lines, it is the largest module in the codebase. It runs in three phases: discovery and structure (Phase 1), definitions and registry (Phase 2), and parallel resolution (Phase 3). The worker pool distributes extraction across CPU cores with thread-local slab allocators.</p>
+<h2>Pipeline Architecture</h2>
+<div class="mermaid">
+flowchart TD
+    A[&quot;index_repository called\nvia MCP or CLI&quot;] --&gt; B[&quot;Phase 1: Discovery&quot;]
+
+    subgraph Phase1[&quot;Phase 1: Discovery &amp; Structure (serial)&quot;]
+        B --&gt; B1[&quot;Discover files\nparse gitignore hierarchy&quot;]
+        B1 --&gt; B2[&quot;Create Project node&quot;]
+        B2 --&gt; B3[&quot;Create Folder/File nodes&quot;]
+        B3 --&gt; B4[&quot;pass_pkgmap\nparse manifest files&quot;]
+    end
+
+    Phase1 --&gt; C[&quot;Phase 2: Definitions (serial)&quot;]
+
+    subgraph Phase2[&quot;Phase 2: Definitions &amp; Registry (serial)&quot;]
+        C --&gt; C1[&quot;pass_definitions\nextract all definitions&quot;]
+        C1 --&gt; C2[&quot;Build registry\nhash table of all functions/methods&quot;]
+        C2 --&gt; C3[&quot;Emit DEFINES edges\nFile -&gt; Function&quot;]
+    end
+
+    Phase2 --&gt; D[&quot;Phase 3: Parallel Resolution&quot;]
+
+    subgraph Phase3[&quot;Phase 3: Parallel Resolution (worker pool)&quot;]
+        D --&gt; D1[&quot;pass_calls\nresolve callees via registry + LSP&quot;]
+        D --&gt; D2[&quot;pass_lsp_cross\ncross-file LSP type-aware resolution&quot;]
+        D --&gt; D3[&quot;pass_usages\ntype_ref and variable edges&quot;]
+        D --&gt; D4[&quot;pass_tests\ntest file linking&quot;]
+        D --&gt; D5[&quot;pass_semantic\ninherits/decorates/implements&quot;]
+        D --&gt; D6[&quot;pass_similarity\nMinHash SIMILAR_TO edges&quot;]
+    end
+
+    subgraph Phase3B[&quot;Phase 3: Sequential Passes&quot;]
+        D --&gt; D7[&quot;pass_githistory\ngit change coupling&quot;]
+        D --&gt; D8[&quot;pass_gitdiff\ngit diff impact mapping&quot;]
+        D --&gt; D9[&quot;pass_route_nodes\nHTTP route creation&quot;]
+        D --&gt; D10[&quot;pass_enrichment\ndecorator tags, complexity&quot;]
+        D --&gt; D11[&quot;pass_configlink\nconfig-to-code linking&quot;]
+        D --&gt; D12[&quot;pass_envscan\nenvironment URL scanning&quot;]
+        D --&gt; D13[&quot;pass_infrascan\ninfrastructure-as-code&quot;]
+        D --&gt; D14[&quot;pass_k8s\nKubernetes manifests&quot;]
+        D --&gt; D15[&quot;pass_semantic_edges\nsemantic similarity edges&quot;]
+        D --&gt; D16[&quot;pass_complexity\ninterprocedural complexity&quot;]
+        D --&gt; D17[&quot;pass_cross_repo\ncross-repo edges&quot;]
+        D --&gt; D18[&quot;pass_compile_commands\ncompile_commands.json&quot;]
+    end
+
+    Phase3 --&gt; E[&quot;Bulk write to SQLite&quot;]
+    Phase3B --&gt; E
+    E --&gt; F[&quot;Build FTS5 index&quot;]
+    F --&gt; G[&quot;Indexing complete&quot;]
+
+</div>
+<h2>Pipeline Context</h2>
+<p>Source: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.CodebaseMemory/codebase-memory-mcp/src/pipeline/pipeline_internal.h</code></p>
+<pre><code class="language-c">// Pipeline orchestrator state
+typedef struct {
+    const char *repo_path;         // Repository being indexed
+    const char *project_name;      // Derived project name
+    cbm_store_t *store;            // SQLite store for output
+    cbm_graph_buffer_t *buffer;    // In-memory staging buffer
+    cbm_hash_table_t *registry;    // Function/method registry
+    cbm_array_t files;             // Discovered file paths
+    cbm_discover_ctx_t *discovery; // Discovery context
+    worker_pool_t *workers;        // Thread pool for parallel passes
+    CBMArena *arena;               // Main arena for pipeline allocations
+    CBMStringPool *pool;           // String interning pool
+
+    // Phase tracking
+    int phase;                     // 1, 2, or 3
+    int pass_count;                // Number of passes completed
+    int file_count;                // Total files discovered
+    int indexed_count;             // Files successfully indexed
+    int skipped_count;             // Files skipped (errors, budget)
+
+    // Timing
+    uint64_t start_time;           // Pipeline start (nanoseconds)
+    uint64_t pass_times[64];       // Per-pass timing
+    const char *pass_names[64];    // Per-pass names
+} cbm_pipeline_t;
+
+// Create and run pipeline
+int cbm_pipeline_index(cbm_store_t *store, const char *repo_path);
+
+// Individual pass functions
+int pass_discovery(cbm_pipeline_t *p);
+int pass_definitions(cbm_pipeline_t *p);
+int pass_pkgmap(cbm_pipeline_t *p);
+int pass_parallel(cbm_pipeline_t *p);
+int pass_calls(cbm_pipeline_t *p);
+int pass_lsp_cross(cbm_pipeline_t *p);
+int pass_usages(cbm_pipeline_t *p);
+int pass_semantic(cbm_pipeline_t *p);
+int pass_tests(cbm_pipeline_t *p);
+int pass_githistory(cbm_pipeline_t *p);
+int pass_gitdiff(cbm_pipeline_t *p);
+int pass_route_nodes(cbm_pipeline_t *p);
+int pass_enrichment(cbm_pipeline_t *p);
+int pass_configlink(cbm_pipeline_t *p);
+int pass_envscan(cbm_pipeline_t *p);
+int pass_infrascan(cbm_pipeline_t *p);
+int pass_k8s(cbm_pipeline_t *p);
+int pass_similarity(cbm_pipeline_t *p);
+int pass_semantic_edges(cbm_pipeline_t *p);
+int pass_complexity(cbm_pipeline_t *p);
+int pass_cross_repo(cbm_pipeline_t *p);
+int pass_compile_commands(cbm_pipeline_t *p);
+</code></pre>
+<h2>Phase 1: Discovery and Structure</h2>
+<div class="mermaid">
+flowchart TD
+    A[&quot;Repository root&quot;] --&gt; B[&quot;cbm_discover_files()\nwalk tree, apply gitignore&quot;]
+    B --&gt; C[&quot;For each discovered file:\ncreate File node in buffer&quot;]
+    C --&gt; D[&quot;For each directory:\ncreate Folder node in buffer&quot;]
+    D --&gt; E[&quot;Create Project node\nname from directory or package.json&quot;]
+    E --&gt; F[&quot;pass_pkgmap:\nparse manifests for packages&quot;]
+    F --&gt; G[&quot;Folder/File nodes linked\nto Project via hierarchy&quot;]
+
+</div>
+<p>Phase 1 runs serially because file discovery is inherently sequential — you walk the directory tree, apply gitignore rules at each level, and emit structural nodes. The output is an array of file paths ready for extraction.</p>
+<p>Source: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.CodebaseMemory/codebase-memory-mcp/src/pipeline/pipeline.c</code></p>
+<pre><code class="language-c">int pass_discovery(cbm_pipeline_t *p) {
+    // Walk directory tree
+    cbm_discover_ctx_t *ctx = cbm_discover_new(p-&gt;repo_path);
+    cbm_array_t files;
+    cbm_array_init(&amp;files);
+
+    cbm_discover_files(ctx, &amp;files);
+
+    // Create structural nodes
+    cbm_buffer_add_project(p-&gt;buffer, p-&gt;project_name, p-&gt;repo_path);
+
+    for (int i = 0; i &lt; files.count; i++) {
+        const char *path = files.items[i];
+        cbm_buffer_add_file(p-&gt;buffer, path);
+
+        // Create folder nodes for parent directories
+        add_folder_nodes(p-&gt;buffer, path);
+    }
+
+    p-&gt;file_count = files.count;
+    p-&gt;files = files;
+    p-&gt;discovery = ctx;
+
+    cbm_log_info(&quot;Discovery: %d files, %d directories\n&quot;, files.count, folder_count);
+    return 0;
+}
+</code></pre>
+<h2>Phase 2: Definitions and Registry</h2>
+<p>Phase 2 extracts all definitions (functions, classes, methods) and builds the registry. The registry is a hash table mapping qualified names to node IDs, which Phase 3 uses for call resolution.</p>
+<pre><code class="language-c">int pass_definitions(cbm_pipeline_t *p) {
+    // Extract all definitions from all files
+    for (int i = 0; i &lt; p-&gt;file_count; i++) {
+        cbm_ctx_t ctx;
+        CBMArena arena;
+        cbm_arena_init(&amp;arena, CBM_ARENA_DEFAULT_BLOCK_SIZE);
+
+        ctx_init(&amp;ctx, p, p-&gt;files.items[i], &amp;arena);
+        cbm_extract_file(&amp;ctx, p-&gt;files.items[i], &amp;arena);
+
+        cbm_arena_destroy(&amp;arena);
+    }
+
+    // Build registry from extracted definitions
+    build_registry_from_cache(p);
+
+    cbm_log_info(&quot;Definitions: %d functions, %d classes, %d methods\n&quot;,
+                 p-&gt;registry-&gt;function_count,
+                 p-&gt;registry-&gt;class_count,
+                 p-&gt;registry-&gt;method_count);
+    return 0;
+}
+</code></pre>
+<h2>Registry: The Global Symbol Table</h2>
+<p>Source: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.CodebaseMemory/codebase-memory-mcp/src/pipeline/registry.c</code></p>
+<pre><code class="language-c">// Function/method registry entry
+typedef struct {
+    const char *qualified_name;   // &quot;auth.digest_auth&quot; (interned)
+    const char *file_path;        // Relative path
+    int64_t node_id;              // SQLite node ID
+    CBMLanguage language;
+    int start_line;
+} cbm_registry_entry_t;
+
+// Registry: hash table of all functions/methods
+typedef struct {
+    cbm_hash_table_t *table;      // Key: qualified_name, Value: entry
+    int entry_count;
+    int resolution_hits;          // CALLS edges resolved via registry
+    int resolution_misses;        // CALLS edges that could not be resolved
+    int lsp_fallbacks;            // CALLS edges resolved via LSP
+} cbm_registry_t;
+
+// Build registry from extracted definitions
+void build_registry_from_cache(cbm_pipeline_t *p);
+
+// Resolve a call to a registry entry
+cbm_registry_entry_t *registry_resolve(cbm_registry_t *reg, const char *callee);
+
+// LSP type-aware fallback when registry misses
+int registry_lsp_resolve(cbm_registry_t *reg, const char *callee, const char *caller_type);
+</code></pre>
+<p>The registry is built in two stages. First, all definitions are extracted and placed in a cache (the graph buffer). Then <code>build_registry_from_cache()</code> walks the buffer and populates the hash table. Resolution uses the hash table for O(1) lookup:</p>
+<pre><code class="language-c">cbm_registry_entry_t *registry_resolve(cbm_registry_t *reg, const char *callee) {
+    // Direct lookup in hash table
+    void *entry = cbm_hash_get(reg-&gt;table, callee);
+    if (entry) {
+        reg-&gt;resolution_hits++;
+        return entry;
+    }
+
+    reg-&gt;resolution_misses++;
+    return NULL;  // Caller must use LSP fallback or leave unresolved
+}
+</code></pre>
+<p><strong>Aha:</strong> The registry resolution is intentionally limited to bare function names. <code>digest_auth</code> resolves, but <code>auth.digest_auth</code> only resolves if the qualified name matches exactly. This means intra-file calls resolve cleanly (same module), while cross-file calls may need LSP. The trade-off is acceptable because the registry catches ~80% of calls in practice (same-file and same-module calls), and LSP handles the rest with type awareness.</p>
+<h2>Phase 3: Parallel Resolution</h2>
+<p>Phase 3 runs the bulk of extraction passes using a worker pool. The worker pool distributes files across threads, with each thread getting its own slab allocator for tree-sitter:</p>
+<p>Source: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.CodebaseMemory/codebase-memory-mcp/src/pipeline/worker_pool.h</code></p>
+<pre><code class="language-c">// Worker pool for parallel extraction
+typedef struct {
+    pthread_t *threads;
+    int num_threads;
+    cbm_array_t *work_queues;      // Per-thread work queue
+    cbm_array_t *result_buffers;   // Per-thread result buffer
+    pthread_mutex_t queue_mutex;
+    pthread_cond_t work_available;
+    pthread_cond_t work_done;
+    int active_workers;
+    int shutdown;
+} worker_pool_t;
+
+// Create worker pool (auto-detects CPU count, capped at 256)
+worker_pool_t *worker_pool_create(int max_threads);
+
+// Run a pass across all files using the worker pool
+int worker_pool_run_pass(worker_pool_t *pool, cbm_pipeline_t *p,
+                         void (*pass_fn)(cbm_pipeline_t *p, int file_idx));
+
+// Destroy worker pool
+void worker_pool_destroy(worker_pool_t *pool);
+</code></pre>
+<p>Source: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.CodebaseMemory/codebase-memory-mcp/src/pipeline/worker_pool.c</code></p>
+<pre><code class="language-c">// Worker thread main loop
+static void *worker_thread(void *arg) {
+    worker_pool_t *pool = arg;
+
+    // Install thread-local slab allocator for tree-sitter
+    CBMSlab slab;
+    cbm_slab_init(&amp;slab, SLAB_REGION_SIZE);
+    cbm_slab_install(&amp;slab);
+
+    while (!pool-&gt;shutdown) {
+        // Wait for work
+        pthread_mutex_lock(&amp;pool-&gt;queue_mutex);
+        while (pool-&gt;work_queue_empty &amp;&amp; !pool-&gt;shutdown) {
+            pthread_cond_wait(&amp;pool-&gt;work_available, &amp;pool-&gt;queue_mutex);
+        }
+
+        // Get work item
+        int file_idx = dequeue_work(pool);
+        pthread_mutex_unlock(&amp;pool-&gt;queue_mutex);
+
+        if (file_idx &gt;= 0) {
+            pool-&gt;active_workers++;
+            // Execute pass on this file
+            pass_fn(pool-&gt;pipeline, file_idx);
+            pool-&gt;active_workers--;
+
+            // Signal completion
+            pthread_mutex_lock(&amp;pool-&gt;queue_mutex);
+            pthread_cond_signal(&amp;pool-&gt;work_done);
+            pthread_mutex_unlock(&amp;pool-&gt;queue_mutex);
+        }
+    }
+
+    cbm_slab_destroy_thread(&amp;slab);
+    return NULL;
+}
+</code></pre>
+<h2>Pass Detail: Calls Resolution</h2>
+<p>Source: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.CodebaseMemory/codebase-memory-mcp/src/pipeline/pass_calls.c</code></p>
+<pre><code class="language-c">// Resolve calls using registry + LSP fallback
+int pass_calls(cbm_pipeline_t *p) {
+    // For each file with raw_calls from extraction:
+    for (int i = 0; i &lt; p-&gt;file_count; i++) {
+        cbm_raw_call_t *calls = get_raw_calls(p, i);
+        for (int j = 0; j &lt; calls-&gt;count; j++) {
+            cbm_raw_call_t *call = &amp;calls-&gt;items[j];
+
+            // Try registry first (fast, same-file/same-module)
+            cbm_registry_entry_t *entry = registry_resolve(p-&gt;registry, call-&gt;callee);
+            if (entry) {
+                // Emit CALLS edge: caller -&gt; callee
+                cbm_buffer_add_edge(p-&gt;buffer, &quot;CALLS&quot;,
+                                    call-&gt;caller_node_id, entry-&gt;node_id,
+                                    call-&gt;line);
+                continue;
+            }
+
+            // LSP fallback for cross-file resolution
+            if (lsp_resolve(call)) {
+                // LSP found the target
+                cbm_buffer_add_edge(p-&gt;buffer, &quot;CALLS&quot;, ...);
+            }
+            // If both miss, the call remains unresolved (no edge emitted)
+        }
+    }
+}
+</code></pre>
+<h2>Pass Detail: Similarity (MinHash)</h2>
+<p>Source: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.CodebaseMemory/codebase-memory-mcp/src/pipeline/pass_similarity.c</code></p>
+<pre><code class="language-c">// Compute MinHash fingerprints and emit SIMILAR_TO edges
+int pass_similarity(cbm_pipeline_t *p) {
+    cbm_minhash_ctx_t mh_ctx;
+    cbm_minhash_init(&amp;mh_ctx, CBM_MINHASH_K);
+
+    // Compute fingerprint for each node
+    for (int i = 0; i &lt; p-&gt;node_count; i++) {
+        cbm_node_t *node = get_node(p, i);
+        cbm_minhash_t fp = cbm_minhash_compute(&amp;mh_ctx, node);
+        set_property(node, &quot;fp&quot;, minhash_to_hex(&amp;fp));
+    }
+
+    // Build LSH index
+    cbm_lsh_t lsh;
+    cbm_lsh_init(&amp;lsh, CBM_LSH_BANDS, CBM_LSH_ROWS);
+    cbm_lsh_insert_all(&amp;lsh, p-&gt;nodes);
+
+    // Find candidates and emit SIMILAR_TO edges
+    for (int i = 0; i &lt; p-&gt;node_count; i++) {
+        cbm_array_t candidates;
+        cbm_lsh_query(&amp;lsh, p-&gt;nodes[i], &amp;candidates);
+
+        for (int j = 0; j &lt; candidates.count; j++) {
+            float jaccard = cbm_minhash_jaccard(&amp;p-&gt;nodes[i]-&gt;fp, &amp;candidates[j]-&gt;fp);
+            if (jaccard &gt;= CBM_MINHASH_JACCARD_THRESHOLD) {
+                cbm_buffer_add_edge(p-&gt;buffer, &quot;SIMILAR_TO&quot;,
+                                    p-&gt;nodes[i]-&gt;id, candidates[j]-&gt;id,
+                                    jaccard);
+            }
+        }
+    }
+
+    cbm_lsh_destroy(&amp;lsh);
+    return 0;
+}
+</code></pre>
+<h2>Pass Timing</h2>
+<p>The pipeline tracks per-pass timing for diagnostics:</p>
+<pre><code class="language-c">// In pipeline.c
+uint64_t pass_start = cbm_now_ns();
+pass_calls(p);
+uint64_t pass_end = cbm_now_ns();
+
+p-&gt;pass_times[p-&gt;pass_count] = pass_end - pass_start;
+p-&gt;pass_names[p-&gt;pass_count] = &quot;pass_calls&quot;;
+p-&gt;pass_count++;
+
+cbm_log_info(&quot;pass_calls: %.2fms\n&quot;, (pass_end - pass_start) / 1e6);
+</code></pre>
+<p>A typical Linux kernel index shows these pass times:</p>
+<table><tr><th>Pass</th><th>Time</th><th>Notes</th></tr><tr><td>Discovery</td><td>1.2s</td><td>75K files, gitignore parsing</td></tr><tr><td>Definitions</td><td>45s</td><td>158 languages, tree-sitter parse</td></tr><tr><td>Registry</td><td>0.8s</td><td>Hash table build</td></tr><tr><td>Calls</td><td>8s</td><td>Registry + LSP resolution</td></tr><tr><td>LSP Cross</td><td>12s</td><td>Cross-file type-aware</td></tr><tr><td>Similarity</td><td>5s</td><td>MinHash + LSH</td></tr><tr><td>Semantic Edges</td><td>10s</td><td>11-signal ensemble</td></tr><tr><td>All others</td><td>3s</td><td>Git, routes, config, infra</td></tr><tr><td>**Total**</td><td>**~180s**</td><td>3 minutes</td></tr></table>
+<h2>Aha Moment</h2>
+<p><strong>Aha:</strong> The pipeline is 22,049 lines because it does not try to do everything in one pass. Each pass is a separate concern with its own data requirements and output. The registry pass builds the symbol table. The calls pass consumes the symbol table. The similarity pass operates on the completed graph. This separation means each pass can be optimized independently, tested independently, and disabled independently. If semantic similarity is too expensive, set <code>CBM_SEMANTIC_ENABLED=0</code> and the pass is skipped without affecting the rest. This is much cleaner than a monolithic extractor where every feature is coupled to every other.</p>
+<h2>Cross-References</h2>
+<ul><li><a href="04-extraction.md">Extraction</a> for the per-file extraction engine called by the pipeline</li><li><a href="06-store.md">Store</a> for how the pipeline's graph buffer is flushed to SQLite</li><li><a href="09-semantic-similarity.md">Semantic Similarity</a> for the pass_similarity and pass_semantic_edges algorithms</li><li><a href="03-discovery.md">Discovery</a> for the pass_discovery implementation details</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
