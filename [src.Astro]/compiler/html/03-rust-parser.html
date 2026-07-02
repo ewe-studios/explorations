@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rust Parser -- oxc Integration and AST Scanning -- compiler</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/compiler/docs</span>
+    <div class="nav-actions">
+      <a href="00-overview.html" class="nav-breadcrumb">Overview -- The Astro Compiler</a><a href="01-go-parser.html" class="nav-breadcrumb">Go Parser -- Tokenization and Parsing</a><a href="02-go-printer.html" class="nav-breadcrumb">Go Printer -- Code Generation from AST to JavaScript</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="02-go-printer.html" class="nav-btn" title="Previous: Go Printer -- Code Generation from AST to JavaScript">← prev</a>
+      <a href="04-napi-bindings.html" class="nav-btn nav-btn-next" title="Next: N-API Bindings -- Native Node.js Interface for Rust Compiler">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Rust Parser: oxc Integration and AST Scanning</h1>
+<p>The Rust compiler delegates parsing to a forked oxc parser (<code>github.com/withastro/oxc</code>) that returns an <code>AstroRoot</code> AST — a JSX-based tree with Astro-specific node types for frontmatter and script elements. Analysis (metadata collection) runs as a separate single-pass visitor (<code>AstroScanner</code>) using oxc's <code>Visit</code> trait, cleanly separating parsing from analysis.</p>
+<h2>oxc Parser Integration</h2>
+<p>The Rust compiler uses a custom oxc fork with Astro-specific changes:</p>
+<pre><code class="language-toml"># Cargo.toml:16-34 — oxc dependencies from withastro/oxc fork
+oxc_allocator = { git = &quot;https://github.com/withastro/oxc&quot;, rev = &quot;c429ef28...&quot; }
+oxc_ast = { git = &quot;https://github.com/withastro/oxc&quot;, rev = &quot;c429ef28...&quot; }
+oxc_parser = { git = &quot;https://github.com/withastro/oxc&quot;, rev = &quot;c429ef28...&quot;, features = [&quot;regular_expression&quot;] }
+oxc_ast_visit = { git = &quot;https://github.com/withastro/oxc&quot;, rev = &quot;c429ef28...&quot; }
+oxc_codegen = { git = &quot;https://github.com/withastro/oxc&quot;, rev = &quot;c429ef28...&quot; }
+</code></pre>
+<p>The fork adds <code>SourceType::astro()</code> and <code>Parser::parse_astro()</code> which return <code>AstroRoot</code> instead of the standard <code>Program</code>. This gives the compiler a JSX-native AST with Astro extensions.</p>
+<p>Source: <code>compiler-rs/Cargo.toml:16-34</code></p>
+<h2>AstroRoot AST Structure</h2>
+<p>The <code>AstroRoot</code> node (from the oxc fork) is the document root. It contains:</p>
+<pre><code class="language-">AstroRoot
+├── frontmatter: Option&lt;AstroFrontmatter&gt;   ← TypeScript between --- fences
+│   └── program: Program                     ← oxc Program (JS/TS statements)
+├── body: Vec&lt;JSXChild&lt;&#x27;a&gt;&gt;                 ← Template content
+└── (inherited from JSX)
+
+AstroFrontmatter
+└── program: Program&lt;&#x27;a&gt;                    ← Parsed TypeScript AST
+
+AstroScript                                 ← Standalone &lt;script&gt; nodes
+└── program: Program&lt;&#x27;a&gt;                    ← Parsed script content
+
+JSXChild                                  ← Template children
+├── Text(JSXText)
+├── Element(JSXElement)
+├── Fragment(JSXFragment)
+├── ExpressionContainer(JSXExpressionContainer)
+├── Spread(JSXSpreadChild)
+├── AstroScript(AstroScript)               ← Parsed script (not raw text)
+├── AstroDoctype(JSXDoctype)
+└── AstroComment(JSXComment)
+</code></pre>
+
+<div class="mermaid">
+classDiagram
+    class AstroRoot {
+        +frontmatter: Option~AstroFrontmatter~
+        +body: Vec~JSXChild~
+    }
+    class AstroFrontmatter {
+        +program: Program
+    }
+    class AstroScript {
+        +program: Program
+    }
+    class JSXChild {
+        &lt;&lt;enumeration&gt;&gt;
+        Text
+        Element
+        Fragment
+        ExpressionContainer
+        Spread
+        AstroScript
+        AstroDoctype
+        AstroComment
+    }
+    class JSXElement {
+        +opening_element: JSXOpeningElement
+        +children: Vec~JSXChild~
+        +closing_element: Option~JSXClosingElement~
+    }
+    class JSXOpeningElement {
+        +name: JSXElementName
+        +attributes: Vec~JSXAttributeItem~
+    }
+    
+    AstroRoot *-- AstroFrontmatter
+    AstroRoot *-- JSXChild
+    JSXChild *-- JSXElement
+    JSXChild *-- AstroScript
+    AstroFrontmatter *-- Program
+    AstroScript *-- Program
+    JSXElement *-- JSXOpeningElement
+
+</div>
+<h2>The Transform Entry Point</h2>
+<p>The <code>transform</code> function (<code>crates/astro_codegen/src/printer/mod.rs:176-185</code>) is the primary entry point:</p>
+<pre><code class="language-rust">// crates/astro_codegen/src/printer/mod.rs:176-185
+pub fn transform&lt;&#x27;a&gt;(
+    allocator: &amp;&#x27;a Allocator,
+    source_text: &amp;&#x27;a str,
+    options: TransformOptions,
+    root: &amp;&#x27;a AstroRoot&lt;&#x27;a&gt;,
+) -&gt; TransformResult {
+    // Pass 1: Analysis
+    let scan_result = AstroScanner::new(allocator).scan(root);
+    // Pass 2: Code generation
+    let codegen = AstroCodegen::new(allocator, source_text, options, scan_result);
+    codegen.build(root)
+}
+</code></pre>
+<p>Source: <code>crates/astro_codegen/src/printer/mod.rs:176-185</code></p>
+<h2>AstroScanner: Single-Pass Metadata Collection</h2>
+<p>The <code>AstroScanner</code> (<code>crates/astro_codegen/src/scanner.rs:61-103</code>) walks the AST once using oxc's <code>Visit</code> trait, collecting metadata that the printer needs:</p>
+<pre><code class="language-rust">// crates/astro_codegen/src/scanner.rs:29-52
+pub struct ScanResult {
+    pub uses_astro_global: bool,                  // Astro.xxx in frontmatter
+    pub uses_transitions: bool,                   // transition:* directives
+    pub has_await: bool,                          // await expressions (needs async)
+    pub client_only_component_names: FxHashSet&lt;String&gt;, // client:only names
+    pub hydrated_components: Vec&lt;HydratedComponent&gt;,    // client:* components
+    pub client_only_components: Vec&lt;HydratedComponent&gt;, // client:only components
+    pub server_deferred_components: Vec&lt;HydratedComponent&gt;, // server:defer
+    pub hydration_directives: Vec&lt;String&gt;,        // &quot;load&quot;, &quot;visible&quot;, &quot;only&quot;
+    pub hoisted_scripts: Vec&lt;TransformResultHoistedScript&gt;,
+    pub has_template_element: bool,               // &lt;template&gt; exists
+}
+</code></pre>
+<p>Source: <code>crates/astro_codegen/src/scanner.rs:29-52</code></p>
+<h2>Scanner Implementation</h2>
+<p>The scanner implements <code>Visit<'a></code> (<code>crates/astro_codegen/src/scanner.rs:308-377</code>):</p>
+<div class="mermaid">
+flowchart TD
+    A[AstroScanner.scan root] --&gt; B[visit_astro_root]
+    B --&gt; C[walk frontmatter statements]
+    C --&gt; D[visit_identifier_reference: detect Astro global]
+    D --&gt; E[visit_await_expression: detect await]
+    E --&gt; F[walk template JSX children]
+    F --&gt; G[visit_jsx_element]
+    G --&gt; H[process_element_directives]
+    H --&gt; I{attribute name?}
+    I --&gt;|client:only| J[track client-only component]
+    I --&gt;|client:*| K[track hydrated component]
+    I --&gt;|server:defer| L[track server-deferred component]
+    I --&gt;|transition:*| M[set uses_transitions]
+    G --&gt; N{name == script?}
+    N --&gt;|Yes| O[try_collect_script: hoist]
+    N --&gt;|No| P[continue walk]
+    P --&gt; Q[visit_astro_script: standalone scripts]
+    O --&gt; Q
+    Q --&gt; R[ScanResult]
+
+</div>
+<p>The key visitor methods:</p>
+<pre><code class="language-rust">// crates/astro_codegen/src/scanner.rs:308-377
+impl&lt;&#x27;a&gt; Visit&lt;&#x27;a&gt; for AstroScanner&lt;&#x27;a&gt; {
+    fn visit_identifier_reference(&amp;mut self, ident: &amp;IdentifierReference&lt;&#x27;a&gt;) {
+        if ident.name == &quot;Astro&quot; {
+            self.uses_astro_global = true;
+        }
+    }
+    
+    fn visit_jsx_element(&amp;mut self, el: &amp;JSXElement&lt;&#x27;a&gt;) {
+        self.process_element_directives(&amp;el.opening_element);
+        let name = get_jsx_element_name(&amp;el.opening_element.name);
+        
+        if name == &quot;template&quot; {
+            self.has_template_element = true;
+        }
+        
+        if name == &quot;script&quot; {
+            if !self.in_non_hoistable &amp;&amp; should_hoist_script(&amp;el.opening_element.attributes) {
+                self.try_collect_script(el);
+            }
+            return; // Don&#x27;t walk script children
+        }
+        
+        // Track non-hoistable context (svg, noscript, template)
+        let is_non_hoistable = matches!(name.as_str(), &quot;svg&quot; | &quot;noscript&quot; | &quot;template&quot;);
+        let was = self.in_non_hoistable;
+        if is_non_hoistable { self.in_non_hoistable = true; }
+        walk::walk_jsx_element(self, el);
+        self.in_non_hoistable = was;
+    }
+    
+    fn visit_await_expression(&amp;mut self, _it: &amp;AwaitExpression&lt;&#x27;a&gt;) {
+        self.has_await = true;
+    }
+    
+    fn visit_astro_script(&amp;mut self, script: &amp;AstroScript&lt;&#x27;a&gt;) {
+        self.collect_script_from_program(&amp;script.program, &amp;[]);
+    }
+}
+</code></pre>
+<p>Source: <code>crates/astro_codegen/src/scanner.rs:308-377</code></p>
+<h2>Directive Detection</h2>
+<p>The <code>process_element_directives</code> method (<code>crates/astro_codegen/src/scanner.rs:123-195</code>) scans attributes for directives:</p>
+<pre><code class="language-rust">// crates/astro_codegen/src/scanner.rs:123-195
+fn process_element_directives(&amp;mut self, el: &amp;JSXOpeningElement&lt;&#x27;a&gt;) {
+    for attr in &amp;el.attributes {
+        let attr_name = get_jsx_attribute_name(&amp;attr.name);
+        
+        // transition:* detection
+        if attr_name.starts_with(&quot;transition:&quot;) {
+            self.uses_transitions = true;
+        }
+        
+        // server:defer detection
+        if attr_name == &quot;server:defer&quot; &amp;&amp; is_component {
+            self.server_deferred_components.push(HydratedComponent { ... });
+        }
+        
+        // client:* detection
+        if let Some(directive) = attr_name.strip_prefix(&quot;client:&quot;) {
+            if directive == &quot;only&quot; {
+                self.client_only_component_names.insert(name.clone());
+                self.client_only_components.push(HydratedComponent { ... });
+                self.hydration_directives.push(&quot;only&quot;.to_string());
+            } else {
+                self.hydration_directives.push(directive.to_string());
+                self.hydrated_components.push(HydratedComponent { ... });
+            }
+            break; // Only first client:* directive
+        }
+    }
+}
+</code></pre>
+<p>Source: <code>crates/astro_codegen/src/scanner.rs:123-195</code></p>
+<p>Aha: The scanner only tracks metadata — it never modifies the AST. This is a clean separation: the scanner asks "what's in this file?" and the printer asks "how do I emit it?" The Go compiler mixes both concerns (transform modifies the AST in place). The Rust approach means the scanner could run in parallel with other analysis passes without race conditions.</p>
+<h2>Script Hoisting Logic</h2>
+<p>The <code>should_hoist_script</code> function (<code>crates/astro_codegen/src/scanner.rs:421-463</code>) determines which <code><script></code> elements get bundled:</p>
+<pre><code class="language-rust">// crates/astro_codegen/src/scanner.rs:421-463
+pub fn should_hoist_script(attrs: &amp;Vec&lt;JSXAttributeItem&gt;) -&gt; bool {
+    let mut has_type_module = false;
+    let mut has_src = false;
+    let mut has_other = false;
+    let mut is_inline = false;
+    let mut has_define_vars = false;
+    
+    for attr in attrs {
+        match attr_name.as_str() {
+            &quot;is:inline&quot; =&gt; is_inline = true,
+            &quot;define:vars&quot; =&gt; has_define_vars = true,
+            &quot;src&quot; =&gt; has_src = true,
+            &quot;type&quot; =&gt; { if value == &quot;module&quot; { has_type_module = true } else { has_other = true } }
+            _ =&gt; has_other = true,
+        }
+    }
+    
+    // is:inline or define:vars: never hoist
+    if is_inline || has_define_vars { return false; }
+    
+    // src attribute: only hoistable if it&#x27;s the sole attribute
+    if has_src { return !has_type_module &amp;&amp; !has_other; }
+    
+    // No attributes or just type=&quot;module&quot;: hoistable
+    attrs.is_empty() || (has_type_module &amp;&amp; !has_other)
+}
+</code></pre>
+<p>Source: <code>crates/astro_codegen/src/scanner.rs:421-463</code></p>
+<h2>Helper Functions</h2>
+<p>Shared helpers (<code>crates/astro_codegen/src/scanner.rs:381-417</code>):</p>
+<pre><code class="language-rust">// crates/astro_codegen/src/scanner.rs:411-417
+pub fn is_component_name(name: &amp;str) -&gt; bool {
+    name.starts_with(|c: char| c.is_ascii_uppercase()) 
+        || name.contains(&#x27;.&#x27;) 
+        || name.contains(&#x27;:&#x27;)
+}
+
+pub fn is_custom_element(name: &amp;str) -&gt; bool {
+    name.contains(&#x27;-&#x27;)
+}
+</code></pre>
+<p>These match the Go compiler's <code>isComponent</code> and <code>isCustomElement</code> functions exactly.</p>
+<p>Source: <code>compiler/internal/parser.go:407-416</code> (Go equivalent).</p>
+<h2>Await Detection</h2>
+<p>The scanner detects three forms of async usage (<code>crates/astro_codegen/src/scanner.rs:354-369</code>):</p>
+<pre><code class="language-rust">// await expression: await fetch(...)
+fn visit_await_expression(&amp;mut self, ...) { self.has_await = true; }
+
+// for await (... of ...): needs async but is NOT an AwaitExpression
+fn visit_for_of_statement(&amp;mut self, it: &amp;ForOfStatement) {
+    self.has_await |= it.r#await;
+    walk::walk_for_of_statement(self, it);
+}
+
+// await using x = ...: needs async but is NOT an AwaitExpression  
+fn visit_variable_declaration(&amp;mut self, it: &amp;VariableDeclaration) {
+    self.has_await |= it.kind == VariableDeclarationKind::AwaitUsing;
+    walk::walk_variable_declaration(self, it);
+}
+</code></pre>
+<p>Source: <code>crates/astro_codegen/src/scanner.rs:354-369</code></p>
+<p>Aha: The <code>for await...of</code> and <code>await using</code> constructs are NOT <code>AwaitExpression</code> nodes in the AST — they're separate statement/declaration types with an <code>await</code> flag. The scanner must check these explicitly, or the printer would emit non-async wrappers around <code>await</code>-containing code, producing invalid JavaScript.</p>
+<h2>Next Steps</h2>
+<p>Continue to N-API bindings: <a href="./04-napi-bindings.md">N-API Bindings</a></p>
+<p>Related documents:</p>
+<ul><li><a href="./01-go-parser.md">Go Parser</a> — Hand-written parser the Rust version replaces</li><li><a href="./06-code-generation.md">Code Generation</a> — How the scanner's results feed into codegen</li><li><a href="./05-ast-transforms.md">AST Transforms</a> — Go equivalent transform pass</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

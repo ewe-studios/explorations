@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AST Transforms -- CSS Scoping, Directives, and Metadata -- compiler</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/compiler/docs</span>
+    <div class="nav-actions">
+      <a href="02-go-printer.html" class="nav-breadcrumb">Go Printer -- Code Generation from AST to JavaScript</a><a href="03-rust-parser.html" class="nav-breadcrumb">Rust Parser -- oxc Integration and AST Scanning</a><a href="04-napi-bindings.html" class="nav-breadcrumb">N-API Bindings -- Native Node.js Interface for Rust Compiler</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="04-napi-bindings.html" class="nav-btn" title="Previous: N-API Bindings -- Native Node.js Interface for Rust Compiler">← prev</a>
+      <a href="06-code-generation.html" class="nav-btn nav-btn-next" title="Next: Code Generation -- Building the JavaScript Output">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>AST Transforms: CSS Scoping, Directives, and Metadata</h1>
+<p>The transform pass mutates the parsed AST before printing: it scopes CSS selectors to component hashes, converts directives like <code>set:html</code> and <code>define:vars</code> into runtime function calls, extracts component metadata for hydration, and collapses whitespace. The Go compiler modifies the AST in-place; the Rust compiler separates analysis (scanner) from mutation-free code generation.</p>
+<h2>Go Transform Entry Point</h2>
+<p>The <code>Transform</code> function (<code>internal/transform/transform.go:49-128</code>) walks the AST once and applies all transformations:</p>
+<pre><code class="language-go">// internal/transform/transform.go:49-128
+func Transform(doc *astro.Node, opts TransformOptions, h *handler.Handler) *astro.Node {
+    shouldScope := len(doc.Styles) &gt; 0 &amp;&amp; ScopeStyle(doc.Styles, opts)
+    definedVars := GetDefineVars(doc.Styles)
+
+    walk(doc, func(n *astro.Node) {
+        WarnAboutRerunOnExternalESMs(n, h)
+        WarnAboutMisplacedReload(n, h)
+        HintAboutImplicitInlineDirective(n, h)
+        ExtractScript(doc, n, &amp;opts, h)
+        AddComponentProps(doc, n, &amp;opts)
+        if shouldScope { ScopeElement(n, opts) }
+        if HasAttr(n, &quot;transition:animate&quot;) || ... {
+            doc.Transition = true
+            doc.HeadPropagation = true
+            getOrCreateTransitionScope(n, &amp;opts, i)
+        }
+        if HasAttr(n, &quot;server:defer&quot;) {
+            doc.HeadPropagation = true
+        }
+        if len(definedVars) &gt; 0 {
+            didAdd := AddDefineVars(n, definedVars)
+        }
+        mergeClassList(doc, n, &amp;opts)
+        if n.DataAtom == a.Head { doc.ContainsHead = true }
+        if opts.AnnotateSourceFile { AnnotateElement(n, opts) }
+    })
+
+    NormalizeSetDirectives(doc, h)
+    TrimTrailingSpace(doc)
+
+    // Whitespace collapse
+    switch opts.Compact {
+    case CompactJSX: collapseWhitespaceJSX(doc)
+    case CompactNone: /* no-op */
+    }
+
+    return doc
+}
+</code></pre>
+<p>Source: <code>internal/transform/transform.go:49-128</code></p>
+<div class="mermaid">
+flowchart TD
+    A[Transform called with AST] --&gt; B[ScopeStyle: parse CSS, add selectors]
+    B --&gt; C[GetDefineVars: collect define:vars values]
+    C --&gt; D[Single-pass walk]
+    D --&gt; E[WarnAboutRerunOnExternalESMs]
+    D --&gt; F[WarnAboutMisplacedReload]
+    D --&gt; G[ExtractScript: hoist scripts]
+    D --&gt; H[AddComponentProps: client:* metadata]
+    D --&gt; I[ScopeElement: add data-astro-id]
+    D --&gt; J[getOrCreateTransitionScope]
+    D --&gt; K[AddDefineVars: inject vars into elements]
+    D --&gt; L[mergeClassList: class + class:list merge]
+    D --&gt; M[AnnotateElement: source file annotation]
+    E --&gt; N[NormalizeSetDirectives: set:html/set:text]
+    N --&gt; O[TrimTrailingSpace]
+    O --&gt; P[collapseWhitespace or collapseWhitespaceJSX]
+    P --&gt; Q[Transformed AST]
+
+</div>
+<h2>TransformOptions</h2>
+<pre><code class="language-go">// internal/transform/transform.go:33-47
+type TransformOptions struct {
+    Scope                   string                  // CSS scope hash
+    Filename                string                  // Source file path
+    NormalizedFilename      string                  // Normalized for hash
+    InternalURL             string                  // Runtime import specifier
+    SourceMap               string                  // Sourcemap mode
+    AstroGlobalArgs         string                  // $$createAstro arguments
+    ScopedStyleStrategy     string                  // where/class/attribute
+    Compact                 CompactMode             // none/default/jsx
+    ResultScopedSlot        bool                    // Scoped slot result
+    TransitionsAnimationURL string                  // View transitions CSS URL
+    ResolvePath             func(string) string     // Custom path resolver
+    PreprocessStyle         interface{}             // Style preprocessing callback
+    AnnotateSourceFile      bool                    // Source file annotation
+}
+</code></pre>
+<p>Source: <code>internal/transform/transform.go:33-47</code></p>
+<h2>CSS Scoping</h2>
+<p>The <code>ScopeStyle</code> function (<code>internal/transform/scope-css.go:18-59</code>) transforms CSS selectors to be component-scoped:</p>
+<pre><code class="language-go">// internal/transform/scope-css.go:18-59
+func ScopeStyle(styles []*astro.Node, opts TransformOptions) bool {
+    for _, n := range styles {
+        if n.DataAtom != a.Style { continue }
+        if hasTruthyAttr(n, &quot;global&quot;) { continue }      // Deprecated
+        if hasTruthyAttr(n, &quot;is:global&quot;) { continue }    // Global styles
+        if n.FirstChild == nil || strings.TrimSpace(n.FirstChild.Data) == &quot;&quot; {
+            if !HasAttr(n, &quot;define:vars&quot;) { continue }
+        }
+
+        didScope = true
+        // Add data-astro-id attribute to style element
+        n.Attr = append(n.Attr, astro.Attribute{
+            Key: &quot;data-astro-id&quot;, Val: opts.Scope,
+        })
+
+        // Parse CSS with esbuild&#x27;s CSS parser
+        tree := css_parser.Parse(..., n.FirstChild.Data, ...)
+
+        // Print with scoping strategy
+        result := css_printer.Print(tree, css_printer.Options{
+            Scope: opts.Scope,
+            ScopeStrategy: scopeStrategy,
+        })
+        n.FirstChild.Data = string(result.CSS)
+    }
+    return didScope
+}
+</code></pre>
+<p>Source: <code>internal/transform/scope-css.go:18-59</code></p>
+<p>The scope strategy options (<code>css_printer.Options</code>):</p>
+<table><tr><th>Strategy</th><th>CSS Output</th><th>Selector Size</th></tr><tr><td>`where` (default)</td><td>`:where(.astro-XXXX) h1`</td><td>17 chars hash</td></tr><tr><td>`class`</td><td>`.astro-XXXX h1`</td><td>17 chars hash</td></tr><tr><td>`attribute`</td><td>`[data-astro-cid-XXXX] h1`</td><td>27 chars hash</td></tr></table>
+<p>Source: <code>internal/transform/scope-css.go:44-49</code></p>
+<h2>Rust CSS Scoping</h2>
+<p>The Rust compiler's <code>css_scoping.rs</code> implements equivalent logic using <code>lightningcss</code>:</p>
+<pre><code class="language-rust">// crates/astro_codegen/src/css_scoping.rs
+// Uses lightningcss for CSS parsing and selector transformation
+// ScopeStrategy enum mirrors Go: Where, Class, Attribute
+</code></pre>
+<p>Source: <code>compiler-rs/crates/astro_codegen/src/css_scoping.rs</code></p>
+<h2>Directive Normalization</h2>
+<h3>set:html and set:text</h3>
+<p>The <code>NormalizeSetDirectives</code> function (<code>internal/transform/transform.go:179-279</code>) converts <code>set:html</code> and <code>set:text</code> attributes into expression children:</p>
+<pre><code class="language-go">// internal/transform/transform.go:179-279
+func NormalizeSetDirectives(doc *astro.Node, h *handler.Handler) {
+    walk(doc, func(n *astro.Node) {
+        if n.Type == astro.ElementNode &amp;&amp; HasSetDirective(n) {
+            for _, attr := range n.Attr {
+                if attr.Key == &quot;set:html&quot; || attr.Key == &quot;set:text&quot; {
+                    n.RemoveAttribute(attr.Key)
+
+                    var nodeToAppend *astro.Node
+                    var shouldAddExpression bool
+
+                    switch attr.Type {
+                    case astro.QuotedAttribute:
+                        // set:html=&quot;raw &lt;b&gt;html&lt;/b&gt;&quot; -&gt; $$unescapeHTML(&quot;raw &lt;b&gt;html&lt;/b&gt;&quot;)
+                        data = fmt.Sprintf(&quot;\&quot;%s\&quot;&quot;, attr.Val)
+                        shouldAddExpression = attr.Key == &quot;set:html&quot;
+                    case astro.ExpressionAttribute:
+                        // set:html={htmlString} -&gt; $$unescapeHTML(htmlString)
+                        if attr.Key == &quot;set:html&quot; {
+                            data = fmt.Sprintf(&quot;$$unescapeHTML(%s)&quot;, attr.Val)
+                        }
+                        shouldAddExpression = true
+                    }
+
+                    if shouldAddExpression {
+                        nodeToAppend = &amp;astro.Node{
+                            Type: astro.ElementNode,
+                            Data: &quot;astro:expression&quot;,
+                            Expression: true,
+                        }
+                        nodeToAppend.AppendChild(&amp;astro.Node{
+                            Type: astro.TextNode, Data: data,
+                        })
+                    }
+
+                    // Warn if existing children will be overwritten
+                    for c := n.FirstChild; c != nil; c = c.NextSibling {
+                        if c.Type == astro.CommentNode || ... {
+                            h.AppendWarning(&amp;loc.ErrorWithRange{
+                                Code: loc.WARNING_SET_WITH_CHILDREN,
+                                Text: fmt.Sprintf(&quot;%s directive will overwrite child nodes.&quot;, attr.Key),
+                                Hint: &quot;Remove the child nodes to suppress this warning.&quot;,
+                            })
+                        }
+                    }
+                    n.AppendChild(nodeToAppend)
+                }
+            }
+        }
+    })
+}
+</code></pre>
+<p>Source: <code>internal/transform/transform.go:179-279</code></p>
+<p>Aha: The <code>set:html</code> directive wraps the value in <code>$$unescapeHTML()</code> to allow raw HTML injection. <code>set:text</code> does NOT -- it just renders as a text node. This distinction prevents XSS from <code>set:text</code> (which always escapes) while allowing intentional HTML injection via <code>set:html</code>. The transform converts a simple attribute into an expression child node, letting the printer handle it uniformly.</p>
+<h2>Script Extraction</h2>
+<p>The <code>ExtractScript</code> function (<code>internal/transform/transform.go:535-589</code>) collects hoistable scripts:</p>
+<pre><code class="language-go">// internal/transform/transform.go:535-589
+func ExtractScript(doc *astro.Node, n *astro.Node, opts *TransformOptions, h *handler.Handler) {
+    if n.Type == astro.ElementNode &amp;&amp; n.DataAtom == a.Script {
+        if HasSetDirective(n) || HasInlineDirective(n) { return }
+        if !IsHoistable(n, true) { return }
+
+        // Hoist scripts that have: no attributes, only src, or hoist attribute
+        if len(n.Attr) == 0 || (len(n.Attr) == 1 &amp;&amp; n.Attr[0].Key == &quot;src&quot;) {
+            doc.Scripts = append(doc.Scripts, n)
+            n.HandledScript = true
+        }
+    }
+}
+</code></pre>
+<p>Source: <code>internal/transform/transform.go:535-589</code></p>
+<h2>Component Props and Hydration Metadata</h2>
+<p><code>AddComponentProps</code> (<code>internal/transform/transform.go:604-697</code>) resolves client:<em>/server:</em> directives:</p>
+<pre><code class="language-go">// internal/transform/transform.go:604-697
+func AddComponentProps(doc *astro.Node, n *astro.Node, opts *TransformOptions) {
+    if n.Type == astro.ElementNode &amp;&amp; (n.Component || n.CustomElement) {
+        for _, attr := range n.Attr {
+            if strings.HasPrefix(attr.Key, &quot;client:&quot;) {
+                directive := parts[1]
+                doc.HydrationDirectives[directive] = true
+
+                if attr.Key == &quot;client:only&quot; {
+                    doc.ClientOnlyComponentNodes = append(doc.ClientOnlyComponentNodes, n)
+                    // Match to import statement
+                    match := matchNodeToImportStatement(doc, n)
+                    if match != nil {
+                        doc.ClientOnlyComponents = append(doc.ClientOnlyComponents, &amp;HydratedComponentMetadata{
+                            ExportName: match.ExportName,
+                            Specifier: match.Specifier,
+                            ResolvedPath: ResolveIdForMatch(match.Specifier, opts),
+                        })
+                    }
+                    // Add client:component-path and client:component-export attrs
+                    break
+                }
+
+                // For regular client:* directives
+                doc.HydratedComponentNodes = append(doc.HydratedComponentNodes, n)
+                // ... similar import matching
+            }
+
+            // server:* handling (similar pattern)
+            if strings.HasPrefix(attr.Key, &quot;server:&quot;) {
+                // server:defer, etc.
+            }
+        }
+    }
+}
+</code></pre>
+<p>Source: <code>internal/transform/transform.go:604-697</code></p>
+<h2>Import Matching</h2>
+<p><code>matchNodeToImportStatement</code> (<code>internal/transform/transform.go:704-722</code>) scans frontmatter imports to find the matching module for a component name:</p>
+<pre><code class="language-go">// internal/transform/transform.go:704-722
+func matchNodeToImportStatement(doc *astro.Node, n *astro.Node) *ImportMatch {
+    eachImportStatement(doc, func(stmt js_scanner.ImportStatement) bool {
+        for _, imported := range stmt.Imports {
+            exportName, isUsed := js_scanner.ExtractComponentExportName(n.Data, imported)
+            if isUsed {
+                match = &amp;ImportMatch{
+                    ExportName: exportName,
+                    Specifier: stmt.Specifier,
+                }
+                return false // Stop iterating
+            }
+        }
+        return true
+    })
+    return match
+}
+</code></pre>
+<p>Source: <code>internal/transform/transform.go:704-722</code></p>
+<h2>Whitespace Collapsing</h2>
+<p>The Go compiler implements two whitespace strategies (<code>internal/transform/transform.go:327-493</code>):</p>
+<h3>collapseWhitespace (HTML-aware)</h3>
+<pre><code class="language-go">// internal/transform/transform.go:327-394
+func collapseWhitespace(doc *astro.Node) {
+    walk(doc, func(n *astro.Node) {
+        if n.Type == astro.TextNode {
+            if n.Closest(isRawElement) != nil { return }  // Don&#x27;t touch raw
+
+            if n.Parent != nil &amp;&amp; n.Parent.Expression {
+                // Inside expressions: trim first/last child
+                if n.PrevSibling == nil { n.Data = strings.TrimLeftFunc(...) }
+                if n.NextSibling == nil { n.Data = strings.TrimRightFunc(...) }
+                return
+            }
+
+            // Lone whitespace-only text node
+            if len(strings.TrimFunc(n.Data, unicode.IsSpace)) == 0 {
+                if n.PrevSibling == nil &amp;&amp; n.NextSibling == nil {
+                    n.Data = &quot;&quot;  // Clear
+                } else {
+                    n.Data = &quot; &quot; // Collapse to single space
+                }
+                return
+            }
+
+            // Collapse leading/trailing whitespace
+            // Newlines preserved as \n, spaces as single space
+        }
+    })
+}
+</code></pre>
+<p>Source: <code>internal/transform/transform.go:327-394</code></p>
+<h3>collapseWhitespaceJSX (JSX-style)</h3>
+<p>The JSX version (<code>internal/transform/transform.go:409-493</code>) implements the same algorithm as esbuild/Babel:</p>
+<pre><code class="language-go">// internal/transform/transform.go:409-464
+func cleanJSXTextWhitespace(text string) string {
+    // First line: preserve leading, trim trailing
+    // Middle lines: trim both, join with single space
+    // Last line: preserve trailing, trim leading
+    // Empty lines: contribute nothing
+}
+</code></pre>
+<p>This matches esbuild's <code>fixWhitespaceAndDecodeJSXEntities</code> exactly.</p>
+<p>Source: <code>internal/transform/transform.go:409-464</code></p>
+<h2>Rust Scanner Equivalence</h2>
+<p>The Rust compiler achieves the same results through the scanner pass:</p>
+<table><tr><th>Go Transform</th><th>Rust Scanner</th></tr><tr><td>`ScopeStyle`</td><td>`css_scoping.rs` (called during codegen)</td></tr><tr><td>`NormalizeSetDirectives`</td><td>Handled directly in printer</td></tr><tr><td>`ExtractScript`</td><td>`AstroScanner::try_collect_script`</td></tr><tr><td>`AddComponentProps`</td><td>`AstroScanner::process_element_directives`</td></tr><tr><td>`GetDefineVars`</td><td>`define_vars_values` in codegen</td></tr><tr><td>`collapseWhitespace`</td><td>`collapse_html` / `collapse_jsx` in whitespace.rs</td></tr><tr><td>`walk` function</td><td>`oxc_ast_visit::Visit` trait</td></tr></table>
+<div class="mermaid">
+flowchart LR
+    subgraph Go Compiler
+        A[Parse AST] --&gt; B[Transform Pass]
+        B --&gt; C[Mutate AST in-place]
+        C --&gt; D[Printer consumes]
+    end
+
+    subgraph Rust Compiler
+        E[Parse AST] --&gt; F[Scanner Pass]
+        F --&gt; G[Collect metadata]
+        E --&gt; H[Codegen Pass]
+        H --&gt; I[Reads metadata, generates code]
+        G -.-&gt; H
+    end
+
+</div>
+<h2>The Walk Function</h2>
+<pre><code class="language-go">// internal/transform/transform.go:748-757
+func walk(doc *astro.Node, cb func(*astro.Node)) {
+    var f func(*astro.Node)
+    f = func(n *astro.Node) {
+        cb(n)
+        for c := n.FirstChild; c != nil; c = c.NextSibling {
+            f(c)
+        }
+    }
+    f(doc)
+}
+</code></pre>
+<p>Source: <code>internal/transform/transform.go:748-757</code></p>
+<p>Simple pre-order depth-first traversal. The callback can mutate nodes, collect data, or trigger warnings.</p>
+<h2>class:list Merging</h2>
+<p><code>mergeClassList</code> (<code>internal/transform/transform.go:760-800</code>) combines <code>class</code> and <code>class:list</code> attributes:</p>
+<pre><code class="language-go">// internal/transform/transform.go:760-800
+func mergeClassList(doc *astro.Node, n *astro.Node, opts *TransformOptions) {
+    if classListAttrIndex &gt;= 0 &amp;&amp; classAttrIndex &gt;= 0 {
+        if classAttrType == astro.ExpressionAttribute {
+            n.Attr[classListAttrIndex].Val = fmt.Sprintf(&quot;[%s, %s]&quot;, classAttrValue, classListAttrValue)
+        } else {
+            n.Attr[classListAttrIndex].Val = fmt.Sprintf(&quot;[&#x27;%s&#x27;, %s]&quot;, classAttrValue, classListAttrValue)
+        }
+        n.Attr = remove(n.Attr, classAttrIndex)  // Remove the class attribute
+    }
+}
+</code></pre>
+<p>Source: <code>internal/transform/transform.go:760-800</code></p>
+<h2>Next Steps</h2>
+<p>Continue to code generation: <a href="./06-code-generation.md">Code Generation</a></p>
+<p>Related documents:</p>
+<ul><li><a href="./02-go-printer.md">Go Printer</a> -- Consumes the transformed AST</li><li><a href="./03-rust-parser.md">Rust Parser</a> -- Scanner replaces transform in Rust</li><li><a href="./09-cross-cutting.md">Cross-Cutting</a> -- Whitespace strategies compared</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

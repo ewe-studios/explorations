@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Go Parser -- Tokenization and Parsing -- compiler</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/compiler/docs</span>
+    <div class="nav-actions">
+      <a href="00-overview.html" class="nav-breadcrumb">Overview -- The Astro Compiler</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="00-overview.html" class="nav-btn" title="Previous: Overview -- The Astro Compiler">← prev</a>
+      <a href="02-go-printer.html" class="nav-btn nav-btn-next" title="Next: Go Printer -- Code Generation from AST to JavaScript">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Go Parser: Tokenization and Parsing</h1>
+<p>The Go compiler parses .astro files using a custom tokenizer that extends Go's <code>golang.org/x/net/html</code> package with Astro-specific token types (frontmatter fences, expression delimiters), feeding into an HTML5-compliant parser augmented with 12 Astro-aware insertion modes. The tokenizer runs in multiple states (frontmatter loop, expression loop, raw text loop) via goto-based state machine transitions.</p>
+<h2>Token Types and Attribute Types</h2>
+<p>The tokenizer (<code>internal/token.go:24-48</code>) defines 10 token types:</p>
+<pre><code class="language-go">// internal/token.go:24-48
+const (
+    ErrorToken TokenType = iota       // Parsing error or EOF
+    TextToken                         // Plain text content
+    StartTagToken                     // &lt;div&gt;, &lt;Component&gt;
+    EndTagToken                       // &lt;/div&gt;
+    SelfClosingTagToken               // &lt;br/&gt;, &lt;input/&gt;
+    CommentToken                      // &lt;!-- ... --&gt;
+    DoctypeToken                      // &lt;!DOCTYPE html&gt;
+    FrontmatterFenceToken             // --- (opening or closing)
+    StartExpressionToken              // { (beginning of expression)
+    EndExpressionToken                // } (end of expression)
+)
+</code></pre>
+<p>Attribute types (<code>internal/token.go:80-87</code>) cover six variations:</p>
+<pre><code class="language-go">// internal/token.go:80-87
+const (
+    QuotedAttribute        // class=&quot;my-class&quot;
+    EmptyAttribute         // disabled
+    ExpressionAttribute    // onClick={() =&gt; {}}
+    SpreadAttribute        // {...props}
+    ShorthandAttribute     // {className}
+    TemplateLiteralAttribute // title=`Hello ${name}`
+)
+</code></pre>
+<p>Frontmatter state tracking (<code>internal/token.go:53-57</code>) uses three states:</p>
+<pre><code class="language-go">// internal/token.go:53-57
+const (
+    FrontmatterInitial FrontmatterState = iota  // Not yet seen ---
+    FrontmatterOpen                               // Between opening and closing ---
+    FrontmatterClosed                             // After closing ---
+)
+</code></pre>
+<h2>Tokenizer State Machine</h2>
+<p>The tokenizer is a goto-based state machine (<code>internal/token.go:1676-2098</code>). The <code>Next()</code> method can transition between four labeled states:</p>
+<div class="mermaid">
+stateDiagram-v2
+    [*] --&gt; frontmatter_loop: if dashes detected
+    frontmatter_loop --&gt; loop: text content, &lt; or {
+    frontmatter_loop --&gt; [*]: FrontmatterFenceToken (---)
+    loop --&gt; expression_loop: { or }
+    loop --&gt; [*]: TextToken, StartTagToken, EndTagToken, CommentToken
+    expression_loop --&gt; loop: &lt; element found
+    expression_loop --&gt; [*]: StartExpressionToken, EndExpressionToken, TextToken
+    loop --&gt; raw_with_expression_loop: title/textarea elements
+    raw_with_expression_loop --&gt; expression_loop: { or }
+    raw_with_expression_loop --&gt; [*]: TextToken
+    
+    note right of frontmatter_loop
+        Tracks --- fences, handles
+        TypeScript generics as text
+    end note
+    
+    note right of expression_loop
+        Manages expression stack depth,
+        tracks nested { } pairs
+    end note
+
+</div>
+<p>The tokenizer tracks state in <code>Tokenizer</code> struct (<code>internal/token.go:239-300</code>):</p>
+<table><tr><th>Field</th><th>Purpose</th></tr><tr><td>`fm FrontmatterState`</td><td>Current frontmatter parsing state</td></tr><tr><td>`rawTag string`</td><td>"script", "style", etc. — next token is raw text</td></tr><tr><td>`noExpressionTag string`</td><td>"math", "iframe", etc. — `{` is literal text</td></tr><tr><td>`expressionStack []int`</td><td>Nested expression depth counter</td></tr><tr><td>`expressionElementStack [][]string`</td><td>Elements open within each expression</td></tr><tr><td>`openBraceIsExpressionStart bool`</td><td>Whether `{` starts a new expression</td></tr><tr><td>`attrExpressionStack int`</td><td>Attribute expression nesting depth</td></tr><tr><td>`attrTemplateLiteralStack []int`</td><td>Template literal nesting in attrs</td></tr></table>
+<p>Source: <code>internal/token.go:239-300</code></p>
+<h2>The Next() Method</h2>
+<p>The main <code>Next()</code> method (<code>internal/token.go:1676-2098</code>) is the heart of the tokenizer. It dispatches based on current state:</p>
+<pre><code class="language-go">// internal/token.go:1676-1710 (simplified dispatch)
+func (z *Tokenizer) Next() TokenType {
+    z.prevToken = z.Token()
+    z.raw.Start = z.raw.End
+    z.data.Start = z.raw.End
+    
+    // If in raw text mode (script, style, etc.)
+    if z.rawTag != &quot;&quot; {
+        if z.rawTag == &quot;plaintext&quot; { /* read to EOF */ }
+        if z.rawTag == &quot;title&quot; || z.rawTag == &quot;textarea&quot; {
+            goto raw_with_expression_loop  // Still parse expressions
+        } else {
+            z.readRawOrRCDATA()  // Read until &lt;/tag&gt;
+        }
+    }
+    
+    // Frontmatter not yet closed?
+    if z.fm != FrontmatterClosed {
+        goto frontmatter_loop
+    }
+    // At expression boundary?
+    if z.isAtExpressionBoundary() {
+        goto expression_loop
+    }
+    
+    // Normal HTML/JSX parsing loop
+loop:
+    for {
+        c := z.readByte()
+        if c == &#x27;{&#x27; || c == &#x27;}&#x27; { goto expression_loop }
+        if c == &#x27;&lt;&#x27; { /* check for tag */ }
+        // ... emit TextToken or tag token
+    }
+}
+</code></pre>
+<h2>Expression Handling</h2>
+<p>Expression tracking is the most complex part of the tokenizer. The <code>expressionStack</code> and <code>expressionElementStack</code> work together:</p>
+<pre><code class="language-go">// internal/token.go:1643-1673 (trackExpressionElementStack)
+func (z *Tokenizer) trackExpressionElementStack() {
+    if len(z.expressionStack) == 0 { return }
+    i := len(z.expressionElementStack) - 1
+    if z.tt == StartTagToken {
+        // Push element onto expression&#x27;s element stack
+        z.expressionElementStack[i] = append(z.expressionElementStack[i], tagName)
+    } else if z.tt == EndTagToken {
+        // Pop matching element
+        for j := len(stack)-1; j &gt;= 0; j-- {
+            if stack[j] == tagName {
+                if len(stack) == 1 {
+                    // Stack emptied — reset expression mode
+                    z.expressionElementStack[i] = nil
+                    z.openBraceIsExpressionStart = false
+                } else {
+                    z.expressionElementStack[i] = stack[:len(stack)-1]
+                }
+            }
+        }
+    }
+}
+</code></pre>
+<p>The key insight: when inside an expression <code>{...}</code>, the tokenizer tracks which HTML elements are open. A <code>{</code> only starts a <strong>new</strong> expression when the element stack is empty (no unclosed elements). This distinguishes JSX element <code>{</code> from object literal <code>{</code>.</p>
+<h2>Parser: HTML5 Insertion Modes</h2>
+<p>The parser (<code>internal/parser.go</code>) implements the HTML5 tree construction algorithm with Astro extensions. It uses insertion modes — functions that decide what to do with each token:</p>
+<pre><code class="language-go">// internal/parser.go:538
+type insertionMode func(*parser) bool
+</code></pre>
+<p>Available insertion modes:</p>
+<table><tr><th>Mode</th><th>Source Line</th><th>Purpose</th></tr><tr><td>`initialIM`</td><td>625</td><td>Handle doctype, frontmatter fence</td></tr><tr><td>`beforeHTMLIM`</td><td>660</td><td>Handle `<html>`, early components</td></tr><tr><td>`beforeHeadIM`</td><td>729</td><td>Handle `<head>`, expressions</td></tr><tr><td>`inHeadIM`</td><td>784</td><td>Handle head elements, components</td></tr><tr><td>`inHeadNoscriptIM`</td><td>971</td><td>Handle `<noscript>` context</td></tr><tr><td>`afterHeadIM`</td><td>1020</td><td>Handle `<body>`, `<frameset>`</td></tr><tr><td>`inBodyIM`</td><td>1120</td><td>Main content handling (largest)</td></tr><tr><td>`textIM`</td><td>1797</td><td>Raw text element content</td></tr><tr><td>`inTableIM`</td><td>1837</td><td>Table context</td></tr><tr><td>`inCaptionIM`</td><td>1972</td><td>Table caption context</td></tr><tr><td>`inColumnGroupIM`</td><td>2032</td><td>`<colgroup>` context</td></tr><tr><td>`inTableBodyIM`</td><td>2108</td><td>`<tbody>`, `<thead>`, `<tfoot>`</td></tr><tr><td>`inRowIM`</td><td>2177</td><td>`<tr>` context</td></tr><tr><td>`inCellIM`</td><td>2243</td><td>`<td>`, `<th>` context</td></tr><tr><td>`inSelectIM`</td><td>2309</td><td>`<select>` context</td></tr><tr><td>`inSelectInTableIM`</td><td>2420</td><td>`<select>` in table</td></tr><tr><td>`inTemplateIM`</td><td>2447</td><td>`<template>` context</td></tr><tr><td>`afterBodyIM`</td><td>2520</td><td>After `</body>`</td></tr><tr><td>`inFramesetIM`</td><td>2564</td><td>`<frameset>` context</td></tr><tr><td>`afterFramesetIM`</td><td>2615</td><td>After `</frameset>`</td></tr><tr><td>`afterAfterBodyIM`</td><td>2655</td><td>After `</html>`</td></tr><tr><td>`afterAfterFramesetIM`</td><td>2685</td><td>Final state</td></tr><tr><td>`frontmatterIM`</td><td>2722</td><td>**Astro extension**: frontmatter content</td></tr><tr><td>`inLiteralIM`</td><td>2775</td><td>**Astro extension**: literal component content</td></tr><tr><td>`inExpressionIM`</td><td>2816</td><td>**Astro extension**: expression content</td></tr></table>
+<div class="mermaid">
+flowchart TD
+    A[initialIM] --&gt; B[beforeHTMLIM]
+    B --&gt; C[beforeHeadIM]
+    C --&gt; D[inHeadIM]
+    D --&gt; E[afterHeadIM]
+    E --&gt; F[inBodyIM]
+    F --&gt; G[textIM]
+    F --&gt; H[inTableIM]
+    H --&gt; I[inCaptionIM]
+    H --&gt; J[inTableBodyIM]
+    J --&gt; K[inRowIM]
+    K --&gt; L[inCellIM]
+    F --&gt; M[inSelectIM]
+    F --&gt; N[inTemplateIM]
+    F --&gt; O[afterBodyIM]
+    O --&gt; P[afterAfterBodyIM]
+    
+    style F fill:#4a90d9
+    style frontmatterIM fill:#27ae60
+    
+    Q[frontmatterIM] -.-&gt; F
+    R[inLiteralIM] -.-&gt; F
+    S[inExpressionIM] -.-&gt; F
+
+</div>
+<h2>Frontmatter Parsing</h2>
+<p>The <code>frontmatterIM</code> insertion mode (<code>internal/parser.go:2722-2772</code>) handles content between <code>---</code> fences:</p>
+<pre><code class="language-go">// internal/parser.go:2722-2772
+func frontmatterIM(p *parser) bool {
+    switch p.tok.Type {
+    case FrontmatterFenceToken:
+        if p.frontmatterState == FrontmatterInitial {
+            p.addFrontmatter(false)  // Opening fence
+        } else {
+            p.frontmatterState = FrontmatterClosed
+            p.fm.Loc = append(p.fm.Loc, p.tok.Loc)
+            for range p.oe {
+                if p.oe.top().DataAtom != a.Html {
+                    p.oe.pop()
+                }
+            }
+            p.im = p.originalIM  // Return to previous mode
+            p.originalIM = nil
+        }
+    case TextToken:
+        p.addText(p.tok.Data)  // TypeScript code as text
+    case StartTagToken:
+        // TypeScript generics: &lt;T&gt; without space before tag
+        if p.top().Type == FrontmatterNode &amp;&amp; p.ltok.Data[len(p.ltok.Data)-1:] != &quot; &quot; {
+            p.addText(&quot;&lt;&quot;)
+            p.addText(p.tok.Data)
+            p.addText(&quot;&gt;&quot;)
+            return true
+        }
+        p.addElement()  // JSX elements in frontmatter
+    }
+}
+</code></pre>
+<p><strong>Aha:</strong> TypeScript generics are distinguished from HTML tags by checking whether there's a space before the <code><</code>. <code>function foo<T>()</code> has no space before <code><T></code>, so it's treated as text, not a tag. <code>function foo() <Component /></code> has a space, so <code><Component></code> is a tag.</p>
+<h2>The AST Node Structure</h2>
+<p>The AST node (<code>internal/node.go:82-113</code>) carries extensive metadata:</p>
+<pre><code class="language-go">// internal/node.go:82-113
+type Node struct {
+    Fragment        bool        // Is a Fragment &lt;&gt;...&lt;/&gt;
+    CustomElement   bool        // Contains &#x27;-&#x27; (web component)
+    Component       bool        // Starts with uppercase or has &#x27;.&#x27;
+    Expression      bool        // Is an expression node
+    Transition      bool        // Uses transition directives
+    TransitionScope string      // Hash for transition scoping
+    HandledScript   bool        // Script handled by compiler
+    
+    // Tree structure (doubly-linked with parent)
+    Parent, FirstChild, LastChild, PrevSibling, NextSibling *Node
+    
+    // Document-level collections (only on root node)
+    Styles, Scripts          []*Node
+    HydratedComponentNodes   []*Node
+    HydratedComponents       []*HydratedComponentMetadata
+    ClientOnlyComponentNodes []*Node
+    ClientOnlyComponents     []*HydratedComponentMetadata
+    HydrationDirectives      map[string]bool
+    ServerComponents         []*HydratedComponentMetadata
+    ContainsHead             bool
+    ContainsTemplateElement  bool
+    HeadPropagation          bool
+    
+    Type      NodeType
+    DataAtom  atom.Atom
+    Data      string
+    Namespace string
+    Attr      []Attribute
+    Loc       []loc.Loc
+}
+</code></pre>
+<p>Node types (<code>internal/node.go:15-32</code>):</p>
+<pre><code class="language-go">// internal/node.go:15-32
+const (
+    ErrorNode NodeType = iota
+    TextNode
+    DocumentNode
+    ElementNode
+    CommentNode
+    DoctypeNode
+    RawNode              // Raw HTML injection
+    scopeMarkerNode      // HTML5 scope marker
+    FrontmatterNode      // Astro extension
+    ExpressionNode       // Astro extension
+    RenderHeadNode       // Astro extension
+)
+</code></pre>
+<h2>Parser State: Stack of Open Elements</h2>
+<p>The parser maintains an element stack (<code>oe</code>) and active formatting elements (<code>afe</code>), per the HTML5 spec:</p>
+<pre><code class="language-go">// internal/parser.go:20-64 (partial)
+type parser struct {
+    tokenizer *Tokenizer
+    doc  *Node       // Document root
+    fm   *Node       // Frontmatter node
+    oe   nodeStack   // Stack of open elements
+    afe  nodeStack   // Active formatting elements
+    head, form *Node // Element pointers
+    scripting, framesetOK bool
+    templateStack insertionModeStack
+    im          insertionMode        // Current insertion mode
+    originalIM  insertionMode        // Mode to return to
+    fosterParenting bool             // Table foster parenting
+    quirks      bool                 // Quirks mode
+    literal     bool                 // Literal mode flag
+    handler     *handler.Handler     // Error/warning handler
+}
+</code></pre>
+<p>Source: <code>internal/parser.go:20-64</code></p>
+<h2>Expression Insertion Mode</h2>
+<p>The <code>inExpressionIM</code> (<code>internal/parser.go:2816-2876</code>) handles content inside <code>{...}</code> expressions:</p>
+<pre><code class="language-go">// internal/parser.go:2816-2876
+func inExpressionIM(p *parser) bool {
+    switch p.tok.Type {
+    case StartTagToken:
+        if p.isInsideHead() {
+            // Components in head expressions go to literal mode
+            if isComponent(p.tok.Data) || isFragment(p.tok.Data) {
+                ret := inLiteralIM(p)
+                p.im = inExpressionIM
+                return ret
+            }
+            // Head elements dispatched to inHeadIM
+            switch p.tok.DataAtom {
+            case a.Noframes, a.Style, a.Script, a.Title, a.Noscript, a.Base, a.Basefont, a.Bgsound, a.Link, a.Meta, a.Slot:
+                ret := inHeadIM(p)
+                p.im = inExpressionIM
+                return ret
+            }
+        }
+        return inBodyIM(p)  // Default: treat as body content
+    case EndExpressionToken:
+        p.addLoc()
+        p.oe.pop()
+        p.resetInsertionMode()
+        return true
+    }
+}
+</code></pre>
+<h2>Implicit Node Handling</h2>
+<p>When a document starts without <code><html></code>, the parser creates implicit nodes. The <code>ImplicitNodeMarker</code> (<code>internal/node.go:58</code>) is a zero-byte attribute used to mark these:</p>
+<pre><code class="language-go">// internal/node.go:58
+const ImplicitNodeMarker = &quot;\x00implicit&quot;
+</code></pre>
+<p>This allows the printer to know whether <code><html></code>, <code><head></code>, and <code><body></code> were user-authored or compiler-inserted.</p>
+<h2>Public API</h2>
+<pre><code class="language-go">// internal/parser.go:3095-3147
+func Parse(r io.Reader) (*Node, error) {
+    return ParseWithOptions(r)
+}
+
+func ParseWithOptions(r io.Reader, opts ...ParseOption) (*Node, error) {
+    p := &amp;parser{
+        tokenizer: NewTokenizer(r),
+        doc: &amp;Node{
+            Type:                DocumentNode,
+            HydrationDirectives: make(map[string]bool),
+        },
+        frontmatterState: FrontmatterInitial,
+        im:               initialIM,
+    }
+    for _, f := range opts { f(p) }
+    if err := p.parse(); err != nil { return nil, err }
+    return p.doc, nil
+}
+
+func ParseFragmentWithOptions(r io.Reader, context *Node, opts ...ParseOption) ([]*Node, error) {
+    // Similar, but parses within a context element
+}
+</code></pre>
+<p>Source: <code>internal/parser.go:3095-3147</code>, <code>internal/parser.go:3149-3233</code></p>
+<h2>Next Steps</h2>
+<p>Continue to the Go printer: <a href="./02-go-printer.md">Go Printer</a></p>
+<p>Related documents:</p>
+<ul><li><a href="./03-rust-parser.md">Rust Parser</a> — oxc-based alternative implementation</li><li><a href="./05-ast-transforms.md">AST Transforms</a> — What happens after parsing</li><li><a href="./08-syntax-spec.md">Syntax Spec</a> — Full .astro syntax reference</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

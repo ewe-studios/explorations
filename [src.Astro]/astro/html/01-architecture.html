@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Astro 7.0.4 Architecture -- astro</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/astro/docs</span>
+    <div class="nav-actions">
+      <a href="00-overview.html" class="nav-breadcrumb">Astro 7.0.4 Overview — Zero JavaScript by Default</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="00-overview.html" class="nav-btn" title="Previous: Astro 7.0.4 Overview — Zero JavaScript by Default">← prev</a>
+      <a href="02-config-routing.html" class="nav-btn nav-btn-next" title="Next: Configuration System and Routing">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Astro 7.0.4 Architecture</h1>
+<p><strong>Core concept:</strong> Astro is a content-focused, island-based web framework that ships zero JavaScript by default. The framework operates as a <strong>monorepo built around Vite as its build orchestrator</strong>, with the core <code>astro</code> package at the center, surrounded by integration packages, markdown processors, language tooling, and a Rust-based compiler (<code>@astrojs/compiler-rs</code>) that parses <code>.astro</code> files into efficient JavaScript.</p>
+<hr>
+<h2>Table of Contents</h2>
+<ul><li><a href="#monorepo-structure">Monorepo Structure</a></li><li><a href="#package-ecosystem">Package Ecosystem</a></li><li><a href="#layer-diagram">Layer Diagram</a></li><li><a href="#packagesastro-source-structure">packages/astro Source Structure</a></li><li><a href="#core-module-breakdown">Core Module Breakdown</a></li><li><a href="#module-dependency-graph">Module Dependency Graph</a></li><li><a href="#package-exports-surface">Package Exports Surface</a></li><li><a href="#compiler-integration">Compiler Integration</a></li><li><a href="#vite-integration">Vite Integration</a></li><li><a href="#integration-packages">Integration Packages</a></li><li><a href="#markdown-packages">Markdown Packages</a></li><li><a href="#three-environments">Three Environments</a></li><li><a href="#key-design-patterns">Key Design Patterns</a></li></ul>
+<hr>
+<h2>Monorepo Structure</h2>
+<p>Astro is organized as a <strong>pnpm workspace monorepo</strong> at <a href="https://github.com/withastro/astro">github.com/withastro/astro</a>, managed through <code>pnpm-workspace.yaml</code> with patterns covering <code>packages/<strong>/<em></code>, <code>examples/</strong>/</em></code>, <code>benchmark/<strong>/<em></code>, and auxiliary directories. The build system uses </strong>Turborepo</em>* (<code>turbo.json</code>) for orchestrated parallel builds.</p>
+<div class="mermaid">
+graph TB
+    root[&quot;root (private)&lt;br/&gt;pnpm-workspace.yaml&lt;br/&gt;turbo.json&quot;]
+
+    subgraph Core
+        astro[&quot;packages/astro&lt;br/&gt;v7.0.4 — Main framework&quot;]
+        compiler[&quot;compiler&lt;br/&gt;Rust-based WASM compiler&quot;]
+        astro_prism[&quot;astro-prism&lt;br/&gt;Syntax highlighting&quot;]
+    end
+
+    subgraph CLI_Scaffolding
+        create_astro[&quot;packages/create-astro&lt;br/&gt;v5.2.1 — Project scaffolding&quot;]
+        upgrade[&quot;packages/upgrade&lt;br/&gt;v0.7.3 — Version upgrade CLI&quot;]
+    end
+
+    subgraph Shared_Utilities
+        internal_helpers[&quot;packages/internal-helpers&lt;br/&gt;v0.10.0 — FS, path, markdown, CLI helpers&quot;]
+        telemetry[&quot;packages/telemetry&lt;br/&gt;v3.3.2 — Anonymous usage telemetry&quot;]
+        underscore_redirects[&quot;packages/underscore-redirects&lt;br/&gt;v1.0.3 — _redirects file generation&quot;]
+    end
+
+    subgraph Markdown
+        markdown_remark[&quot;packages/markdown/remark&lt;br/&gt;@astrojs/markdown-remark v7.2.0&quot;]
+        markdown_satteri[&quot;packages/markdown/satteri&lt;br/&gt;@astrojs/markdown-satteri v0.3.2&quot;]
+    end
+
+    subgraph Language_Tools
+        lang_check[&quot;packages/language-tools/astro-check&lt;br/&gt;@astrojs/check v0.9.9&quot;]
+        lang_server[&quot;packages/language-tools/language-server&lt;br/&gt;@astrojs/language-server v2.16.10&quot;]
+        lang_ts_plugin[&quot;packages/language-tools/ts-plugin&lt;br/&gt;@astrojs/ts-plugin v1.10.9&quot;]
+        lang_vscode[&quot;packages/language-tools/vscode&lt;br/&gt;astro-vscode&quot;]
+        lang_yaml2ts[&quot;packages/language-tools/yaml2ts&lt;br/&gt;@astrojs/yaml2ts v0.2.4&quot;]
+    end
+
+    subgraph Integrations_Adapters
+        integrations[&quot;packages/integrations/*&lt;br/&gt;18 integration packages&quot;]
+    end
+
+    root --&gt; Core
+    root --&gt; CLI_Scaffolding
+    root --&gt; Shared_Utilities
+    root --&gt; Markdown
+    root --&gt; Language_Tools
+    root --&gt; Integrations_Adapters
+
+    astro --&gt; internal_helpers
+    astro --&gt; telemetry
+    astro --&gt; markdown_satteri
+    astro --&gt; underscore_redirects
+    astro --&gt; compiler
+    astro --&gt; astro_prism
+
+    markdown_remark --&gt; internal_helpers
+    markdown_remark --&gt; astro_prism
+    markdown_satteri --&gt; internal_helpers
+    markdown_satteri --&gt; astro_prism
+
+    lang_server --&gt; lang_yaml2ts
+    lang_check --&gt; lang_server
+
+</div>
+<p><strong>Top-level workspace packages</strong> (outside <code>packages/</code>):</p>
+<table><tr><th>Directory</th><th>Purpose</th></tr><tr><td>`compiler/`</td><td>Rust-based WASM compiler (`@astrojs/compiler-rs`) — published as a separate npm package</td></tr><tr><td>`astro-prism/`</td><td>Prism-based syntax highlighting (Astro 1.x heritage, largely superseded by Shiki)</td></tr><tr><td>`flue/`</td><td>E2E test framework for Astro</td></tr><tr><td>`benchmark/`</td><td>Performance benchmarking infrastructure</td></tr><tr><td>`scripts/`</td><td>Shared build/test/dev scripts used across all workspace packages</td></tr><tr><td>`examples/`</td><td>Example projects for each integration and feature</td></tr></table>
+<hr>
+<h2>Package Ecosystem</h2>
+<p>The workspace contains approximately <strong>30+ packages</strong> organized into logical groups:</p>
+<h3>Core Package</h3>
+<table><tr><th>Package</th><th>Name</th><th>Version</th><th>Description</th></tr><tr><td>`packages/astro`</td><td>`astro`</td><td>**7.0.4**</td><td>The main framework — CLI, compiler pipeline, runtime, server, dev tools</td></tr></table>
+<h3>CLI & Scaffolding</h3>
+<table><tr><th>Package</th><th>Name</th><th>Version</th><th>Description</th></tr><tr><td>`packages/create-astro`</td><td>`create-astro`</td><td>5.2.1</td><td>Interactive project scaffolding wizard</td></tr><tr><td>`packages/upgrade`</td><td>`@astrojs/upgrade`</td><td>0.7.3</td><td>CLI for upgrading Astro versions</td></tr></table>
+<h3>Shared Utilities</h3>
+<table><tr><th>Package</th><th>Name</th><th>Version</th><th>Description</th></tr><tr><td>`packages/internal-helpers`</td><td>`@astrojs/internal-helpers`</td><td>0.10.0</td><td>Cross-package utilities: path, fs, markdown, shiki, CLI, request</td></tr><tr><td>`packages/telemetry`</td><td>`@astrojs/telemetry`</td><td>3.3.2</td><td>Anonymous usage analytics</td></tr><tr><td>`packages/underscore-redirects`</td><td>`@astrojs/underscore-redirects`</td><td>1.0.3</td><td>`_redirects` file generator for deploy adapters</td></tr></table>
+<h3>Markdown Processing</h3>
+<table><tr><th>Package</th><th>Name</th><th>Version</th><th>Description</th></tr><tr><td>`packages/markdown/remark`</td><td>`@astrojs/markdown-remark`</td><td>7.2.0</td><td>Remark/rehype-based markdown processor (legacy default)</td></tr><tr><td>`packages/markdown/satteri`</td><td>`@astrojs/markdown-satteri`</td><td>0.3.2</td><td>Newer markdown processor, default in Astro 7</td></tr></table>
+<h3>Language Tools</h3>
+<table><tr><th>Package</th><th>Name</th><th>Version</th><th>Description</th></tr><tr><td>`packages/language-tools/language-server`</td><td>`@astrojs/language-server`</td><td>2.16.10</td><td>LSP implementation for Astro files</td></tr><tr><td>`packages/language-tools/astro-check`</td><td>`@astrojs/check`</td><td>0.9.9</td><td>Type-checking CLI for Astro projects</td></tr><tr><td>`packages/language-tools/ts-plugin`</td><td>`@astrojs/ts-plugin`</td><td>1.10.9</td><td>TypeScript plugin for Astro intellisense</td></tr><tr><td>`packages/language-tools/vscode`</td><td>`astro-vscode`</td><td>—</td><td>VS Code extension</td></tr><tr><td>`packages/language-tools/yaml2ts`</td><td>`@astrojs/yaml2ts`</td><td>0.2.4</td><td>YAML-to-VirtualCode converter for data collection intellisense</td></tr></table>
+<h3>Integration Packages (18 packages)</h3>
+<table><tr><th>Package</th><th>Name</th><th>Version</th><th>Purpose</th></tr><tr><td>`packages/integrations/node`</td><td>`@astrojs/node`</td><td>11.0.0</td><td>Node.js SSR adapter</td></tr><tr><td>`packages/integrations/cloudflare`</td><td>`@astrojs/cloudflare`</td><td>14.0.2</td><td>Cloudflare Workers/Pages adapter</td></tr><tr><td>`packages/integrations/vercel`</td><td>`@astrojs/vercel`</td><td>11.0.0</td><td>Vercel adapter</td></tr><tr><td>`packages/integrations/netlify`</td><td>`@astrojs/netlify`</td><td>8.0.0</td><td>Netlify adapter</td></tr><tr><td>`packages/integrations/deno`</td><td>—</td><td>—</td><td>Deno adapter</td></tr><tr><td>`packages/integrations/react`</td><td>`@astrojs/react`</td><td>6.0.0</td><td>React integration</td></tr><tr><td>`packages/integrations/vue`</td><td>`@astrojs/vue`</td><td>7.0.0</td><td>Vue integration</td></tr><tr><td>`packages/integrations/svelte`</td><td>`@astrojs/svelte`</td><td>9.0.0</td><td>Svelte integration</td></tr><tr><td>`packages/integrations/solid`</td><td>`@astrojs/solid-js`</td><td>7.0.0</td><td>SolidJS integration</td></tr><tr><td>`packages/integrations/preact`</td><td>`@astrojs/preact`</td><td>6.0.0</td><td>Preact integration</td></tr><tr><td>`packages/integrations/mdx`</td><td>`@astrojs/mdx`</td><td>7.0.0</td><td>MDX support</td></tr><tr><td>`packages/integrations/markdoc`</td><td>`@astrojs/markdoc`</td><td>2.0.1</td><td>Markdoc support</td></tr><tr><td>`packages/integrations/tailwind`</td><td>—</td><td>—</td><td>Tailwind CSS integration</td></tr><tr><td>`packages/integrations/partytown`</td><td>`@astrojs/partytown`</td><td>2.1.7</td><td>Partytown integration</td></tr><tr><td>`packages/integrations/sitemap`</td><td>`@astrojs/sitemap`</td><td>3.7.3</td><td>Sitemap generation</td></tr><tr><td>`packages/integrations/alpinejs`</td><td>—</td><td>—</td><td>Alpine.js integration</td></tr><tr><td>`packages/integrations/web-vitals`</td><td>—</td><td>—</td><td>Web Vitals integration</td></tr></table>
+<hr>
+<h2>Layer Diagram</h2>
+<p>Astro's architecture is layered, flowing from user-facing CLI commands down through compilation and runtime execution.</p>
+<div class="mermaid">
+graph TB
+    subgraph User_Facing[&quot;Layer 1: CLI &amp; Configuration&quot;]
+        cli[&quot;CLI (src/cli/)&lt;br/&gt;dev, build, preview, sync, check, add&quot;]
+        config[&quot;Config (src/config/)&lt;br/&gt;astro.config.mjs loader &amp; validator&quot;]
+        scaffold[&quot;create-astro&lt;br/&gt;Project scaffolding&quot;]
+    end
+
+    subgraph Orchestration[&quot;Layer 2: Build Orchestration&quot;]
+        vite_core[&quot;Vite ^8.0.13&lt;br/&gt;Core build/dev server orchestrator&quot;]
+        vite_plugins[&quot;23 Vite Plugins&lt;br/&gt;vite-plugin-*/&quot;]
+        esbuild[&quot;esbuild ^0.28.0&lt;br/&gt;Bundler for non-Astro assets&quot;]
+        compiler_rs[&quot;@astrojs/compiler-rs ^0.3.0&lt;br/&gt;Rust WASM .astro file parser&quot;]
+    end
+
+    subgraph Core_Pipeline[&quot;Layer 3: Core Pipeline (src/core/)&quot;]
+        pipeline[&quot;Base Pipeline&lt;br/&gt;src/core/base-pipeline.ts&quot;]
+        dev_server[&quot;Dev Pipeline&lt;br/&gt;src/core/dev/&quot;]
+        build_pipeline[&quot;Build Pipeline&lt;br/&gt;src/core/build/&quot;]
+        prerender[&quot;Prerender&lt;br/&gt;src/core/prerender/&quot;]
+        render[&quot;Render Pipeline&lt;br/&gt;src/core/render/&quot;]
+        routing[&quot;Routing Engine&lt;br/&gt;src/core/routing/&quot;]
+        middleware[&quot;Middleware Stack&lt;br/&gt;src/core/middleware/&quot;]
+    end
+
+    subgraph Runtime_Layer[&quot;Layer 4: Runtime (src/runtime/)&quot;]
+        client_runtime[&quot;Client Runtime&lt;br/&gt;src/runtime/client/&lt;br/&gt;island hydration directives&quot;]
+        server_runtime[&quot;Server Runtime&lt;br/&gt;src/runtime/server/&lt;br/&gt;SSR rendering&quot;]
+        prerender_runtime[&quot;Prerender Runtime&lt;br/&gt;src/runtime/prerender/&quot;]
+        compiler_runtime[&quot;Compiler Runtime&lt;br/&gt;src/runtime/compiler/&quot;]
+    end
+
+    subgraph Entrypoints[&quot;Layer 5: Entrypoints (src/entrypoints/)&quot;]
+        dev_entrypoint[&quot;Dev Entry&lt;br/&gt;src/entrypoints/prerender.js&quot;]
+        legacy_entrypoint[&quot;Legacy Entry&lt;br/&gt;src/entrypoints/legacy.js&quot;]
+    end
+
+    subgraph App_Server[&quot;Layer 6: App / SSR Server (src/core/app/)&quot;]
+        app_entry[&quot;App Entry&lt;br/&gt;src/core/app/entrypoints/&quot;]
+        virtual_entries[&quot;Virtual Entrypoints&lt;br/&gt;virtual/dev.js, virtual/prod.js&quot;]
+        node_entry[&quot;Node Entry&lt;br/&gt;src/core/app/entrypoints/node.js&quot;]
+        manifest_entry[&quot;Manifest Entry&lt;br/&gt;src/core/app/entrypoints/manifest.js&quot;]
+    end
+
+    User_Facing --&gt; Orchestration
+    Orchestration --&gt; Core_Pipeline
+    Core_Pipeline --&gt; Runtime_Layer
+    Core_Pipeline --&gt; Entrypoints
+    Core_Pipeline --&gt; App_Server
+
+</div>
+<h3>Layer Responsibilities</h3>
+<table><tr><th>Layer</th><th>Primary Source</th><th>Responsibility</th></tr><tr><td>**CLI & Config**</td><td>`src/cli/`, `src/config/`</td><td>Parse commands, load/validate `astro.config.mjs`, initialize environment</td></tr><tr><td>**Build Orchestration**</td><td>Vite + 23 plugins</td><td>File resolution, HMR, module graph, dev server, asset bundling</td></tr><tr><td>**Core Pipeline**</td><td>`src/core/`</td><td>Page routing, middleware, rendering orchestration, build/prerender/dev pipelines</td></tr><tr><td>**Runtime**</td><td>`src/runtime/`</td><td>Island hydration scripts, SSR template rendering, prerender worker communication</td></tr><tr><td>**Entrypoints**</td><td>`src/entrypoints/`</td><td>Process entry points for prerender workers and legacy SSR</td></tr><tr><td>**App / SSR**</td><td>`src/core/app/`</td><td>`Astro` class, request handling, manifest generation, adapter interface</td></tr></table>
+<hr>
+<h2>packages/astro Source Structure</h2>
+<p>The main <code>packages/astro</code> package contains <strong>37 top-level source directories</strong> under <code>src/</code>, each responsible for a distinct subsystem.</p>
+<pre><code class="language-">packages/astro/src/
+├── # === Domain Subsystems (12 directories) ===
+├── actions/                  # Server actions (form submissions, RPC-style handlers)
+├── assets/                   # Image optimization, fonts, SVG processing
+│   ├── build/                # Build-time asset processing
+│   ├── endpoint/             # Image endpoint handlers
+│   ├── fonts/                # Font optimization (unifont, capsize)
+│   ├── services/             # Sharp/noop image processing services
+│   ├── svg/                  # SVG optimization (SVGO)
+│   └── utils/                # Asset utility functions
+├── content/                  # Content collections, data loaders, content layer
+├── i18n/                     # Internationalization — routing, fallback, middleware
+├── integrations/             # Integration API utilities (adapter utils, hooks, features)
+├── markdown/                 # Markdown rendering facade (delegates to remark/satteri)
+├── preferences/              # User preferences store (CLI config persistence)
+├── prerender/                # Prerender routing utilities
+├── transitions/              # View transitions API
+├── toolbar/                  # Dev toolbar
+├── env/                      # Environment variable handling (runtime + setup)
+├── template/                 # Template rendering helpers (4xx pages)
+├──
+├── # === Core Infrastructure (5 directories) ===
+├── core/                     # CENTRAL MODULE — pipeline, routing, rendering, config, dev, build
+├── runtime/                  # Runtime code (client, server, compiler, prerender)
+├── cli/                      # CLI command implementations (dev, build, preview, sync...)
+├── config/                   # Config loading entrypoint
+├── types/                    # Type definitions (astro.ts, public types, typed-emitter)
+├──
+├── # === Integration Points (4 directories) ===
+├── container/                # Container API for testing/rendering in isolation
+├── entrypoints/              # Process entry points (prerender, legacy)
+├── jsx-runtime/              # JSX runtime for .astro components
+├── virtual-modules/          # Virtual module generators (i18n, transitions, middleware...)
+├──
+├── # === Build-Time (2 directories) ===
+├── manifest/                 # Route manifest serialization
+├── events/                   # Internal event system
+├──
+├── # === Vite Plugins (23 directories) ===
+├── vite-plugin-adapter-config/    # Adapter configuration injection
+├── vite-plugin-app/               # App SSR server integration
+├── vite-plugin-astro/             # .astro file compilation (main compiler bridge)
+├── vite-plugin-astro-server/      # Astro dev server enhancements
+├── vite-plugin-chromedevtools/    # Chrome DevTools integration
+├── vite-plugin-config-alias/      # Config path aliasing
+├── vite-plugin-css/               # CSS processing and injection
+├── vite-plugin-dev-status/        # Dev server status indicators
+├── vite-plugin-environment/       # Environment variable injection
+├── vite-plugin-fileurl/           # file:// URL handling
+├── vite-plugin-head/              # &lt;head&gt; propagation and management
+├── vite-plugin-hmr-reload/        # HMR reload on config changes
+├── vite-plugin-html/              # HTML generation and processing
+├── vite-plugin-integrations-container/  # Integration container support
+├── vite-plugin-load-fallback/     # Module load fallbacks
+├── vite-plugin-markdown/          # Markdown file processing in Vite
+├── vite-plugin-overlay/           # Error overlay display
+├── vite-plugin-pages/             # File-based routing
+├── vite-plugin-renderers/         # Framework renderer integration (React, Vue, etc.)
+├── vite-plugin-routes/            # Route generation and management
+├── vite-plugin-scripts/           # Script injection
+├── vite-plugin-static-paths/      # Static path handling
+├── vite-plugin-utils/             # Shared Vite plugin utilities
+├──
+├── # === Top-Level Files ===
+├── index.ts                  # Main entry: exports core/index.js + types
+├── zod.ts                    # Zod schema utilities
+├── environments.ts           # Environment type definitions
+└── type-utils.ts             # TypeScript utility types
+</code></pre>
+<h3>packages/astro/src/core/ Deep Dive</h3>
+<p>The <code>core/</code> directory is the central hub with <strong>40+ files</strong> covering the most critical subsystems:</p>
+<table><tr><th>File/Directory</th><th>Purpose</th></tr><tr><td>`base-pipeline.ts`</td><td>Base pipeline shared by dev and build</td></tr><tr><td>`build/`</td><td>Build pipeline — generates static output</td></tr><tr><td>`dev/`</td><td>Development server pipeline</td></tr><tr><td>`preview/`</td><td>Preview server for built sites</td></tr><tr><td>`routing/`</td><td>Route matching, generation, and management</td></tr><tr><td>`render/`</td><td>Component rendering orchestration</td></tr><tr><td>`middleware/`</td><td>Middleware chain execution</td></tr><tr><td>`compile/`</td><td>Compiler bridge to `@astrojs/compiler-rs`</td></tr><tr><td>`config/`</td><td>Configuration loading and validation</td></tr><tr><td>`logger/`</td><td>Structured logging system</td></tr><tr><td>`errors/`</td><td>Error handling and user-facing error messages</td></tr><tr><td>`app/`</td><td>`Astro` class — SSR request handling</td></tr><tr><td>`hono/`</td><td>Hono-based routing adapter</td></tr><tr><td>`fetch/`</td><td>Fetch utilities</td></tr><tr><td>`pages/`</td><td>Page generation</td></tr><tr><td>`head-propagation/`</td><td>`<head>` element collection and propagation</td></tr><tr><td>`csp/`</td><td>Content Security Policy generation</td></tr><tr><td>`cookies/`</td><td>Cookie handling</td></tr><tr><td>`session/`</td><td>Session management</td></tr><tr><td>`encryption.ts`</td><td>Encryption utilities</td></tr><tr><td>`server-islands/`</td><td>Server Islands (partial hydration)</td></tr><tr><td>`client-directive/`</td><td>Client directive processing (`client:load`, `client:idle`, etc.)</td></tr><tr><td>`create-vite.ts`</td><td>Vite configuration builder</td></tr><tr><td>`module-loader/`</td><td>Dynamic module loading</td></tr><tr><td>`i18n/`</td><td>i18n core utilities</td></tr><tr><td>`redirects/`</td><td>Redirect generation</td></tr><tr><td>`rewrites/`</td><td>URL rewrite rules</td></tr><tr><td>`sync/`</td><td>Content collection sync</td></tr><tr><td>`cache/`</td><td>Caching provider abstraction</td></tr><tr><td>`constants.ts`</td><td>Shared constants</td></tr><tr><td>`util.ts` / `util-runtime.ts` / `util-runtime.ts`</td><td>Utility functions</td></tr><tr><td>`path.ts`</td><td>Path manipulation</td></tr><tr><td>`output-filename.ts`</td><td>Output file naming</td></tr><tr><td>`request.ts` / `request-body.ts`</td><td>Request handling</td></tr><tr><td>`fs/`</td><td>Filesystem utilities</td></tr><tr><td>`messages/`</td><td>User-facing messages</td></tr><tr><td>`wait-until.ts`</td><td>WaitUntil API</td></tr><tr><td>`viteUtils.ts`</td><td>Vite-specific utilities</td></tr><tr><td>`createMinimalViteDevServer.ts`</td><td>Minimal Vite dev server factory</td></tr><tr><td>`index.ts`</td><td>Core exports</td></tr></table>
+<hr>
+<h2>Core Module Breakdown</h2>
+<h3>Module Groups and Their Responsibilities</h3>
+<pre><code class="language-">packages/astro/
+├── src/core/          ← Central logic: pipeline, routing, rendering, config
+├── src/runtime/       ← Runtime code split by environment
+│   ├── client/        ←   Client-side island hydration scripts
+│   ├── server/        ←   Server-side rendering (astro-island, template)
+│   ├── compiler/      ←   Compiler runtime bridge
+│   └── prerender/     ←   Prerender worker communication
+├── src/types/         ← Type definitions
+│   ├── astro.ts       ←   Core Astro types (AstroGlobal, etc.)
+│   ├── public/        ←   Public-facing type exports
+│   └── typed-emitter.ts ← Event emitter types
+├── src/vite-plugin-*/ ← 23 Vite plugins forming the build pipeline
+├── src/container/     ← Container API for testing
+│   ├── index.ts       ←   Container entrypoint
+│   ├── pipeline.ts    ←   Container-specific pipeline
+│   └── vite-plugin-container.ts ← Vite plugin for container mode
+└── src/entrypoints/   ← Process entry points
+    ├── prerender.js   ←   Prerender worker entry
+    └── legacy.js      ←   Legacy SSR entry
+</code></pre>
+<hr>
+<h2>Module Dependency Graph</h2>
+<div class="mermaid">
+graph LR
+    subgraph External
+        vite[&quot;Vite ^8.0.13&quot;]
+        compiler_rs[&quot;@astrojs/compiler-rs ^0.3.0&lt;br/&gt;Rust WASM&quot;]
+        esbuild[&quot;esbuild ^0.28.0&quot;]
+        zod[&quot;zod ^4.3.6&quot;]
+    end
+
+    subgraph Workspace_Deps
+        internal_helpers[&quot;@astrojs/internal-helpers&lt;br/&gt;path, fs, markdown, shiki&quot;]
+        satteri[&quot;@astrojs/markdown-satteri&lt;br/&gt;Default markdown processor&quot;]
+        telemetry_pkg[&quot;@astrojs/telemetry&quot;]
+        underscore[&quot;@astrojs/underscore-redirects&quot;]
+        remark[&quot;@astrojs/markdown-remark&lt;br/&gt;Optional peer dependency&quot;]
+    end
+
+    subgraph Key_Third_Party
+        devalue[&quot;devalue ^5.8.1&lt;br/&gt;Safe serialization&quot;]
+        magic_string[&quot;magic-string ^0.30.21&lt;br/&gt;Source map manipulation&quot;]
+        ultrahtml[&quot;ultrahtml ^1.6.0&lt;br/&gt;Lightweight HTML parser&quot;]
+        unstorage[&quot;unstorage ^1.17.5&lt;br/&gt;Universal storage&quot;]
+        hono_dev[&quot;hono ^4.12.14&lt;br/&gt;SSR routing (devDep)&quot;]
+    end
+
+    cli[&quot;src/cli/&quot;] --&gt; config
+    cli --&gt; core
+    config --&gt; core
+
+    core --&gt; vite
+    core --&gt; compiler_rs
+    core --&gt; esbuild
+    core --&gt; zod
+    core --&gt; internal_helpers
+    core --&gt; satteri
+    core --&gt; devalue
+    core --&gt; magic_string
+    core --&gt; ultrahtml
+    core --&gt; unstorage
+
+    vite_plugin_astro[&quot;vite-plugin-astro/&quot;] --&gt; compiler_rs
+    vite_plugin_astro --&gt; core
+
+    runtime_client[&quot;runtime/client/&quot;] --&gt; runtime_server
+    runtime_server[&quot;runtime/server/&quot;] --&gt; devalue
+    runtime_server --&gt; ultrahtml
+
+    container[&quot;src/container/&quot;] --&gt; core
+    container --&gt; vite
+
+    content[&quot;src/content/&quot;] --&gt; zod
+    content --&gt; unstorage
+    content --&gt; core
+
+    assets[&quot;src/assets/&quot;] --&gt; core
+    assets --&gt; zod
+
+    i18n[&quot;src/i18n/&quot;] --&gt; core
+
+    app[&quot;src/core/app/&quot;] --&gt; core
+    app --&gt; hono_dev
+
+    markdown_pkg[&quot;src/markdown/&quot;] --&gt; satteri
+    markdown_pkg --&gt; remark
+    markdown_pkg --&gt; internal_helpers
+
+    telemetry_impl[&quot;src/cli/telemetry&quot;] --&gt; telemetry_pkg
+    build_pipeline[&quot;src/core/build/&quot;] --&gt; underscore
+
+</div>
+<hr>
+<h2>Package Exports Surface</h2>
+<p>The <code>astro</code> package exposes an extensive public API through conditional exports in <code>package.json</code>. These exports define the surface area that user code, integrations, and internal modules can import.</p>
+<pre><code class="language-jsonc">// packages/astro/package.json — exports (key entries)
+{
+  &quot;exports&quot;: {
+    &quot;.&quot;: &quot;./dist/index.js&quot;,                     // Main: defineModel, getAstroIntegration, etc.
+    &quot;./env&quot;: &quot;./env.d.ts&quot;,                      // Environment type declarations
+    &quot;./env/runtime&quot;: &quot;./dist/env/runtime.js&quot;,   // Environment variable runtime access
+    &quot;./env/setup&quot;: &quot;./dist/env/setup.js&quot;,       // Environment setup utilities
+    &quot;./types&quot;: &quot;./types.d.ts&quot;,                  // Public TypeScript definitions
+    &quot;./client&quot;: &quot;./client.d.ts&quot;,                // Client-side type declarations
+    &quot;./astro-jsx&quot;: &quot;./astro-jsx.d.ts&quot;,          // Astro JSX types
+    &quot;./jsx-runtime&quot;: &quot;./dist/jsx-runtime/index.js&quot;,  // JSX runtime for .astro files
+    &quot;./compiler-runtime&quot;: &quot;./dist/runtime/compiler/index.js&quot;,
+    &quot;./markdown&quot;: &quot;./dist/markdown/index.js&quot;,   // Markdown rendering API
+    &quot;./runtime/*&quot;: &quot;./dist/runtime/*&quot;,          // Runtime modules (client/*, server/*)
+    &quot;./config&quot;: &quot;./dist/config/entrypoint.js&quot;,  // Config loading entrypoint
+    &quot;./container&quot;: &quot;./dist/container/index.js&quot;, // Container API
+    &quot;./app&quot;: &quot;./dist/core/app/entrypoints/index.js&quot;,     // App SSR entry
+    &quot;./app/node&quot;: &quot;./dist/core/app/entrypoints/node.js&quot;, // Node.js-specific app
+    &quot;./app/entrypoint&quot;: &quot;./dist/core/app/entrypoints/virtual/index.js&quot;,
+    &quot;./app/entrypoint/dev&quot;: &quot;./dist/core/app/entrypoints/virtual/dev.js&quot;,
+    &quot;./app/entrypoint/prod&quot;: &quot;./dist/core/app/entrypoints/virtual/prod.js&quot;,
+    &quot;./app/manifest&quot;: &quot;./dist/core/app/entrypoints/manifest.js&quot;,
+    &quot;./middleware&quot;: &quot;./dist/core/middleware/index.js&quot;,
+    &quot;./toolbar&quot;: &quot;./dist/toolbar/index.js&quot;,
+    &quot;./actions/runtime/entrypoints/*&quot;: &quot;./dist/actions/runtime/entrypoints/*&quot;,
+    &quot;./assets&quot;: &quot;./dist/assets/index.js&quot;,
+    &quot;./assets/runtime&quot;: &quot;./dist/assets/runtime.js&quot;,
+    &quot;./assets/utils&quot;: &quot;./dist/assets/utils/index.js&quot;,
+    &quot;./assets/services/sharp&quot;: &quot;./dist/assets/services/sharp.js&quot;,
+    &quot;./assets/fonts/runtime.js&quot;: &quot;./dist/assets/fonts/runtime.js&quot;,
+    &quot;./content/config&quot;: &quot;./dist/content/config.js&quot;,
+    &quot;./content/runtime&quot;: &quot;./dist/content/runtime.js&quot;,
+    &quot;./content/runtime-assets&quot;: &quot;./dist/content/runtime-assets.js&quot;,
+    &quot;./loaders&quot;: &quot;./dist/content/loaders/index.js&quot;,
+    &quot;./fetch&quot;: &quot;./dist/core/fetch/index.js&quot;,
+    &quot;./hono&quot;: &quot;./dist/core/hono/index.js&quot;,
+    &quot;./zod&quot;: &quot;./dist/zod.js&quot;,
+    &quot;./errors&quot;: &quot;./dist/core/errors/userError.js&quot;,
+    &quot;./logger&quot;: &quot;./dist/core/logger/public.js&quot;,
+    &quot;./virtual-modules/*&quot;: &quot;./dist/virtual-modules/*&quot;,
+    // ... and many more
+  }
+}
+</code></pre>
+<h3>Export Categories</h3>
+<table><tr><th>Export Prefix</th><th>Purpose</th><th>Key Imports</th></tr><tr><td>`astro`</td><td>Main entry</td><td>`defineConfig`, `getStaticPaths`, `Astro` global</td></tr><tr><td>`astro/app`</td><td>SSR app instance</td><td>`App` class for server-side rendering</td></tr><tr><td>`astro/config`</td><td>Config loading</td><td>Configuration loader</td></tr><tr><td>`astro/container`</td><td>Testing container</td><td>`createContainer` for testing</td></tr><tr><td>`astro/middleware`</td><td>Middleware API</td><td>`sequence`, `defineMiddleware`</td></tr><tr><td>`astro/content/*`</td><td>Content collections</td><td>`defineCollection`, `getCollection`, content loaders</td></tr><tr><td>`astro/assets`</td><td>Image optimization</td><td>`getImage`, `picture`, image components</td></tr><tr><td>`astro/actions/*`</td><td>Server actions</td><td>Action entrypoints for form submissions</td></tr><tr><td>`astro/toolbar`</td><td>Dev toolbar</td><td>Toolbar extension APIs</td></tr><tr><td>`astro/logger/*`</td><td>Logging</td><td>Multiple logger implementations (json, node, console, compose)</td></tr><tr><td>`astro/virtual-modules/*`</td><td>Virtual modules</td><td>i18n, transitions, middleware virtual modules</td></tr><tr><td>`astro/client/*`</td><td>Client directives</td><td>`client:load`, `client:idle`, `client:visible`, etc.</td></tr></table>
+<hr>
+<h2>Compiler Integration</h2>
+<p>Astro uses a <strong>Rust-based compiler</strong> (<code>@astrojs/compiler-rs</code>) compiled to WebAssembly. This is the core parsing engine that transforms <code>.astro</code> component files into efficient JavaScript.</p>
+<pre><code class="language-">.astro file
+     │
+     ▼
+┌─────────────────────────────┐
+│  @astrojs/compiler-rs       │  ← Rust + WASM
+│  (compiler/ directory)      │
+│                             │
+│  • Lexer (tokenization)     │
+│  • Parser (AST generation)  │
+│  • Codegen (JS output)      │
+└──────────────┬──────────────┘
+               │
+               ▼
+┌─────────────────────────────┐
+│  src/runtime/compiler/      │  ← Compiler runtime bridge
+│  (compiler-runtime export)  │
+│                             │
+│  • WASM module loading      │
+│  • Compile function wrapper │
+│  • Source map handling      │
+└──────────────┬──────────────┘
+               │
+               ▼
+┌─────────────────────────────┐
+│  vite-plugin-astro/         │  ← Vite plugin bridge
+│                             │
+│  • resolveId (file routing) │
+│  • transform (compile hook) │
+│  • handleHotUpdate (HMR)    │
+└─────────────────────────────┘
+</code></pre>
+<p>The compiler flow:</p>
+<ol><li><strong>vite-plugin-astro</strong> intercepts <code>.astro</code> files during Vite's module resolution</li><li>It calls into <code>src/core/compile/</code> which wraps <code>@astrojs/compiler-rs</code></li><li>The Rust compiler parses the <code>.astro</code> file into a three-part structure: <strong>frontmatter</strong> (JS between <code>---</code> fences), <strong>template</strong> (HTML-like JSX), and <strong>component metadata</strong></li><li>The generated JS is emitted as an ES module that Vite can process further</li><li>At runtime, <code>src/runtime/compiler/</code> provides the <code>compile()</code> function for dynamic compilation</li></ol>
+<pre><code class="language-typescript">// src/core/compile/ — simplified compiler bridge
+import { compile as astroCompile } from &#x27;@astrojs/compiler-rs&#x27;;
+
+export async function compile(input: string, options: CompileOptions) {
+  return astroCompile(input, {
+    // ... compilation options
+    sourcefile: options.filename,
+    sourcemap: options.sourcemap,
+  });
+}
+</code></pre>
+<hr>
+<h2>Vite Integration</h2>
+<p>Vite <strong>8.0.13</strong> serves as the build orchestrator for the entire Astro framework. Rather than building a custom bundler, Astro composes <strong>23 specialized Vite plugins</strong> that form a processing pipeline:</p>
+<pre><code class="language-">Request/Build
+     │
+     ▼
+ vite-plugin-load-fallback    ← Graceful fallbacks for missing modules
+     │
+     ▼
+ vite-plugin-config-alias     ← Config path aliasing
+     │
+     ▼
+ vite-plugin-fileurl          ← file:// URL handling
+     │
+     ▼
+ vite-plugin-astro            ← .astro file compilation (compiler bridge)
+     │
+     ▼
+ vite-plugin-markdown         ← Markdown file processing
+     │
+     ▼
+ vite-plugin-pages            ← File-based routing
+     │
+     ▼
+ vite-plugin-routes           ← Route generation
+     │
+     ▼
+ vite-plugin-renderers        ← Framework renderers (React, Vue, Svelte...)
+     │
+     ▼
+ vite-plugin-css              ← CSS processing
+     │
+     ▼
+ vite-plugin-head             ← &lt;head&gt; propagation
+     │
+     ▼
+ vite-plugin-html             ← HTML generation
+     │
+     ▼
+ vite-plugin-scripts          ← Script injection
+     │
+     ▼
+ vite-plugin-assets           ← Asset handling (built into core pipeline)
+     │
+     ▼
+ vite-plugin-static-paths     ← Static path generation
+     │
+     ▼
+ vite-plugin-environment      ← Environment variable injection
+     │
+     ▼
+ vite-plugin-app              ← App SSR server integration
+     │
+     ▼
+ vite-plugin-astro-server     ← Dev server enhancements
+     │
+     ▼
+ vite-plugin-hmr-reload       ← HMR on config changes
+     │
+     ▼
+ vite-plugin-chromedevtools   ← Chrome DevTools integration
+     │
+     ▼
+ vite-plugin-dev-status       ← Dev status indicators
+     │
+     ▼
+ vite-plugin-integrations-container ← Integration container
+     │
+     ▼
+ vite-plugin-adapter-config   ← Adapter config injection
+     │
+     ▼
+ vite-plugin-overlay          ← Error overlay
+     │
+     ▼
+ vite-plugin-utils            ← Shared utilities
+     │
+     ▼
+ vite-plugin-container        ← Container mode (testing)
+     │
+     ▼
+ vite-plugin-i18n             ← i18n routing
+     │
+     ▼
+ vite-plugin-actions          ← Server actions
+     │
+     ▼
+Output (HTML/JS/CSS)
+</code></pre>
+<p>Vite configuration is constructed in <code>src/core/create-vite.ts</code>, which assembles the plugin array, configures resolve aliases, sets up SSR mode when needed, and configures esbuild for non-Astro file processing.</p>
+<hr>
+<h2>Integration Packages</h2>
+<p>Integration packages (<code>packages/integrations/*</code>) follow a standard pattern: they export a function conforming to Astro's integration API that hooks into the build lifecycle via <code>astro:config:setup</code>, <code>astro:config:done</code>, <code>astro:build:setup</code>, <code>astro:build:start</code>, <code>astro:build:done</code>, and <code>astro:server:setup</code> hooks.</p>
+<h3>Adapter Integrations (deploy targets)</h3>
+<table><tr><th>Package</th><th>Purpose</th><th>Key Files</th></tr><tr><td>`@astrojs/node`</td><td>Node.js SSR server</td><td>Express-based server, edge functions</td></tr><tr><td>`@astrojs/cloudflare`</td><td>Cloudflare Workers/Pages</td><td>Wrangler integration, _routes.json</td></tr><tr><td>`@astrojs/vercel`</td><td>Vercel deployment</td><td>Edge/serverless functions, _routes.json</td></tr><tr><td>`@astrojs/netlify`</td><td>Netlify deployment</td><td>Edge handlers, serverless functions</td></tr><tr><td>`@astrojs/deno`</td><td>Deno deployment</td><td>Deno-specific server</td></tr></table>
+<h3>UI Framework Integrations</h3>
+<table><tr><th>Package</th><th>Purpose</th><th>Key Mechanism</th></tr><tr><td>`@astrojs/react`</td><td>React components</td><td>`@vitejs/plugin-react`, client directives</td></tr><tr><td>`@astrojs/vue`</td><td>Vue components</td><td>`@vitejs/plugin-vue`</td></tr><tr><td>`@astrojs/svelte`</td><td>Svelte components</td><td>`@sveltejs/vite-plugin-svelte`</td></tr><tr><td>`@astrojs/solid-js`</td><td>SolidJS components</td><td>`vite-plugin-solid`</td></tr><tr><td>`@astrojs/preact`</td><td>Preact components</td><td>`@preact/preset-vite`</td></tr></table>
+<h3>Content Integrations</h3>
+<table><tr><th>Package</th><th>Purpose</th></tr><tr><td>`@astrojs/mdx`</td><td>MDX support (JSX in markdown)</td></tr><tr><td>`@astrojs/markdoc`</td><td>Markdoc support (GitHub-style docs)</td></tr></table>
+<h3>Utility Integrations</h3>
+<table><tr><th>Package</th><th>Purpose</th></tr><tr><td>`@astrojs/sitemap`</td><td>XML sitemap generation</td></tr><tr><td>`@astrojs/partytown`</td><td>Third-party script sandboxing</td></tr><tr><td>`@astrojs/tailwind`</td><td>Tailwind CSS integration</td></tr><tr><td>`@astrojs/alpinejs`</td><td>Alpine.js integration</td></tr><tr><td>`@astrojs/web-vitals`</td><td>Web Vitals tracking</td></tr></table>
+<h3>Internal Integration API</h3>
+<p>The integration system is defined in <code>src/integrations/</code>:</p>
+<ul><li><strong><code>hooks.ts</code></strong> — Integration hook type definitions</li><li><strong><code>adapter-utils.ts</code></strong> — Utilities for building adapters (server entry generation, manifest creation)</li><li><strong><code>features-validation.ts</code></strong> — Integration feature validation</li></ul>
+<hr>
+<h2>Markdown Packages</h2>
+<p>Astro ships with two markdown processing packages:</p>
+<h3>@astrojs/markdown-satteri (Default in Astro 7)</h3>
+<ul><li><strong>Version</strong>: 0.3.2</li><li><strong>Role</strong>: Default markdown processor</li><li><strong>Dependencies</strong>: <code>@astrojs/internal-helpers</code>, <code>@astrojs/prism</code>, Shiki, unified ecosystem</li><li><strong>Design</strong>: Newer, purpose-built processor for Astro</li></ul>
+<h3>@astrojs/markdown-remark (Optional Peer Dependency)</h3>
+<ul><li><strong>Version</strong>: 7.2.0</li><li><strong>Role</strong>: Remark/rehype-based processor (legacy, opt-in)</li><li><strong>Dependencies</strong>: <code>@astrojs/internal-helpers</code>, <code>@astrojs/prism</code>, rehype, remark, Shiki</li><li><strong>Exports</strong>: <code>.</code> (main processor) and <code>./shiki</code> (Shiki syntax highlighting)</li><li><strong>Imports</strong>: Conditional <code>#import-plugin</code> — browser vs. default implementation</li></ul>
+<p>Both processors share common infrastructure through <code>@astrojs/internal-helpers</code> (markdown parsing, Shiki engines) and <code>astro-prism</code> (Prism syntax highlighting).</p>
+<pre><code class="language-typescript">// packages/astro/src/markdown/index.ts — Markdown facade
+// Delegates to the configured processor (satteri or remark)
+import { renderMarkdown } from &#x27;@astrojs/markdown-satteri&#x27;;
+
+export { renderMarkdown };
+</code></pre>
+<hr>
+<h2>Three Environments</h2>
+<p>Astro organizes code around <strong>three execution environments</strong>, each with distinct responsibilities:</p>
+<h3>1. SSR (Server-Side Rendering) Environment</h3>
+<p><strong>Source</strong>: <code>src/core/app/</code>, <code>src/runtime/server/</code></p>
+<p>The SSR environment renders <code>.astro</code> components to HTML on the server. It uses:</p>
+<ul><li><strong><code>src/core/app/entrypoints/</code></strong> — Multiple entry points:</li><li><code>index.js</code> — Generic app entry</li><li><code>node.js</code> — Node.js-specific (uses <code>node:http</code>)</li><li><code>virtual/dev.js</code> — Development virtual entry</li><li><code>virtual/prod.js</code> — Production virtual entry</li><li><code>manifest.js</code> — Route manifest generation</li></ul>
+<ul><li><strong><code>src/runtime/server/</code></strong> — Server-side rendering runtime:</li><li><code>astro-island.ts</code> — Island component rendering</li><li>Template rendering functions</li><li><code><head></code> collection and propagation</li></ul>
+<ul><li><strong>Key dependencies</strong>: <code>devalue</code> (serialization), <code>ultrahtml</code> (HTML parsing), <code>hono</code> (routing)</li></ul>
+<h3>2. Prerender Environment</h3>
+<p><strong>Source</strong>: <code>src/entrypoints/prerender.js</code>, <code>src/runtime/prerender/</code>, <code>src/core/build/</code></p>
+<p>The prerender environment generates static HTML at build time:</p>
+<ul><li><strong><code>src/entrypoints/prerender.js</code></strong> — Worker process entry point</li><li><strong><code>src/runtime/prerender/</code></strong> — Prerender-specific runtime code</li><li><strong>Communication</strong>: Uses a worker-pool model where prerender workers receive route data and emit HTML</li><li><strong>Key files</strong>: <code>src/prerender/routing.ts</code>, <code>src/prerender/utils.ts</code></li></ul>
+<h3>3. Client Environment</h3>
+<p><strong>Source</strong>: <code>src/runtime/client/</code>, <code>src/assets/</code>, virtual modules</p>
+<p>The client environment handles browser-side code:</p>
+<ul><li><strong><code>src/runtime/client/</code></strong> — Hydration scripts for islands:</li><li><code>idle.ts</code> — <code>client:idle</code> directive</li><li><code>load.ts</code> — <code>client:load</code> directive</li><li><code>media.ts</code> — <code>client:media</code> directive</li><li><code>only.ts</code> — <code>client:only</code> directive</li><li><code>visible.ts</code> — <code>client:visible</code> directive</li></ul>
+<ul><li><strong><code>src/assets/</code></strong> — Client-side asset handling:</li><li>Image optimization endpoints</li><li>Font runtime (<code>src/assets/fonts/runtime.js</code>)</li><li>SVG processing</li></ul>
+<ul><li><strong>Virtual modules</strong> (<code>src/virtual-modules/</code>) — Generated at build time:</li><li><code>transitions.ts</code> — View transitions router</li><li><code>transitions-events.ts</code> — Transition event handling</li><li><code>transitions-router.ts</code> — Client-side routing for transitions</li><li><code>i18n.ts</code> — i18n client configuration</li><li><code>middleware.ts</code> — Client middleware</li><li><code>prefetch.ts</code> — Prefetch configuration</li><li><code>live-config.ts</code> — Dev live reload config</li><li><code>container.ts</code> — Container virtual module</li></ul>
+<pre><code class="language-">┌──────────────────────────────────────────────────────────────┐
+│                    Three Environments                         │
+├──────────────────────┬──────────────────┬─────────────────────┤
+│       SSR            │    Prerender     │      Client         │
+│  (src/core/app/)     │ (src/entrypoints/│ (src/runtime/client/│
+│                      │  prerender.js)   │  src/assets/)       │
+├──────────────────────┼──────────────────┼─────────────────────┤
+│ Renders .astro → HTML│ Generates static │ Hydrates islands    │
+│ Handles requests     │ HTML at build    │ client:load/idle/   │
+│ Adapter deployment   │ Worker pool      │ visible/only/media  │
+│ Hono routing         │ Route distribution│ Transitions        │
+│ devalue serialization│ prerender/utils  │ Virtual modules     │
+│ Server components    │ build pipeline   │ Image/font runtime  │
+└──────────────────────┴──────────────────┴─────────────────────┘
+</code></pre>
+<hr>
+<h2>Key Design Patterns</h2>
+<h3>1. Pipeline Architecture</h3>
+<p>Astro's core follows a <strong>pipeline pattern</strong> defined in <code>src/core/base-pipeline.ts</code>. Both dev and build modes extend this base:</p>
+<ul><li><strong>Dev Pipeline</strong> (<code>src/core/dev/</code>): Vite dev server with HMR, on-demand compilation</li><li><strong>Build Pipeline</strong> (<code>src/core/build/</code>): Full compilation, prerendering, static output generation</li></ul>
+<h3>2. Virtual Module System</h3>
+<p>Astro generates virtual modules at build time that are injected into Vite's module graph:</p>
+<pre><code class="language-">src/virtual-modules/
+├── transitions.ts          → View transitions client code
+├── transitions-router.ts   → Client-side transition routing
+├── transitions-events.ts   → Transition event dispatcher
+├── transitions-swap-functions.ts → Swap animation functions
+├── transitions-types.ts    → Transition type definitions
+├── i18n.ts                 → i18n client configuration
+├── middleware.ts           → Middleware client code
+├── prefetch.ts             → Prefetch setup
+├── live-config.ts          → Dev reload configuration
+└── container.ts            → Container testing virtual module
+</code></pre>
+<h3>3. Island Architecture</h3>
+<p>The island pattern is central to Astro's zero-JS-by-default philosophy:</p>
+<ul><li><code>.astro</code> components render to HTML with <strong>no client JavaScript</strong></li><li>UI framework components (React, Vue, Svelte) become "islands" with explicit client directives</li><li>Each directive (<code>client:load</code>, <code>client:idle</code>, <code>client:visible</code>, <code>client:media</code>, <code>client:only</code>) generates a specific hydration script</li><li>The <code>astro-island</code> web component (<code>src/runtime/server/astro-island.ts</code>) manages hydration</li></ul>
+<h3>4. Integration Hook System</h3>
+<p>Integrations hook into the lifecycle through named events:</p>
+<pre><code class="language-typescript">// Integration hook types (src/integrations/hooks.ts)
+interface AstroIntegration {
+  name: string;
+  hooks: {
+    &#x27;astro:config:setup&#x27;?: (options: ConfigSetupOptions) =&gt; void | Promise&lt;void&gt;;
+    &#x27;astro:config:done&#x27;?: (options: ConfigDoneOptions) =&gt; void | Promise&lt;void&gt;;
+    &#x27;astro:server:setup&#x27;?: (options: ServerSetupOptions) =&gt; void | Promise&lt;void&gt;;
+    &#x27;astro:server:done&#x27;?: () =&gt; void | Promise&lt;void&gt;;
+    &#x27;astro:build:start&#x27;?: (options: BuildStartOptions) =&gt; void | Promise&lt;void&gt;;
+    &#x27;astro:build:setup&#x27;?: (options: BuildSetupOptions) =&gt; void | Promise&lt;void&gt;;
+    &#x27;astro:build:done&#x27;?: (pages: PageData[]) =&gt; void | Promise&lt;void&gt;;
+    // ... and more
+  };
+}
+</code></pre>
+<hr>
+<h2>Aha Moment</h2>
+<p><strong>Astro is fundamentally a Vite meta-framework, not a standalone bundler.</strong> The 23 <code>vite-plugin-*</code> directories reveal that Astro's entire compilation and serving strategy is implemented as Vite plugins. This means Astro inherits Vite's module resolution, HMR, CSS processing, and dev server for free, and focuses its engineering effort on the domain-specific pieces: the <code>.astro</code> compiler bridge (<code>vite-plugin-astro</code>), file-based routing (<code>vite-plugin-pages</code>), SSR rendering (<code>vite-plugin-app</code>), and the 19 other plugins that compose the Astro experience. The <code>src/core/create-vite.ts</code> file is the single orchestrator that assembles this plugin chain.</p>
+<hr>
+<h2>Cross-References</h2>
+<ul><li><strong><a href="./02-build-system.md">02-build-system.md</a></strong> — Detailed Vite plugin pipeline, compiler bridge, and build orchestration</li><li><strong><a href="./03-runtime.md">03-runtime.md</a></strong> — SSR rendering, prerender workers, client hydration, and island architecture</li><li><strong><a href="./04-integrations.md">04-integrations.md</a></strong> — Integration API, adapter patterns, and UI framework integrations</li><li><strong><a href="./05-content.md">05-content.md</a></strong> — Content collections, data loaders, and content layer architecture</li><li><strong><a href="./06-assets.md">06-assets.md</a></strong> — Image optimization, font processing, and asset pipeline</li></ul>
+<hr>
+<p><em>GitHub: <a href="https://github.com/withastro/astro">github.com/withastro/astro</a></em> <em>Package: <code>astro@7.0.4</code> — Node.js >=22.12.0</em></p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
