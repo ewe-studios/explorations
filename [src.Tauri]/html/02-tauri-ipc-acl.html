@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tauri IPC and ACL — Commands, Permissions, Message Passing -- [src.Tauri]</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/[src.Tauri]/docs</span>
+    <div class="nav-actions">
+      <a href="00-overview.html" class="nav-breadcrumb">Tauri Ecosystem — Overview</a><a href="01-tauri-core.html" class="nav-breadcrumb">Tauri Core — App, Builder, Managers, Plugin System</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="01-tauri-core.html" class="nav-btn" title="Previous: Tauri Core — App, Builder, Managers, Plugin System">← prev</a>
+      <a href="03-tauri-build-cli.html" class="nav-btn nav-btn-next" title="Next: Tauri Build and CLI — tauri-cli, tauri-build, Bundler Pipeline">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Tauri IPC and ACL — Commands, Permissions, Message Passing</h1>
+<h2>Core Concept</h2>
+<p>Tauri's IPC (Inter-Process Communication) system bridges JavaScript frontend code with Rust backend handlers through a typed, asynchronous message-passing channel. The ACL (Access Control List) sits in front of every IPC call and checks whether the calling webview has permission to execute the requested command. This design makes security a first-class concern: capabilities are declarative, permissions are explicit, and the IPC layer enforces them automatically.</p>
+<p>The IPC flow is: JavaScript calls <code>window.__TAURI__.ipc.invoke('command', args)</code>. The call is serialized and sent through the WebView's message handler. Tauri's IPC layer deserializes the call, checks the ACL, and dispatches to the appropriate Rust handler. The result is serialized and sent back as a resolved or rejected Promise.</p>
+<h2>Command Macro</h2>
+<p>Rust handlers are defined with the <code>#[tauri::command]</code> procedural macro:</p>
+<pre><code class="language-rust">// tauri/src/command.rs
+#[tauri::command]
+fn read_file(path: String, state: State&lt;Database&gt;) -&gt; Result&lt;String, String&gt; {
+    // The function body executes when the IPC call arrives
+    let content = std::fs::read_to_string(&amp;path)
+        .map_err(|e| e.to_string())?;
+    Ok(content)
+}
+</code></pre>
+<p>The macro generates an <code>InvokeHandler</code> implementation that:</p>
+<ol><li>Deserializes the JSON arguments into Rust types</li><li>Calls the function</li><li>Serializes the return value back to JSON</li><li>Handles <code>Result</code> by resolving or rejecting the JavaScript Promise</li></ol>
+<pre><code class="language-rust">// Generated by #[tauri::command] — simplified
+impl&lt;R: Runtime&gt; InvokeHandler&lt;R&gt; for __cmd__read_file {
+    fn call(&amp;self, invoke: Invoke&lt;R&gt;) -&gt; bool {
+        let args: ReadFileArgs = invoke.message.parse_args()?;
+        let state = invoke.message.state::&lt;Database&gt;();
+        let result = read_file(args.path, state);
+        invoke.resolver.resolve_result(result)
+    }
+}
+</code></pre>
+<p>Commands can accept special types that Tauri injects:</p>
+<ul><li><code>State<T></code> — managed application state</li><li><code>Window<R></code> — the calling window</li><li><code>Webview<R></code> — the calling webview</li><li><code>AppHandle<R></code> — the application handle</li><li><code>Config</code> — the application configuration</li></ul>
+<div class="mermaid">
+sequenceDiagram
+    participant JS as JavaScript
+    participant Bridge as __TAURI__.ipc.invoke()
+    participant Serde as JSON Serialization
+    participant ACL as ACL Check
+    participant Handler as #[tauri::command] fn
+    participant Resolver as Promise Resolver
+
+    JS-&gt;&gt;Bridge: invoke(&#x27;read_file&#x27;, {path: &#x27;data.txt&#x27;})
+    Bridge-&gt;&gt;Serde: serialize args to JSON
+    Serde-&gt;&gt;ACL: check capability for &#x27;read_file&#x27;
+    alt permitted
+        ACL-&gt;&gt;Handler: deserialize args, call fn
+        Handler--&gt;&gt;Resolver: Result&lt;String, String&gt;
+        Resolver--&gt;&gt;Bridge: serialize result
+        Bridge--&gt;&gt;JS: Promise.resolve(result)
+    else denied
+        ACL--&gt;&gt;JS: Promise.reject(PermissionDenied)
+    end
+
+</div>
+<h2>Invoke Message Structure</h2>
+<p>Every IPC call is a structured message:</p>
+<pre><code class="language-rust">// tauri/src/ipc/message.rs
+pub struct InvokeMessage&lt;R: Runtime&gt; {
+    pub cmd: String,              // Command name
+    pub callback: u64,            // JS callback ID for success
+    pub error: u64,               // JS callback ID for failure
+    pub inner: RawMessage,        // Serialized arguments
+}
+
+pub struct Invoke&lt;R: Runtime&gt; {
+    pub message: InvokeMessage&lt;R&gt;,
+    pub resolver: InvokeResolver&lt;R&gt;,
+}
+</code></pre>
+<p>The <code>callback</code> and <code>error</code> IDs are numeric identifiers that the JavaScript side uses to route the response to the correct Promise. The <code>resolver</code> is what the Rust handler uses to send back the result.</p>
+<h2>ACL — Access Control List</h2>
+<p>The ACL is Tauri's security gate. It reads capability definitions and checks every IPC call against them.</p>
+<pre><code class="language-rust">// tauri/src/acl/mod.rs
+pub struct AccessControlList {
+    capabilities: HashMap&lt;String, Capability&gt;,
+    scopes: HashMap&lt;String, Scope&gt;,
+}
+
+pub struct Capability {
+    pub identifier: String,
+    pub description: String,
+    pub local: bool,
+    pub remote: HashMap&lt;String, Remote&gt;,
+    pub permissions: Vec&lt;String&gt;,
+    pub contexts: Contexts,
+    pub webviews: Vec&lt;String&gt;,      // Which webviews this applies to
+    pub windows: Vec&lt;String&gt;,
+}
+</code></pre>
+<h3>Capability Files</h3>
+<p>Capabilities are defined in <code>capabilities/</code> directory as JSON files:</p>
+<pre><code class="language-json">{
+  &quot;identifier&quot;: &quot;main-capability&quot;,
+  &quot;description&quot;: &quot;Permissions for the main window&quot;,
+  &quot;local&quot;: true,
+  &quot;remote&quot;: {
+    &quot;urls&quot;: []
+  },
+  &quot;webviews&quot;: [&quot;main&quot;],
+  &quot;windows&quot;: [&quot;main&quot;],
+  &quot;permissions&quot;: [
+    &quot;shell:allow-open&quot;,
+    &quot;fs:allow-read-file&quot;,
+    &quot;fs:allow-read-text-file&quot;,
+    &quot;fs:allow-write-file&quot;,
+    &quot;dialog:allow-open&quot;,
+    &quot;http:default&quot;
+  ]
+}
+</code></pre>
+<p>Each permission is a string in the format <code>plugin:action</code>. The <code>allow-</code> prefix grants permission. Without a matching permission entry, the command is silently rejected.</p>
+<h3>ACL Check Flow</h3>
+<div class="mermaid">
+flowchart TD
+    A[IPC call arrives] --&gt; B[Extract command name]
+    B --&gt; C[Find capability for this webview]
+    C --&gt; D{Capability exists?}
+    D --&gt;|No| E[Reject: no capability]
+    D --&gt;|Yes| F{Permission listed?}
+    F --&gt;|No| G[Reject: permission not granted]
+    F --&gt;|Yes| H{Scope check needed?}
+    H --&gt;|Yes| I[Check allow/deny paths]
+    H --&gt;|No| J[Execute command]
+    I --&gt; K{Path allowed?}
+    K --&gt;|Yes| J
+    K --&gt;|No| L[Reject: path not in scope]
+
+</div>
+<p>The ACL check is a three-step process:</p>
+<ol><li><strong>Capability match</strong> — does any capability cover this webview?</li><li><strong>Permission check</strong> — is the specific command listed in the capability's permissions?</li><li><strong>Scope check</strong> — for filesystem and shell commands, does the requested path match the allowed/denied patterns?</li></ol>
+<h3>Scoped Permissions</h3>
+<p>Some plugins support scoped permissions that restrict what values a command can operate on:</p>
+<pre><code class="language-json">{
+  &quot;identifier&quot;: &quot;fs-capability&quot;,
+  &quot;permissions&quot;: [
+    {
+      &quot;identifier&quot;: &quot;fs:default&quot;,
+      &quot;allow&quot;: [
+        { &quot;path&quot;: &quot;$HOME/documents/**&quot; },
+        { &quot;path&quot;: &quot;$APPDATA/config.json&quot; }
+      ],
+      &quot;deny&quot;: [
+        { &quot;path&quot;: &quot;$HOME/documents/secret/**&quot; }
+      ]
+    }
+  ]
+}
+</code></pre>
+<p>The scope engine checks paths against allow/deny lists. Deny entries take priority over allow entries. Path variables like <code>$HOME</code>, <code>$APPDATA</code>, <code>$APPDIR</code> are resolved at runtime.</p>
+<h2>IPC Transport Layer</h2>
+<p>The actual transport depends on the platform:</p>
+<div class="mermaid">
+flowchart LR
+    subgraph macOS
+        JS1[JavaScript] --&gt;|webkit.messageHandlers| WK[WKScriptMessageHandler]
+        WK --&gt;|native callback| Rust1[Rust handler]
+    end
+
+    subgraph Windows
+        JS2[JavaScript] --&gt;|window.chrome.webview.postMessage| WV2[WebView2]
+        WV2 --&gt;|WebMessageReceived| Rust2[Rust handler]
+    end
+
+    subgraph Linux
+        JS3[JavaScript] --&gt;|window.webkit.messageHandlers| GTK[WebKitGTK UserMessage]
+        GTK --&gt;|script_message_received| Rust3[Rust handler]
+    end
+
+    Rust1 --&gt;|evaluate JavaScript| JS1
+    Rust2 --&gt;|evaluate JavaScript| JS2
+    Rust3 --&gt;|evaluate JavaScript| JS3
+
+</div>
+<p>On macOS, wry registers a <code>WKScriptMessageHandler</code>. On Windows, it uses WebView2's <code>WebMessageReceived</code> event. On Linux, it uses WebKitGTK's <code>script_message_received</code>. All three converge to the same Rust IPC handler.</p>
+<p><strong>Aha:</strong> The IPC system doesn't use actual inter-process communication. The WebView and Rust code run in the same process. The "IPC" naming reflects the logical separation, not a process boundary. This is important: there is no serialization overhead crossing process boundaries. The JSON serialization happens because JavaScript and Rust have different type systems, not because they are in different processes.</p>
+<h2>JavaScript API</h2>
+<p>The JavaScript side accesses IPC through <code>window.__TAURI__</code>:</p>
+<pre><code class="language-javascript">// Invoke a command
+const content = await window.__TAURI__.invoke(&#x27;read_file&#x27;, { path: &#x27;data.txt&#x27; })
+
+// Listen for events from Rust
+window.__TAURI__.event.listen(&#x27;progress&#x27;, (event) =&gt; {
+    console.log(`Progress: ${event.payload}%`)
+})
+
+// Emit events to Rust
+window.__TAURI__.event.emit(&#x27;user-action&#x27;, { action: &#x27;click&#x27;, element: &#x27;button&#x27; })
+</code></pre>
+<p>The <code>__TAURI__</code> object is injected into the WebView at load time. It is not available in external URLs — only in the app's own frontend.</p>
+<h2>Event System</h2>
+<p>Tauri has a pub/sub event system separate from the request/response IPC:</p>
+<pre><code class="language-rust">// tauri/src/event.rs
+pub struct EventManager&lt;R: Runtime&gt; {
+    listeners: Arc&lt;Mutex&lt;HashMap&lt;String, Vec&lt;EventHandler&gt;&gt;&gt;&gt;,
+}
+
+impl&lt;R: Runtime&gt; EventManager&lt;R&gt; {
+    pub fn emit(&amp;self, event: &amp;str, payload: impl Serialize) -&gt; Result&lt;()&gt; {
+        // Broadcast to all listeners
+    }
+
+    pub fn listen&lt;F&gt;(&amp;self, event: &amp;str, handler: F) -&gt; EventId
+    where F: Fn(EventPayload) + Send + &#x27;static {
+        // Register listener, return ID for unlistening
+    }
+}
+</code></pre>
+<p>Events are broadcast. Any window can listen to any event. Events are not ACL-gated — they are designed for pub/sub communication, not privileged operations.</p>
+<div class="mermaid">
+sequenceDiagram
+    participant Rust1 as Rust Handler A
+    participant EM as EventManager
+    participant JS1 as Window A (JS)
+    participant JS2 as Window B (JS)
+
+    Rust1-&gt;&gt;EM: emit(&quot;update&quot;, {data: ...})
+    EM-&gt;&gt;JS1: event callback fires
+    EM-&gt;&gt;JS2: event callback fires
+    JS1-&gt;&gt;EM: listen(&quot;update&quot;, handler)
+    JS2-&gt;&gt;EM: listen(&quot;update&quot;, handler)
+    Note over EM: Events are broadcast to&lt;br/&gt;all registered listeners
+
+</div>
+<h2>Invoke Handler Composition</h2>
+<p>Multiple command handlers are composed into a single invoke handler:</p>
+<pre><code class="language-rust">// tauri/src/command.rs
+pub fn generate_handler&lt;T: InvokeHandler&lt;R&gt;, R: Runtime&gt;(
+    handlers: Vec&lt;T&gt;
+) -&gt; impl Fn(Invoke&lt;R&gt;) -&gt; bool + Send {
+    move |invoke| {
+        for handler in &amp;handlers {
+            if handler.call(invoke) {
+                return true; // handler consumed this invoke
+            }
+        }
+        false // no handler matched
+    }
+}
+</code></pre>
+<p>When an IPC call arrives, each handler is tried in order. The first handler that returns <code>true</code> (meaning it handled the call) short-circuits the rest. If no handler matches, the call returns false and the JavaScript Promise rejects with an "unknown command" error.</p>
+<p><strong>Key insight:</strong> Handler ordering matters. If two handlers register the same command name, the first one wins silently. This is a footgun — duplicate command names are not an error, they are a silent override.</p>
+<h2>Error Handling</h2>
+<p>IPC errors flow through Rust's <code>Result</code> type:</p>
+<pre><code class="language-rust">#[tauri::command]
+fn risky_operation() -&gt; Result&lt;String, InvokeError&gt; {
+    // Ok(value) → Promise resolves with value
+    // Err(error) → Promise rejects with error message
+    let data = std::fs::read_to_string(&quot;missing.txt&quot;)
+        .map_err(|e| InvokeError(e.to_string()))?;
+    Ok(data)
+}
+</code></pre>
+<p>The error type must implement <code>serde::Serialize</code>. Tauri serializes the error and passes it to the JavaScript callback ID registered in the <code>InvokeMessage</code>. On the JavaScript side, the Promise rejects with the serialized error.</p>
+<h2>IPC Message Serialization</h2>
+<p>All IPC messages are JSON-serialized. The serialization pipeline uses <code>serde_json</code>:</p>
+<pre><code class="language-rust">// tauri/src/ipc/serializer.rs
+// JavaScript → Rust:
+let args: InvokeArgs = serde_json::from_str(&amp;message.body)?;
+
+// Rust → JavaScript:
+let result = serde_json::to_string(&amp;response)?;
+</code></pre>
+<p>The serialization has performance implications:</p>
+<ul><li>Small messages (< 1 KB): negligible overhead (~10 microseconds)</li><li>Medium messages (100 KB): ~1 millisecond</li><li>Large messages (1 MB): ~10 milliseconds</li></ul>
+<p>For performance-sensitive applications, consider:</p>
+<ul><li>Using binary data through custom protocol handlers (avoids JSON encoding)</li><li>Batching multiple small operations into a single IPC call</li><li>Streaming large data through file paths rather than inline content</li></ul>
+<h2>Capability File Resolution</h2>
+<p>Capability files are resolved at build time by <code>tauri-build</code>:</p>
+<pre><code class="language-rust">// tauri-build/src/capabilities.rs
+pub fn resolve_capabilities(config_dir: &amp;Path) -&gt; Result&lt;Vec&lt;Capability&gt;&gt; {
+    let caps_dir = config_dir.join(&quot;capabilities&quot;);
+    let mut capabilities = Vec::new();
+
+    if caps_dir.exists() {
+        for entry in std::fs::read_dir(&amp;caps_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension() == Some(&quot;json&quot;.as_ref()) {
+                let content = std::fs::read_to_string(&amp;path)?;
+                let cap: Capability = serde_json::from_str(&amp;content)?;
+                capabilities.push(cap);
+            }
+        }
+    }
+
+    // Validate capabilities
+    for cap in &amp;capabilities {
+        validate_capability(cap)?;
+    }
+
+    Ok(capabilities)
+}
+</code></pre>
+<p>Each capability file is validated:</p>
+<ul><li>Identifier must be unique</li><li>Permission strings must match known permission definitions</li><li>Scope paths must be valid path patterns</li><li>Webview references must match defined webviews</li></ul>
+<p>If validation fails, the build fails with a descriptive error. This is compile-time security: you cannot deploy an app with invalid capability configurations.</p>
+<h2>Cross-References</h2>
+<ul><li><a href="01-tauri-core.md">Tauri Core</a> — App<R>, AppManager, where IPC is dispatched</li><li><a href="03-tauri-build-cli.md">Build and CLI</a> — how capabilities are bundled into the binary</li><li><a href="04-wry-webview.md">Wry WebView</a> — how wry's message handlers transport IPC messages</li><li><a href="08-plugins.md">Plugins</a> — how plugins define their own IPC commands via Extension</li><li><a href="10-cross-cutting.md">Cross-Cutting Concerns</a> — security review of the ACL system</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
