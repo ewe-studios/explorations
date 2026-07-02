@@ -15,28 +15,27 @@ The key insight is that Tauri separates the Rust build (handled by cargo) from t
 The CLI is a Rust binary built with `clap`:
 
 ```rust
-// tauri-cli/src/main.rs
-#[derive(Parser)]
-#[clap(about = "Tauri CLI", version)]
-struct Cli {
-    #[clap(subcommand)]
-    command: Commands,
-}
-
+// tauri-cli/src/lib.rs
 #[derive(Subcommand)]
 enum Commands {
-    /// Initialize a Tauri project
-    Init(InitOptions),
-    /// Run the app in development mode
-    Dev(DevOptions),
-    /// Build the app for production
-    Build(BuildOptions),
-    /// Show information about the project
-    Info,
-    /// Sign a binary or file
-    Sign(SignOptions),
-    /// ACL management
-    Acl(AclOptions),
+    Init(init::Options),
+    Dev(dev::Options),
+    Build(build::Options),
+    Bundle(bundle::Options),
+    Android(mobile::android::Cli),
+    #[cfg(target_os = "macos")]
+    Ios(mobile::ios::Cli),
+    Migrate,              // Migrate from v1 to v2
+    Info(info::Options),
+    Add(add::Options),     // Add frontend framework template
+    Remove(remove::Options),
+    Plugin(plugin::Cli),
+    Icon(icon::Options),
+    Signer(signer::Cli),
+    Completions(completions::Options),
+    Permission(acl::permission::Cli),
+    Capability(acl::capability::Cli),
+    Inspect(inspect::Cli),
 }
 ```
 
@@ -45,9 +44,14 @@ enum Commands {
 | `tauri init` | Scaffold a new Tauri project, create `tauri.conf.json` |
 | `tauri dev` | Run frontend dev server, build Rust, launch app in dev mode |
 | `tauri build` | Build frontend for production, compile Rust, run bundler |
+| `tauri bundle` | Run only the bundler (skip compilation) |
 | `tauri info` | Display versions, OS info, dependencies |
-| `tauri sign` | Sign binaries with a signing key |
-| `tauri acl` | Manage ACL capabilities |
+| `tauri android` | Android subcommands (init, dev, build) |
+| `tauri ios` | iOS subcommands (init, dev, build) — macOS only |
+| `tauri icon` | Generate app icons from a source image |
+| `tauri signer` | Sign binaries with a signing key |
+| `tauri permission` | Manage individual ACL permissions |
+| `tauri capability` | Manage ACL capability files |
 
 ## Development Flow
 
@@ -129,15 +133,17 @@ The build flow produces an optimized release binary, then packages it. The bundl
 
 ```rust
 // tauri-build/src/lib.rs
-pub fn setup<R: tauri::Runtime>(
-    context: tauri::Context<R>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // Generated code:
-    // 1. Embed frontend assets using include_bytes!
-    // 2. Parse and validate configuration
-    // 3. Generate context struct with all config values
-    // 4. Generate ACL capability definitions
-    Ok(())
+pub fn Builder::default() -> Builder {
+    Builder { settings: Settings::default() }
+}
+
+impl Builder {
+    pub fn build(self) {
+        // 1. Embed frontend assets using include_bytes!
+        // 2. Parse and validate configuration
+        // 3. Generate context struct with all config values
+        // 4. Generate ACL capability definitions
+    }
 }
 ```
 
@@ -154,15 +160,15 @@ The generated code includes:
 The bundler produces platform-specific installers:
 
 ```rust
-// tauri-bundler/src/bundle/mod.rs
+// tauri-utils/src/config.rs
 pub enum BundleType {
     Deb,        // Debian package (.deb)
     Rpm,        // Red Hat package (.rpm)
     AppImage,   // Linux portable app (.AppImage)
     Msi,        // Windows Installer (.msi)
     Nsis,       // Nullsoft installer (.exe)
-    Dmg,        // macOS disk image (.dmg)
-    Updater,    // Self-updating bundle
+    App,        // macOS application bundle (.app)
+    Dmg,        // Apple disk image (.dmg)
 }
 ```
 

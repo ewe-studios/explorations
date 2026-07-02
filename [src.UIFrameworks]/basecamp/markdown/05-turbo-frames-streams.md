@@ -226,13 +226,22 @@ class StreamElement extends HTMLElement {
   }
 
   get performAction() {
-    return StreamActions[this.action] || StreamActions[this.action]
+    if (this.action) {
+      const actionFunction = StreamActions[this.action]
+      if (actionFunction) return actionFunction
+      this.#raise("unknown action")
+    }
+    this.#raise("action attribute is missing")
   }
 
   get targetElements() {
-    if (this.target) return this.targetElementsById
-    if (this.targets) return this.targetElementsByQuery
-    return []
+    if (this.target) {
+      return this.targetElementsById
+    } else if (this.targets) {
+      return this.targetElementsByQuery
+    } else {
+      this.#raise("target or targets attribute is missing")
+    }
   }
 
   get action() { return this.getAttribute("action") }
@@ -254,44 +263,48 @@ Source: `src/core/streams/stream_actions.js`
 // src/core/streams/stream_actions.js
 export const StreamActions = {
   after() {
-    this.targetElements.forEach(e => e.parentElement.insertBefore(this.templateContent, e.nextSibling))
+    this.targetElements.forEach((e) => e.parentElement?.insertBefore(this.templateContent, e.nextSibling))
   },
 
   append() {
     this.removeDuplicateTargetChildren()
-    this.targetElements.forEach(e => e.append(this.templateContent))
+    this.targetElements.forEach((e) => e.append(this.templateContent))
   },
 
   before() {
-    this.targetElements.forEach(e => e.parentElement.insertBefore(this.templateContent, e))
+    this.targetElements.forEach((e) => e.parentElement?.insertBefore(this.templateContent, e))
   },
 
   prepend() {
     this.removeDuplicateTargetChildren()
-    this.targetElements.forEach(e => e.prepend(this.templateContent))
+    this.targetElements.forEach((e) => e.prepend(this.templateContent))
   },
 
   remove() {
-    this.targetElements.forEach(e => e.remove())
+    this.targetElements.forEach((e) => e.remove())
   },
 
   replace() {
-    if (this.method == "morph") {
-      this.targetElements.forEach(e => morphElements(e, this.templateContent))
-    } else {
-      this.targetElements.forEach(e => e.replaceWith(this.templateContent))
-    }
+    const method = this.getAttribute("method")
+    this.targetElements.forEach((targetElement) => {
+      if (method === "morph") {
+        morphElements(targetElement, this.templateContent)
+      } else {
+        targetElement.replaceWith(this.templateContent)
+      }
+    })
   },
 
   update() {
-    if (this.method == "morph") {
-      this.targetElements.forEach(e => morphChildren(e, this.templateContent))
-    } else {
-      this.targetElements.forEach(e => {
-        e.innerHTML = ""
-        e.append(this.templateContent)
-      })
-    }
+    const method = this.getAttribute("method")
+    this.targetElements.forEach((targetElement) => {
+      if (method === "morph") {
+        morphChildren(targetElement, this.templateContent)
+      } else {
+        targetElement.innerHTML = ""
+        targetElement.append(this.templateContent)
+      }
+    })
   },
 
   refresh() {

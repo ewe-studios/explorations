@@ -13,25 +13,21 @@ Wry's architecture is a facade over platform-specific WebView implementations. T
 ## WebViewBuilder — The Central API
 
 ```rust
-// wry/src/webview/mod.rs
-pub struct WebViewBuilder<'a> {
-    // Core
-    pub platform_specific: PlatformSpecificWebViewAttributes,
-    // URL/content
-    pub url: Option<Url>,
-    pub html: Option<String>,
-    pub initialization_scripts: Vec<Script>,
-    // IPC
-    pub ipc_handler: Option<Handler>,
-    pub custom_protocol: Option<CustomProtocol>,
-    // Window integration
-    pub window: Option<Window>,
-    // Settings
-    pub devtools: bool,
+// wry/src/lib.rs — WebViewAttributes is internal (not pub)
+struct WebViewAttributes<'a> {
+    pub id: Option<WebViewId<'a>>,
+    pub context: Option<&'a mut WebContext>,
+    pub user_agent: Option<String>,
+    pub visible: bool,
     pub transparent: bool,
-    pub fullscreen: bool,
+    pub background_color: Option<RGBA>,
+    pub url: Option<String>,
+    pub headers: Option<http::HeaderMap>,
     pub zoom_hotkeys_enabled: bool,
-    pub scroll_bounce: bool,
+    // ...
+    pub initialization_scripts: Vec<InitializationScript>,
+    pub custom_protocols: HashMap<String, Box<dyn Fn(...)>>,
+    pub ipc_handler: Option<Box<dyn Fn(Request<String>)>>,
     // ... 50+ total fields
 }
 ```
@@ -182,10 +178,9 @@ The protocol handler can serve any content type: HTML, CSS, JavaScript, JSON, im
 Wry provides a unified IPC message handler across all platforms:
 
 ```rust
-// wry/src/webview/mod.rs
-pub struct WebViewAttributes {
-    pub ipc_handler: Option<Box<dyn Fn(String)>>,
-}
+// wry/src/lib.rs — internal structure
+// ipc_handler receives http::Request<String>, not raw String
+pub ipc_handler: Option<Box<dyn Fn(Request<String>)>>,
 ```
 
 On each platform, the message handler is wired differently:

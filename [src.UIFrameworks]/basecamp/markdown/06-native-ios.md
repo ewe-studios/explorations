@@ -17,25 +17,32 @@ Source: `Source/Turbo/Session/Session.swift`
 ```swift
 // Source/Turbo/Session/Session.swift
 public class Session: NSObject {
-    weak var delegate: SessionDelegate?
-    let webView: WKWebView
-    var pathConfiguration: PathConfiguration?
-    var currentVisit: Visit?
-    var topmostVisit: Visit?
-    var previousVisit: Visit?
-    var activatedVisitable: Visitable?
-    var activeVisitable: Visitable?
+    public weak var delegate: SessionDelegate?
+    public let webView: WKWebView
+    public var pathConfiguration: PathConfiguration?
+
+    private var currentVisit: Visit?    // private, exposed via topmostVisitable/activeVisitable
+    private var topmostVisit: Visit?
+    private var previousVisit: Visit?
+    private var activatedVisitable: Visitable?
+
+    public var topmostVisitable: Visitable?    // computed from topmostVisit
+    public var activeVisitable: Visitable?     // computed from activatedVisitable
 
     // Visit creation -- cold boot for first visit, JS-driven for subsequent
-    func visit(_ visitable: Visitable, action: VisitAction)
-    func visit(_ visitable: Visitable, options: VisitOptions?, reload: Bool)
+    public func visit(_ visitable: Visitable, action: VisitAction)
+    public func visit(_ visitable: Visitable, options: VisitOptions?, reload: Bool)
 
     // Lifecycle management
-    func reload()
-    func clearSnapshotCache()
-    func markSnapshotCacheAsStale()
-    func activateVisitable(_ visitable: Visitable)
-    func deactivateVisitable(_ visitable: Visitable, showScreenshot: Bool = true)
+    public func reload()
+    public func clearSnapshotCache()
+    public func markSnapshotCacheAsStale()
+    public func markContentAsStale()
+
+    // Private -- internal implementation
+    private func activateVisitable(_ visitable: Visitable)
+    private func deactivateVisitable(_ visitable: Visitable, showScreenshot: Bool = false)
+    private func isActivatedVisitable(_ visitable: Visitable) -> Bool
 }
 ```
 
@@ -181,10 +188,10 @@ Source: `Source/Turbo/Visit/JavaScriptVisit.swift`
 ```swift
 // Source/Turbo/Visit/JavaScriptVisit.swift
 final class JavaScriptVisit: Visit {
-    var identifier: String  // UUID
+    var identifier = "(pending)"  // Set to UUID by JS callback, not a UUID initially
 
     override func startVisit() {
-        // Calls Turbo JS: visitLocation(location, options, restorationIdentifier)
+        bridge.visitDelegate = self  // Also sets delegate before calling visitLocation
         bridge.visitLocation(location, options: options, restorationIdentifier: restorationIdentifier)
     }
 }
@@ -387,7 +394,7 @@ Source: `Source/Turbo/Visit/VisitOptions.swift`
 // Source/Turbo/Visit/VisitOptions.swift
 struct VisitOptions: Codable {
     let action: VisitAction        // .advance, .replace, .restore
-    let response: VisitResponse?   // response from previous visit (for error handling)
+    var response: VisitResponse?   // response from previous visit (for error handling)
 }
 
 enum VisitAction: String, Codable {
@@ -432,13 +439,20 @@ struct VisitProposal {
 Source: `Source/Turbo/Navigator/Helpers/Navigation.swift`
 
 ```swift
-// Source/Turbo/Navigator/Helpers/Navigation.swift
+// Source/Turbo/Navigator/Helpers/Navigation.swift + Navigation+QueryStringPresentation.swift
 enum Navigation {
     enum Context: String { case `default`, case modal }
     enum Presentation: String {
-        case `default`, pop, replace, refresh, clearAll, replaceRoot, none
+        case `default`, pop, replace, refresh
+        case clearAll = "clear_all"
+        case replaceRoot = "replace_root"
+        case none
     }
-    enum ModalStyle: String { case medium, large, full, pageSheet, formSheet }
+    enum ModalStyle: String {
+        case medium, large, full
+        case pageSheet = "page_sheet"
+        case formSheet = "form_sheet"
+    }
     enum QueryStringPresentation: String { case `default`, replace }
 }
 ```

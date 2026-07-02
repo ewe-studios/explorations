@@ -14,47 +14,56 @@ Plugins are the primary way Tauri apps access system resources. The ACL system g
 
 ```rust
 // tauri/src/plugin.rs
-pub trait Plugin<R: Runtime>: Send + Sync {
+pub trait Plugin<R: Runtime>: Send {
     /// Unique name for the plugin
     fn name(&self) -> &'static str;
 
     /// Called once when the plugin is registered
-    fn initialize(&mut self, app: &AppHandle<R>, api: PluginApi) -> Result<(), Box<dyn std::error::Error>> {
-        let _ = (app, api);
+    #[allow(unused_variables)]
+    fn initialize(
+        &mut self,
+        app: &AppHandle<R>,
+        config: JsonValue,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         Ok(())
     }
 
-    /// Called when a page loads — inject scripts here
-    fn on_page_load(&self, window: Window<R>, payload: &PageLoadPayload) {
-        let _ = (window, payload);
-    }
-
-    /// Called when a window is ready
-    fn on_window_ready(&self, window: &Window<R>, label: &str) {
-        let _ = (window, label);
-    }
-
-    /// Called when a webview is ready
-    fn on_webview_ready(&self, webview: &Webview<R>, label: &str) {
-        let _ = (webview, label);
-    }
-
-    /// Define IPC commands the plugin provides
-    fn extension(&self) -> Option<Box<dyn Extension>> {
+    /// JavaScript to inject before page load
+    fn initialization_script(&self) -> Option<String> {
         None
     }
+
+    /// Callback invoked when the window is created
+    #[allow(unused_variables)]
+    fn window_created(&mut self, window: Window<R>) {}
+
+    /// Callback invoked when the webview is created
+    #[allow(unused_variables)]
+    fn webview_created(&mut self, webview: Webview<R>) {}
+
+    /// Callback invoked when webview tries to navigate. Return false to cancel.
+    #[allow(unused_variables)]
+    fn on_navigation(&mut self, webview: &Webview<R>, url: &Url) -> bool {
+        true
+    }
+
+    /// Callback invoked when the webview performs a navigation to a page
+    #[allow(unused_variables)]
+    fn on_page_load(&mut self, webview: &Webview<R>, payload: &PageLoadPayload<'_>) {}
+
+    /// Callback invoked when the event loop receives a new event
+    #[allow(unused_variables)]
+    fn on_event(&mut self, app: &AppHandle<R>, event: &RunEvent) {}
+
+    /// Extend commands to Builder::invoke_handler. Return true if handled.
+    #[allow(unused_variables)]
+    fn extend_api(&mut self, invoke: Invoke<R>) -> bool {
+        false
+    }
 }
 ```
 
-The `Extension` trait defines the plugin's IPC commands:
-
-```rust
-pub trait Extension: Send + Sync {
-    fn on_message(&self, scope: Scope, message: Request) -> Result<Response>;
-}
-```
-
-When an IPC call matches the plugin's command prefix, the plugin's `on_message` handler is called. The handler deserializes the arguments, executes the command, and returns a response.
+Plugins handle IPC commands through the `extend_api` method. When an IPC call matches the plugin's command prefix, the plugin's `extend_api` handler is called. The handler deserializes the arguments, executes the command, and returns `true` if handled.
 
 ## Shell Plugin
 
@@ -342,7 +351,7 @@ pub fn init<R: Runtime>() -> impl Plugin<R> {
 
 // In tauri-plugin-websocket/Cargo.toml
 [dependencies]
-tokio-tungstenite = "0.23"
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 tokio = { version = "1", features = ["full"] }
 url = "2"
 ```

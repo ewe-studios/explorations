@@ -60,15 +60,15 @@ The Turbo `Session` class is the delegate for 10+ subsystems:
 
 | Subsystem | Delegate Method Called | Session Response |
 |-----------|----------------------|------------------|
-| `LinkClickObserver` | `linkClickIntercepted(link, event)` | Check `elementIsNavigatable`, propose visit |
+| `LinkClickObserver` | `willFollowLinkToLocation(link, location, event)` | Check `elementIsNavigatable`, propose visit |
 | `FormSubmitObserver` | `formSubmitted(form, submitter)` | Check `submissionIsNavigatable`, submit via Turbo |
-| `LinkPrefetchObserver` | `linkPrefetched(url, request)` | Cache the request for potential click |
-| `ScrollObserver` | `scrollChanged(position)` | Update history restoration data |
-| `StreamObserver` | `streamMessageReceived(message)` | Render via `StreamMessageRenderer` |
-| `History` | `proposedVisit(location, action)` | Create Visit, start navigation |
-| `PageView` | `allowsImmediateRender(snapshot)` | Check if Turbo Drive is enabled |
+| `LinkPrefetchObserver` | `canPrefetchRequestToLocation(link, location)` | Cache the request for potential click |
+| `ScrollObserver` | `scrollPositionChanged(position)` | Update history restoration data |
+| `StreamObserver` | `receivedMessageFromStream(message)` | Render via `StreamMessageRenderer` |
+| `History` | `historyPoppedToLocationWithRestorationIdentifierAndDirection(...)` | Create Visit, start navigation |
+| `PageView` | `allowsImmediateRender({ element }, options)` | Check if Turbo Drive is enabled |
 | `BrowserAdapter` | `visitProposedToLocation(location, options)` | Start visit or full page nav |
-| `Preloader` | `shouldPreloadLink(link)` | Check preload eligibility |
+| `Preloader` | `shouldPreloadLink(element)` | Check preload eligibility |
 | `FrameRedirector` | Various frame routing callbacks | Route to appropriate frame controller |
 
 ```mermaid
@@ -390,7 +390,7 @@ sealed interface WebSslError : VisitError // NotYetValid, Expired, etc.
 | Page refresh debounce | 150ms | Turbo |
 | Recent requests max | 20 | Turbo |
 | Default value types | array, boolean, number, object, string | Stimulus |
-| Unvisitable extensions | 56 extensions | Turbo |
+| Unvisitable extensions | 54 extensions | Turbo |
 | Android min SDK | 28 | hotwire-native-android |
 | iOS min version | 14 | hotwire-native-ios |
 | WebView Chromium min | 120 | hotwire-native-android |

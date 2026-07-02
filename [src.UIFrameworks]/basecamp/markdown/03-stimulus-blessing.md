@@ -58,7 +58,7 @@ export class Controller<Element = HTMLElement> {
     ClassPropertiesBlessing,
     TargetPropertiesBlessing,
     ValuePropertiesBlessing,
-    OutletPropertiesBlassing
+    OutletPropertiesBlessing
   ]
   static targets: string[] = []
   static outlets: string[] = []
@@ -77,49 +77,84 @@ The `shadow()` function creates a subclass that defines the blessed properties o
 Source: `src/core/blessing.ts`
 
 ```typescript
-// src/core/blessing.ts:20
-export function shadow<T>(constructor: Constructor<T>, properties: PropertyDescriptorMap): Constructor<T> {
-  const shadowConstructor = extend(constructor)
-  shadowConstructor.blessings = [constructor]  // prevent re-blessing
-  const shadowPrototype = shadowConstructor.prototype as any
+// src/core/blessing.ts:10
+export function bless<T>(constructor: Blessable<T>): Constructor<T> {
+  return shadow(constructor, getBlessedProperties(constructor))
+}
 
-  for (const [key, descriptor] of Object.entries(properties)) {
-    const existing = getShadowedDescriptor(shadowPrototype, properties, key)
-    if (existing) {
-      Object.defineProperty(shadowPrototype, key, existing)
+function shadow<T>(constructor: Constructor<T>, properties: PropertyDescriptorMap) {
+  const shadowConstructor = extend(constructor)
+  const shadowProperties = getShadowProperties(constructor.prototype, properties)
+  Object.defineProperties(shadowConstructor.prototype, shadowProperties)
+  return shadowConstructor
+}
+
+function getBlessedProperties<T>(constructor: Constructor<T>) {
+  const blessings = readInheritableStaticArrayValues(constructor, "blessings") as Blessing<T>[]
+  return blessings.reduce((blessedProperties, blessing) => {
+    const properties = blessing(constructor)
+    for (const key in properties) {
+      const descriptor = blessedProperties[key] || ({} as PropertyDescriptor)
+      blessedProperties[key] = Object.assign(descriptor, properties[key])
     }
-  }
-  return shadowConstructor as any
+    return blessedProperties
+  }, {} as PropertyDescriptorMap)
+}
+
+function getShadowProperties(prototype: any, properties: PropertyDescriptorMap) {
+  return getOwnKeys(properties).reduce((shadowProperties, key) => {
+    const descriptor = getShadowedDescriptor(prototype, properties, key)
+    if (descriptor) {
+      Object.assign(shadowProperties, { [key]: descriptor })
+    }
+    return shadowProperties
+  }, {} as PropertyDescriptorMap)
 }
 ```
+
+The actual implementation uses three helper functions: `getBlessedProperties()` (collects and merges all blessing descriptors using `Object.assign`), `getShadowProperties()` (filters through `getShadowedDescriptor` to handle user overrides), and `getOwnKeys()` (includes both `getOwnPropertyNames` and `getOwnPropertySymbols`). The old docs showed a simpler direct loop, but the actual code uses `reduce` for all three operations.
 
 Aha: The `getShadowedDescriptor` function is the key to allowing subclass overrides. If the user's class already defines a getter or setter for a key that a blessing would generate, `getShadowedDescriptor` merges the existing getter/setter with the blessed descriptor. This means a user can override `this.fooTarget` with their own getter, and the blessing does not overwrite it. If the user defines a plain value property (not an accessor), the blessing skips shadowing entirely for that key.
 
 ## The Extend Function
 
-The `extend()` function creates a subclass using the best available mechanism.
+The `extend()` function creates a subclass using the best available mechanism. It uses an IIFE that tests Reflect.construct once at load time and caches the result.
 
 Source: `src/core/blessing.ts`
 
 ```typescript
-// src/core/blessing.ts:35
-export function extend<T>(constructor: Constructor<T>): Constructor<T> {
-  if (supportsReflectConstruct()) {
-    // Use Reflect.construct for proper ES6 subclassing
-    return class extends constructor {
-      constructor(...args: any[]) {
-        super(...args)
-        Reflect.construct(constructor, args, new.target)
-      }
+// src/core/blessing.ts:64
+const extend = (() => {
+  function extendWithReflect<T extends Constructor<any>>(constructor: T): T {
+    function extended() {
+      return Reflect.construct(constructor, arguments, new.target)
     }
-  } else {
-    // Fallback: class extends
-    return class extends constructor {}
+
+    extended.prototype = Object.create(constructor.prototype, {
+      constructor: { value: extended },
+    })
+
+    Reflect.setPrototypeOf(extended, constructor)
+    return extended as any
   }
-}
+
+  function testReflectExtension() {
+    const a = function (this: any) { this.a.call(this) } as any
+    const b = extendWithReflect(a)
+    b.prototype.a = function () {}
+    return new b()
+  }
+
+  try {
+    testReflectExtension()
+    return extendWithReflect
+  } catch (error: any) {
+    return <T extends Constructor<any>>(constructor: T) => class extended extends constructor {}
+  }
+})()
 ```
 
-The `Reflect.construct` path ensures that `new.target` is preserved, which is important for ES6 class semantics. The fallback `class extends` path works in environments without `Reflect.construct`.
+The IIFE attempts `Reflect.construct` once and caches whichever path succeeds. This avoids repeated `supportsReflectConstruct()` checks at runtime. The fallback `class extends` path works in environments without `Reflect.construct`.
 
 ## TargetPropertiesBlessing: this.fooTarget and this.fooTargets
 
@@ -135,8 +170,13 @@ export function TargetPropertiesBlessing(constructor: Constructor<Controller>): 
 
   for (const name of targets) {
     properties[`${name}Target`] = {
-      get(this: Controller): Element | undefined {
-        return this.targets.find(name)  // throws Guide warning if not found
+      get(this: Controller) {
+        const target = this.targets.find(name)
+        if (target) {
+          return target
+        } else {
+          throw new Error(`Missing target element "${name}" for "${this.identifier}" controller`)
+        }
       }
     }
     properties[`${name}Targets`] = {
@@ -212,18 +252,19 @@ export function ValuePropertiesBlessing(constructor: Constructor<Controller>): P
 
     // Getter: reads data attribute, coerces type
     propertyDescriptorMap[name] = {
-      get(this: Controller): TypedValue {
-        const key = this.data.get(attributeName)
-        if (key !== null) {
-          return descriptor.reader(key)  // JSON.parse for arrays/objects
+      get(this: Controller) {
+        const value = this.data.get(key)
+        if (value !== null) {
+          return read(value)  // JSON.parse for arrays/objects
         }
-        return descriptor.defaultValue  // typed default
+        return definition.defaultValue  // typed default
       },
-      set(this: Controller, value: TypedValue) {
-        if (value === descriptor.defaultValue) {
-          this.data.delete(attributeName)  // remove attribute when set to default
+
+      set(this: Controller, value: T | undefined) {
+        if (value === undefined) {
+          this.data.delete(key)  // remove attribute when set to undefined
         } else {
-          this.data.set(attributeName, descriptor.writer(value))  // JSON.stringify
+          this.data.set(key, write(value))  // JSON.stringify
         }
       }
     }
@@ -231,7 +272,7 @@ export function ValuePropertiesBlessing(constructor: Constructor<Controller>): P
     // hasXxx getter
     propertyDescriptorMap[`has${capitalize(name)}`] = {
       get(this: Controller): boolean {
-        return this.data.has(attributeName) || this.hasCustomDefaultValue(name)
+        return this.data.has(key) || definition.hasCustomDefaultValue
       }
     }
   }
@@ -239,26 +280,25 @@ export function ValuePropertiesBlessing(constructor: Constructor<Controller>): P
 }
 ```
 
-The `ValueDescriptor` class handles type coercion for five built-in types:
+The `ValueDescriptor` is a type alias for a plain object (not a class) with fields `type`, `key`, `name`, `defaultValue`, `hasCustomDefaultValue`, `reader`, and `writer`. It handles type coercion for five built-in types:
 
 Source: `src/core/value_properties.ts`
 
 ```typescript
-// Default values by type
+// Default values by type -- uses getters to return fresh instances
 const defaultValuesByType = {
-  array: [] as any[],
+  get array() { return [] },
   boolean: false,
   number: 0,
-  object: {} as any,
-  string: ""
+  get object() { return {} },
+  string: "",
 }
 
-// ValueDescriptor.reader() for arrays and objects uses JSON.parse
-// ValueDescriptor.writer() for arrays and objects uses JSON.stringify
-// Scalars (boolean, number, string) use direct coercion
+// readers: array uses JSON.parse, boolean checks "0"/"false", number strips underscores
+// writers: array/object use JSON.stringify, others use string interpolation
 ```
 
-Aha: When a value is set to its default value, the attribute is removed from the DOM. This is an intentional cleanup mechanism. If `countValue` defaults to `0` and you set `this.countValue = 0`, the `data-my-count` attribute is removed from the element. This keeps the DOM clean and makes it obvious which values differ from defaults.
+Aha: When a value is set to `undefined`, the attribute is removed from the DOM. This is an intentional cleanup mechanism. If `countValue` is `0` (the default) and you set `this.countValue = undefined`, the `data-my-count` attribute is removed. Note: setting to the default value itself (e.g., `0`) does NOT remove the attribute -- only `undefined` does. The getters on `defaultValuesByType` ensure each access to `array` or `object` returns a fresh instance, preventing shared mutable defaults.
 
 ## Value Type Coercion Table
 
@@ -309,7 +349,7 @@ Each class name is read from a `data-${identifier}-foo-class` attribute. For exa
 
 ## OutletPropertiesBlessing: this.barOutlet and this.barOutlets
 
-The `OutletPropertiesBlessing` generates accessors for outlet controllers and elements.
+The `OutletPropertiesBlessing` generates accessors for outlet controllers and elements. The actual source also generates `${camelizedName}OutletElements` (returns `Element[]`).
 
 Source: `src/core/outlet_properties.ts`
 
@@ -317,35 +357,51 @@ Source: `src/core/outlet_properties.ts`
 // src/core/outlet_properties.ts
 export function OutletPropertiesBlessing(constructor: Constructor<Controller>): PropertyDescriptorMap {
   const outlets = readInheritableStaticArrayValues(constructor, "outlets")
-  const properties: PropertyDescriptorMap = {}
+  return outlets.reduce((properties: any, outletDefinition: any) => {
+    return Object.assign(properties, propertiesForOutletDefinition(outletDefinition))
+  }, {} as PropertyDescriptorMap)
+}
 
-  for (const outletName of outlets) {
-    const camelizedName = camelize(outletName)
+function propertiesForOutletDefinition(name: string) {
+  const camelizedName = namespaceCamelize(name)
 
-    properties[`${camelizedName}Outlet`] = {
-      get(this: Controller): Controller | undefined {
-        return this.outlets.find(outletName)  // returns outlet controller instance
-      }
-    }
-    properties[`${camelizedName}Outlets`] = {
-      get(this: Controller): Controller[] {
-        return this.outlets.findAll(outletName)
-      }
-    }
-    properties[`${camelizedName}OutletElement`] = {
-      get(this: Controller): Element | undefined {
-        return this.outlets.find(outletName)?.element
-      }
-    }
-    properties[`has${capitalize(camelizedName)}Outlet`] = {
-      get(this: Controller): boolean {
-        return this.outlets.has(outletName)
-      }
-    }
+  return {
+    [`${camelizedName}Outlet`]: {
+      get(this: Controller) {
+        const outletElement = this.outlets.find(name)
+        const selector = this.outlets.getSelectorForOutletName(name)
+        if (outletElement) {
+          const outletController = getControllerAndEnsureConnectedScope(this, outletElement, name)
+          if (outletController) return outletController
+          throw new Error(`Missing outlet controller "${name}"`)
+        }
+        throw new Error(`Missing outlet element "${name}"`)
+      },
+    },
+    [`${camelizedName}Outlets`]: {
+      get(this: Controller) { ... }  // returns Controller[] (with warnings for missing controllers)
+    },
+    [`${camelizedName}OutletElement`]: {
+      get(this: Controller) { ... }  // returns Element | undefined
+    },
+    [`${camelizedName}OutletElements`]: {
+      get(this: Controller) { return this.outlets.findAll(name) }  // returns Element[]
+    },
+    [`has${capitalize(camelizedName)}Outlet`]: {
+      get(this: Controller) { return this.outlets.has(name) },
+    },
   }
-  return properties
 }
 ```
+
+For each outlet name, FIVE properties are generated (not four as in targets/values):
+- `sidebarOutlet` -> returns the Controller instance (throws if element or controller missing)
+- `sidebarOutlets` -> returns Controller[] (warns for missing controllers, filters them out)
+- `sidebarOutletElement` -> returns Element (throws if missing)
+- `sidebarOutletElements` -> returns Element[]
+- `hasSidebarOutlet` -> boolean
+
+Aha: The `${name}Outlet` getter does NOT just return `this.outlets.find()` -- it first gets the element, then calls `getControllerAndEnsureConnectedScope()` which looks up the controller by identifier, and if not found, calls `router.proposeToConnectScopeForElementAndIdentifier()` to dynamically propose a connection. This ensures the outlet controller is instantiated and connected before being returned.
 
 Aha: The `OutletSet.find()` method does not just return the element -- it returns the controller instance for that element. This is because outlets are designed for inter-controller communication. When you access `this.sidebarOutlet`, you get the `SidebarController` instance, not just the DOM element. If the outlet controller is not yet connected, the `OutletObserver` dynamically proposes a scope connection for the outlet element, ensuring the controller is instantiated and connected before returning.
 
@@ -384,33 +440,25 @@ The `getShadowedDescriptor()` function handles the case where a user subclass ov
 Source: `src/core/blessing.ts`
 
 ```typescript
-// src/core/blessing.ts:47
-function getShadowedDescriptor(prototype: any, properties: PropertyDescriptorMap, key: string): PropertyDescriptor | null {
-  const existingDescriptor = Object.getOwnPropertyDescriptor(prototype, key)
-  if (existingDescriptor) {
-    // User already defined a getter/setter -- merge with blessed descriptor
-    const blessedDescriptor = properties[key]
-    if (existingDescriptor.get || existingDescriptor.set) {
-      // Both are accessors -- merge them
-      return {
-        get: function() {
-          return blessedDescriptor.get ? blessedDescriptor.get.call(this) : existingDescriptor.get!.call(this)
-        },
-        set: function(value: any) {
-          existingDescriptor.set ? existingDescriptor.set.call(this, value) : blessedDescriptor.set?.call(this, value)
-        }
-      }
+// src/core/blessing.ts:43
+function getShadowedDescriptor(prototype: any, properties: PropertyDescriptorMap, key: string | symbol) {
+  const shadowingDescriptor = Object.getOwnPropertyDescriptor(prototype, key)
+  const shadowedByValue = shadowingDescriptor && "value" in shadowingDescriptor
+  if (!shadowedByValue) {
+    const descriptor = Object.getOwnPropertyDescriptor(properties, key)!.value
+    if (shadowingDescriptor) {
+      descriptor.get = shadowingDescriptor.get || descriptor.get
+      descriptor.set = shadowingDescriptor.set || descriptor.set
     }
-    // User defined a plain value -- skip shadowing
-    return null
+    return descriptor
   }
-  return properties[key]
+  // If the prototype has a value property (not accessor), skip shadowing
 }
 ```
 
 This means:
-1. If the user defines a getter/setter, both the user code and the blessed code run
-2. If the user defines a plain value property, the blessing is skipped entirely
+1. If the user defines an accessor (getter/setter), the blessed descriptor's get/set are merged with the user's
+2. If the user defines a plain value property (`shadowedByValue` is true), the blessing is skipped entirely (returns `undefined`)
 3. If the user defines nothing, the full blessed descriptor is used
 
 ## Example: Complete Controller with All Blessings

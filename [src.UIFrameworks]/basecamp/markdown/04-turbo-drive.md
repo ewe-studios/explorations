@@ -53,22 +53,22 @@ The `start()` method activates everything:
 Source: `src/core/session.js:21`
 
 ```javascript
-// src/core/session.js:21
+// src/core/session.js:52
 start() {
   if (!this.started) {
     this.pageObserver.start()
     this.cacheObserver.start()
     this.linkPrefetchObserver.start()
+    this.formLinkClickObserver.start()
     this.linkClickObserver.start()
     this.formSubmitObserver.start()
     this.scrollObserver.start()
     this.streamObserver.start()
-    this.formLinkClickObserver.start()
     this.frameRedirector.start()
     this.history.start()
     this.preloader.start()
     this.started = true
-    this.delegate.startSession(this)
+    this.enabled = true
   }
 }
 ```
@@ -431,7 +431,7 @@ Source: `src/core/config/drive.js`
 
 ```javascript
 // src/core/config/drive.js
-export const drive = new Config({
+export const drive = {
   enabled: true,
   progressBarDelay: 500,
   unvisitableExtensions: new Set([
@@ -442,15 +442,22 @@ export const drive = new Config({
     ".pptx", ".rar", ".rtf", ".svg", ".tar", ".tif", ".tiff", ".txt", ".wav",
     ".webm", ".webp", ".wma", ".wmv", ".xls", ".xlsx", ".xml", ".zip"
   ])
-})
+}
 ```
 
-The `unvisitableExtensions` set prevents Turbo from intercepting links to binary files. These 56 extensions are always handled as full page navigations rather than XHR fetches.
+The `unvisitableExtensions` set prevents Turbo from intercepting links to binary files. These 54 extensions are always handled as full page navigations rather than XHR fetches. Note: `drive` is a plain object, NOT wrapped in `Config` like `forms` is.
 
 Source: `src/core/config/forms.js`
 
 ```javascript
 // src/core/config/forms.js
+class Config {
+  #submitter = null
+  constructor(config) { Object.assign(this, config) }
+  get submitter() { return this.#submitter }
+  set submitter(value) { this.#submitter = submitter[value] || value }
+}
+
 export const forms = new Config({
   mode: "on",          // "on" | "off" | "optin"
   submitter: "disabled" // or "aria-disabled" or custom object
@@ -461,6 +468,8 @@ The `mode` setting controls form submission behavior:
 - `"on"` -- all forms with `method="post"` (or other non-GET methods) go through Turbo
 - `"off"` -- no forms go through Turbo
 - `"optin"` -- only forms with `data-turbo="true"` go through Turbo
+
+The `submitter` setting is transformed by the `Config` class into an object with `beforeSubmit` and `afterSubmit` callbacks. `"disabled"` sets `submitter.disabled = true/false`, while `"aria-disabled"` sets the `aria-disabled` attribute.
 
 ## Bardo: Permanent Element Preservation
 
@@ -551,7 +560,7 @@ When the user hovers over a link for 100ms, Turbo issues a GET request with `X-S
 | `LimitedSet` max size | `20` (recent requests) | `limited_set.js` |
 | `Drive enabled` | `true` | `config/drive.js` |
 | `Forms mode` | `"on"` | `config/forms.js` |
-| `Unvisitable extensions` | 56 extensions | `config/drive.js` |
+| `Unvisitable extensions` | 54 extensions | `config/drive.js` |
 | `Visit action default` | `"advance"` | `visit.js` |
 
 ## Next

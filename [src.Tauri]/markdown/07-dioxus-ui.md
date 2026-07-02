@@ -15,16 +15,16 @@ The key insight is that Dioxus separates the UI description (VirtualDom + rsx!) 
 ```rust
 // dioxus/packages/core/src/virtual_dom.rs
 pub struct VirtualDom {
-    /// The root component
-    root: ScopeId,
     /// The scope arena — stores all component instances
-    scopes: Slab<Scope>,
-    /// The dirty queue — components that need to re-render
-    dirty_queue: Vec<ScopeId>,
-    /// The render signal — what the renderer sees
-    mutations: Mutations,
-    /// The context for signal subscriptions
-    runtime: Runtime,
+    pub(crate) scopes: Slab<ScopeState>,
+    /// The dirty scope queue — ordered by scope priority
+    pub(crate) dirty_scopes: BTreeSet<ScopeOrder>,
+    /// The runtime for signal subscriptions and async task management
+    pub(crate) runtime: Rc<Runtime>,
+    /// Scopes that have been resolved since last render
+    pub(crate) resolved_scopes: Vec<ScopeId>,
+    /// Receiver for scheduler messages
+    rx: futures_channel::mpsc::UnboundedReceiver<SchedulerMsg>,
 }
 
 impl VirtualDom {
@@ -277,36 +277,35 @@ fn TodoList() -> Element {
 Dioxus-desktop renders to a desktop WebView:
 
 ```rust
-// dioxus/packages/desktop/src/lib.rs
-pub struct DesktopContext {
-    pub window: Window,           // from tao
-    pub webview: WebView,         // from wry
-    pub proxy: EventLoopProxy,    // from tao
+// dioxus/packages/desktop/src/desktop_context.rs
+/// DesktopContext is a type alias: Rc<DesktopService>
+pub type DesktopContext = Rc<DesktopService>;
+
+pub struct DesktopService {
+    pub webview: WebView,             // from wry
+    pub window: Window,               // from tao
+    pub(crate) shared: Rc<SharedContext>,
+    pub(super) query: QueryEngine,
+    pub(crate) asset_handlers: AssetHandlerRegistry,
+    // ...
 }
+```
 
-pub fn launch(app: fn() -> Element) {
-    let event_loop = EventLoop::new();
-    let window = WindowBuilder::new().build(&event_loop).unwrap();
-    let webview = WebViewBuilder::new()
-        .with_url("dioxus://localhost/")
-        .with_custom_protocol("dioxus".into(), handler)
-        .build(&window)
-        .unwrap();
+The desktop renderer:
+1. Creates a tao window
+2. Creates a wry WebView with a custom `dioxus://` protocol
+3. Runs the VirtualDom
+4. Converts mutations to JavaScript that manipulates the DOM
+5. Handles events by forwarding them from the WebView to the VirtualDom
 
-    let mut vdom = VirtualDom::new(app);
-    let mut renderer = DesktopRenderer::new(window, webview);
-
-    renderer.render(&mut vdom);
-
-    event_loop.run(move |event, _, control_flow| {
-        match event {
-            WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
-            WindowEvent::RedrawRequested => {
-                renderer.render(&mut vdom);
-            }
-            _ => {}
-        }
-    });
+```rust
+// dioxus/packages/desktop/src/launch.rs
+pub fn launch(
+    root: fn() -> Element,
+    config: Config,
+) {
+    let virtual_dom = VirtualDom::new(root);
+    launch_virtual_dom(virtual_dom, config);
 }
 ```
 

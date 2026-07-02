@@ -129,17 +129,23 @@ fn main() {
 `AppManager` is the workhorse. Every operation on windows, webviews, or plugins flows through it.
 
 ```rust
-// tauri/src/manager.rs
+// tauri/src/manager/mod.rs
 pub struct AppManager<R: Runtime> {
-    pub windows: WindowManager<R>,
-    pub webviews: WebviewManager<R>,
-    pub plugins: Arc<Mutex<PluginRegistry<R>>>,
+    pub runtime_authority: Mutex<RuntimeAuthority>,
+    pub window: WindowManager<R>,
+    pub webview: WebviewManager<R>,
+    #[cfg(all(desktop, feature = "tray-icon"))]
+    pub tray: TrayManager<R>,
+    #[cfg(desktop)]
+    pub menu: MenuManager<R>,
+    pub(crate) plugins: Mutex<PluginStore<R>>,
+    pub listeners: Listeners,
     pub state: Arc<StateManager>,
-    pub config: Arc<Config>,
-    pub package_info: Option<PackageInfo>,
-    // IPC and ACL
-    pub invoke_responder: Arc<InvokeResponder<R>>,
-    pub acl: Arc<AccessControlList>,
+    pub config: Config,
+    pub assets: Box<dyn Assets<R>>,
+    pub package_info: PackageInfo,
+    pub pattern: Arc<Pattern>,
+    // ... additional fields for resources, plugin_global_api_scripts, etc.
 }
 ```
 
@@ -187,38 +193,38 @@ Plugins extend Tauri without modifying core code. The `Plugin` trait defines lif
 // tauri/src/plugin.rs
 pub trait Plugin<R: Runtime>: Send + Sync {
     fn name(&self) -> &'static str;
-    fn initialize(&mut self, app: &AppHandle<R>, api: PluginApi) -> Result<(), Box<dyn std::error::Error>> { ... }
-    fn on_page_load(&self, window: Window<R>, payload: &PageLoadPayload) { ... }
-    fn on_window_ready(&self, window: &Window<R>, label: &str) { ... }
-    fn on_webview_ready(&self, webview: &Webview<R>, label: &str) { ... }
-    fn extension(&self) -> Option<Box<dyn Extension>> { ... }
+    fn initialize(&mut self, app: &AppHandle<R>, config: JsonValue) -> Result<(), Box<dyn std::error::Error>> { ... }
+    fn initialization_script(&self) -> Option<String> { ... }
+    fn window_created(&mut self, window: Window<R>) { ... }
+    fn webview_created(&mut self, webview: Webview<R>) { ... }
+    fn on_navigation(&mut self, webview: &Webview<R>, url: &Url) -> bool { ... }
+    fn on_page_load(&mut self, webview: &Webview<R>, payload: &PageLoadPayload<'_>) { ... }
+    fn on_event(&mut self, app: &AppHandle<R>, event: &RunEvent) { ... }
+    fn extend_api(&mut self, invoke: Invoke<R>) -> bool { ... }
 }
 ```
 
 Key hooks:
-- `initialize()` — called once when the plugin is registered. The plugin can insert state into the app.
-- `on_page_load()` — called every time a webview navigates. Useful for injecting scripts.
-- `on_window_ready()` — called when a new window is created. Useful for per-window setup.
-- `extension()` — returns an `Extension` that defines custom IPC commands the plugin provides.
+- `initialize()` — called once when the plugin is registered. The plugin can insert state into the app via `app.manage()`.
+- `initialization_script()` — returns JavaScript to inject before page load.
+- `window_created()` — called when a new window is created.
+- `webview_created()` — called when a new webview is created.
+- `on_navigation()` — called when webview tries to navigate; return `false` to cancel.
+- `on_page_load()` — called every time a webview completes a page navigation.
+- `on_event()` — called when the event loop receives a new event.
+- `extend_api()` — handles IPC commands the plugin provides. Returns `true` if the invoke was handled.
 
 ### Plugin Registration Flow
 
 ```rust
 // tauri/src/plugin.rs
-pub(crate) struct PluginRegistry<R: Runtime> {
+pub(crate) struct PluginStore<R: Runtime> {
     plugins: Vec<Box<dyn Plugin<R>>>,
 }
 
-impl<R: Runtime> PluginRegistry<R> {
+impl<R: Runtime> PluginStore<R> {
     pub fn register(&mut self, plugin: Box<dyn Plugin<R>>) {
         self.plugins.push(plugin);
-    }
-
-    pub fn initialize(&self, app: &AppHandle<R>) -> Result<(), Box<dyn std::error::Error>> {
-        for plugin in &self.plugins {
-            plugin.initialize(app, PluginApi::new(app))?;
-        }
-        Ok(())
     }
 }
 ```

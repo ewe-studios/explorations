@@ -191,8 +191,8 @@ The `Scope` is a read-only view of the DOM element's Stimulus-related attributes
 |--------|-------|--------|---------|
 | `ClassMap` | `data-${id}-foo-class` | `.get("foo")` | `"css-class-name"` |
 | `DataMap` | `data-${id}-key` | `.get("key")` | `"value"` |
-| `TargetSet` | `data-${id}-target` | `.find("foo")` | `Element` |
-| `OutletSet` | `data-${id}-foo-outlet` | `.find("foo")` | `Element` |
+| `TargetSet` | `data-${id}-target` | `.find("foo")` | `Element | undefined` |
+| `OutletSet` | `data-${id}-foo-outlet` | `.find("foo")` | `Element | undefined` |
 
 The `ClassMap` reads `data-${identifier}-foo-class` attributes and returns CSS class names. The `DataMap` reads `data-${identifier}-key` attributes and returns arbitrary string values. The `TargetSet` reads the space-separated `data-${identifier}-target` attribute and returns matching elements. The `OutletSet` reads `data-${identifier}-foo-outlet` attributes and returns matching elements.
 
@@ -221,6 +221,12 @@ export class Context implements ErrorHandler, TargetObserverDelegate, OutletObse
     this.valueObserver = new ValueObserver(this, this.controller)
     this.targetObserver = new TargetObserver(this, this)
     this.outletObserver = new OutletObserver(this, this)
+
+    try {
+      this.controller.initialize()    // called in constructor, before observers start
+    } catch (error: any) {
+      this.handleError(error, "initializing controller")
+    }
   }
 
   connect(): void {
@@ -228,16 +234,29 @@ export class Context implements ErrorHandler, TargetObserverDelegate, OutletObse
     this.valueObserver.start()      // watches data-${id}-* for value attributes
     this.targetObserver.start()     // watches data-${id}-target for target elements
     this.outletObserver.start()     // watches outlet attributes
-    this.controller.initialize()    // user override point
-    this.controller.connect()       // user override point
+
+    try {
+      this.controller.connect()     // user override point
+    } catch (error: any) {
+      this.handleError(error, "connecting controller")
+    }
+  }
+
+  refresh(): void {
+    this.outletObserver.refresh()
   }
 
   disconnect(): void {
-    this.controller.disconnect()    // user override point
-    this.bindingObserver.stop()
-    this.valueObserver.stop()
+    try {
+      this.controller.disconnect()  // user override point
+    } catch (error: any) {
+      this.handleError(error, "disconnecting controller")
+    }
+
+    this.outletObserver.stop()      // stop in reverse order
     this.targetObserver.stop()
-    this.outletObserver.stop()
+    this.valueObserver.stop()
+    this.bindingObserver.stop()
   }
 
   get application(): Application { return this.module.application }
@@ -247,12 +266,38 @@ export class Context implements ErrorHandler, TargetObserverDelegate, OutletObse
   get element(): Element { return this.scope.element }
   get parentElement(): Element | null { return this.element.parentElement }
 
-  handleError(error: Error, message: string, detail: object): void {
-    this.application.handleError(error, message, detail)
+  handleError(error: Error, message: string, detail: object = {}): void {
+    const { identifier, controller, element } = this
+    detail = Object.assign({ identifier, controller, element }, detail)
+    this.application.handleError(error, `Error ${message}`, detail)
   }
-  invokeControllerMethod(methodName: string, ...args: unknown[]): void {
-    if (typeof this.controller[methodName] == "function") {
-      this.controller[methodName](...args)
+
+  logDebugActivity = (functionName: string, detail: object = {}): void => {
+    const { identifier, controller, element } = this
+    detail = Object.assign({ identifier, controller, element }, detail)
+    this.application.logDebugActivity(this.identifier, functionName, detail)
+  }
+
+  targetConnected(element: Element, name: string): void {
+    this.invokeControllerMethod(`${name}TargetConnected`, element)
+  }
+
+  targetDisconnected(element: Element, name: string): void {
+    this.invokeControllerMethod(`${name}TargetDisconnected`, element)
+  }
+
+  outletConnected(outlet: Controller, element: Element, name: string): void {
+    this.invokeControllerMethod(`${namespaceCamelize(name)}OutletConnected`, outlet, element)
+  }
+
+  outletDisconnected(outlet: Controller, element: Element, name: string): void {
+    this.invokeControllerMethod(`${namespaceCamelize(name)}OutletDisconnected`, outlet, element)
+  }
+
+  invokeControllerMethod(methodName: string, ...args: any[]): void {
+    const controller: any = this.controller
+    if (typeof controller[methodName] == "function") {
+      controller[methodName](...args)
     }
   }
 }
@@ -283,30 +328,34 @@ sequenceDiagram
     participant BindObs as BindingObserver
     participant ValObs as ValueObserver
     participant TgtObs as TargetObserver
+    participant OutObs as OutletObserver
 
     DOM->>SO: data-controller="my" appears
     SO->>Router: scopeConnected(scope)
     Router->>Module: find module with id "my"
     Module->>Module: fetchContextForScope(scope)
     Module->>Context: new Context(module, scope)
+    Note over Context: constructor creates Controller
     Context->>Controller: new MyController(context)
-    Context->>Controller: controller.initialize()
+    Context->>Controller: controller.initialize() (in constructor)
     Module->>Context: connectContextForScope
     Context->>BindObs: start() -- watches data-action
     Context->>ValObs: start() -- watches data-values
     Context->>TgtObs: start() -- watches data-targets
+    Context->>OutObs: start() -- watches outlet attributes
     Context->>Controller: controller.connect()
 
-    Note over DOM,TgtObs: Later, element removed
+    Note over DOM,OutObs: Later, element removed
 
     DOM->>SO: data-controller="my" removed
     SO->>Router: scopeDisconnected(scope)
     Router->>Module: disconnectContextForScope
     Module->>Context: disconnect()
     Context->>Controller: controller.disconnect()
-    Context->>BindObs: stop()
-    Context->>ValObs: stop()
+    Context->>OutObs: stop()
     Context->>TgtObs: stop()
+    Context->>ValObs: stop()
+    Context->>BindObs: stop()
 ```
 
 ## The Controller Base Class
@@ -320,8 +369,8 @@ export class Controller<Element = HTMLElement> {
   static targets: string[] = []
   static outlets: string[] = []
   static values: ValueDefinitionMap = {}
-  static shouldLoad = true
-  static afterLoad?(identifier: string, application: Application)
+  static get shouldLoad() { return true }
+  static afterLoad?(_identifier: string, _application: Application): void
 
   readonly context: Context
 
@@ -329,17 +378,17 @@ export class Controller<Element = HTMLElement> {
   get application(): Application { return this.context.application }
   get scope(): Scope { return this.context.scope }
   get element(): Element { return this.scope.element as Element }
-  get identifier(): string { return this.context.identifier }
+  get identifier(): string { return this.scope.identifier }
   get targets(): TargetSet { return this.scope.targets }
   get outlets(): OutletSet { return this.scope.outlets }
   get classes(): ClassMap { return this.scope.classes }
   get data(): DataMap { return this.scope.data }
 
-  initialize?(): void    // override point -- called once when controller is created
-  connect?(): void       // override point -- called when controller enters DOM
-  disconnect?(): void    // override point -- called when controller leaves DOM
+  initialize(): void    // override point -- called once in constructor, before observers start
+  connect(): void       // override point -- called when controller enters DOM
+  disconnect(): void    // override point -- called when controller leaves DOM
 
-  dispatch(eventName: string, options?: { target?: Element; detail?: object; prefix?: string; bubbles?: boolean; cancelable?: boolean }): CustomEvent
+  dispatch(eventName: string, options?: { target?: Element | Window | Document; detail?: object; prefix?: string; bubbles?: boolean; cancelable?: boolean }): CustomEvent
 }
 ```
 

@@ -13,14 +13,18 @@ The key insight is that layout algorithms are independent of rendering. Taffy co
 ## TaffyTree — The Node Tree
 
 ```rust
-// taffy/src/tree.rs
-pub struct TaffyTree {
+// taffy/src/tree/taffy_tree.rs
+pub struct TaffyTree<NodeContext = ()> {
     /// The node storage — a slotmap for O(1) insert/delete
     nodes: SlotMap<DefaultKey, NodeData>,
-    /// The tree structure — parent-child relationships
-    children: HashMap<NodeId, Vec<NodeId>>,
-    /// Layout cache — computed layouts are cached
-    cache: LayoutCache,
+    /// Functions/closures that compute the intrinsic size of leaf nodes
+    node_context_data: SecondaryMap<DefaultKey, NodeContext>,
+    /// The children of each node — slotmap, not HashMap
+    children: SlotMap<DefaultKey, ChildrenVec<NodeId>>,
+    /// The parents of each node — enables upward traversal
+    parents: SlotMap<DefaultKey, Option<NodeId>>,
+    /// Layout mode configuration
+    config: TaffyConfig,
 }
 ```
 
@@ -320,29 +324,36 @@ Dimensions support the same unit types as CSS: absolute lengths, percentages, an
 ## Measure Cache — 9-Slot Cache
 
 ```rust
-// taffy/src/tree.rs
-pub struct MeasureCache {
-    // 9-slot cache for different constraint combinations
-    // Each slot maps to a specific (available_width, available_height) constraint
-    slots: [Option<(Size<Option<f32>>, Size<f32>)>; 9],
+// taffy/src/tree/cache.rs
+pub(crate) struct CacheEntry<T> {
+    known_dimensions: Size<Option<f32>>,
+    available_space: Size<AvailableSpace>,
+    content: T,
+}
+
+pub struct Cache {
+    /// Cache for the node's final layout
+    final_layout_entry: Option<CacheEntry<LayoutOutput>>,
+    /// 9-slot cache for different constraint combinations
+    measure_entries: [Option<CacheEntry<Size<f32>>>; CACHE_SIZE], // CACHE_SIZE = 9
 }
 ```
 
-**Aha:** Taffy uses a 9-slot measure cache instead of a general-purpose LRU cache. The 9 slots correspond to the 9 possible constraint combinations:
+**Aha:** Taffy uses a 9-slot measure cache for preliminary size measurements, plus a separate `final_layout_entry` for the final computed layout. The 9 slots correspond to combinations of `known_dimensions` (which dimensions are known) and `available_space` constraints:
 
-| Slot | Width constraint | Height constraint |
-|------|-----------------|-------------------|
-| 0 | Exact | Exact |
-| 1 | Exact | Min-content |
-| 2 | Exact | Max-content |
-| 3 | Min-content | Exact |
-| 4 | Min-content | Min-content |
-| 5 | Min-content | Max-content |
-| 6 | Max-content | Exact |
-| 7 | Max-content | Min-content |
-| 8 | Max-content | Max-content |
+| Slot | Width known? | Height known? | Other dimension constraint |
+|------|-------------|---------------|---------------------------|
+| 0 | Yes | Yes | N/A (both known) |
+| 1 | Yes | No | MaxContent or Definite |
+| 2 | Yes | No | MinContent |
+| 3 | No | Yes | MaxContent or Definite |
+| 4 | No | Yes | MinContent |
+| 5 | No | No | x: MaxContent/Definite, y: MaxContent/Definite |
+| 6 | No | No | x: MaxContent/Definite, y: MinContent |
+| 7 | No | No | x: MinContent, y: MaxContent/Definite |
+| 8 | No | No | x: MinContent, y: MinContent |
 
-This is clever: layout algorithms always measure nodes under one of these constraint combinations. A 9-slot direct-index cache is faster than a HashMap lookup and has no allocation overhead. The cache is reset when the node's style changes.
+The cache selection is computed by `compute_cache_slot()` which examines both `known_dimensions` and `available_space` to determine the correct slot. The cache is reset when the node's style changes.
 
 ## no_std Support
 
@@ -350,8 +361,11 @@ This is clever: layout algorithms always measure nodes under one of these constr
 # taffy/Cargo.toml
 [features]
 std = ["num-traits/std", "grid?/std", "serde?/std", "slotmap?/std"]
-alloc = ["serde?/alloc"]
 taffy_tree = ["dep:slotmap"]
+flexbox = []
+grid = ["alloc", "dep:grid"]
+block_layout = []
+content_size = []
 ```
 
 Taffy supports `no_std` environments:
@@ -361,31 +375,43 @@ Taffy supports `no_std` environments:
 
 The layout algorithms themselves (`compute_flexbox_layout`, `compute_grid_layout`, `compute_block_layout`) work without any heap allocation. Only the `TaffyTree` storage needs allocation.
 
-## Layout Tree Trait
+## Layout Traits
 
-Taffy decouples the algorithm from the storage through the `LayoutTree` trait:
+Taffy decouples the algorithm from the storage through a hierarchy of traits:
 
 ```rust
-// taffy/src/tree.rs
-pub trait LayoutTree {
-    type ChildIter<'a>: Iterator<Item = NodeId>
-    where Self: 'a;
+// taffy/src/tree/traits.rs
+/// Base trait for tree traversal — requires access to immediate children only
+pub trait TraversePartialTree {
+    type ChildIter<'a>: Iterator<Item = NodeId> where Self: 'a;
 
-    fn children(&self, node: NodeId) -> Self::ChildIter<'_>;
-    fn child_count(&self, node: NodeId) -> usize;
-    fn style(&self, node: NodeId) -> &Style;
-    fn layout(&self, node: NodeId) -> &Layout;
-    fn set_unrounded_layout(&mut self, node: NodeId, layout: Layout);
-    fn measure_child(
-        &mut self,
-        node_id: NodeId,
-        known_dimensions: Size<Option<f32>>,
-        parent_size: Size<Option<f32>>,
-    ) -> Option<Size<f32>>;
+    fn child_ids(&self, parent_node_id: NodeId) -> Self::ChildIter<'_>;
+    fn child_count(&self, parent_node_id: NodeId) -> usize;
+    fn get_child_id(&self, parent_node_id: NodeId, child_index: usize) -> NodeId;
 }
+
+/// Marker trait — extends TraversePartialTree with the guarantee that
+/// recursive descent into the full tree is supported
+pub trait TraverseTree: TraversePartialTree {}
+
+/// Main layout trait — any type implementing this can be laid out
+/// using Taffy's algorithms
+pub trait LayoutPartialTree: TraversePartialTree {
+    type CoreContainerStyle<'a>: CoreStyle where Self: 'a;
+    type CacheMut<'b>: Deref<Target = Cache> + DerefMut where Self: 'b;
+
+    fn get_core_container_style(&self, node_id: NodeId) -> Self::CoreContainerStyle<'_>;
+    fn set_unrounded_layout(&mut self, node_id: NodeId, layout: &Layout);
+    fn get_cache_mut(&mut self, node_id: NodeId) -> Self::CacheMut<'_>;
+    fn compute_child_layout(&mut self, node_id: NodeId, inputs: LayoutInput) -> LayoutOutput;
+}
+
+/// Additional traits for rounding and debug printing
+pub trait RoundTree: TraverseTree { ... }
+pub trait PrintTree: TraverseTree { ... }
 ```
 
-Any data structure that implements `LayoutTree` can use Taffy's algorithms. `TaffyTree` is the default implementation, but you could implement `LayoutTree` for your own tree structure.
+The trait hierarchy is: `TraversePartialTree` (base traversal) → `TraverseTree` (full recursive access) → `LayoutPartialTree` (layoutable). `TaffyTree` implements all of these. This allows Taffy's algorithms to work with any data structure that provides the necessary tree access patterns.
 
 **Aha:** The `LayoutTree` trait is Taffy's most important design decision. It means the layout algorithms are pure functions over an abstract tree, not coupled to a specific storage implementation. This allows Taffy to be embedded in any UI framework (dioxus, egui, iced) without requiring a specific node representation.
 

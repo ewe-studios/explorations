@@ -78,14 +78,19 @@ flowchart TD
 ```rust
 // tao/src/event_loop.rs
 pub enum ControlFlow {
-    /// Exit the event loop after the current iteration
-    Exit,
-    /// Wait for the next event, then process it (low CPU)
-    Wait,
     /// Poll for events continuously (high CPU, needed for animations)
     Poll,
+    /// Wait for the next event, then process it (low CPU)
+    Wait,
     /// Wait until a specific time, then poll
     WaitUntil(Instant),
+    /// Exit with the given code (the only terminal variant)
+    ExitWithCode(i32),
+}
+
+impl ControlFlow {
+    /// Alias for `ExitWithCode(0)`
+    pub const Exit: Self = Self::ExitWithCode(0);
 }
 ```
 
@@ -262,17 +267,17 @@ classDiagram
     class StartCause {
         <<enum>>
         Init
-        WaitCancelled
-        WaitCanceled
-        ResumeTimeReached
+        WaitCancelled{start, requested_resume}
+        Poll
+        ResumeTimeReached{start, requested_resume}
     }
 
     class ControlFlow {
         <<enum>>
-        Exit
-        Wait
         Poll
+        Wait
         WaitUntil(Instant)
+        ExitWithCode(i32)
     }
 
     Event --> WindowEvent

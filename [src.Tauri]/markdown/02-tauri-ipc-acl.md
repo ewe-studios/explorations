@@ -77,42 +77,39 @@ sequenceDiagram
 Every IPC call is a structured message:
 
 ```rust
-// tauri/src/ipc/message.rs
+// tauri/src/ipc/mod.rs
 pub struct InvokeMessage<R: Runtime> {
-    pub cmd: String,              // Command name
-    pub callback: u64,            // JS callback ID for success
-    pub error: u64,               // JS callback ID for failure
-    pub inner: RawMessage,        // Serialized arguments
+    pub(crate) webview: Webview<R>,    // The webview that sent the invoke
+    pub(crate) state: Arc<StateManager>, // Application managed state
+    pub(crate) command: String,         // Command name
+    pub(crate) payload: InvokeBody,     // JSON argument body
+    pub(crate) headers: HeaderMap,      // HTTP request headers
 }
 
 pub struct Invoke<R: Runtime> {
     pub message: InvokeMessage<R>,
     pub resolver: InvokeResolver<R>,
+    pub acl: Option<Vec<ResolvedCommand>>, // Resolved ACL for this invoke
 }
 ```
 
-The `callback` and `error` IDs are numeric identifiers that the JavaScript side uses to route the response to the correct Promise. The `resolver` is what the Rust handler uses to send back the result.
+The `command` is the command name string. The `payload` is the JSON-serialized argument body. The `resolver` is what the Rust handler uses to send back the result. The `acl` field contains the resolved permissions for this specific invoke.
 
 ## ACL — Access Control List
 
 The ACL is Tauri's security gate. It reads capability definitions and checks every IPC call against them.
 
 ```rust
-// tauri/src/acl/mod.rs
-pub struct AccessControlList {
-    capabilities: HashMap<String, Capability>,
-    scopes: HashMap<String, Scope>,
-}
-
+// tauri-utils/src/acl/capability.rs
 pub struct Capability {
     pub identifier: String,
     pub description: String,
-    pub local: bool,
-    pub remote: HashMap<String, Remote>,
-    pub permissions: Vec<String>,
-    pub contexts: Contexts,
-    pub webviews: Vec<String>,      // Which webviews this applies to
-    pub windows: Vec<String>,
+    pub local: bool,                          // default: true
+    pub remote: Option<CapabilityRemote>,     // URLs that can use this capability
+    pub windows: Vec<String>,                 // glob patterns for window labels
+    pub webviews: Vec<String>,                // glob patterns for webview labels
+    pub permissions: Vec<PermissionEntry>,    // permission strings or scoped entries
+    pub platforms: Option<Vec<Target>>,       // optional platform targeting
 }
 ```
 
@@ -244,20 +241,16 @@ The `__TAURI__` object is injected into the WebView at load time. It is not avai
 Tauri has a pub/sub event system separate from the request/response IPC:
 
 ```rust
-// tauri/src/event.rs
-pub struct EventManager<R: Runtime> {
-    listeners: Arc<Mutex<HashMap<String, Vec<EventHandler>>>>,
+// tauri/src/event/listener.rs
+struct InnerListeners {
+    pending: Mutex<Vec<Pending>>,
+    handlers: Mutex<HashMap<EventName, HashMap<EventId, Handler>>>,
+    js_event_listeners: Mutex<HashMap<WebviewLabel, HashMap<EventName, HashSet<JsHandler>>>>,
+    // ...
 }
 
-impl<R: Runtime> EventManager<R> {
-    pub fn emit(&self, event: &str, payload: impl Serialize) -> Result<()> {
-        // Broadcast to all listeners
-    }
-
-    pub fn listen<F>(&self, event: &str, handler: F) -> EventId
-    where F: Fn(EventPayload) + Send + 'static {
-        // Register listener, return ID for unlistening
-    }
+pub struct Listeners {
+    inner: Arc<InnerListeners>,
 }
 ```
 
@@ -280,22 +273,12 @@ sequenceDiagram
 
 ## Invoke Handler Composition
 
-Multiple command handlers are composed into a single invoke handler:
+Multiple command handlers are composed via the `generate_handler!` macro:
 
 ```rust
-// tauri/src/command.rs
-pub fn generate_handler<T: InvokeHandler<R>, R: Runtime>(
-    handlers: Vec<T>
-) -> impl Fn(Invoke<R>) -> bool + Send {
-    move |invoke| {
-        for handler in &handlers {
-            if handler.call(invoke) {
-                return true; // handler consumed this invoke
-            }
-        }
-        false // no handler matched
-    }
-}
+// tauri-macros/src/lib.rs
+// generate_handler! is a proc macro that generates an invoke handler closure
+// matching command names to their registered handlers
 ```
 
 When an IPC call arrives, each handler is tried in order. The first handler that returns `true` (meaning it handled the call) short-circuits the rest. If no handler matches, the call returns false and the JavaScript Promise rejects with an "unknown command" error.
