@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>htmx Core — Deep Dive -- htmx</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/htmx/docs</span>
+    <div class="nav-actions">
+      <a href="00-overview.html" class="nav-breadcrumb">HTMX Ecosystem Overview</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="00-overview.html" class="nav-btn" title="Previous: HTMX Ecosystem Overview">← prev</a>
+      <a href="02-hyperscript.html" class="nav-btn nav-btn-next" title="Next: Hyperscript Deep Dive — The Small Scripting Language for the Web">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>htmx Core — Deep Dive</h1>
+<p>htmx adds AJAX, CSS transitions, WebSockets, Server-Sent Events, and server-driven DOM updates to HTML via attributes — no JavaScript framework required. Every interaction begins as an HTML attribute like <code>hx-get="/api/data"</code> and flows through a deterministic pipeline: trigger detection, attribute inheritance, request dispatch, response handling, DOM swap, and attribute settling. The entire library ships as a single ~5300-line IIFE (<code>htmx/dist/htmx.js</code>, version <code>2.0.10</code>) with zero dependencies. This document walks every layer of that pipeline, every configuration knob, and every extension point.</p>
+<p>Related: <a href="00-overview.md">00-overview.md</a> for the project landscape, <a href="02-hyperscript.md">02-hyperscript.md</a> for the scripting companion, <a href="03-idiomorph.md">03-idiomorph.md</a> for morphdom swap extensions, <a href="05-fixi-family.md">05-fixi-family.md</a> for the broader ecosystem, and <a href="07-cross-cutting.md">07-cross-cutting.md</a> for patterns that span all documents.</p>
+<hr>
+<h2>1. Public API Surface</h2>
+<p>Source: <code>htmx/dist/htmx.js:5-60</code> — the public API object definition, with assignments at lines 302-322.</p>
+<p>The entire public API is a single object with 26 properties. Each property is assigned to an internal function at module load time (lines 302-322). The object shape is:</p>
+<pre><code class="language-javascript">// htmx/dist/htmx.js:5-60 — public API object shape
+const htmx = {
+    /* Event processing */
+    onLoad: null,           // (callback) =&gt; void — fires on htmx:load
+    process: null,          // (elt: Element) =&gt; void — processes a DOM node
+    on: null,               // (target, event, selector?, handler) =&gt; void — event listener
+    off: null,              // (target, event, handler) =&gt; void — remove listener
+    trigger: null,          // (elt, eventName, detail?) =&gt; boolean — dispatch custom event
+    ajax: null,             // (verb, path, context | opts) =&gt; void — programmatic AJAX
+    /* DOM querying */
+    find: null,             // (selector, from?) =&gt; Element
+    findAll: null,          // (selector, from?) =&gt; NodeList
+    closest: null,          // (elt, selector) =&gt; Element
+    values: function(elt, type) { … },  // resolves htmx input values for an element
+    /* DOM manipulation */
+    remove: null,           // (elt, delay?) =&gt; void
+    addClass: null,         // (elt, cls, delay?) =&gt; void
+    removeClass: null,      // (elt, cls, delay?) =&gt; void
+    toggleClass: null,      // (elt, cls, delay?) =&gt; void
+    takeClass: null,        // (elt, cls) =&gt; void — removes siblings&#x27; matching class
+    swap: null,             // (target, content, swapSpec, opts?) =&gt; void
+    /* Extensions */
+    defineExtension: null,  // (name, extension) =&gt; void
+    removeExtension: null,  // (name) =&gt; void
+    /* Debugging */
+    logAll: null,           // enable full logging
+    logNone: null,          // disable all logging
+    logger: null,           // custom logger function
+    config: { … },          // runtime configuration (30+ options)
+    parseInterval: null,    // (str) =&gt; number — parse &quot;30s&quot;, &quot;500ms&quot;, etc.
+    location,               // proxy of window.location
+    _: null,                // internalEval — evaluate hyperscript expressions
+    version: &#x27;2.0.10&#x27;
+}
+</code></pre>
+<p>Key behavioral notes:</p>
+<ul><li><code>htmx.onLoad(callback)</code> registers for <code>htmx:load</code> events. Fires after every DOM swap, not just initial page load. This is how third-party libraries reinitialize on new content.</li><li><code>htmx.process(elt)</code> walks a subtree and applies htmx attribute processing to any unprocessed elements. Call this after manually inserting htmx-enhanced content.</li><li><code>htmx.ajax(verb, path, opts)</code> is the programmatic entry point. Accepts <code>{ target, select, swap, source, event, handler, values, headers, selectOOB, swapOverride }</code> as options.</li><li><code>htmx.values(elt, type)</code> returns the input values htmx would include in a request. The <code>type</code> parameter (<code>'get'</code> or <code>'post'</code>) controls whether the enclosing form's values are included.</li><li><code>htmx.takeClass(elt, cls)</code> adds <code>cls</code> to <code>elt</code> and removes it from all siblings. Useful for tab-like UI patterns.</li></ul>
+<hr>
+<h2>2. Configuration System</h2>
+<p>Source: <code>htmx/dist/htmx.js:77-289</code> — the <code>htmx.config</code> object with all 30+ defaults.</p>
+<p>Configuration lives in a single mutable object. Every option has a JSDoc type and default value. The table below lists every option:</p>
+<table><tr><th>Option</th><th>Type</th><th>Default</th><th>Purpose</th></tr><tr><td>`historyEnabled`</td><td>`boolean`</td><td>`true`</td><td>Whether to use history (pushState/sessionStorage)</td></tr><tr><td>`historyCacheSize`</td><td>`number`</td><td>`10`</td><td>Pages kept in sessionStorage for history</td></tr><tr><td>`refreshOnHistoryMiss`</td><td>`boolean`</td><td>`false`</td><td>Full page reload on history cache miss</td></tr><tr><td>`defaultSwapStyle`</td><td>`HtmxSwapStyle`</td><td>`'innerHTML'`</td><td>Swap style when `hx-swap` is omitted</td></tr><tr><td>`defaultSwapDelay`</td><td>`number`</td><td>`0`</td><td>Delay between response receipt and swap (ms)</td></tr><tr><td>`defaultSettleDelay`</td><td>`number`</td><td>`20`</td><td>Delay between swap completion and settling (ms)</td></tr><tr><td>`includeIndicatorStyles`</td><td>`boolean`</td><td>`true`</td><td>Inject CSS to hide indicators without `.htmx-indicator`</td></tr><tr><td>`indicatorClass`</td><td>`string`</td><td>`'htmx-indicator'`</td><td>Class on loading indicators during requests</td></tr><tr><td>`requestClass`</td><td>`string`</td><td>`'htmx-request'`</td><td>Class on triggering element during request</td></tr><tr><td>`addedClass`</td><td>`string`</td><td>`'htmx-added'`</td><td>Class temporarily on newly added elements</td></tr><tr><td>`settlingClass`</td><td>`string`</td><td>`'htmx-settling'`</td><td>Class on target during settling phase</td></tr><tr><td>`swappingClass`</td><td>`string`</td><td>`'htmx-swapping'`</td><td>Class on target during swapping phase</td></tr><tr><td>`allowEval`</td><td>`boolean`</td><td>`true`</td><td>Enable `hx-vars`, trigger conditions, script eval</td></tr><tr><td>`allowScriptTags`</td><td>`boolean`</td><td>`true`</td><td>Enable `<script>` tag evaluation in responses</td></tr><tr><td>`inlineScriptNonce`</td><td>`string`</td><td>`''`</td><td>Nonce for inline scripts (CSP compatibility)</td></tr><tr><td>`inlineStyleNonce`</td><td>`string`</td><td>`''`</td><td>Nonce for inline styles (CSP compatibility)</td></tr><tr><td>`attributesToSettle`</td><td>`string[]`</td><td>`['class', 'style', 'width', 'height']`</td><td>Attributes merged during settling</td></tr><tr><td>`withCredentials`</td><td>`boolean`</td><td>`false`</td><td>Send cookies/cross-origin credentials</td></tr><tr><td>`timeout`</td><td>`number`</td><td>`0`</td><td>Request timeout in ms (0 = no timeout)</td></tr><tr><td>`wsReconnectDelay`</td><td>`'full-jitter' \</td><td>fn`</td><td>`'full-jitter'`</td><td>WebSocket reconnect delay strategy</td></tr><tr><td>`wsBinaryType`</td><td>`BinaryType`</td><td>`'blob'`</td><td>WebSocket binary data type</td></tr><tr><td>`disableSelector`</td><td>`string`</td><td>`'[hx-disable], [data-hx-disable]'`</td><td>Elements that disable htmx processing</td></tr><tr><td>`scrollBehavior`</td><td>`'auto' \</td><td>'instant' \</td><td>'smooth'`</td><td>`'instant'`</td><td>Scroll behavior for scroll targets</td></tr><tr><td>`defaultFocusScroll`</td><td>`boolean`</td><td>`false`</td><td>Scroll focused element into view after swap</td></tr><tr><td>`getCacheBusterParam`</td><td>`boolean`</td><td>`false`</td><td>Add cache-busting param to GET requests</td></tr><tr><td>`globalViewTransitions`</td><td>`boolean`</td><td>`false`</td><td>Use View Transition API for swaps</td></tr><tr><td>`methodsThatUseUrlParams`</td><td>`HttpVerb[]`</td><td>`['get', 'delete']`</td><td>Methods that encode params in URL, not body</td></tr><tr><td>`selfRequestsOnly`</td><td>`boolean`</td><td>`true`</td><td>Block requests to non-origin hosts</td></tr><tr><td>`ignoreTitle`</td><td>`boolean`</td><td>`false`</td><td>Skip updating `<title>` from response</td></tr><tr><td>`scrollIntoViewOnBoost`</td><td>`boolean`</td><td>`true`</td><td>Scroll boosted element target into viewport</td></tr><tr><td>`triggerSpecsCache`</td><td>`Object \</td><td>null`</td><td>`null`</td><td>Cache for evaluated trigger specifications</td></tr><tr><td>`disableInheritance`</td><td>`boolean`</td><td>`false`</td><td>Disable attribute inheritance entirely</td></tr><tr><td>`responseHandling`</td><td>`HtmxResponseHandlingConfig[]`</td><td>(see below)</td><td>Status code → swap/error mapping</td></tr><tr><td>`allowNestedOobSwaps`</td><td>`boolean`</td><td>`true`</td><td>Process OOB swaps on nested response elements</td></tr><tr><td>`historyRestoreAsHxRequest`</td><td>`boolean`</td><td>`true`</td><td>Send HX-Request header on history restore</td></tr><tr><td>`reportValidityOfForms`</td><td>`boolean`</td><td>`false`</td><td>Report form validation errors to users</td></tr></table>
+<p>The <code>responseHandling</code> array deserves its own callout. It is a list of objects with <code>code</code> (regex-style pattern), <code>swap</code> (boolean), and <code>error</code> (boolean):</p>
+<pre><code class="language-javascript">// htmx/dist/htmx.js:264-268 — responseHandling config
+responseHandling: [
+    { code: &#x27;204&#x27;, swap: false },           // No Content: don&#x27;t swap
+    { code: &#x27;[23]..&#x27;, swap: true },          // 2xx/3xx: swap normally
+    { code: &#x27;[45]..&#x27;, swap: false, error: true }  // 4xx/5xx: don&#x27;t swap, fire error
+]
+</code></pre>
+<p>This means a <code>204 No Content</code> response triggers events but performs no DOM swap. A <code>400</code> or <code>500</code> response fires error events without replacing content. Any 2xx or 3xx response performs a normal swap. Custom response handling can be added by pushing additional objects to this array.</p>
+<hr>
+<h2>3. Request Lifecycle</h2>
+<p>The htmx request lifecycle spans approximately 25 distinct event phases. Each phase can be intercepted by event listeners. The sequence below traces a complete request from trigger through settlement.</p>
+<div class="mermaid">
+sequenceDiagram
+    participant User
+    participant Element
+    participant htmx
+    participant Server
+    participant DOM
+
+    User-&gt;&gt;Element: Click / trigger event
+    Element-&gt;&gt;htmx: htmx:trigger
+    htmx-&gt;&gt;htmx: resolve target, sync strategy, queue
+    htmx-&gt;&gt;Element: htmx:confirm
+    alt confirm returns false
+        htmx--&gt;&gt;Element: request aborted
+    else prompt needed
+        htmx-&gt;&gt;Element: htmx:prompt
+        alt prompt cancelled
+            htmx--&gt;&gt;Element: request aborted
+        end
+    end
+    htmx-&gt;&gt;htmx: build request config (headers, values, params)
+    htmx-&gt;&gt;Element: htmx:configRequest
+    alt configRequest returns false
+        htmx--&gt;&gt;Element: request aborted
+    end
+    htmx-&gt;&gt;Element: htmx:beforeRequest
+    alt beforeRequest returns false
+        htmx--&gt;&gt;Element: request aborted
+    end
+    htmx-&gt;&gt;Element: htmx:beforeSend
+    htmx-&gt;&gt;Server: XMLHttpRequest.send()
+    Server--&gt;&gt;htmx: response received
+    htmx-&gt;&gt;Element: htmx:afterRequest
+    htmx-&gt;&gt;Element: htmx:afterOnLoad
+    htmx-&gt;&gt;htmx: evaluate responseHandling config
+    htmx-&gt;&gt;Element: htmx:beforeOnLoad
+    htmx-&gt;&gt;Element: htmx:beforeSwap
+    alt beforeSwap returns false
+        htmx--&gt;&gt;Element: swap aborted
+    end
+    htmx-&gt;&gt;DOM: capture activeElement.selectionStart/End
+    htmx-&gt;&gt;DOM: makeFragment(response)
+    htmx-&gt;&gt;DOM: findAndSwapOobElements
+    htmx-&gt;&gt;DOM: swapWithStyle
+    htmx-&gt;&gt;DOM: restore focus/selection
+    htmx-&gt;&gt;Element: htmx:afterSwap
+    htmx-&gt;&gt;Element: htmx:afterSettle (after settleDelay)
+    htmx-&gt;&gt;Element: htmx:load
+    DOM--&gt;&gt;User: updated content visible
+
+</div>
+<p>Key event interception points:</p>
+<ul><li><strong><code>htmx:confirm</code></strong> — return <code>false</code> to abort. Used for confirmation dialogs. The <code>confirmDetails</code> object includes <code>{ target, elt, path, verb, triggeringEvent, etc, issueRequest, question }</code>.</li><li><strong><code>htmx:prompt</code></strong> — fires when <code>hx-prompt</code> is set. Return <code>false</code> or cancel the prompt dialog to abort.</li><li><strong><code>htmx:configRequest</code></strong> — fires after request config is built but before sending. Modify <code>requestConfig.headers</code>, <code>requestConfig.parameters</code>, <code>requestConfig.target</code>. Return <code>false</code> to abort.</li><li><strong><code>htmx:beforeRequest</code></strong> — last chance to abort before the XHR is created. Return <code>false</code>.</li><li><strong><code>htmx:beforeSwap</code></strong> — fires before content swap. The <code>beforeSwapDetails</code> object includes <code>{ shouldSwap, serverResponse, isError, ignoreTitle, selectOverride }</code>. Set <code>isError: true</code> to force error handling. Return <code>false</code> to abort swap.</li><li><strong><code>htmx:oobBeforeSwap</code></strong> — fires before each out-of-band swap. The detail includes <code>{ shouldSwap, target, fragment }</code>. Return <code>false</code> to skip that specific OOB swap.</li></ul>
+<p>Events that fire on the <code>document.body</code>:</p>
+<ul><li><code>htmx:load</code> — fires after each swap cycle completes</li><li><code>htmx:historyItemCreated</code> — when a history entry is created</li><li><code>htmx:historyCacheMiss</code> / <code>htmx:historyCacheHit</code> / <code>htmx:historyCacheMissLoad</code> / <code>htmx:historyCacheMissLoadError</code> / <code>htmx:historyCacheError</code></li><li><code>htmx:historyRestore</code> — when history navigation restores a page</li><li><code>htmx:beforeHistorySave</code> — before saving to history</li><li><code>htmx:abort</code> — listened on body, triggered to abort in-flight requests</li><li><code>htmx:oobErrorNoTarget</code> — when an OOB swap target cannot be found</li></ul>
+<hr>
+<h2>4. Element State Machine</h2>
+<p>Every htmx-enhanced element transitions through a well-defined state machine driven by CSS class application and removal.</p>
+<div class="mermaid">
+stateDiagram-v2
+    [*] --&gt; Idle : element processed
+    Idle --&gt; Triggering : user action / event fires
+    Triggering --&gt; Requesting : htmx:beforeSend, XHR created
+    Requesting --&gt; Swapping : response received, beforeSwap passes
+    Swapping --&gt; Settling : afterSwap fires, swapDelay complete
+    Settling --&gt; Idle : afterSettle fires, settlingClass removed
+
+    Requesting --&gt; Idle : error / timeout / abort
+    Triggering --&gt; Idle : confirm returns false / queue dropped
+    Swapping --&gt; Idle : beforeSwap returns false
+
+    note right of Triggering : triggerClass added
+    note right of Requesting : requestClass added
+    note right of Swapping : swappingClass added
+    note right of Settling : settlingClass added
+
+</div>
+<p>The class lifecycle is deterministic:</p>
+<ol><li><strong>Triggering</strong> — no dedicated class, but <code>htmx:trigger</code> event fires</li><li><strong>Requesting</strong> — <code>htmx-request</code> class added to triggering element (config: <code>requestClass</code>). Removed when request completes (<code>htmx:afterRequest</code>)</li><li><strong>Swapping</strong> — <code>htmx-swapping</code> class added to target before swap (config: <code>swappingClass</code>). Removed after <code>htmx:afterSwap</code></li><li><strong>Settling</strong> — <code>htmx-settling</code> class added to target after swap (config: <code>settlingClass</code>). Removed after <code>htmx:afterSettle</code></li><li><strong>Idle</strong> — no htmx classes present, element ready for next trigger</li></ol>
+<p>Newly added elements receive <code>htmx-added</code> temporarily during the swap, then it is removed during settling. This allows CSS transitions on newly inserted content.</p>
+<hr>
+<h2>5. Swap Strategies</h2>
+<p>Source: <code>htmx/dist/htmx.js:1799-1848</code> — the <code>swapWithStyle</code> switch statement.</p>
+<p>htmx supports nine built-in swap strategies, each mapping to a specific DOM mutation. The switch at line 1799 dispatches by string name:</p>
+<pre><code class="language-javascript">// htmx/dist/htmx.js:1799-1848 — swapWithStyle switch
+function swapWithStyle(swapStyle, elt, target, fragment, settleInfo) {
+    switch (swapStyle) {
+      case &#x27;none&#x27;:         return  // no DOM mutation
+      case &#x27;outerHTML&#x27;:    swapOuterHTML(target, fragment, settleInfo); return
+      case &#x27;afterbegin&#x27;:   swapAfterBegin(target, fragment, settleInfo); return
+      case &#x27;beforebegin&#x27;:  swapBeforeBegin(target, fragment, settleInfo); return
+      case &#x27;beforeend&#x27;:    swapBeforeEnd(target, fragment, settleInfo); return
+      case &#x27;afterend&#x27;:     swapAfterEnd(target, fragment, settleInfo); return
+      case &#x27;delete&#x27;:       swapDelete(target); return
+      default:
+        // Extension dispatch: try each extension&#x27;s handleSwap
+        // Falls through to innerHTML if no extension handles it
+        if (swapStyle === &#x27;innerHTML&#x27;) {
+            swapInnerHTML(target, fragment, settleInfo)
+        } else {
+            swapWithStyle(htmx.config.defaultSwapStyle, elt, target, fragment, settleInfo)
+        }
+    }
+}
+</code></pre>
+<p>Each strategy:</p>
+<table><tr><th>Swap Style</th><th>DOM Operation</th><th>Description</th></tr><tr><td>`none`</td><td>None</td><td>Response is processed for headers/OOB swaps but the target is not mutated</td></tr><tr><td>`innerHTML`</td><td>Replace `target.innerHTML`</td><td>Default. Replaces all child nodes of target</td></tr><tr><td>`outerHTML`</td><td>Replace target element entirely</td><td>Target element itself is replaced with response content</td></tr><tr><td>`beforebegin`</td><td>`target.parentNode.insertBefore(fragment, target)`</td><td>Inserts before target as previous sibling</td></tr><tr><td>`afterbegin`</td><td>`target.insertBefore(fragment, target.firstChild)`</td><td>Inserts as first child of target</td></tr><tr><td>`beforeend`</td><td>`target.appendChild(fragment)`</td><td>Inserts as last child of target</td></tr><tr><td>`afterend`</td><td>`target.parentNode.insertBefore(fragment, target.nextSibling)`</td><td>Inserts after target as next sibling</td></tr><tr><td>`delete`</td><td>`target.parentNode.removeChild(target)`</td><td>Removes target from DOM entirely</td></tr><tr><td>(custom)</td><td>Extension `handleSwap`</td><td>Any unrecognized string delegates to extensions</td></tr></table>
+<p>The <code>swapInnerHTML</code> function (line 1779) is particularly careful: it inserts new nodes before the existing first child, then removes all original children one by one. This ensures the new content coexists briefly with the old, allowing CSS transitions if <code>globalViewTransitions</code> is enabled.</p>
+<p>The <code>swapOuterHTML</code> function (line 1682) uses <code>target.previousSibling</code> to track insertion position, then calls <code>target.remove()</code> after processing. It handles the edge case where the target has no parent by returning early.</p>
+<hr>
+<h2>6. The Complete Swap Pipeline</h2>
+<p>Source: <code>htmx/dist/htmx.js:1880-2059</code> — the <code>swap</code> function.</p>
+<p>The <code>swap</code> function is the orchestration layer. It does not directly mutate the DOM. Instead, it coordinates transitions, timing, focus preservation, OOB swaps, and settling:</p>
+<pre><code class="language-javascript">// htmx/dist/htmx.js:1880-1903 — swap function opening (focus preservation)
+function swap(target, content, swapSpec, swapOptions) {
+    if (!swapOptions) { swapOptions = {} }
+    let settleResolve = null
+    let settleReject = null
+
+    let doSwap = function() {
+        maybeCall(swapOptions.beforeSwapCallback)
+        target = resolveTarget(target)
+        const rootNode = swapOptions.contextElement
+            ? getRootNode(swapOptions.contextElement, false)
+            : getDocument()
+
+        // preserve focus and selection
+        const activeElt = document.activeElement
+        let selectionInfo = {}
+        selectionInfo = {
+            elt: activeElt,
+            start: activeElt ? activeElt.selectionStart : null,
+            end: activeElt ? activeElt.selectionEnd : null
+        }
+        // ... continues with makeFragment, OOB swaps, swapWithStyle, restore
+    }
+    // ... transition wrapping and swapDelay scheduling
+}
+</code></pre>
+<p>The pipeline order is:</p>
+<ol><li><strong><code>beforeSwapCallback</code></strong> — optional hook from <code>swapOptions</code></li><li><strong>Target resolution</strong> — string selectors resolved to elements</li><li><strong>Focus/selection capture</strong> — <code>activeElement</code>, <code>selectionStart</code>, <code>selectionEnd</code> saved</li><li><strong>Fragment creation</strong> — <code>makeFragment(content)</code> parses HTML string into DocumentFragment</li><li><strong>Title extraction</strong> — <code><title></code> from fragment captured for later document title update</li><li><strong>Select-OOB</strong> — <code>hx-select-oob</code> attribute extracts elements by ID for OOB swap</li><li><strong>OOB swap discovery</strong> — <code>findAndSwapOobElements</code> finds <code>[hx-swap-oob]</code> elements in fragment</li><li><strong>Template OOB</strong> — OOB swaps inside <code><template></code> content are processed, then templates removed</li><li><strong>Content selection</strong> — <code>hx-select</code> attribute filters fragment to matched elements only</li><li><strong>Preserved elements</strong> — elements with <code>hx-preserve</code> are held aside</li><li><strong><code>swapWithStyle</code></strong> — the actual DOM mutation (section 5 above)</li><li><strong>Restore preserved</strong> — preserved elements reinserted into new content</li><li><strong>Focus/selection restore</strong> — element looked up by <code>id</code>, selection restored, focus reapplied</li><li><strong><code>htmx:afterSwap</code></strong> — fired on all settled elements</li><li><strong>Title merge</strong> — <code>handleTitle(settleInfo.title)</code> updates <code>document.title</code></li><li><strong>Settling</strong> — after <code>settleDelay</code>, pending tasks execute, <code>htmx:afterSettle</code> fires</li></ol>
+<p><strong>Aha:</strong> htmx's swap pipeline preserves focus and selection across DOM replacements by capturing <code>activeElement.selectionStart</code> and <code>selectionEnd</code> before the swap and restoring them after. This means a user typing in a textarea that gets replaced mid-keystroke (e.g., live autocomplete) does not lose their cursor position or selected text. The restore logic looks up the element by <code>id</code> in the new DOM, then calls <code>setSelectionRange</code> and <code>focus</code> with <code>preventScroll</code> controlled by <code>defaultFocusScroll</code>. This is what makes forms work seamlessly without JavaScript frameworks — the browser's native form state survives DOM mutations that would destroy it in a naive implementation.</p>
+<hr>
+<h2>7. Out-of-Band Swaps and Nested OOB Swaps</h2>
+<p>Out-of-band swaps let a single server response update multiple DOM targets. The response can contain elements marked with <code>hx-swap-oob="true"</code> or <code>hx-swap-oob="#target-id:swapStyle"</code>.</p>
+<p>The discovery mechanism (<code>findAndSwapOobElements</code>, line 1856) runs twice:</p>
+<ol><li>First, on the top-level response fragment</li><li>Second, on every <code><template></code> element's content (lines 1937-1942)</li></ol>
+<p>This double-scan allows servers to wrap OOB elements in <code><template></code> tags for clean HTML that does not render visually if the response is viewed directly.</p>
+<p>Nested OOB swaps are controlled by <code>htmx.config.allowNestedOobSwaps</code> (default <code>true</code>). When enabled, any element at any depth in the response with <code>hx-swap-oob</code> is processed. When disabled, only top-level OOB elements are processed — the attribute is stripped from nested elements to prevent accidental server-side data leaks from becoming DOM mutations.</p>
+<p>The <code>oobSwap</code> function (line 1469) processes each OOB element:</p>
+<ul><li>Parses the swap value (e.g., <code>"true"</code>, <code>"#myDiv:outerHTML"</code>, <code>"innerHTML"</code>)</li><li>Resolves the target by ID (default) or explicit selector</li><li>Fires <code>htmx:oobBeforeSwap</code> on the target</li><li>Performs the swap via <code>swapWithStyle</code></li><li>Fires <code>htmx:oobAfterSwap</code></li><li>If target not found, fires <code>htmx:oobErrorNoTarget</code> on <code>document.body</code></li></ul>
+<p>The <code>hx-select-oob</code> attribute on the triggering element provides a client-side OOB mapping: <code>hx-select-oob="#status:update, #count:innerHTML"</code> extracts elements from the response and swaps them into targets specified by the client.</p>
+<hr>
+<h2>8. Extension System</h2>
+<p>Source: <code>htmx/dist/htmx.js:4991-5057</code> — extension definition and resolution.</p>
+<p>Extensions are registered via <code>htmx.defineExtension(name, extension)</code>. The extension object must conform to the <code>HtmxExtension</code> interface:</p>
+<pre><code class="language-javascript">// htmx/dist/htmx.js:4986-4993 — extension base interface
+const extensionBase = function() {
+    return {
+        init: function(api) { },                  // receives internalAPI object
+        onEvent: function(name, evt) { return true; },  // event interceptor
+        transformResponse: function(text, xhr, elt) { return text; },
+        isInlineSwap: function(swapStyle) { return false; },
+        handleSwap: function(swapStyle, target, fragment, settleInfo) { return false; },
+        encodeParameters: function(xhr, parameters, elt) { return null; }
+    }
+}
+</code></pre>
+<p>The extension lifecycle:</p>
+<ol><li><strong>Registration</strong> — <code>defineExtension</code> calls <code>extension.init(internalAPI)</code> if present, then merges the extension into the <code>extensions</code> registry with defaults from <code>extensionBase</code></li><li><strong>Resolution</strong> — <code>getExtensions(elt)</code> walks up the DOM tree from an element, reading <code>hx-ext</code> attributes. Comma-separated extension names are resolved from the registry. <code>ignore:extName</code> syntax excludes extensions from child elements</li><li><strong>Invocation</strong> — extensions are called at specific pipeline points:</li></ol>
+<ul><li><code>onEvent(name, evt)</code> — every htmx event, return <code>false</code> to prevent default</li><li><code>transformResponse(text, xhr, elt)</code> — mutate response text before parsing</li><li><code>isInlineSwap(swapStyle)</code> — return <code>true</code> to claim a custom swap style</li><li><code>handleSwap(swapStyle, target, fragment, settleInfo)</code> — perform custom DOM mutation</li><li><code>encodeParameters(xhr, parameters, elt)</code> — modify request encoding</li></ul>
+<p>Extension resolution walks upward through the DOM (line 5030-5056). An element's <code>hx-ext="json-enc"</code> enables that extension for the element and all descendants. A descendant with <code>hx-ext="ignore:json-enc,ws"</code> disables <code>json-enc</code> and enables <code>ws</code>. This mirrors the attribute inheritance system.</p>
+<p>There are 23 shipped extensions in <code>dist/ext/</code>: <code>ajax-header</code>, <code>alpine-morph</code>, <code>class-tools</code>, <code>client-side-templates</code>, <code>debug</code>, <code>disable-element</code>, <code>event-header</code>, <code>head-support</code>, <code>include-vals</code>, <code>json-enc</code>, <code>loading-states</code>, <code>method-override</code>, <code>morphdom-swap</code>, <code>multi-swap</code>, <code>path-deps</code>, <code>path-params</code>, <code>preload</code>, <code>rails-method</code>, <code>remove-me</code>, <code>response-targets</code>, <code>restored</code>, <code>sse</code>, <code>ws</code>.</p>
+<hr>
+<h2>9. History Management</h2>
+<p>Source: <code>htmx/dist/htmx.js:3157-3355</code> — history cache and restoration.</p>
+<p>htmx implements browser history via <code>pushState</code>/<code>popState</code> with a sessionStorage-backed cache. The cache stores <code>{ url, content, title, scroll }</code> objects.</p>
+<p><strong>Save flow</strong> (<code>saveToHistoryCache</code>, line 3157):</p>
+<ol><li><code>cleanInnerHtmlForHistory(rootElt)</code> extracts the current page content</li><li>Creates <code>newHistoryItem</code> with url, content, title, scroll position</li><li>Fires <code>htmx:historyItemCreated</code> on body</li><li>Pushes to <code>htmx-history-cache</code> array in sessionStorage</li><li>Trims to <code>historyCacheSize</code> (default 10) from the front</li><li>Retries on quota errors by dropping oldest entries until save succeeds</li></ol>
+<p><strong>Restore flow</strong> (<code>getCachedHistory</code>, line 3217):</p>
+<ol><li>Normalize URL path for lookup</li><li>Search <code>htmx-history-cache</code> for matching URL</li><li>On hit: fires <code>htmx:historyCacheHit</code>, restores content and title, fires <code>htmx:historyRestore</code></li><li>On miss: if <code>refreshOnHistoryMiss</code> is true, does <code>location.reload()</code>. Otherwise fires <code>htmx:historyCacheMiss</code>, fetches the URL via AJAX, fires <code>htmx:historyCacheMissLoad</code> or <code>htmx:historyCacheMissLoadError</code>, then restores</li></ol>
+<p>The <code>historyRestoreAsHxRequest</code> config option (default <code>true</code>) controls whether history restore requests include the <code>HX-Request: true</code> header. When using <code>HX-Request</code> to return partial responses from the server, this should be set to <code>false</code> — otherwise the server returns a fragment instead of a full page for history navigation.</p>
+<p>URL push behavior is controlled per-request by <code>hx-push-url</code> (push new history entry) or <code>hx-replace-url</code> (replace current entry). Both accept <code>true</code>, <code>false</code>, or a specific URL string.</p>
+<hr>
+<h2>10. WebSocket and SSE Support</h2>
+<p>htmx core includes WebSocket reconnection configuration but delegates actual WebSocket and SSE protocol handling to extensions. The core config provides:</p>
+<ul><li><code>wsReconnectDelay: 'full-jitter'</code> (line 195) — string name for the reconnect delay algorithm. The actual <code>getWebSocketReconnectDelay</code> function implements exponential backoff with random jitter</li><li><code>wsBinaryType: 'blob'</code> (line 201) — controls <code>WebSocket.binaryType</code></li></ul>
+<p>The <code>ws</code> extension (<code>dist/ext/ws.js</code>) provides the <code>hx-ws</code> attribute for WebSocket connections. It handles:</p>
+<ul><li>Connection lifecycle (open, message, close)</li><li>Sending form values over WebSocket on trigger events</li><li>Receiving server messages and swapping content</li><li>Automatic reconnection with the configured delay strategy</li></ul>
+<p>The <code>sse</code> extension (<code>dist/ext/sse.js</code>) provides the <code>hx-sse</code> attribute for Server-Sent Events. It handles:</p>
+<ul><li><code>EventSource</code> connection management</li><li>Named event subscription via <code>hx-sse="event-name"</code></li><li>Receiving server-sent events and triggering DOM swaps</li><li>Automatic reconnection on connection loss</li></ul>
+<p>Both extensions use the htmx event system (<code>onEvent</code>) to intercept the request pipeline and replace AJAX with persistent connection handling. The extensions follow the same attribute inheritance pattern — <code>hx-ext="ws"</code> on a parent enables WebSocket support for all children.</p>
+<hr>
+<h2>11. Attribute Inheritance, hx-disinherit, and hx-inherit</h2>
+<p>Source: <code>htmx/dist/htmx.js:466-498</code> — <code>getAttributeValueWithDisinheritance</code> and <code>getClosestAttributeValue</code>.</p>
+<p>By default, htmx attributes inherit downward. A <code>hx-target="#main"</code> on a <code><div></code> applies to all descendant elements unless overridden. The inheritance mechanism is implemented in <code>getClosestAttributeValue</code>, which walks up the DOM tree calling <code>getAttributeValueWithDisinheritance</code> at each ancestor.</p>
+<p>The disinheritance system provides two control attributes:</p>
+<p><strong><code>hx-disinherit</code></strong> — prevents attribute inheritance to children:</p>
+<ul><li><code>hx-disinherit="*"</code> — blocks all attribute inheritance from this element downward</li><li><code>hx-disinherit="hx-target hx-swap"</code> — blocks specific attributes only</li><li>When an attribute is disinherit, <code>getClosestAttributeValue</code> returns <code>null</code> for descendants</li></ul>
+<p><strong><code>hx-inherit</code></strong> — works with <code>disableInheritance: true</code> to enable opt-in inheritance:</p>
+<ul><li>When <code>htmx.config.disableInheritance</code> is <code>false</code> (default), all attributes inherit unless blocked by <code>hx-disinherit</code></li><li>When <code>htmx.config.disableInheritance</code> is <code>true</code>, attributes do NOT inherit unless explicitly allowed by <code>hx-inherit</code></li><li><code>hx-inherit="*"</code> — allow all attributes from this ancestor</li><li><code>hx-inherit="hx-target"</code> — allow only <code>hx-target</code> to inherit</li></ul>
+<p>The interaction logic (line 466-482):</p>
+<pre><code class="language-javascript">// htmx/dist/htmx.js:466-482 — disinheritance logic
+function getAttributeValueWithDisinheritance(initialElement, ancestor, attributeName) {
+    const attributeValue = getAttributeValue(ancestor, attributeName)
+    const disinherit = getAttributeValue(ancestor, &#x27;hx-disinherit&#x27;)
+    var inherit = getAttributeValue(ancestor, &#x27;hx-inherit&#x27;)
+    if (initialElement !== ancestor) {
+        if (htmx.config.disableInheritance) {
+            // Opt-in mode: only inherit if explicitly allowed
+            if (inherit &amp;&amp; (inherit === &#x27;*&#x27; || inherit.split(&#x27; &#x27;).indexOf(attributeName) &gt;= 0)) {
+                return attributeValue
+            } else {
+                return null  // blocked by default
+            }
+        }
+        // Opt-out mode: inherit unless explicitly blocked
+        if (disinherit &amp;&amp; (disinherit === &#x27;*&#x27; || disinherit.split(&#x27; &#x27;).indexOf(attributeName) &gt;= 0)) {
+            return &#x27;unset&#x27;  // signals to caller that this is explicitly blocked
+        }
+    }
+    return attributeValue
+}
+</code></pre>
+<p>The <code>getClosestAttributeValue</code> function (line 490) walks upward via <code>getClosestMatch</code> and returns the first non-<code>'unset'</code> value. This means a disinherit at a closer ancestor takes precedence over an inherit at a farther ancestor.</p>
+<hr>
+<h2>12. Internal API</h2>
+<p>Source: <code>htmx/dist/htmx.js:324-352</code> — the <code>internalAPI</code> object.</p>
+<p>The internal API exposes 27 functions used by the extension system and internal pipeline. Extensions receive this object in their <code>init(api)</code> callback:</p>
+<table><tr><th>Function</th><th>Purpose</th></tr><tr><td>`addTriggerHandler`</td><td>Register custom trigger logic for elements</td></tr><tr><td>`bodyContains`</td><td>Check if element is in the document (works across iframes)</td></tr><tr><td>`canAccessLocalStorage`</td><td>Safe localStorage availability check</td></tr><tr><td>`findThisElement`</td><td>Resolve `this` in `hx-sync="this:..."` context</td></tr><tr><td>`filterValues`</td><td>Filter input values by `hx-params` spec</td></tr><tr><td>`swap`</td><td>The complete swap pipeline (section 6)</td></tr><tr><td>`hasAttribute` / `getAttributeValue`</td><td>Safe attribute access with `data-hx-` fallback</td></tr><tr><td>`getClosestAttributeValue`</td><td>Walk up tree with disinheritance (section 11)</td></tr><tr><td>`getClosestMatch`</td><td>Walk up DOM tree matching a predicate</td></tr><tr><td>`getExpressionVars`</td><td>Resolve `hx-vars` / `hx-vals` expressions</td></tr><tr><td>`getHeaders`</td><td>Build request headers from `hx-headers`</td></tr><tr><td>`getInputValues`</td><td>Collect all form/input values for an element</td></tr><tr><td>`getInternalData`</td><td>Access htmx-attached metadata on elements</td></tr><tr><td>`getSwapSpecification`</td><td>Parse `hx-swap` into `{ swapStyle, swapDelay, settleDelay, ... }`</td></tr><tr><td>`getTriggerSpecs`</td><td>Parse `hx-trigger` into `{ trigger, delay, from, target, ... }`</td></tr><tr><td>`getTarget`</td><td>Resolve `hx-target` to an Element</td></tr><tr><td>`makeFragment`</td><td>Parse HTML string into DocumentFragment</td></tr><tr><td>`mergeObjects`</td><td>Shallow object merge</td></tr><tr><td>`makeSettleInfo`</td><td>Create settle tracking structure for a swap</td></tr><tr><td>`oobSwap`</td><td>Perform a single out-of-band swap</td></tr><tr><td>`querySelectorExt`</td><td>Extended CSS selector with htmx scoping</td></tr><tr><td>`settleImmediately`</td><td>Run settle tasks without delay</td></tr><tr><td>`shouldCancel`</td><td>Determine if event should be cancelled by htmx</td></tr><tr><td>`triggerEvent` / `triggerErrorEvent`</td><td>Fire custom events on elements</td></tr><tr><td>`withExtensions`</td><td>Execute a callback against all active extensions for an element</td></tr></table>
+<hr>
+<h2>13. Supported Verbs and Selector</h2>
+<p>Source: <code>htmx/dist/htmx.js:354-357</code>.</p>
+<p>htmx supports five HTTP verbs, mapped to both <code>hx-</code> and <code>data-hx-</code> prefixed attributes:</p>
+<pre><code class="language-javascript">// htmx/dist/htmx.js:354-357
+const VERBS = [&#x27;get&#x27;, &#x27;post&#x27;, &#x27;put&#x27;, &#x27;delete&#x27;, &#x27;patch&#x27;]
+const VERB_SELECTOR = VERBS.map(function(verb) {
+    return &#x27;[hx-&#x27; + verb + &#x27;], [data-hx-&#x27; + verb + &#x27;]&#x27;
+}).join(&#x27;, &#x27;)
+// Result: &#x27;[hx-get], [data-hx-get], [hx-post], [data-hx-post], ...&#x27;
+</code></pre>
+<p>The <code>methodsThatUseUrlParams</code> config option (<code>['get', 'delete']</code>) determines which verbs encode parameters in the URL query string rather than the request body. This matches REST conventions where GET and DELETE requests traditionally do not have request bodies.</p>
+<hr>
+<h2>14. Next Steps</h2>
+<p>This document covers the core htmx engine. For the full ecosystem:</p>
+<ul><li><a href="00-overview.md">00-overview.md</a> — project landscape and architecture</li><li><a href="02-hyperscript.md">02-hyperscript.md</a> — the <code>_hyperscript</code> scripting language bundled with htmx</li><li><a href="03-idiomorph.md">03-idiomorph.md</a> — the Idiomorph morphdom swap algorithm for minimal DOM diffing</li><li><a href="05-fixi-family.md">05-fixi-family.md</a> — related projects in the Fixi ecosystem</li><li><a href="07-cross-cutting.md">07-cross-cutting.md</a> — patterns, testing strategies, and cross-cutting concerns</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

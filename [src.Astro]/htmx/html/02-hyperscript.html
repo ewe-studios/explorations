@@ -1,0 +1,792 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hyperscript Deep Dive — The Small Scripting Language for the Web -- htmx</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/htmx/docs</span>
+    <div class="nav-actions">
+      <a href="00-overview.html" class="nav-breadcrumb">HTMX Ecosystem Overview</a><a href="01-htmx-core.html" class="nav-breadcrumb">htmx Core — Deep Dive</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="01-htmx-core.html" class="nav-btn" title="Previous: htmx Core — Deep Dive">← prev</a>
+      <a href="03-idiomorph.html" class="nav-btn nav-btn-next" title="Next: Idiomorph: ID-Based DOM Morphing">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Hyperscript Deep Dive — The Small Scripting Language for the Web</h1>
+<p>Hyperscript is a small scripting language for the web that lives inside HTML attributes. It provides event handlers, DOM manipulation, async control flow, and server integration through a natural-language-like syntax. Instead of writing JavaScript event listeners and DOM APIs, you write <code>on click put "Hello" into #output</code> directly on the element. The entire language compiles to an AST, runs through a custom execution engine, and integrates seamlessly with htmx for server-driven updates. It is a companion library to htmx — the same team, the same hypermedia philosophy — but it stands alone as a general-purpose DOM scripting language.</p>
+<p>Source: <code>_hyperscript/package.json:1-8</code> — version 0.9.93, BSD 2-Clause license, repository at https://github.com/bigskysoftware/_hyperscript</p>
+<pre><code class="language-json">// _hyperscript/package.json:1-8
+{
+  &quot;name&quot;: &quot;hyperscript.org&quot;,
+  &quot;description&quot;: &quot;a small scripting language for the web&quot;,
+  &quot;version&quot;: &quot;0.9.93&quot;,
+  &quot;license&quot;: &quot;BSD 2-Clause&quot;,
+  &quot;repository&quot;: {
+    &quot;type&quot;: &quot;git&quot;,
+    &quot;url&quot;: &quot;git+https://github.com/bigskysoftware/_hyperscript.git&quot;
+  }
+}
+</code></pre>
+<hr>
+<h2>Architecture — Six Modules, One Pipeline</h2>
+<p>Hyperscript is not a single monolithic file. The source is organized into six architectural layers, each with a clear responsibility. The bundled distribution (<code>dist/_hyperscript.js</code>) is assembled from these modules by esbuild.</p>
+<pre><code class="language-">src/
+  _hyperscript.js                  ← Entry point: wires all subsystems together
+  core/
+    tokenizer.js                   ← Lexical analysis: characters → Tokens stream
+    kernel.js                      ← Grammar registry and AST builder
+    parser.js                      ← Unified parser API over kernel + tokens
+    config.js                      ← Global configuration
+    runtime/
+      runtime.js                   ← Execution engine: unifiedEval, unifiedExec
+      collections.js               ← ElementCollection, auto-iteration
+      conversions.js               ← Type coercion system
+      cookies.js                   ← Cookie read/write API
+      reactivity.js                ← Reactive tracking and mutation notification
+      morph.js                     ← DOM morphing (idiomorph integration)
+      htmx-compat.js               ← htmx interoperability layer
+  parsetree/
+    base.js                        ← Command, Feature, Expression base classes
+    internals.js                   ← AST node utilities, error types
+    commands/
+      basic.js                     ← log, beep!, set, wait
+      dom.js                       ← add, remove, toggle, put, append, prepend
+      events.js                    ← send, trigger, halt
+      controlflow.js               ← if, for, while, repeat, try/catch
+      execution.js                 ← call, fetch, async
+      animations.js                ← transition, add/remove class with timing
+      debug.js                     ← break, log, beep!
+      setters.js                   ← set, increment/decrement
+      template.js                  ← live template commands
+      pseudoCommand.js             ← Bare function-call syntax
+    expressions/
+      expressions.js               ← Arithmetic, comparison, logical operators
+      literals.js                  ← Strings, numbers, booleans, null
+      webliterals.js               ← URL, CSS, HTML literals
+      postfix.js                   ← Property access, array indexing
+      positional.js                ← first, last, random, positional operators
+      existentials.js              ← exists, empty checks
+      targets.js                   ← CSS query targets, attribute targets
+    features/
+      on.js                        ← Event handlers: on click, on every
+      def.js                       ← Function definitions: def myFunc()
+      set.js                       ← Module-like set blocks
+      init.js                      ← init feature: run on element mount
+      worker.js                    ← Web worker integration
+      behavior.js                  ← Reusable behavior blocks
+      install.js                   ← Extension installation
+      js.js                        ← Inline JavaScript escape hatch
+      when.js                      ← Reactive when expressions
+      bind.js                      ← Two-way data binding
+      live.js                      ← Live templates
+  ext/                             ← Official extensions
+    component.js                   ← Component system
+    eventsource.js                 ← Server-sent events
+    socket.js                      ← WebSocket support
+    hdb.js                         ← Hyperscript debugger
+    tailwind.js                    ← Tailwind integration
+    intercept.js / intercept-sw.js ← Request interception
+    worker.js                      ← Worker helper
+  platform/                        ← Runtime platforms
+    node-hyperscript.js            ← Node.js entry
+    bun-hyperscript.js             ← Bun entry
+    deno-hyperscript.js            ← Deno entry
+</code></pre>
+<p>The compilation pipeline flows through these modules in a strict sequence. Source text enters the tokenizer, which produces a <code>Tokens</code> object. The kernel drives the parser over that token stream, building an AST of <code>Command</code>, <code>Feature</code>, and <code>Expression</code> nodes. The runtime then executes the AST by walking command chains, resolving expressions, and updating the DOM.</p>
+<div class="mermaid">
+flowchart TD
+    A[&quot;HTML attribute source text\n_e.g. &#x27;on click put \&quot;Hi\&quot; into #output&#x27;&quot;] --&gt; T[Tokenizer]
+    T --&gt;|&quot;Tokens stream\n(consumed + remaining)&quot;| K[LanguageKernel]
+    K --&gt;|&quot;AST: HyperscriptProgram\n[Feature] → [CommandList] → [Expression]&quot;| R[Runtime]
+    R --&gt; E[&quot;unifiedEval + unifiedExec\ncommand → next command → ...&quot;]
+    E --&gt; D[&quot;DOM updates\ninnerHTML, classList, attributes&quot;]
+    E --&gt; EV[&quot;Event dispatch\nhyperscript:* events&quot;]
+    E --&gt; AS[&quot;Async resolution\nPromise chains&quot;]
+
+    subgraph &quot;src/core/&quot;
+        T
+        K
+    end
+
+    subgraph &quot;src/core/runtime/&quot;
+        R
+    end
+
+</div>
+<hr>
+<h2>Tokenizer — Lexical Analysis with Follow Sets</h2>
+<p>The tokenizer is where hyperscript's natural-language readability begins. It turns raw source text into a stream of typed tokens that the parser consumes. The architecture has two classes: <code>Tokenizer</code> (the lexer) and <code>Tokens</code> (the token stream manager).</p>
+<h3>The Tokens Class — Stream Management</h3>
+<p>Source: <code>_hyperscript/src/core/tokenizer.js:7-207</code></p>
+<p>The <code>Tokens</code> class is not a simple array wrapper. It manages a token stream with consumed/consumable tracking, lookahead, and a follow-set mechanism that enables context-aware parsing. The class holds four private fields:</p>
+<ul><li><code>#tokens</code> — the remaining unconsumed token array</li><li><code>#consumed</code> — tokens already processed by the parser</li><li><code>#lastConsumed</code> — the most recently consumed token (for error reporting)</li><li><code>#follows</code> — a stack of "follow tokens" that should not be consumed in the current parsing context</li></ul>
+<pre><code class="language-javascript">// _hyperscript/src/core/tokenizer.js:7-26
+export class Tokens {
+    #tokens;
+    #consumed = [];
+    #lastConsumed = null;
+    #follows = [];
+    source;
+
+    constructor(tokens, source) {
+        this.#tokens = tokens;
+        this.source = source;
+        this.consumeWhitespace();
+    }
+</code></pre>
+<p>The <code>token(n, includeWhitespace)</code> method provides positional access. It skips whitespace by default (mimicking how natural-language parsing ignores spaces between words) and returns the nth significant token. When <code>n</code> goes past the end, it returns an <code>EOF</code> sentinel:</p>
+<pre><code class="language-javascript">// _hyperscript/src/core/tokenizer.js:55-68
+token(n, includeWhitespace) {
+    var token;
+    var i = 0;
+    do {
+        if (!includeWhitespace) {
+            while (this.#tokens[i] &amp;&amp; this.#tokens[i].type === &quot;WHITESPACE&quot;) {
+                i++;
+            }
+        }
+        token = this.#tokens[i];
+        n--;
+        i++;
+    } while (n &gt; -1);
+    return token || { type: &quot;EOF&quot;, value: &quot;&lt;&lt;&lt;EOF&gt;&gt;&gt;&quot; };
+}
+</code></pre>
+<h3>Matching and Consuming — The Parser's Interface</h3>
+<p>The matching methods are the parser's primary interface. They check the current token and consume it if it matches:</p>
+<ul><li><code>matchToken(value, type)</code> — matches an exact identifier value and type</li><li><code>matchOpToken(value)</code> — matches an operator token (has <code>.op === true</code>)</li><li><code>matchTokenType(...types)</code> — matches any of the given token types</li><li><code>matchAnyToken(...tokens)</code> — tries multiple exact matches in order</li><li><code>matchAnyOpToken(...ops)</code> — tries multiple operator matches in order</li></ul>
+<p>Each returns the consumed token on match, or <code>undefined</code> on failure. The parser uses these return values to drive conditional parsing.</p>
+<pre><code class="language-javascript">// _hyperscript/src/core/tokenizer.js:81-99
+matchToken(value, type) {
+    if (this.#follows.includes(value)) return;
+    type = type || &quot;IDENTIFIER&quot;;
+    if (this.currentToken() &amp;&amp; this.currentToken().value === value &amp;&amp; this.currentToken().type === type) {
+        return this.consumeToken();
+    }
+}
+
+matchOpToken(value) {
+    if (this.currentToken() &amp;&amp; this.currentToken().op &amp;&amp; this.currentToken().value === value) {
+        return this.consumeToken();
+    }
+}
+</code></pre>
+<p>Notice the guard in <code>matchToken</code>: <code>if (this.#follows.includes(value)) return;</code>. This is the follow-set mechanism in action. If the current token value is in the follow set, the match is suppressed — the parser is told "this token belongs to the outer context, don't consume it here."</p>
+<h3>The OP_TABLE — Operator Mapping</h3>
+<p>Source: <code>_hyperscript/src/core/tokenizer.js:213-248</code></p>
+<p>The tokenizer uses a flat lookup table to classify operator characters into token types:</p>
+<pre><code class="language-javascript">// _hyperscript/src/core/tokenizer.js:213-248
+const OP_TABLE = {
+    &quot;+&quot;: &quot;PLUS&quot;,        &quot;-&quot;: &quot;MINUS&quot;,      &quot;*&quot;: &quot;MULTIPLY&quot;,   &quot;/&quot;: &quot;DIVIDE&quot;,
+    &quot;.&quot;: &quot;PERIOD&quot;,      &quot;..&quot;: &quot;ELLIPSIS&quot;,   &quot;\\&quot;: &quot;BACKSLASH&quot;, &quot;:&quot;: &quot;COLON&quot;,
+    &quot;%&quot;: &quot;PERCENT&quot;,     &quot;|&quot;: &quot;PIPE&quot;,        &quot;!&quot;: &quot;EXCLAMATION&quot;,&quot;?&quot;: &quot;QUESTION&quot;,
+    &quot;#&quot;: &quot;POUND&quot;,       &quot;&amp;&quot;: &quot;AMPERSAND&quot;,   &quot;$&quot;: &quot;DOLLAR&quot;,     &quot;;&quot;: &quot;SEMI&quot;,
+    &quot;,&quot;: &quot;COMMA&quot;,       &quot;(&quot;: &quot;L_PAREN&quot;,     &quot;)&quot;: &quot;R_PAREN&quot;,    &quot;&lt;&quot;: &quot;L_ANG&quot;,
+    &quot;&gt;&quot;: &quot;R_ANG&quot;,       &quot;&lt;=&quot;: &quot;LTE_ANG&quot;,    &quot;&gt;=&quot;: &quot;GTE_ANG&quot;,   &quot;==&quot;: &quot;EQ&quot;,
+    &quot;===&quot;: &quot;EQQ&quot;,       &quot;!=&quot;: &quot;NEQ&quot;,        &quot;!==&quot;: &quot;NEQQ&quot;,     &quot;{&quot;: &quot;L_BRACE&quot;,
+    &quot;}&quot;: &quot;R_BRACE&quot;,     &quot;[&quot;: &quot;L_BRACKET&quot;,   &quot;]&quot;: &quot;R_BRACKET&quot;,  &quot;=&quot;: &quot;EQUALS&quot;,
+    &quot;~&quot;: &quot;TILDE&quot;,       &quot;^&quot;: &quot;CARET&quot;,
+};
+</code></pre>
+<p>The <code>#consumeOp()</code> method uses this table greedily: it reads a character, then keeps reading while the two-character combination also exists in the table. This means <code>==</code> is tokenized as <code>EQ</code> (not two <code>EQUALS</code> tokens), and <code>===</code> becomes <code>EQQ</code> (not <code>EQ</code> plus <code>EQUALS</code>). Multi-character operators are recognized by maximal munch.</p>
+<pre><code class="language-javascript">// _hyperscript/src/core/tokenizer.js:617-627
+#consumeOp() {
+    var token = this.#makeOpToken();
+    var value = this.#consumeChar();
+    while (this.#currentChar() &amp;&amp; OP_TABLE[value + this.#currentChar()]) {
+        value += this.#consumeChar();
+    }
+    token.type = OP_TABLE[value];
+    token.value = value;
+    token.end = this.#position;
+    return token;
+}
+</code></pre>
+<h3>Follow Sets — The Key Insight</h3>
+<p><strong>Aha:</strong> The follow-set mechanism (<code>pushFollow</code>/<code>popFollow</code>) is how hyperscript achieves natural-language readability without parser complexity. The same keyword can mean different things in different contexts because the follow set tells the tokenizer which tokens are "off limits" for the current parsing scope.</p>
+<p>For example, consider <code>on click from .button put "Hi" into #output</code>. When parsing the event source clause after <code>from</code>, the parser pushes <code>put</code> onto the follow set. This means when <code>matchToken("button")</code> runs and encounters <code>put</code>, it does NOT consume <code>put</code> as a button name — <code>put</code> is in the follow set, so the match returns <code>undefined</code>. The parser knows it has finished parsing the event source and can move on to parsing the command body. Without follow sets, the parser would need explicit grammar rules to handle every possible keyword boundary. With follow sets, any keyword can serve as a scope delimiter.</p>
+<p>The follow-set API provides stack operations:</p>
+<pre><code class="language-javascript">// _hyperscript/src/core/tokenizer.js:180-205
+pushFollow(str) { this.#follows.push(str); }
+popFollow() { this.#follows.pop(); }
+pushFollows(...strs) { for (var i = 0; i &lt; strs.length; i++) this.#follows.push(strs[i]); return strs.length; }
+popFollows(count) { for (var i = 0; i &lt; count; i++) this.#follows.pop(); }
+clearFollows() { var tmp = this.#follows; this.#follows = []; return tmp; }
+restoreFollows(f) { this.#follows = f; }
+</code></pre>
+<p>The <code>clearFollows()</code> and <code>restoreFollows()</code> pair enables context switching during error recovery. When the parser hits a syntax error, it clears the follow set, scans forward to the next known keyword boundary, then restores normal parsing.</p>
+<h3>The Tokenizer Class — Character to Token</h3>
+<p>Source: <code>_hyperscript/src/core/tokenizer.js:250-751</code></p>
+<p>The <code>Tokenizer</code> class walks the source string character by character and produces a <code>Tokens</code> object. Its main loop (<code>#tokenize()</code>) classifies each character:</p>
+<table><tr><th>Character pattern</th><th>Token type produced</th></tr><tr><td>`--` or `//` at start</td><td>Comment (consumed, not emitted)</td></tr><tr><td>Whitespace</td><td>`WHITESPACE` token</td></tr><tr><td>`.` + alpha (no preceding symbol)</td><td>`CLASS_REF` (e.g., `.button`)</td></tr><tr><td>`#` + alpha (no preceding symbol)</td><td>`ID_REF` (e.g., `#output`)</td></tr><tr><td>`[@`</td><td>`ATTRIBUTE_REF` (e.g., `[@data-id]`)</td></tr><tr><td>`@`</td><td>Short attribute ref (e.g., `@data-id`)</td></tr><tr><td>`*` + alpha</td><td>`STYLE_REF` (e.g., `*color`)</td></tr><tr><td>Alpha/`_`/`$`</td><td>`IDENTIFIER`</td></tr><tr><td>Digit</td><td>`NUMBER` (supports `e` exponent, decimal)</td></tr><tr><td>String (`"`, `'`, `` ` ``)</td><td>`STRING` (template if backtick)</td></tr><tr><td>OP_TABLE character</td><td>Operator token (`.op = true`)</td></tr><tr><td>Other</td><td>`RESERVED` or error</td></tr></table>
+<p>The tokenizer tracks <code>#lastToken</code> to implement <code>#possiblePrecedingSymbol()</code>, which prevents ambiguous parses. For example, <code>foo.bar</code> is a property access (dot after identifier), while <code>.button</code> alone is a class reference (dot not after identifier). The same character produces different token types based on context.</p>
+<pre><code class="language-javascript">// _hyperscript/src/core/tokenizer.js:346-357
+#possiblePrecedingSymbol() {
+    return (
+        this.#isAlpha(this.#lastToken) ||
+        this.#isNumeric(this.#lastToken) ||
+        this.#lastToken === &quot;)&quot; ||
+        this.#lastToken === &quot;\&quot;&quot; ||
+        this.#lastToken === &quot;&#x27;&quot; ||
+        this.#lastToken === &quot;`&quot; ||
+        this.#lastToken === &quot;}&quot; ||
+        this.#lastToken === &quot;]&quot;
+    );
+}
+</code></pre>
+<hr>
+<h2>Kernel and Parser — Grammar Registry and AST Builder</h2>
+<p>The <code>LanguageKernel</code> is hyperscript's grammar registry and the entry point for parsing. It does not tokenize or execute — it defines what the language looks like and builds the AST.</p>
+<p>Source: <code>_hyperscript/src/core/kernel.js:1-457</code></p>
+<h3>Grammar Elements and Expression Precedence</h3>
+<p>The kernel organ the language into a hierarchy of grammar elements, each with a parse function:</p>
+<pre><code class="language-javascript">// _hyperscript/src/core/kernel.js:21-36
+this.addGrammarElement(&quot;hyperscript&quot;, this.parseHyperscriptProgram.bind(this));
+this.addGrammarElement(&quot;feature&quot;, this.parseFeature.bind(this));
+this.addGrammarElement(&quot;commandList&quot;, this.parseCommandList.bind(this));
+this.addGrammarElement(&quot;command&quot;, this.parseCommand.bind(this));
+this.addGrammarElement(&quot;indirectStatement&quot;, this.parseIndirectStatement.bind(this));
+
+this.addGrammarElement(&quot;expression&quot;, this.parseExpression.bind(this));
+this.addGrammarElement(&quot;assignableExpression&quot;, this.parseAssignableExpression.bind(this));
+this.addGrammarElement(&quot;unaryExpression&quot;, this.parseUnaryExpression.bind(this));
+this.addGrammarElement(&quot;postfixExpression&quot;, this.parsePostfixExpression.bind(this));
+this.addGrammarElement(&quot;primaryExpression&quot;, this.parsePrimaryExpression.bind(this));
+this.addGrammarElement(&quot;indirectExpression&quot;, this.parseIndirectExpression.bind(this));
+this.addGrammarElement(&quot;leaf&quot;, this.parseLeaf.bind(this));
+</code></pre>
+<p>The expression layers form a precedence chain. At the top are compound expressions (<code>expression</code>, <code>assignableExpression</code>), then unary expressions (negation, <code>not</code>), then postfix expressions (property access, array indexing), then primary expressions (parenthesized, leaf), and finally leaf expressions (literals, identifiers, CSS selectors). This layered approach means operator precedence is baked into the grammar structure, not into a precedence table.</p>
+<p>The kernel registers commands and features by keyword. When a command class declares <code>static keyword = "log"</code>, the kernel creates a grammar type <code>"logCommand"</code> and stores the parse function in its <code>#commands</code> map:</p>
+<pre><code class="language-javascript">// _hyperscript/src/core/kernel.js:265-269
+addCommand(keyword, definition) {
+    var commandGrammarType = keyword + &quot;Command&quot;;
+    this.#grammar[commandGrammarType] = definition;
+    this.#commands[keyword] = definition;
+}
+</code></pre>
+<h3>The Parser — Unified API</h3>
+<p>Source: <code>_hyperscript/src/core/parser.js:1-330</code></p>
+<p>The <code>Parser</code> class wraps a kernel and a token stream, providing a single object that grammar functions operate against. It delegates all token operations to the <code>Tokens</code> stream and all grammar operations to the kernel:</p>
+<pre><code class="language-javascript">// _hyperscript/src/core/parser.js:29-35
+export class Parser {
+    #kernel;
+    constructor(kernel, tokens) {
+        this.#kernel = kernel;
+        this.tokens = tokens;
+    }
+</code></pre>
+<p>The <code>parseElement(type, root)</code> method is the primary entry point. It asks the kernel for the grammar definition, calls it with the parser, and initializes token positions on the resulting AST node:</p>
+<pre><code class="language-javascript">// _hyperscript/src/core/parser.js:216-218
+parseElement(type, root = null) {
+    return this.#kernel.parseElement(type, this, root);
+}
+</code></pre>
+<p>The <code>commandBoundary()</code> method detects where a command list ends:</p>
+<pre><code class="language-javascript">// _hyperscript/src/core/parser.js:269-283
+commandBoundary(token) {
+    if (
+        token.value == &quot;end&quot; ||
+        token.value == &quot;then&quot; ||
+        token.value == &quot;else&quot; ||
+        token.value == &quot;)&quot; ||
+        this.commandStart(token) ||
+        this.featureStart(token) ||
+        token.type == &quot;EOF&quot;
+    ) return true;
+    return false;
+}
+</code></pre>
+<h3>Error Recovery — ParseRecoverySentinel</h3>
+<p>Hyperscript does not abort on the first syntax error. It uses <code>ParseRecoverySentinel</code> to recover and continue parsing. When a parse error occurs, the kernel's <code>#syncToCommand()</code> or <code>#syncToFeature()</code> methods scan forward to the next known keyword, emit a <code>FailedCommand</code> or <code>FailedFeature</code> node, and resume. This means a file with three features and an error in the second one still produces valid AST nodes for the first and third:</p>
+<pre><code class="language-javascript">// _hyperscript/src/core/kernel.js:406-426
+#syncToFeature(parser) {
+    parser.tokens.clearFollows();
+    while (parser.hasMore() &amp;&amp;
+           !parser.featureStart(parser.currentToken()) &amp;&amp;
+           parser.currentToken().value !== &quot;end&quot; &amp;&amp;
+           parser.currentToken().type !== &quot;EOF&quot;) {
+        parser.tokens.consumeToken();
+    }
+}
+
+#syncToCommand(parser) {
+    parser.tokens.clearFollows();
+    while (parser.hasMore() &amp;&amp;
+           !parser.commandBoundary(parser.currentToken())) {
+        parser.tokens.consumeToken();
+    }
+    if (parser.hasMore() &amp;&amp; parser.currentToken().value === &quot;then&quot;) {
+        parser.tokens.consumeToken();
+    }
+}
+</code></pre>
+<hr>
+<h2>Runtime — The Execution Engine</h2>
+<p>The <code>Runtime</code> class is where hyperscript comes alive. It takes the AST produced by the kernel and executes it against the DOM.</p>
+<p>Source: <code>_hyperscript/src/core/runtime/runtime.js:1-1009</code></p>
+<h3>Context — The Execution Environment</h3>
+<p>Every hyperscript execution runs within a <code>Context</code> object. The context provides the variable scopes and metadata that commands operate against:</p>
+<pre><code class="language-javascript">// _hyperscript/src/core/runtime/runtime.js:11-50
+export class Context {
+    constructor(owner, feature, hyperscriptTarget, event, runtime, globalScope, kernel, tokenizer) {
+        this.meta = {
+            parser: kernel,
+            tokenizer: tokenizer,
+            runtime,
+            owner,
+            feature,
+            iterators: {},
+            ctx: this
+        }
+        this.locals = { cookies: cookies };
+        this.me = hyperscriptTarget;
+        this.you = undefined;
+        this.result = undefined;
+        this.event = event;
+        this.target = event?.target ?? null;
+        this.detail = event?.detail ?? null;
+        this.sender = event?.detail?.sender ?? null;
+        this.body = &quot;document&quot; in globalScope ? document.body : null;
+        runtime.addFeatures(owner, this);
+    }
+}
+</code></pre>
+<p>The context exposes special pronouns as properties: <code>me</code> (the element the script is on), <code>you</code> (the target of a <code>tell</code> block), <code>result</code> (the last expression result), <code>it</code>/<code>its</code> (alias for <code>result</code>), <code>event</code> (the triggering event), <code>target</code> (the event target), <code>detail</code> (event detail), and <code>sender</code> (who dispatched the event). These are the pronouns that make hyperscript read like natural language.</p>
+<h3>unifiedEval and unifiedExec — The Heartbeat</h3>
+<p>The runtime's execution loop follows a two-phase pattern. First, <code>unifiedEval</code> evaluates all arguments for a command, handling async values with <code>Promise.all</code>:</p>
+<pre><code class="language-javascript">// _hyperscript/src/core/runtime/runtime.js:145-204
+unifiedEval(parseElement, ctx) {
+    var async = false;
+    var evaluatedArgs = {};
+    if (parseElement.args) {
+        for (var [name, argument] of Object.entries(parseElement.args)) {
+            if (argument &amp;&amp; argument.evaluate) {
+                var value = argument.evaluate(ctx);
+                if (value &amp;&amp; value.then) async = true;
+                evaluatedArgs[name] = value;
+            }
+            // ... handles arrays and non-expression args
+        }
+    }
+    if (async) {
+        return new Promise((resolve, reject) =&gt; {
+            Promise.all(values).then(function (resolved) {
+                resolve(parseElement.resolve(ctx, finalArgs));
+            });
+        });
+    } else {
+        return parseElement.resolve(ctx, evaluatedArgs);
+    }
+}
+</code></pre>
+<p>Then <code>unifiedExec</code> runs the command and follows the <code>next</code> pointer in a while loop:</p>
+<pre><code class="language-javascript">// _hyperscript/src/core/runtime/runtime.js:86-143
+unifiedExec(command, ctx) {
+    while (true) {
+        try {
+            var next = this.unifiedEval(command, ctx);
+        } catch (e) {
+            // Error handling: errorHandler, finally, exception tracking
+            this.registerHyperTrace(ctx, e);
+            if (ctx.meta.errorHandler &amp;&amp; !ctx.meta.handlingError) {
+                ctx.meta.handlingError = true;
+                ctx.locals[ctx.meta.errorSymbol] = e;
+                command = ctx.meta.errorHandler;
+                continue;
+            } else {
+                ctx.meta.currentException = e;
+                next = Runtime.HALT;
+            }
+        }
+        if (next == null) {
+            throw new Error(&quot;Command did not return a next element&quot;);
+        } else if (next.then) {
+            // Async: chain the promise and continue
+            next.then(resolvedNext =&gt; this.unifiedExec(resolvedNext, ctx));
+            return;
+        } else if (next === Runtime.HALT) {
+            // Finally handler, onHalt callbacks, exception rejection
+            return;
+        } else {
+            command = next;  // Continue with next command
+        }
+    }
+}
+</code></pre>
+<p>This design means every command is a node in a linked list. The <code>next</code> property points to the following command. When a command finishes, it returns <code>this.findNext(ctx)</code> which walks up the parent chain if needed. Async commands return a promise that resolves to the next command. Error conditions jump to the error handler via <code>continue</code>.</p>
+<div class="mermaid">
+flowchart TD
+    A[&quot;Event fires\n(on click, on every, etc.)&quot;] --&gt; B[&quot;Runtime.getEventQueueFor&quot;]
+    B --&gt; C{Already executing?}
+    C --&gt;|Yes + queueAll| D[&quot;Enqueue context&quot;]
+    C --&gt;|Yes + queueLast| E[&quot;Replace queue tail&quot;]
+    C --&gt;|No| F[&quot;Create Context\n(me, event, target, detail)&quot;]
+    F --&gt; G[&quot;unifiedEval first command\nevaluate args, gather Promises&quot;]
+    G --&gt; H{Any async?}
+    H --&gt;|Yes| I[&quot;Promise.all then\nunifiedExec resolved&quot;]
+    H --&gt;|No| J[&quot;unifiedExec resolved&quot;]
+    I --&gt; K[&quot;resolve command with args&quot;]
+    J --&gt; K
+    K --&gt; L{Next command?}
+    L --&gt;|Yes| G
+    L --&gt;|HALT| M[&quot;onHalt callback\nfinally handler\nreject or return&quot;]
+    L --&gt;|Async Promise| N[&quot;Chain: .then → unifiedExec&quot;]
+    N --&gt; L
+    M --&gt; O{Queued events?}
+    O --&gt;|Yes| P[&quot;setTimeout execute next\nqueue.shift()&quot;]
+    O --&gt;|No| Q[&quot;Execution complete&quot;]
+    P --&gt; F
+    M --&gt; Q
+
+    style A fill:#e1f5fe
+    style Q fill:#e8f5e9
+    style M fill:#fff3e0
+
+</div>
+<h3>Symbol Resolution — Four Scopes</h3>
+<p>Hyperscript resolves symbols through a layered scope chain. The <code>resolveSymbol</code> method checks in order:</p>
+<ol><li><strong>Pronouns</strong> — <code>me</code>, <code>my</code>, <code>I</code> → <code>context.me</code>; <code>it</code>, <code>its</code> → <code>context.result</code>; <code>you</code>, <code>your</code> → <code>context.you</code></li><li><strong>Global scope</strong> — <code>window</code> / <code>globalThis</code> properties</li><li><strong>Element scope</strong> — data stored on the element's <code>_hyperscript</code> internal object</li><li><strong>Local scope</strong> — <code>context.locals</code> (set by <code>on click(x, y)</code> destructuring, <code>repeat with</code>, etc.)</li><li><strong>Inherited scope</strong> — walks up the DOM tree via <code>#resolveInherited</code>, supporting <code>dom-scope</code> attributes for scope control</li></ol>
+<pre><code class="language-javascript">// _hyperscript/src/core/runtime/runtime.js:254-313
+resolveSymbol(str, context, type, targetElement) {
+    if (str === &quot;me&quot; || str === &quot;my&quot; || str === &quot;I&quot;) return context.me;
+    if (str === &quot;it&quot; || str === &quot;its&quot;) return context.beingTested ?? context.result;
+    if (str === &quot;you&quot; || str === &quot;your&quot; || str === &quot;yourself&quot;) return context.you;
+    // ... global, element, inherited, local checks
+    var fromContext = this.#isHyperscriptContext(context) &amp;&amp; !this.#isReservedWord(str)
+        ? context.locals[str] : context[str];
+    if (typeof fromContext !== &quot;undefined&quot;) return fromContext;
+    var elementScope = this.#getElementScope(context);
+    fromContext = elementScope[str];
+    if (typeof fromContext !== &quot;undefined&quot;) return fromContext;
+    var val = this.#globalScope[str];
+    return val;
+}
+</code></pre>
+<p>The <code>#resolveInherited</code> method walks up the DOM tree and respects <code>dom-scope</code> attributes. Setting <code>dom-scope="isolated"</code> on an element stops the walk. Setting <code>dom-scope="closest .container"</code> jumps to the nearest matching ancestor. This gives fine-grained control over which elements share state.</p>
+<h3>Element Initialization — The Bootstrapping</h3>
+<p>When hyperscript processes a DOM node, it looks for script attributes (configured via <code>config.attributes</code>, defaulting to <code>_</code>, <code>script</code>, <code>data-script</code>), reads the source text, tokenizes it, parses it into an AST, and calls <code>apply()</code> on the program:</p>
+<pre><code class="language-javascript">// _hyperscript/src/core/runtime/runtime.js:821-881
+#initElement(elt, target) {
+    if (elt.closest &amp;&amp; elt.closest(config.disableSelector)) return;
+    var src = this.#getScript(elt);
+    if (!src) return;
+    var hash = this.#hashScript(src);
+    var internalData = this.getInternalData(elt);
+    if (internalData.initialized &amp;&amp; internalData.scriptHash === hash) return;
+    if (internalData.initialized) this.cleanup(elt);  // Script changed
+
+    internalData.initialized = true;
+    internalData.scriptHash = hash;
+    var tokens = this.#tokenizer.tokenize(src);
+    var hyperScript = this.#kernel.parseHyperScript(tokens);
+    if (hyperScript.errors?.length) {
+        this.triggerEvent(elt, &quot;hyperscript:parse-error&quot;, { errors: hyperScript.errors });
+        return;
+    }
+    hyperScript.apply(target || elt, elt, null, this);
+    elt.setAttribute(&#x27;data-hyperscript-powered&#x27;, &#x27;true&#x27;);
+    this.triggerEvent(elt, &quot;hyperscript:after:init&quot;);
+    setTimeout(() =&gt; this.triggerEvent(target || elt, &quot;load&quot;, { hyperscript: true }), 1);
+}
+</code></pre>
+<p>The script hash enables hot-reloading: if the script text changes (e.g., after an idiomorph swap), the old element is cleaned up and reinitialized.</p>
+<hr>
+<h2>Commands — What Hyperscript Can Do</h2>
+<p>Commands are the verbs of hyperscript. Each command class declares a <code>static keyword</code>, a <code>parse(parser)</code> method, and an <code>execute(ctx)</code> or <code>resolve(ctx, args)</code> method. Commands chain via the <code>next</code> property.</p>
+<p>Source: <code>_hyperscript/src/parsetree/commands/</code> (9 files, 30+ commands)</p>
+<h3>DOM Manipulation Commands</h3>
+<p>From <code>src/parsetree/commands/dom.js</code>:</p>
+<table><tr><th>Command</th><th>Syntax</th><th>Effect</th></tr><tr><td>`put`</td><td>`put value into target`</td><td>Sets innerHTML of target</td></tr><tr><td>`append`</td><td>`append value to target`</td><td>Appends to target's children</td></tr><tr><td>`prepend`</td><td>`prepend value to target`</td><td>Prepends to target's children</td></tr><tr><td>`add`</td><td>`add .class to target`</td><td>Adds CSS classes</td></tr><tr><td>`remove`</td><td>`remove .class from target`</td><td>Removes CSS classes or DOM nodes</td></tr><tr><td>`toggle`</td><td>`toggle .class on target`</td><td>Toggles CSS classes</td></tr></table>
+<p>Example — adding a class with a transition:</p>
+<pre><code class="language-hyperscript">-- HTML attribute: _=&quot;on click add .active to #modal transition opacity 0.3s&quot;
+on click
+    add .active to #modal
+    transition opacity 0.3s
+</code></pre>
+<h3>Event Commands</h3>
+<p>From <code>src/parsetree/commands/events.js</code>:</p>
+<table><tr><th>Command</th><th>Syntax</th><th>Effect</th></tr><tr><td>`send`</td><td>`send eventName to target [with detail]`</td><td>Dispatches a custom event</td></tr><tr><td>`trigger`</td><td>`trigger eventName on target [with detail]`</td><td>Alias for send</td></tr><tr><td>`halt`</td><td>`halt [the event]`</td><td>Stops event propagation</td></tr></table>
+<p>Example — sending a custom event with detail:</p>
+<pre><code class="language-hyperscript">-- HTML attribute: _=&quot;on click send itemSelected with {id: 42} to #cart&quot;
+on click
+    send itemSelected with {id: 42} to #cart
+</code></pre>
+<h3>Control Flow Commands</h3>
+<p>From <code>src/parsetree/commands/controlflow.js</code>:</p>
+<table><tr><th>Command</th><th>Syntax</th><th>Effect</th></tr><tr><td>`if`</td><td>`if condition ... end`</td><td>Conditional execution</td></tr><tr><td>`for`</td><td>`for x in collection ... end`</td><td>Iteration</td></tr><tr><td>`while`</td><td>`while condition ... end`</td><td>Loop while true</td></tr><tr><td>`repeat`</td><td>`repeat N times ... end`</td><td>Fixed iteration</td></tr><tr><td>`try`</td><td>`try ... catch e ... finally ... end`</td><td>Error handling</td></tr></table>
+<p>Example — iterating over elements:</p>
+<pre><code class="language-hyperscript">-- HTML attribute: _=&quot;on click for item in .items log item.innerText&quot;
+on click
+    for item in .items
+        log item.innerText
+</code></pre>
+<h3>Async Commands</h3>
+<p>Hyperscript has async built in. The <code>wait</code> command pauses execution:</p>
+<pre><code class="language-hyperscript">-- Wait for event: wait for animationend
+-- Wait for duration: wait 2s
+-- Wait for condition: wait until .loading is empty
+on click
+    add .loading to me
+    fetch /api/data
+    put it into #results
+    remove .loading from me
+</code></pre>
+<p>The <code>fetch</code> command is a built-in async operation that wraps <code>fetch()</code> and returns the response body as the <code>result</code>:</p>
+<pre><code class="language-hyperscript">on click
+    fetch /api/users
+    put it into #user-list
+</code></pre>
+<hr>
+<h2>Features — The Top-Level Constructs</h2>
+<p>Features are the top-level building blocks of hyperscript programs. Unlike commands (which execute sequentially), features are installable units that respond to triggers.</p>
+<p>Source: <code>_hyperscript/src/parsetree/features/</code> (10 files)</p>
+<h3>On Feature — Event Handlers</h3>
+<p>Source: <code>_hyperscript/src/parsetree/features/on.js</code></p>
+<p>The <code>on</code> feature is the most common. It installs event handlers with rich configuration:</p>
+<pre><code class="language-">on [every] &lt;eventName&gt;[(args...)] [filter] [from &lt;target&gt;] [elsewhere]
+   [debounced|throttled at &lt;time&gt;] [queue all|first|last|none]
+   &lt;commands&gt;
+   [catch &lt;error&gt; &lt;commands&gt;]
+   [finally &lt;commands&gt;]
+   end
+</code></pre>
+
+<pre><code class="language-javascript">// _hyperscript/src/parsetree/features/on.js:18-34
+export class OnFeature extends Feature {
+    static keyword = &quot;on&quot;;
+
+    constructor(displayName, events, start, every, errorHandler, errorSymbol,
+                finallyHandler, queueAll, queueFirst, queueNone, queueLast) {
+        // ... stores all configuration
+    }
+</code></pre>
+<p>The <code>execute()</code> method manages an event queue per feature per element. If a handler is already running and <code>queueNone</code> is set, incoming events are dropped. If <code>queueLast</code> is set, only the latest event is kept. This prevents event storms from overwhelming the handler:</p>
+<pre><code class="language-javascript">// _hyperscript/src/parsetree/features/on.js:36-54
+execute(ctx) {
+    let eventQueueInfo = ctx.meta.runtime.getEventQueueFor(ctx.me, onFeature);
+    if (eventQueueInfo.executing &amp;&amp; every === false) {
+        if (queueNone || (queueFirst &amp;&amp; eventQueueInfo.queue.length &gt; 0)) return;
+        if (queueLast) eventQueueInfo.queue.length = 0;
+        eventQueueInfo.queue.push(ctx);
+        return;
+    }
+    eventQueueInfo.executing = true;
+    ctx.meta.onHalt = function () {
+        eventQueueInfo.executing = false;
+        var queued = eventQueueInfo.queue.shift();
+        if (queued) setTimeout(() =&gt; onFeature.execute(queued), 1);
+    };
+    start.execute(ctx);
+}
+</code></pre>
+<h3>Def Feature — Function Definitions</h3>
+<p>The <code>def</code> feature creates reusable functions:</p>
+<pre><code class="language-hyperscript">def highlight(element, duration)
+    add .highlight to element
+    wait duration
+    remove .highlight from element
+end
+</code></pre>
+<h3>Init Feature — Mount Hook</h3>
+<p>The <code>init</code> feature runs once when the element is processed:</p>
+<pre><code class="language-hyperscript">init
+    log me.innerText + &quot; mounted&quot;
+end
+</code></pre>
+<h3>When Feature — Reactive Conditions</h3>
+<p>The <code>when</code> feature runs commands when a condition becomes true:</p>
+<pre><code class="language-hyperscript">when #cart.items.length &gt; 0
+    add .has-items to #cart
+otherwise
+    remove .has-items from #cart
+</code></pre>
+<h3>Bind Feature — Two-Way Data Binding</h3>
+<p>The <code>bind</code> feature creates reactive bindings between elements:</p>
+<pre><code class="language-hyperscript">bind value to #input on keyup
+</code></pre>
+<hr>
+<h2>Integration with htmx</h2>
+<p>Hyperscript and htmx are designed to work together. The integration lives in <code>src/core/runtime/htmx-compat.js</code>. When both libraries are loaded, hyperscript:</p>
+<ol><li><strong>Listens for htmx events</strong> — <code>htmx:afterRequest</code>, <code>htmx:afterSwap</code>, <code>htmx:beforeRequest</code> — and can trigger hyperscript commands in response</li><li><strong>Shares the same element</strong> — a single element can have both <code>hx-get</code> and <code>_="on click ..."</code> attributes</li><li><strong>Cooperates on DOM swaps</strong> — when htmx swaps content, hyperscript's <code>processNode()</code> is called on the new content, initializing any hyperscript scripts within</li><li><strong>Uses idiomorph</strong> — for out-of-band swaps, hyperscript delegates to the idiomorph morphing engine for intelligent DOM updates</li></ol>
+<p>A typical hypermedia pattern combines both:</p>
+<pre><code class="language-html">&lt;button hx-get=&quot;/api/data&quot;
+        hx-target=&quot;#results&quot;
+        _=&quot;on htmx:beforeRequest add .loading to me
+           on htmx:afterRequest remove .loading from me&quot;&gt;
+    Load Data
+&lt;/button&gt;
+</code></pre>
+<p>The <code>hx-*</code> attributes handle the server communication. The hyperscript handles the visual feedback. Neither library needs to know about the other's internals — they coordinate through DOM events.</p>
+<hr>
+<h2>Comparison with JavaScript</h2>
+<p>Hyperscript is not a replacement for JavaScript. It is a complement designed for a specific niche: local DOM interactivity.</p>
+<table><tr><th>Aspect</th><th>JavaScript</th><th>Hyperscript</th></tr><tr><td>**Scope**</td><td>General-purpose language</td><td>DOM scripting only</td></tr><tr><td>**Syntax**</td><td>C-style, semicolons, braces</td><td>Natural-language keywords</td></tr><tr><td>**Event handling**</td><td>`addEventListener`, callbacks</td><td>`on click`, `on every`</td></tr><tr><td>**DOM access**</td><td>`document.querySelector`, `el.classList`</td><td>Direct: `.class`, `#id`, `add`, `remove`</td></tr><tr><td>**Async**</td><td>`async/await`, Promises</td><td>Built in: `wait`, `fetch` return implicitly awaited</td></tr><tr><td>**Iteration**</td><td>`for...of`, `forEach`</td><td>`for x in collection`</td></tr><tr><td>**Templating**</td><td>Template literals, JSX</td><td>String templates with `$variable` interpolation</td></tr><tr><td>**Error handling**</td><td>`try/catch/finally`</td><td>Same keywords, same semantics</td></tr><tr><td>**Extensibility**</td><td>npm packages, modules</td><td>Extensions (`_hyperscript.use()`)</td></tr><tr><td>**Escape hatch**</td><td>N/A</td><td>`js ... end` block runs raw JavaScript</td></tr></table>
+<p>Hyperscript shines when the task is: "when this happens, update that element." JavaScript is still needed for complex business logic, data transformations, and third-party integrations. The <code>js ... end</code> block lets you drop into JavaScript when hyperscript's built-in commands are insufficient:</p>
+<pre><code class="language-hyperscript">on click
+    js
+        const data = JSON.parse(me.dataset.config)
+        return processData(data)
+    end
+    put it into #output
+</code></pre>
+<hr>
+<h2>Runtime Execution Flow — End to End</h2>
+<p>This sequence diagram shows how hyperscript handles a click event from trigger to DOM update:</p>
+<div class="mermaid">
+sequenceDiagram
+    participant User
+    participant DOM as DOM Element
+    participant Runtime as Runtime
+    participant Context as Execution Context
+    participant Commands as Command Chain
+    participant DOM2 as DOM
+
+    User-&gt;&gt;DOM: Click
+    DOM-&gt;&gt;Runtime: Event fires, OnFeature.execute(ctx)
+    Runtime-&gt;&gt;Runtime: getEventQueueFor (queue management)
+    Runtime-&gt;&gt;Context: Create Context(me=element, event, target, detail)
+    Context-&gt;&gt;Context: addFeatures(owner) — walk parent tree
+    Runtime-&gt;&gt;Commands: unifiedEval(firstCommand, ctx)
+    Commands-&gt;&gt;Commands: Evaluate args (resolve expressions)
+    Commands-&gt;&gt;Runtime: resolve(ctx, evaluatedArgs)
+    Runtime-&gt;&gt;DOM2: DOM update (add class, set innerHTML, etc.)
+    Runtime-&gt;&gt;Runtime: findNext — follow .next pointer
+    loop Each command
+        Commands-&gt;&gt;Commands: unifiedEval → resolve → findNext
+        Commands--&gt;&gt;DOM2: DOM mutations
+    end
+    Commands-&gt;&gt;Runtime: Return Runtime.HALT
+    Runtime-&gt;&gt;Runtime: onHalt callback
+    Runtime-&gt;&gt;Runtime: Check event queue for pending events
+    Runtime--&gt;&gt;Context: Execution complete
+
+</div>
+<hr>
+<h2>Summary</h2>
+<p>Hyperscript achieves its goal — a small scripting language for the web — through a clean six-module architecture. The tokenizer (<code>src/core/tokenizer.js</code>) converts HTML attribute text into a typed token stream, using the follow-set mechanism to resolve ambiguous contexts without grammar complexity. The kernel (<code>src/core/kernel.js</code>) registers grammar elements, commands, and features by keyword, building an AST through layered expression precedence. The parser (<code>src/core/parser.js</code>) provides a unified API over kernel and tokens. The runtime (<code>src/core/runtime/runtime.js</code>) executes the AST through <code>unifiedEval</code> and <code>unifiedExec</code>, managing four scope layers, async resolution, error recovery, and DOM initialization. Commands (<code>src/parsetree/commands/</code>) provide the verbs — DOM manipulation, events, control flow, async. Features (<code>src/parsetree/features/</code>) provide the top-level constructs — event handlers, function definitions, reactive conditions, data bindings.</p>
+<p>The follow-set mechanism is the clever insight that makes natural-language syntax possible without a complex grammar. Event queue management prevents handler overload. Symbol resolution walks pronouns, locals, elements, and globals in a predictable chain. And the htmx integration layer coordinates through DOM events, not shared state.</p>
+<p>For the next document in this series, see <a href="06-idiomorph.md">06-idiomorph.md</a> for the DOM morphing algorithm that hyperscript uses during content swaps, or <a href="01-architecture.md">01-architecture.md</a> for the broader htmx ecosystem architecture. Cross-references: <a href="00-overview.md">00-overview.md</a> for the ecosystem map, <a href="03-swap-strategies.md">03-swap-strategies.md</a> for htmx swap patterns, <a href="05-fixi-family.md">05-fixi-family.md</a> for the minimalist hypermedia toolkit, and <a href="07-cross-cutting.md">07-cross-cutting.md</a> for end-to-end data flows.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
