@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Turbo Frames & Streams -- Partial Updates and Live DOM -- basecamp</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/basecamp/docs</span>
+    <div class="nav-actions">
+      <a href="02-stimulus-observers.html" class="nav-breadcrumb">Stimulus Observers -- MutationObserver Chain Hierarchy</a><a href="03-stimulus-blessing.html" class="nav-breadcrumb">Stimulus Blessing -- Runtime Shadow Constructors</a><a href="04-turbo-drive.html" class="nav-breadcrumb">Turbo Drive -- SPA Navigation, Snapshot Cache, Visit Lifecycle</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="04-turbo-drive.html" class="nav-btn" title="Previous: Turbo Drive -- SPA Navigation, Snapshot Cache, Visit Lifecycle">← prev</a>
+      <a href="06-native-ios.html" class="nav-btn nav-btn-next" title="Next: Native iOS -- Swift SDK: Session, Navigator, Visitable">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Turbo Frames & Streams: Partial-Page Updates and WebSocket-Driven Live DOM</h1>
+<p>Turbo Frames divide the page into independently loadable sections. Clicking a link inside a frame only updates that frame's content. Turbo Streams broadcast HTML fragments over WebSockets and apply them to the DOM using seven built-in actions (append, prepend, replace, update, remove, before, after). Together, they enable partial-page updates without full page navigation or client-side JavaScript frameworks.</p>
+<p>Source: <code>src/core/frames/</code>, <code>src/core/streams/</code>, <code>src/elements/</code>, and <code>src/observers/</code> in <a href="https://github.com/hotwired/turbo">hotwired/turbo</a> v8.0.13.</p>
+<h2>Turbo Frame: Independent Sections</h2>
+<p>The <code><turbo-frame></code> custom element wraps a portion of the page. When a link or form inside the frame is activated, only the frame's content is replaced. The rest of the page remains unchanged.</p>
+<p>Source: <code>src/elements/frame_element.js</code></p>
+<pre><code class="language-javascript">// src/elements/frame_element.js
+const FrameLoadingStyle = { eager: &quot;eager&quot;, lazy: &quot;lazy&quot; }
+
+class FrameElement extends HTMLElement {
+  static delegateConstructor = undefined
+  static observedAttributes = [&quot;disabled&quot;, &quot;loading&quot;, &quot;src&quot;]
+  loaded = Promise.resolve()
+
+  constructor() {
+    super()
+    this.delegate = new FrameElement.delegateConstructor(this)
+  }
+
+  connectedCallback() {
+    if (this.loadingStyle == FrameLoadingStyle.lazy) {
+      this.appearanceObserver = new AppearanceObserver(this, this)
+      this.appearanceObserver.start()
+    }
+    this.delegate.connect()
+  }
+
+  disconnectedCallback() {
+    this.delegate.disconnect()
+  }
+
+  attributeChangedCallback(name) {
+    if (name == &quot;disabled&quot;) this.delegate.disabledChanged()
+    if (name == &quot;loading&quot;) this.delegate.loadingStyleChanged()
+    if (name == &quot;src&quot;) this.delegate.sourceURLChanged()
+  }
+
+  reload() { this.delegate.sourceURLReloaded() }
+
+  // Properties:
+  // src, refresh, loading, disabled, autoscroll, complete, isActive, isPreview
+}
+
+customElements.define(&quot;turbo-frame&quot;, FrameElement)
+FrameElement.delegateConstructor = FrameController
+</code></pre>
+<p>The <code>FrameElement</code> delegates all behavior to <code>FrameController</code>. The <code>static observedAttributes</code> array ensures that <code>attributeChangedCallback</code> fires for <code>disabled</code>, <code>loading</code>, and <code>src</code> changes.</p>
+<p>Aha: The <code>delegateConstructor</code> pattern is clever. The custom element class does not know which controller class will handle it. Instead, <code>FrameElement.delegateConstructor = FrameController</code> is set before <code>customElements.define()</code> is called. This decouples the element definition from the controller implementation and allows the same element to be reconfigured if needed.</p>
+<h2>FrameController: The Frame Logic Engine</h2>
+<p>The <code>FrameController</code> manages frame loading, navigation, and form submission.</p>
+<p>Source: <code>src/core/frames/frame_controller.js</code></p>
+<pre><code class="language-javascript">// src/core/frames/frame_controller.js
+class FrameController {
+  fetchResponseLoaded = (_fetchResponse) =&gt; Promise.resolve()
+  action = null
+
+  constructor(element) {
+    this.element = element
+    this.view = new FrameView(this, this.element)
+    this.appearanceObserver = new AppearanceObserver(this, this.element)
+    this.formLinkClickObserver = new FormLinkClickObserver(this, this.element)
+    this.linkInterceptor = new LinkInterceptor(this, this.element)
+    this.formSubmitObserver = new FormSubmitObserver(this, this.element)
+    this.restorationIdentifier = uuid()
+  }
+
+  connect() {
+    this.linkInterceptor.start()
+    this.formSubmitObserver.start()
+    this.formLinkClickObserver.start()
+    if (this.element.hasAttribute(&quot;loading&quot;)) {
+      this.loadingStyleChanged()
+    }
+    if (this.sourceURL) {
+      this.#loadSourceURL()
+    }
+  }
+
+  disconnect() {
+    this.linkInterceptor.stop()
+    this.formSubmitObserver.stop()
+    this.formLinkClickObserver.stop()
+  }
+
+  // FetchRequest delegate -- prepares request with Turbo-Frame header
+  prepareRequest(request) {
+    request.headers[&quot;Turbo-Frame&quot;] = this.element.id
+  }
+
+  // View delegate -- dispatches turbo:before-frame-render
+  allowsImmediateRender(snapshot, options) {
+    const event = dispatch(&quot;turbo:before-frame-render&quot;, { cancelable: true, detail: { ... } })
+    return !event.defaultPrevented
+  }
+
+  async #loadSourceURL() {
+    const response = await fetch(this.sourceURL, {
+      headers: { &quot;Turbo-Frame&quot;: this.element.id }
+    })
+    const html = await response.text()
+    this.#loadFrameResponse(html)
+  }
+
+  async #handleFrameMissingFromResponse(fetchResponse) {
+    // If response doesn&#x27;t contain matching &lt;turbo-frame id=&quot;...&quot;&gt;,
+    // try to find it in nested frames (recurse attribute)
+    const frame = await this.extractForeignFrameElement(fetchResponse.responseHTML)
+    if (frame) {
+      this.#loadFrameResponse(frame.innerHTML)
+    }
+  }
+
+  async extractForeignFrameElement(container) {
+    // Supports recurse=&quot;frame_id&quot; attribute to find frames within frames
+    const id = this.element.getAttribute(&quot;recurse&quot;)
+    if (id) {
+      return container.querySelector(`turbo-frame[id=&quot;${id}&quot;]`)
+    }
+  }
+}
+</code></pre>
+<p>The <code>Turbo-Frame</code> header in every request tells the server which frame is being requested. The server can respond with just the frame content (when <code>turbo_frame_request?</code> is true in Rails) instead of the full page. This is the key to efficient partial updates.</p>
+<h2>Frame Loading Styles</h2>
+<p>Frames support two loading styles:</p>
+<table><tr><th>Style</th><th>Behavior</th></tr><tr><td>`eager` (default)</td><td>Loads immediately when the element connects to the DOM</td></tr><tr><td>`lazy`</td><td>Defers loading until the frame enters the viewport (via `AppearanceObserver`)</td></tr></table>
+<p>Lazy frames use an <code>IntersectionObserver</code> to detect when they become visible. This is useful for below-the-fold content that should not be loaded until the user scrolls to it.</p>
+<pre><code class="language-html">&lt;turbo-frame id=&quot;comments&quot; src=&quot;/comments&quot; loading=&quot;lazy&quot;&gt;
+  Loading comments...
+&lt;/turbo-frame&gt;
+</code></pre>
+<h2>LinkInterceptor: Click Routing Within Frames</h2>
+<p>The <code>LinkInterceptor</code> intercepts clicks on links within the frame and routes them through the frame controller instead of Turbo Drive.</p>
+<p>Source: <code>src/core/frames/link_interceptor.js</code></p>
+<pre><code class="language-javascript">// src/core/frames/link_interceptor.js
+class LinkInterceptor {
+  constructor(delegate, element) {
+    this.delegate = delegate
+    this.element = element
+  }
+
+  start() {
+    this.element.addEventListener(&quot;click&quot;, this.clickBubbled)
+    document.addEventListener(&quot;turbo:click&quot;, this.linkClicked)
+    document.addEventListener(&quot;turbo:before-visit&quot;, this.willVisit)
+  }
+
+  stop() {
+    this.element.removeEventListener(&quot;click&quot;, this.clickBubbled)
+    document.removeEventListener(&quot;turbo:click&quot;, this.linkClicked)
+    document.removeEventListener(&quot;turbo:before-visit&quot;, this.willVisit)
+  }
+
+  clickEventIsSignificant(event) {
+    // Returns false if the click is inside a turbo-frame with a different id
+    // (the frame should handle it, not Turbo Drive)
+    return !(event.target?.closest(&quot;turbo-frame&quot;)?.id != this.element.id)
+  }
+}
+</code></pre>
+<h2>Stream Element: The Custom Element</h2>
+<p><code><turbo-stream></code> is a custom element that applies DOM operations when connected.</p>
+<p>Source: <code>src/elements/stream_element.js</code></p>
+<pre><code class="language-javascript">// src/elements/stream_element.js
+class StreamElement extends HTMLElement {
+  static async renderElement(newElement) {
+    await newElement.performAction()
+  }
+
+  async connectedCallback() {
+    await this.render()
+    this.disconnect()  // self-removes after action
+  }
+
+  async render() {
+    // Fires turbo:before-stream-render event
+    // Allows custom render() override via event.detail.render
+    const event = new CustomEvent(&quot;turbo:before-stream-render&quot;, {
+      cancelable: true,
+      bubbles: true,
+      detail: { newStream: this, render: StreamElement.renderElement }
+    })
+    this.dispatchEvent(event)
+    await event.detail.render(this)
+  }
+
+  disconnect() {
+    if (this.parentElement) this.parentElement.removeChild(this)
+  }
+
+  get performAction() {
+    return StreamActions[this.action] || StreamActions[this.action]
+  }
+
+  get targetElements() {
+    if (this.target) return this.targetElementsById
+    if (this.targets) return this.targetElementsByQuery
+    return []
+  }
+
+  get action() { return this.getAttribute(&quot;action&quot;) }
+  get target() { return this.getAttribute(&quot;target&quot;) }
+  get targets() { return this.getAttribute(&quot;targets&quot;) }
+  get requestId() { return this.getAttribute(&quot;request-id&quot;) }
+}
+
+customElements.define(&quot;turbo-stream&quot;, StreamElement)
+</code></pre>
+<p>Aha: The <code>turbo:before-stream-render</code> event allows third-party code to completely override how a stream action is applied. The <code>detail.render</code> function defaults to <code>StreamElement.renderElement</code>, which calls <code>this.performAction()</code>. By overriding <code>detail.render</code>, you can apply morphing, animation, or any custom DOM operation instead of the default direct DOM manipulation.</p>
+<h2>StreamActions: Seven Built-In Operations</h2>
+<p>Source: <code>src/core/streams/stream_actions.js</code></p>
+<pre><code class="language-javascript">// src/core/streams/stream_actions.js
+export const StreamActions = {
+  after() {
+    this.targetElements.forEach(e =&gt; e.parentElement.insertBefore(this.templateContent, e.nextSibling))
+  },
+
+  append() {
+    this.removeDuplicateTargetChildren()
+    this.targetElements.forEach(e =&gt; e.append(this.templateContent))
+  },
+
+  before() {
+    this.targetElements.forEach(e =&gt; e.parentElement.insertBefore(this.templateContent, e))
+  },
+
+  prepend() {
+    this.removeDuplicateTargetChildren()
+    this.targetElements.forEach(e =&gt; e.prepend(this.templateContent))
+  },
+
+  remove() {
+    this.targetElements.forEach(e =&gt; e.remove())
+  },
+
+  replace() {
+    if (this.method == &quot;morph&quot;) {
+      this.targetElements.forEach(e =&gt; morphElements(e, this.templateContent))
+    } else {
+      this.targetElements.forEach(e =&gt; e.replaceWith(this.templateContent))
+    }
+  },
+
+  update() {
+    if (this.method == &quot;morph&quot;) {
+      this.targetElements.forEach(e =&gt; morphChildren(e, this.templateContent))
+    } else {
+      this.targetElements.forEach(e =&gt; {
+        e.innerHTML = &quot;&quot;
+        e.append(this.templateContent)
+      })
+    }
+  },
+
+  refresh() {
+    // Calls session.refresh(baseURI, requestId) -- debounced page refresh
+    session.refresh(this.baseURI, this.requestId)
+  }
+}
+</code></pre>
+<p>The <code>method="morph"</code> attribute on replace and update actions switches from direct DOM replacement to Idiomorph-based morphing. This preserves focus, selection, and element state.</p>
+<h2>Stream Action Comparison</h2>
+<table><tr><th>Action</th><th>DOM Operation</th><th>Duplicates Removed</th><th>Morph Support</th></tr><tr><td>`append`</td><td>`target.append(content)`</td><td>Yes (by ID)</td><td>No</td></tr><tr><td>`prepend`</td><td>`target.prepend(content)`</td><td>Yes (by ID)</td><td>No</td></tr><tr><td>`update`</td><td>`target.innerHTML = content`</td><td>No</td><td>Yes</td></tr><tr><td>`replace`</td><td>`target.replaceWith(content)`</td><td>No</td><td>Yes</td></tr><tr><td>`remove`</td><td>`target.remove()`</td><td>N/A</td><td>No</td></tr><tr><td>`before`</td><td>`parent.insertBefore(content, target)`</td><td>No</td><td>No</td></tr><tr><td>`after`</td><td>`parent.insertBefore(content, target.nextSibling)`</td><td>No</td><td>No</td></tr><tr><td>`refresh`</td><td>`session.refresh(url)`</td><td>N/A</td><td>N/A</td></tr></table>
+<h2>StreamMessage: WebSocket Content Detection</h2>
+<p><code>StreamObserver</code> watches for responses with <code>text/vnd.turbo-stream.html</code> content type and converts them into stream messages.</p>
+<p>Source: <code>src/core/streams/stream_message.js</code></p>
+<pre><code class="language-javascript">// src/core/streams/stream_message.js
+class StreamMessage {
+  static contentType = &quot;text/vnd.turbo-stream.html&quot;
+
+  static wrap(message) {
+    if (typeof message == &quot;string&quot;) {
+      return new StreamMessage(createDocumentFragment(message))
+    }
+    return message
+  }
+
+  constructor(html) {
+    this.contentType = StreamMessage.contentType
+    this.fragment = createDocumentFragment(html)
+  }
+}
+</code></pre>
+<p>Source: <code>src/observers/stream_observer.js</code></p>
+<pre><code class="language-javascript">// src/observers/stream_observer.js
+// Listens for turbo:before-fetch-response event
+// Checks response content-type header
+// If text/vnd.turbo-stream.html, renders via StreamMessageRenderer
+</code></pre>
+<p>The <code>StreamMessageRenderer</code> wraps the <code>Bardo</code> system to preserve permanent elements while applying stream actions.</p>
+<p>Source: <code>src/core/streams/stream_message_renderer.js</code></p>
+<pre><code class="language-javascript">// src/core/streams/stream_message_renderer.js
+class StreamMessageRenderer {
+  render({ fragment }) {
+    Bardo.preservingPermanentElements(this, getPermanentElementMap(), () =&gt; {
+      document.documentElement.appendChild(fragment)
+    })
+  }
+}
+</code></pre>
+<h2>Stream Source Element: WebSocket and SSE</h2>
+<p>The <code><turbo-stream-source></code> custom element connects to a WebSocket or Server-Sent Events source and feeds incoming messages into Turbo's stream system.</p>
+<p>Source: <code>src/elements/stream_source_element.js</code></p>
+<pre><code class="language-javascript">// src/elements/stream_source_element.js
+class StreamSourceElement extends HTMLElement {
+  streamSource = null
+
+  connectedCallback() {
+    if (this.src.startsWith(&quot;ws://&quot;) || this.src.startsWith(&quot;wss://&quot;)) {
+      this.streamSource = new WebSocket(this.src)
+    } else {
+      this.streamSource = new EventSource(this.src)
+    }
+    // Connects to session via session.connectStreamSource(this.streamSource)
+  }
+
+  disconnectedCallback() {
+    this.streamSource.close()
+    session.disconnectStreamSource(this.streamSource)
+  }
+
+  get src() { return this.getAttribute(&quot;src&quot;) }
+}
+
+customElements.define(&quot;turbo-stream-source&quot;, StreamSourceElement)
+</code></pre>
+<p>Aha: The protocol detection is automatic. If the <code>src</code> attribute starts with <code>ws://</code> or <code>wss://</code>, a WebSocket is created. Otherwise, an <code>EventSource</code> (SSE) is used. This means the same <code><turbo-stream-source></code> element works with both transport protocols without any configuration.</p>
+<h2>Morphing System: Idiomorph Integration</h2>
+<p>Turbo v8 integrates the Idiomorph library for DOM morphing. This is used in two places:</p>
+<ol><li><strong>MorphingPageRenderer</strong> -- when the page has <code><meta name="turbo-refresh-method" content="morph"></code></li><li><strong>replace/update stream actions</strong> -- when the <code><turbo-stream></code> has <code>method="morph"</code></li></ol>
+<p>Source: <code>src/core/morphing.js</code></p>
+<pre><code class="language-javascript">// src/core/morphing.js
+function morphElements(currentElement, newElement, { callbacks, ...options }) {
+  // Uses Idiomorph library
+  idiomorph.morph(currentElement, newElement, {
+    callbacks: new DefaultIdiomorphCallbacks(callbacks)
+  })
+}
+
+function shouldRefreshFrameWithMorphing(currentFrame, newFrame) {
+  return (
+    currentFrame instanceof FrameElement &amp;&amp;
+    currentFrame.shouldReloadWithMorph &amp;&amp;
+    currentFrame.id == newFrame.id &amp;&amp;
+    currentFrame.src == newFrame.src &amp;&amp;
+    !isInPermanentElement(currentFrame)
+  )
+}
+
+class DefaultIdiomorphCallbacks {
+  beforeNodeAdded(node) {
+    dispatch(&quot;turbo:before-morph-element&quot;, { cancelable: true, target: node })
+  }
+  beforeNodeMorphed(oldNode, newNode) {
+    dispatch(&quot;turbo:before-morph-element&quot;, { cancelable: true, target: oldNode })
+  }
+  beforeAttributeUpdated(attributeName, node, mutationType) {
+    dispatch(&quot;turbo:before-morph-attribute&quot;, { cancelable: true, detail: { attributeName, node, mutationType } })
+  }
+  afterNodeMorphed(node) {
+    dispatch(&quot;turbo:morph-element&quot;, { target: node })
+  }
+}
+</code></pre>
+<p>The morphing callbacks dispatch events that allow user code to cancel or modify morph operations on specific elements.</p>
+<h2>Frame Redirector: Top-Level Frame Routing</h2>
+<p>When a <code><turbo-frame></code> is at the top level (directly in <code><body></code>), the <code>FrameRedirector</code> intercepts all link clicks and form submissions within the frame and routes them through the frame controller.</p>
+<p>Source: <code>src/core/frames/frame_redirector.js</code></p>
+<pre><code class="language-javascript">// src/core/frames/frame_redirector.js
+class FrameRedirector {
+  constructor(session, element) {
+    this.session = session
+    this.element = element
+    this.linkInterceptor = new LinkInterceptor(this, element)
+    this.formSubmitObserver = new FormSubmitObserver(this, element)
+  }
+
+  start() {
+    this.linkInterceptor.start()
+    this.formSubmitObserver.start()
+  }
+
+  stop() {
+    this.linkInterceptor.stop()
+    this.formSubmitObserver.stop()
+  }
+}
+</code></pre>
+<h2>Custom Elements Registration</h2>
+<p>All three Turbo custom elements are registered in <code>src/elements/index.js</code>:</p>
+<p>Source: <code>src/elements/index.js</code></p>
+<pre><code class="language-javascript">// src/elements/index.js
+FrameElement.delegateConstructor = FrameController
+
+if (customElements.get(&quot;turbo-frame&quot;) == undefined) {
+  customElements.define(&quot;turbo-frame&quot;, FrameElement)
+}
+if (customElements.get(&quot;turbo-stream&quot;) == undefined) {
+  customElements.define(&quot;turbo-stream&quot;, StreamElement)
+}
+if (customElements.get(&quot;turbo-stream-source&quot;) == undefined) {
+  customElements.define(&quot;turbo-stream-source&quot;, StreamSourceElement)
+}
+</code></pre>
+<p>The <code>customElements.get()</code> check prevents double-registration when Turbo is loaded multiple times (e.g., via both ESM and script tag).</p>
+<h2>Stream Event Lifecycle</h2>
+<div class="mermaid">
+sequenceDiagram
+    participant Server
+    participant AC as ActionCable
+    participant WS as WebSocket
+    participant StreamObs as StreamObserver
+    participant Session
+    participant SMR as StreamMessageRenderer
+    participant DOM
+
+    Server-&gt;&gt;AC: broadcast_replace_to(stream, target: &quot;msg_1&quot;)
+    AC-&gt;&gt;WS: turbo-stream HTML fragment
+    WS-&gt;&gt;StreamObs: message received
+    StreamObs-&gt;&gt;Session: detect content-type == text/vnd.turbo-stream.html
+    Session-&gt;&gt;SMR: renderStreamMessage(fragment)
+    SMR-&gt;&gt;DOM: &lt;turbo-stream action=&quot;replace&quot; target=&quot;msg_1&quot;&gt;
+    DOM-&gt;&gt;StreamEl: custom element connectedCallback
+    StreamEl-&gt;&gt;StreamEl: performAction() -&gt; StreamActions.replace()
+    StreamEl-&gt;&gt;DOM: target element replaced
+    StreamEl-&gt;&gt;StreamEl: disconnect() -- self-removes
+
+</div>
+<h2>Recent Request Tracking</h2>
+<p>Every fetch request gets a <code>X-Turbo-Request-Id</code> header (UUID). The last 20 IDs are tracked in a <code>LimitedSet</code>.</p>
+<p>Source: <code>src/core/drive/limited_set.js</code></p>
+<pre><code class="language-javascript">// src/core/drive/limited_set.js
+class LimitedSet extends Set {
+  constructor(maxSize = 20) {
+    super()
+    this.maxSize = maxSize
+  }
+  add(value) {
+    if (this.size &gt;= this.maxSize) {
+      const oldest = this.values().next().value
+      this.delete(oldest)
+    }
+    super.add(value)
+  }
+}
+</code></pre>
+<p>The <code>refresh</code> stream action checks this set to avoid refreshing after its own request. This prevents infinite refresh loops when a stream action triggers a page refresh that triggers another stream action.</p>
+<h2>Next</h2>
+<p>The native SDKs embed these web components inside native apps. See <a href="06-native-ios.md">Native iOS</a> and <a href="07-native-android.md">Native Android</a> for how native navigation integrates with Turbo. For the bridge protocol that connects web controllers to native components, see <a href="08-bridge-protocol.md">Bridge Protocol</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
