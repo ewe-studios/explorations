@@ -4,7 +4,7 @@ title: "Overview — What codebase-memory-mcp Is and Why It Exists"
 
 # Overview: What codebase-memory-mcp Is and Why It Exists
 
-codebase-memory-mcp is a high-performance code intelligence engine written in pure C11 that indexes source code repositories into a property graph and exposes 14 MCP (Model Context Protocol) tools over JSON-RPC 2.0 stdio. It supports 158 programming languages via vendored tree-sitter grammars, runs an 11-signal semantic similarity ensemble, and provides a Cypher query engine with 90+ token types. The Linux kernel — 28 million lines across 75,000 files — indexes in 3 minutes.
+codebase-memory-mcp is a high-performance code intelligence engine written in pure C11 that indexes source code repositories into a property graph and exposes 14 MCP (Model Context Protocol) tools over JSON-RPC 2.0 stdio. It supports 156 programming languages via vendored tree-sitter grammars, runs an 11-signal semantic similarity ensemble, and provides a Cypher query engine with 90+ token types. The Linux kernel -- 28 million lines across 75,000 files -- indexes in 3 minutes.
 
 ## The Problem It Solves
 
@@ -58,20 +58,20 @@ flowchart LR
 | Metric | Value |
 |--------|-------|
 | Total source lines | 63,896 |
-| Source files | 1,378 |
-| Test files | 89 |
+| Source files | 119 |
+| Test files | 152 |
 | Passing tests | 5,604 |
 | Languages supported | 158 |
 | MCP tools | 14 |
 | Cypher token types | 90+ |
 | Semantic signals | 11 |
 | MinHash bands | 32 |
-| MinHash permutations | 64 |
+| MinHash K (hash seeds) | 64 |
 | Pipeline module lines | 22,049 |
 | Linux kernel index time | 3 minutes |
 | Linux kernel files | 75,000 |
 | Linux kernel LOC | 28,000,000 |
-| Agents auto-configured | 11 |
+| Agents auto-configured | 9 |
 
 ## Quick Start: Installation
 
@@ -116,7 +116,7 @@ For Cursor or other MCP-compatible editors, the same stdio configuration applies
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CBM_CACHE_DIR` | `~/.cache/codebase-memory-mcp` | Database storage directory |
-| `CBM_WORKERS` | auto-detected | Parallel worker count (1-256) |
+| `CBM_WORKERS` | auto | Worker thread count (auto-detected from CPU count) |
 | `CBM_LOG_LEVEL` | `info` | Log level: debug, info, warn, error, none |
 | `CBM_DIAGNOSTICS` | `false` | Enable memory diagnostics output |
 | `CBM_SEMANTIC_ENABLED` | off | Enable semantic embeddings |
@@ -133,7 +133,7 @@ src/
   main.c                 Entry point: MCP stdio loop, CLI dispatch, install/update
   foundation/            Platform abstractions: arena, slab, mem, hash, string, log
   discover/              File discovery: gitignore parsing, language detection
-  pipeline/              Pipeline orchestrator: 23+ passes, worker pool, registry
+  pipeline/              Pipeline orchestrator: 22 passes, worker pool, registry
   store/                 SQLite storage: nodes, edges, BFS, FTS5, Louvain
   cypher/                Query engine: lexer, recursive descent parser, planner
   mcp/                   MCP server: 14 tools, JSON-RPC 2.0, stdio I/O
@@ -151,13 +151,18 @@ See [Architecture](01-architecture.md) for the full dependency graph and layer d
 
 ## The Extraction Engine
 
-The core extraction engine lives in `internal/cbm/` and handles 158 languages through vendored tree-sitter grammars. It uses a three-tier memory model: mimalloc for global allocation, a slab allocator for tree-sitter nodes (<=64B tier), and an arena allocator for per-file extraction (64KB blocks, up to 256 blocks).
+The core extraction engine lives in `internal/cbm/` and handles 156 languages through vendored tree-sitter grammars. It uses a three-tier memory model: mimalloc for global allocation, a slab allocator for tree-sitter nodes (<=64B tier), and an arena allocator for per-file extraction (64KB blocks, up to 256 blocks).
 
-Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.CodebaseMemory/codebase-memory-mcp/internal/cbm/cbm.c`
+The extraction function signature is:
+
+Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.CodebaseMemory/codebase-memory-mcp/src/pipeline/pass_definitions.c`
 
 ```c
-// Core extraction entry point — processes one file through tree-sitter
-int cbm_extract_file(cbm_ctx_t *ctx, const char *path, cbm_arena_t *arena);
+// Core extraction entry point — processes one file's source through tree-sitter
+// Parameters: source buffer, length, language, project name, relative path, budget
+int cbm_extract_file(const char *source, size_t source_len, CBMLanguage language,
+                     const char *project_name, const char *rel_path, int budget,
+                     cbm_gbuf_t *gbuf, cbm_registry_t *registry);
 ```
 
 Aho-Corasick automaton provides a bitmask fast path for pattern matching during extraction:
@@ -165,12 +170,19 @@ Aho-Corasick automaton provides a bitmask fast path for pattern matching during 
 Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.CodebaseMemory/codebase-memory-mcp/internal/cbm/ac.h`
 
 ```c
-// Aho-Corasick automaton with 64-bit match bitmask
-typedef struct {
-    cbm_ac_state_t *states;
-    uint64_t *output_masks;  // Bitmask of matched pattern IDs
-    int num_states;
-} cbm_ac_t;
+// Opaque Aho-Corasick automaton type
+typedef struct CBMAutomaton CBMAutomaton;
+
+// Build an automaton from patterns
+CBMAutomaton *cbm_ac_build(const char **patterns, const int *lengths, int count,
+                           const uint8_t *alpha_map, int alpha_size);
+
+// Single-text scanning (returns bitmask of matched pattern IDs)
+uint64_t cbm_ac_scan_bitmask(const CBMAutomaton *ac, const char *text, int text_len);
+
+// LZ4-compressed scanning
+uint64_t cbm_ac_scan_lz4_bitmask(const CBMAutomaton *ac, const char *compressed,
+                                 int compressed_len, int original_len);
 ```
 
 See [Extraction](04-extraction.md) for the full extraction engine details and [Foundation Layer](02-foundation-layer.md) for memory management.
@@ -184,32 +196,38 @@ codebase-memory-mcp computes similarity between code nodes using an 11-signal en
 3. **MinHash structural** (weight 0.10) — fingerprint similarity
 4. **API Signature vectors** (weight 0.15) — shared callees
 5. **Type Signature vectors** (weight 0.10) — shared param/return types
-6. **Decorator patterns** (weight 0.05) — shared annotations
-7. **Structural profile** (weight 0.10) — 25-feature AST profile
-8. **Data flow** (weight 0.05) — param-to-return and param-to-condition
-9. **Module proximity** — same directory boost, max +0.10
+6. **Module proximity** (multiplier, not additive) — same directory boost, max +0.10
+7. **Decorator patterns** (weight 0.05) — shared annotations
+8. **Structural profile** (weight 0.10) — 25-feature AST profile
+9. **Data flow** (weight 0.05) — param-to-return and param-to-condition
 10. **Graph diffusion** — neighbor blending, alpha 0.3
 11. **Halstead-lite** — operator/operand complexity profile
 
 MinHash uses K=64 permutations with xxHash, LSH with 32 bands of 2 rows, and Jaccard threshold 0.95 for SIMILAR_TO edge emission.
 
-Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.CodebaseMemory/codebase-memory-mcp/src/foundation/constants.h`
+Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.CodebaseMemory/codebase-memory-mcp/src/simhash/minhash.h` and `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.CodebaseMemory/codebase-memory-mcp/src/semantic/semantic.h`
 
 ```c
-#define CBM_MINHASH_K                     64
-#define CBM_MINHASH_MIN_NODES             30
-#define CBM_MINHASH_JACCARD_THRESHOLD     0.95f
-#define CBM_MINHASH_MAX_EDGES_PER_NODE    10
-#define CBM_LSH_BANDS                     32
-#define CBM_LSH_ROWS                      2
-#define CBM_SEM_DIM                       768
-#define CBM_SEM_SPARSE_NNZE               8
-#define CBM_SEM_WINDOW                    5
-#define CBM_SEM_MAX_OCCUR                 512
-#define CBM_SEM_EDGE_THRESHOLD            0.75f
-#define CBM_SEM_MAX_EDGES                 10
-#define CBM_SEM_AST_PROFILE_DIMS          25
-#define CBM_EXTRACT_BUDGET                5000000
+// From simhash/minhash.h
+#define CBM_MINHASH_K 64
+#define CBM_MINHASH_MIN_NODES 30
+#define CBM_MINHASH_JACCARD_THRESHOLD 0.95f
+#define CBM_MINHASH_MAX_EDGES_PER_NODE 10
+#define CBM_LSH_BANDS 32
+
+// From semantic/semantic.h
+enum { CBM_SEM_DIM = 768 };
+enum { CBM_SEM_SPARSE_NNZE = 8 };
+enum { CBM_SEM_WINDOW = 5 };
+enum { CBM_SEM_MAX_OCCUR = 512 };
+#define CBM_SEM_EDGE_THRESHOLD 0.75f
+enum { CBM_SEM_MAX_EDGES = 10 };
+enum { CBM_SEM_AST_PROFILE_DIMS = 25 };
+```
+
+The extract budget (5MB) is defined in `src/pipeline/pipeline_internal.h`:
+```c
+#define CBM_EXTRACT_BUDGET 5000000
 ```
 
 See [Semantic Similarity](09-semantic-similarity.md) for the full algorithm.

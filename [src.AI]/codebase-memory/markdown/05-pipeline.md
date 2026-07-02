@@ -1,10 +1,10 @@
 ---
-title: "Pipeline — Three-Phase Parallel Indexing, 23+ Passes, Worker Pool"
+title: "Pipeline — Three-Phase Parallel Indexing, 22 Passes, Worker Pool"
 ---
 
-# Pipeline: Three-Phase Parallel Indexing, 23+ Passes, Worker Pool
+# Pipeline: Three-Phase Parallel Indexing, 22 Passes, Worker Pool
 
-The pipeline module orchestrates the entire indexing process across 23+ passes. At 22,049 lines, it is the largest module in the codebase. It runs in three phases: discovery and structure (Phase 1), definitions and registry (Phase 2), and parallel resolution (Phase 3). The worker pool distributes extraction across CPU cores with thread-local slab allocators.
+The pipeline module orchestrates the entire indexing process across 22 passes.
 
 ## Pipeline Architecture
 
@@ -64,31 +64,35 @@ flowchart TD
 Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.CodebaseMemory/codebase-memory-mcp/src/pipeline/pipeline_internal.h`
 
 ```c
-// Pipeline orchestrator state
-typedef struct {
-    const char *repo_path;         // Repository being indexed
-    const char *project_name;      // Derived project name
-    cbm_store_t *store;            // SQLite store for output
-    cbm_graph_buffer_t *buffer;    // In-memory staging buffer
-    cbm_hash_table_t *registry;    // Function/method registry
-    cbm_array_t files;             // Discovered file paths
-    cbm_discover_ctx_t *discovery; // Discovery context
-    worker_pool_t *workers;        // Thread pool for parallel passes
-    CBMArena *arena;               // Main arena for pipeline allocations
-    CBMStringPool *pool;           // String interning pool
+// Pipeline orchestrator state (simplified from pipeline.c)
+struct cbm_pipeline {
+    char *repo_path;
+    char *db_path;
+    char *project_name;
+    cbm_git_context_t git_ctx;
+    char *branch_qn;
+    cbm_index_mode_t mode;
+    atomic_int cancelled;
+    bool persistence;  /* write .codebase-memory/graph.db.zst after indexing */
 
-    // Phase tracking
-    int phase;                     // 1, 2, or 3
-    int pass_count;                // Number of passes completed
-    int file_count;                // Total files discovered
-    int indexed_count;             // Files successfully indexed
-    int skipped_count;             // Files skipped (errors, budget)
+    /* Indexing state (set during run) */
+    cbm_gbuf_t *gbuf;
+    cbm_registry_t *registry;
 
-    // Timing
-    uint64_t start_time;           // Pipeline start (nanoseconds)
-    uint64_t pass_times[64];       // Per-pass timing
-    const char *pass_names[64];    // Per-pass names
-} cbm_pipeline_t;
+    /* Directory subtrees skipped during discovery */
+    char **excluded_dirs;
+    int excluded_count;
+
+    /* User-defined extension overrides */
+    cbm_userconfig_t *userconfig;
+
+    /* Committed graph size at dump time */
+    int committed_nodes;
+    int committed_edges;
+
+    /* ADR captured before full-reindex DB delete */
+    char *saved_adr;
+};
 
 // Create and run pipeline
 int cbm_pipeline_index(cbm_store_t *store, const char *repo_path);
@@ -413,7 +417,7 @@ A typical Linux kernel index shows these pass times:
 | Pass | Time | Notes |
 |------|------|-------|
 | Discovery | 1.2s | 75K files, gitignore parsing |
-| Definitions | 45s | 158 languages, tree-sitter parse |
+| Definitions | 45s | 156 languages, tree-sitter parse |
 | Registry | 0.8s | Hash table build |
 | Calls | 8s | Registry + LSP resolution |
 | LSP Cross | 12s | Cross-file type-aware |

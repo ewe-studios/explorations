@@ -4,7 +4,7 @@ title: "Build and Test — Makefile Targets, 5,604 Tests, Security Audit"
 
 # Build and Test: Makefile Targets, 5,604 Tests, Security Audit
 
-The build system uses a single Makefile (`Makefile.cbm`) with targets for production builds, test runs with sanitizers, security auditing, linting, and optional UI builds. The test suite runs 5,604 tests across 89 test files with AddressSanitizer, UndefinedBehaviorSanitizer, and ThreadSanitizer coverage.
+The build system uses a single Makefile (`Makefile.cbm`) with targets for production builds, test runs with sanitizers, security auditing, linting, and optional UI builds. The test suite runs 5,604 tests across 152 test files with AddressSanitizer, UndefinedBehaviorSanitizer, and ThreadSanitizer coverage.
 
 ## Build Pipeline
 
@@ -187,7 +187,7 @@ Compiles with:
 - `-fsanitize=address,undefined` — ASan + UBSan
 - `-DCBM_TESTING` — enables test code paths
 
-The test binary runs 5,604 tests across 89 test files:
+The test binary runs 5,604 tests across 152 test files:
 
 ```bash
 ./cbm-test
@@ -378,7 +378,7 @@ The project vendors all dependencies:
 
 | Dependency | Purpose | License |
 |------------|---------|---------|
-| tree-sitter | AST parsing for 158 languages | MIT |
+| tree-sitter | AST parsing for 156 languages | MIT |
 | sqlite3 (amalgamation) | Graph storage, FTS5 | Public domain |
 | mimalloc | Global allocator override | MIT |
 | yyjson | JSON parsing/serialization | MIT |

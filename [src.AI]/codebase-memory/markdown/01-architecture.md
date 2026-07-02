@@ -12,12 +12,12 @@ The codebase-memory-mcp engine is structured as four horizontal layers, each wit
 flowchart TD
     subgraph Interface["Interface Layer (stdin/stdout, HTTP)"]
         A1["MCP Server\nmcp/mcp.c\n14 tools, JSON-RPC 2.0"]
-        A2["CLI\nci/cli.c\ninstall, update, config"]
+        A2["CLI\ncli/cli.c\ninstall, update, config"]
         A3["HTTP UI\nui/http_server.c\nembedded assets"]
     end
 
     subgraph Engine["Engine Layer (processing)"]
-        B1["Pipeline\npipeline/pipeline.c\n23+ passes, worker pool"]
+        B1["Pipeline\npipeline/pipeline.c\n22 passes, worker pool"]
         B2["Cypher Engine\ncypher/cypher.c\nlexer, parser, planner"]
         B3["Semantic\nsemantic/semantic.c\n11-signal ensemble"]
         B4["MinHash+LSH\nsimhash/minhash.c\nK=64, 32 bands"]
@@ -117,7 +117,7 @@ codebase-memory-mcp/
 │   ├── store/                    SQLite storage with FTS5
 │   │   ├── store.c
 │   │   └── store.h
-│   ├── pipeline/                 23+ pass orchestrator
+│   ├── pipeline/                 22-pass orchestrator
 │   │   ├── pipeline.c
 │   │   ├── pipeline_internal.h
 │   │   ├── worker_pool.c
@@ -309,13 +309,13 @@ int http_server_start(cbm_store_t *store, int port);
 The engine achieves its performance through several design decisions at each layer:
 
 **Foundation Layer:**
-- Arena allocator with 64KB blocks (up to 256 blocks) avoids per-allocation overhead
+- Arena allocator with 64KB blocks (up to 256 blocks, ~16MB max) avoids per-allocation overhead
 - Slab allocator for tree-sitter nodes matches SubtreeHeapData size (<=64B tier) with free list
 - mimalloc overrides malloc/calloc/realloc globally via vendored static link
 
 **Pipeline Layer:**
 - 3-phase parallel pipeline: extract -> registry -> resolve
-- Worker pool with auto-detected thread count (1-256, via `CBM_WORKERS`)
+- Worker pool with auto-detected thread count (based on available CPU cores)
 - Registry provides O(1) function lookup via hash table with string interning
 
 **Storage Layer:**
@@ -325,7 +325,7 @@ The engine achieves its performance through several design decisions at each lay
 - 30+ prepared statements reused across the indexing lifecycle
 
 **Semantic Layer:**
-- nomic-embed-code vectors stored as int8 (768 dimensions, 40,856 vectors)
+- nomic-embed-code vectors stored as int8 (768 dimensions)
 - MinHash K=64 with xxHash — 64 permutations per node
 - LSH 32 bands x 2 rows — candidate generation in O(N) not O(N^2)
 
@@ -339,7 +339,7 @@ The engine achieves its performance through several design decisions at each lay
 |----------|-----|-----------|
 | Pure C11, not Rust | Deterministic memory, mimalloc override, no GC | Manual memory management, no borrow checker |
 | SQLite, not custom graph DB | ACID, FTS5, existing tooling, zero setup | Not a native graph DB — BFS implemented in C |
-| Vendored tree-sitter, not system lib | 158 grammars bundled, reproducible builds | Binary size increases (~50MB with all grammars) |
+| Vendored tree-sitter, not system lib | 156 grammars bundled, reproducible builds | Binary size increases with all grammars |
 | Three-tier allocator | Per-use-case optimal: arena for temp, slab for tree-sitter, mimalloc for general | Complexity in memory accounting |
 | LSH over brute-force Jaccard | O(N) candidate generation vs O(N^2) | May miss very similar pairs that hash to different bands |
 | Embedded HTTP assets | No external dependencies, works offline | Frontend updates require recompilation |

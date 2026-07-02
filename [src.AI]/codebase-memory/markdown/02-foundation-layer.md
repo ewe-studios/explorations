@@ -18,7 +18,7 @@ sequenceDiagram
     participant Arena as arena.c
     participant Mem as mem.c (mimalloc)
 
-    Main->>Mem: cbm_mem_init(budget=25% RAM)
+    Main->>Mem: cbm_mem_init(budget=50% RAM)
     Main->>Pipeline: cbm_pipeline_index(store, repo_path)
     Pipeline->>Discover: cbm_discover_files()
     Discover->>Mem: malloc for file paths
@@ -86,7 +86,7 @@ flowchart TD
 
 **Tier 2 — Arena allocator:** Per-file extraction creates hundreds of temporary allocations (AST nodes, string copies, edge records). The arena bumps a pointer through 64KB blocks. When a file is done processing, the entire arena resets in O(1) — no individual frees needed. If a file's extraction exceeds 64KB, a new block is chained (up to 256 blocks, or 16MB per arena).
 
-**Tier 3 — mimalloc:** Everything else uses mimalloc, vendored and statically linked. It overrides the system malloc/calloc/realloc/free, so even code that calls `malloc` directly gets mimalloc's performance. mimalloc tracks RSS (resident set size) for memory budget enforcement.
+**Tier 3 — mimalloc:** Everything else uses mimalloc, vendored and statically linked. It overrides the system malloc/calloc/realloc/free, so even code that calls `malloc` directly gets mimalloc's performance. mimalloc tracks RSS (resident set size) for memory budget enforcement. The memory budget is calculated as 50% of total physical RAM (default 0.5).
 
 ## Arena Allocator
 
@@ -122,34 +122,38 @@ Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.CodebaseMemory/code
 
 ```c
 void *cbm_arena_alloc(CBMArena *arena, size_t size) {
-    // Align to 16 bytes for SIMD compatibility
-    size = (size + 15) & ~15;
+    // Align to 8 bytes for compatibility
+    size = (size + 7) & ~7;
 
     // If current block has room, bump
-    if (arena->used + size <= arena->block_sizes[arena->nblocks - 1]) {
+    if (arena->nblocks > 0 && arena->used + size <= arena->block_size) {
         void *ptr = arena->blocks[arena->nblocks - 1] + arena->used;
         arena->used += size;
         arena->total_alloc += size;
         return ptr;
     }
 
-    // Allocate new block
+    // Allocate new block (doubles the current block_size)
     if (arena->nblocks >= CBM_ARENA_MAX_BLOCKS) {
         cbm_log_error("Arena exceeded max blocks (%d)\n", CBM_ARENA_MAX_BLOCKS);
         return NULL;
     }
 
-    size_t alloc_size = arena->block_size * (1 << arena->nblocks);  // Exponential growth
+    size_t alloc_size = arena->block_size * 2;  // Double the previous block
+    if (alloc_size < size) {
+        alloc_size = size;  // Ensure new block fits the request
+    }
     arena->blocks[arena->nblocks] = malloc(alloc_size);
     arena->block_sizes[arena->nblocks] = alloc_size;
-    arena->used = 0;
     arena->nblocks++;
+    arena->block_size = alloc_size;
+    arena->used = 0;
 
     return cbm_arena_alloc(arena, size);  // Retry with new block
 }
 ```
 
-The arena uses exponential growth for new blocks: the first block is 64KB, the second is 128KB, the third is 256KB, and so on. This means the first few blocks fit small files perfectly while large files get proportionally larger blocks. The reset operation just zeroes `used` — the blocks stay allocated and reused across files.
+The arena doubles the previous block size each time it grows (64KB, 128KB, 256KB...). This means the first few blocks fit small files perfectly while large files get proportionally larger blocks. The reset operation frees all blocks except the first and zeroes `used` — the surviving block stays allocated and reused across files.
 
 **Usage pattern in extraction:**
 
@@ -244,15 +248,14 @@ mimalloc is vendored at `vendored/mimalloc/src/static.c` and linked statically. 
 Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.CodebaseMemory/codebase-memory-mcp/src/foundation/mem.c`
 
 ```c
-int cbm_mem_init(CBMMemBudget *budget, double ram_fraction) {
-    size_t total_ram = mi_os_stat_total_memory();
-    budget->budget_bytes = (size_t)(total_ram * ram_fraction);
-    budget->current_rss = 0;
-    budget->peak_rss = 0;
-    budget->collect_count = 0;
+// Initialize memory budget — takes RAM fraction, returns 0 on success.
+// Budget is a fraction of total physical RAM (default 0.5 = 50%).
+int cbm_mem_init(double ram_fraction) {
+    size_t total_ram = cbm_get_total_ram();
+    size_t budget = (size_t)(total_ram * ram_fraction);
 
     cbm_log_info("Memory budget: %zu MB (%.0f%% of %zu MB total RAM)\n",
-                 budget->budget_bytes / (1024*1024),
+                 budget / (1024*1024),
                  ram_fraction * 100.0,
                  total_ram / (1024*1024));
     return 0;
@@ -416,7 +419,7 @@ Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.CodebaseMemory/code
 
 ## Aha Moment
 
-**Aha:** The arena uses exponential growth for new blocks (64KB, 128KB, 256KB...) instead of fixed-size allocation. This means small files (the common case) get exactly the memory they need with zero waste, while large files automatically scale up without hitting a hard limit until 16MB. The reset operation is O(1) — it just zeroes the `used` counter. This is why the engine can process 75,000 Linux kernel files in 3 minutes: it allocates memory in bulk per file and frees it all at once, never paying per-allocation overhead during hot paths.
+**Aha:** The arena doubles the previous block size each time it grows (64KB, 128KB, 256KB...) instead of fixed-size allocation. This means small files (the common case) get exactly the memory they need with zero waste, while large files automatically scale up without hitting a hard limit until 16MB. The reset operation is O(1) — it frees all blocks except the first and zeroes the `used` counter. This is why the engine can process 75,000 Linux kernel files in 3 minutes: it allocates memory in bulk per file and frees it all at once, never paying per-allocation overhead during hot paths.
 
 ## Cross-References
 

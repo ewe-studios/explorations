@@ -1,10 +1,10 @@
 ---
-title: "Extraction — Core Engine, Tree-Sitter AST, 158 Language Grammars"
+title: "Extraction — Core Engine, Tree-Sitter AST, 156 Language Grammars"
 ---
 
-# Extraction: Core Engine, Tree-Sitter AST, 158 Language Grammars
+# Extraction: Core Engine, Tree-Sitter AST, 156 Language Grammars
 
-The extraction engine is the heart of codebase-memory-mcp. It uses tree-sitter to parse source files into concrete syntax trees, then walks those trees to extract definitions, calls, imports, usages, test associations, HTTP routes, and more. It supports 158 languages through vendored tree-sitter grammars and produces a stream of nodes and edges that the pipeline writes to the SQLite store.
+The extraction engine is the heart of codebase-memory-mcp. It uses tree-sitter to parse source files into concrete syntax trees, then walks those trees to extract definitions, calls, imports, usages, test associations, HTTP routes, and more. It supports 156 languages through vendored tree-sitter grammars and produces a stream of nodes and edges that the pipeline writes to the SQLite store.
 
 ## Extraction Architecture
 
@@ -51,81 +51,29 @@ flowchart TD
 
 ## Core Extraction Entry Point
 
-Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.CodebaseMemory/codebase-memory-mcp/internal/cbm/cbm.h`
+The extraction function is called from pipeline passes. It takes a source buffer (not a file path) and writes results to a graph buffer and registry:
+
+Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.CodebaseMemory/codebase-memory-mcp/src/pipeline/pass_definitions.c`
 
 ```c
-// Extraction context — carried through one file's processing
-typedef struct {
-    const char *file_path;        // Absolute path to source file
-    const char *rel_path;         // Relative path from repo root
-    CBMLanguage language;         // Detected language
-    TSLanguage *ts_lang;          // Tree-sitter language pointer
-    TSTree *tree;                 // Parsed syntax tree
-    TSParser *parser;             // Tree-sitter parser instance
-    CBMArena *arena;              // Per-file arena for allocations
-    CBMStringPool *pool;          // String interning pool
-    cbm_graph_buffer_t *buffer;   // Output: nodes and edges
-    int extract_budget;           // Max bytes for this file (5MB default)
-    int error_count;              // Extraction error count
-} cbm_ctx_t;
-
-// Extract one file: parse, walk, emit nodes/edges
-int cbm_extract_file(cbm_ctx_t *ctx, const char *path, CBMArena *arena);
-
-// Parse file into syntax tree using tree-sitter
-TSTree *cbm_parse_file(cbm_ctx_t *ctx, const char *path);
-
-// Walk the syntax tree with the language-agnostic visitor
-int cbm_walk_tree(cbm_ctx_t *ctx, TSTree *tree);
-```
-
-Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.CodebaseMemory/codebase-memory-mcp/internal/cbm/cbm.c`
-
-```c
-int cbm_extract_file(cbm_ctx_t *ctx, const char *path, CBMArena *arena) {
-    ctx->file_path = path;
-    ctx->arena = arena;
-
-    // Step 1: Detect language
-    ctx->language = cbm_lang_from_extension(path);
-    if (ctx->language == CBM_LANG_UNKNOWN) {
-        ctx->language = cbm_lang_from_shebang(path);
-    }
-    if (ctx->language == CBM_LANG_UNKNOWN) {
-        return CBM_SKIP;  // No grammar available
-    }
-
-    // Step 2: Load tree-sitter grammar
-    ctx->ts_lang = cbm_lang_ts_language(ctx->language);
-    if (!ctx->ts_lang) {
-        return CBM_SKIP;
-    }
-
-    // Step 3: Parse file
-    ctx->parser = ts_parser_new();
-    ts_parser_set_language(ctx->parser, ctx->ts_lang);
-    ctx->tree = cbm_parse_file(ctx, path);
-    if (!ctx->tree) {
-        ts_parser_delete(ctx->parser);
-        return CBM_PARSE_ERROR;
-    }
-
-    // Step 4: Walk tree and extract
-    cbm_walk_tree(ctx, ctx->tree);
-
-    // Step 5: Clean up parser and tree
-    ts_tree_delete(ctx->tree);
-    ts_parser_delete(ctx->parser);
-    ctx->tree = NULL;
-    ctx->parser = NULL;
-
-    return CBM_OK;
-}
+// Extract definitions from a source file buffer
+// Parameters:
+//   source       — file contents as string
+//   source_len   — length of source buffer
+//   language     — detected language (CBMLanguage enum)
+//   project_name — project identifier
+//   rel_path     — relative file path
+//   budget       — max bytes for extraction (5MB default)
+//   gbuf         — output graph buffer
+//   registry     — output registry for resolved symbols
+int cbm_extract_file(const char *source, size_t source_len, CBMLanguage language,
+                     const char *project_name, const char *rel_path, int budget,
+                     cbm_gbuf_t *gbuf, cbm_registry_t *registry);
 ```
 
 ## Tree-Sitter Grammar Support
 
-The project vendors 158 tree-sitter grammars in `internal/cbm/grammar_*.c`. Each grammar is a thin wrapper around the upstream tree-sitter grammar, providing the `TSLanguage` pointer and query definitions.
+The project vendors 156 tree-sitter grammars in `internal/cbm/grammar_*.c`. Each grammar is a thin wrapper around the upstream tree-sitter grammar, providing the `TSLanguage` pointer and query definitions.
 
 ```
 internal/cbm/
@@ -156,7 +104,7 @@ static const char *python_call_node = "call";
 static const char *python_name_node = "identifier";
 ```
 
-The grammar shims abstract away the differences between tree-sitter grammars. The language-agnostic walker uses `LanguageConfig` structures that map generic concepts (function node, class node, import node) to language-specific tree-sitter node type names.
+The grammar shims abstract away the differences between tree-sitter grammars. The language-agnostic walker uses `LanguageConfig` structures that map generic concepts (function node, class node, import node) to language-specific tree-sitter node type names, providing 156 language configurations.
 
 ## Language-AST Walker
 
@@ -226,10 +174,13 @@ Each extraction concern is implemented in its own file under `internal/cbm/extra
 | `extract_calls.c` | Function/method calls | — | CALLS |
 | `extract_imports.c` | Import statements, requires | — | IMPORTS |
 | `extract_usages.c` | Type references, variable usages | — | USES, TYPE_REF |
-| `extract_tests.c` | Test functions, test files | Test | TESTS |
-| `extract_routes.c` | HTTP route handlers | HTTPRoute | ROUTES |
-| `extract_decorators.c` | Decorator/annotation patterns | — | DECORATES |
-| `extract_complexity.c` | Cyclomatic complexity | — | (property on node) |
+| `extract_type_refs.c` | Type reference edges | — | TYPE_REF |
+| `extract_type_assigns.c` | Type assignment edges | — | IMPLEMENTS, INHERITS |
+| `extract_channels.c` | Async channel definitions | Channel | CHANNEL |
+| `extract_semantic.c` | Semantic extraction data | — | — |
+| `extract_env_accesses.c` | Environment variable accesses | — | ENV_ACCESS |
+| `extract_k8s.c` | Kubernetes manifest parsing | — | — |
+| `extract_unified.c` | Unified extraction orchestrator | — | — |
 
 Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.CodebaseMemory/codebase-memory-mcp/internal/cbm/extract_defs.c`
 
@@ -306,25 +257,25 @@ The extraction engine uses Aho-Corasick with a 64-bit bitmask for fast pattern m
 Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.CodebaseMemory/codebase-memory-mcp/internal/cbm/ac.h`
 
 ```c
-// Aho-Corasick automaton with bitmask output
-typedef struct {
-    cbm_ac_state_t *states;       // State machine states
-    uint64_t *output_masks;       // Bitmask of matched pattern IDs per state
-    int num_states;
-    uint8_t alphabet[256];        // Alphabet mapping for transition table
-} cbm_ac_t;
+// Opaque Aho-Corasick automaton type
+typedef struct CBMAutomaton CBMAutomaton;
 
 // Build automaton from patterns
-int cbm_ac_build(cbm_ac_t *ac, const char **patterns, int num_patterns);
+CBMAutomaton *cbm_ac_build(const char **patterns, const int *lengths, int count,
+                           const uint8_t *alpha_map, int alpha_size);
+void cbm_ac_free(CBMAutomaton *ac);
 
-// Scan buffer — returns 64-bit bitmask of matched pattern IDs
-uint64_t cbm_ac_scan(cbm_ac_t *ac, const char *buffer, int len);
+// Single-text scanning (returns bitmask of matched pattern IDs)
+uint64_t cbm_ac_scan_bitmask(const CBMAutomaton *ac, const char *text, int text_len);
 
-// Scan LZ4-compressed buffer directly (no decompression needed)
-uint64_t cbm_ac_scan_lz4(cbm_ac_t *ac, const char *compressed, int compressed_len);
+// LZ4-compressed scanning
+uint64_t cbm_ac_scan_lz4_bitmask(const CBMAutomaton *ac, const char *compressed,
+                                 int compressed_len, int original_len);
 
-// Batch scan multiple buffers
-void cbm_ac_batch_scan(cbm_ac_t *ac, cbm_ac_input_t *inputs, int count, uint64_t *results);
+// Batch name scanning
+int cbm_ac_scan_batch(const CBMAutomaton *ac, const char *names_buf,
+                      const int *name_offsets, const int *name_lengths,
+                      int num_names, CBMMatchResult *out_matches, int max_matches);
 ```
 
 The Aho-Corasick automaton is built from a set of patterns (e.g., known HTTP endpoint patterns, known library function names). During extraction, instead of running regex or string matching per pattern, the engine scans the entire file content once and gets back a 64-bit bitmask where each bit represents a matched pattern. This is used for:
@@ -348,7 +299,7 @@ The extraction engine produces these node types:
 | Method | Method inside class | extract_defs.c |
 | Module | Module/namespace | extract_defs.c |
 | Variable | Top-level variable | extract_defs.c |
-| HTTPRoute | HTTP endpoint | extract_routes.c |
+| HTTPRoute | HTTP endpoint | pass_route_nodes |
 | Test | Test function/file | extract_tests.c |
 | Config | Configuration file | pass_configlink |
 | ADR | Architecture Decision Record | manage_adr tool |
@@ -364,9 +315,9 @@ And these edge types:
 | TYPE_REF | Function -> Class | "this function references this type" | extract_usages.c |
 | INHERITS | Class -> Class | "this class inherits from that" | extract_defs.c |
 | IMPLEMENTS | Class -> Interface | "this class implements that interface" | extract_defs.c |
-| DECORATES | Decorator -> Function | "this decorator decorates this function" | extract_decorators.c |
-| TESTS | Test -> Function/Class | "this test tests this" | extract_tests.c |
-| ROUTES | HTTPRoute -> Function | "this route is handled by this function" | extract_routes.c |
+| DECORATES | Decorator -> Function | "this decorator decorates this function" | pass_semantic |
+| TESTS | Test -> Function/Class | "this test tests this" | pass_tests |
+| ROUTES | HTTPRoute -> Function | "this route is handled by this function" | pass_route_nodes |
 | HTTP_CALLS | Function -> HTTPRoute | "this function calls this HTTP endpoint" | traces + extraction |
 | SIMILAR_TO | Node -> Node | "these nodes are structurally similar" | pass_similarity |
 | SEMANTICALLY_RELATED | Node -> Node | "these nodes are semantically related" | pass_semantic_edges |
@@ -375,7 +326,7 @@ And these edge types:
 
 The engine enforces a 5MB extraction budget per file to prevent runaway parsing of generated or minified files:
 
-Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.CodebaseMemory/codebase-memory-mcp/src/foundation/constants.h`
+Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.CodebaseMemory/codebase-memory-mcp/src/pipeline/pipeline_internal.h`
 
 ```c
 #define CBM_EXTRACT_BUDGET  5000000  // 5MB max tree-sitter extraction per file

@@ -190,7 +190,7 @@ Language detection uses two strategies in order: extension matching and shebang 
 Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.CodebaseMemory/codebase-memory-mcp/src/discover/language.c`
 
 ```c
-// Extension-to-language mapping (excerpt — 158 languages total)
+// Extension-to-language mapping (excerpt -- 156 languages total)
 static const struct { const char *ext; CBMLanguage lang; } ext_map[] = {
     {".c",     CBM_LANG_C},
     {".h",     CBM_LANG_C},
