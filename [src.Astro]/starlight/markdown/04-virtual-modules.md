@@ -379,7 +379,7 @@ declare module 'virtual:starlight/route-middleware' {
     export const routeMiddleware: Array<RouteMiddlewareHandler>;
 }
 declare module 'virtual:starlight/pagefind-config' { ... }
-// Plus 27 component module declarations...
+// Plus 28 component module declarations...
 ```
 
 ## CSS Layer Ordering via Virtual Module

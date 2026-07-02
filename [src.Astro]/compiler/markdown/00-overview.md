@@ -18,7 +18,7 @@ The compiler exists in two parallel implementations:
 | Output target | WebAssembly (astro.wasm) + Go | Native binary via N-API |
 | Tokenizer | `internal/token.go` — 2000+ lines | `oxc_parser` with custom Astro source type |
 | Printer | `internal/printer/print-to-js.go` | `crates/astro_codegen/src/printer/mod.rs` |
-| Transforms | `internal/transform/transform.go` | `crates/astro_codegen/src/scanner.rs` |
+| Transforms | `internal/transform/transform.go` | `crates/astro_codegen/src/printer/mod.rs` + submodules |
 | Binding layer | Go WASM bridge (`packages/compiler/src/node/`) | N-API (`crates/astro_napi/src/lib.rs`) |
 | Runtime | Node.js + browser | Node.js only (native addon) |
 

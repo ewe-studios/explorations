@@ -316,7 +316,7 @@ vite: z.custom<ViteUserConfig>((data) => data instanceof Object && !Array.isArra
     .default(ASTRO_CONFIG_DEFAULTS.vite),
 ```
 
-Astro's internal Vite plugins are layered on top of the user's vite config. The user config is never overwritten — it is always merged, so user plugins run alongside Astro's 23+ internal plugins. See [Vite Plugins](04-vite-plugins.html) for the full list of internal plugins.
+Astro's internal Vite plugins are layered on top of the user's vite config. The user config is never overwritten -- it is always merged, so user plugins run alongside Astro's 40+ internal plugins. See [Vite Plugins](04-vite-plugins.html) for the full list of internal plugins.
 
 ### Image Service Configuration
 
@@ -476,7 +476,7 @@ redirects: z.record(
     z.union([
         z.string(),  // simple string redirect
         z.object({
-            status: z.union([z.literal(300), z.literal(301), z.literal(302), z.literal(303), z.literal(304), z.literal(307), z.literal(308)]),
+            status: z.union([z.literal(300), z.literal(301), z.literal(302), z.literal(303), z.literal(307), z.literal(308)]),
             destination: z.string(),
         }),
     ]),

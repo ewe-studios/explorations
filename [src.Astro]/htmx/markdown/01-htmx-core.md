@@ -239,7 +239,7 @@ Newly added elements receive `htmx-added` temporarily during the swap, then it i
 
 Source: `htmx/dist/htmx.js:1799-1848` — the `swapWithStyle` switch statement.
 
-htmx supports nine built-in swap strategies, each mapping to a specific DOM mutation. The switch at line 1799 dispatches by string name:
+htmx supports nine built-in swap strategies, each mapping to a specific DOM mutation. Eight are dispatched by the switch at line 1799 by string name; `textContent` is handled in the `swap` function (line 1908) rather than `swapWithStyle`:
 
 ```javascript
 // htmx/dist/htmx.js:1799-1848 — swapWithStyle switch
@@ -276,6 +276,7 @@ Each strategy:
 | `beforeend` | `target.appendChild(fragment)` | Inserts as last child of target |
 | `afterend` | `target.parentNode.insertBefore(fragment, target.nextSibling)` | Inserts after target as next sibling |
 | `delete` | `target.parentNode.removeChild(target)` | Removes target from DOM entirely |
+| `textContent` | Replace `target.textContent` | Sets text content without HTML parsing |
 | (custom) | Extension `handleSwap` | Any unrecognized string delegates to extensions |
 
 The `swapInnerHTML` function (line 1779) is particularly careful: it inserts new nodes before the existing first child, then removes all original children one by one. This ensures the new content coexists briefly with the old, allowing CSS transitions if `globalViewTransitions` is enabled.

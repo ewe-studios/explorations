@@ -24,7 +24,7 @@ Astro's design decisions all flow from one principle: **content should be delive
 
 ## Architecture at a Glance
 
-Astro's architecture spans three layers: the developer-facing component model, the Vite-powered build pipeline, and the SSR runtime. The Rust compiler transforms `.astro` files into JavaScript, 23 custom Vite plugins handle specialized transformations, and the build produces output across three Vite environments.
+Astro's architecture spans three layers: the developer-facing component model, the Vite-powered build pipeline, and the SSR runtime. The Rust compiler transforms `.astro` files into JavaScript, 40+ custom Vite plugins handle specialized transformations, and the build produces output across three Vite environments.
 
 ```mermaid
 flowchart TD
@@ -37,7 +37,7 @@ flowchart TD
 
     subgraph Core["Astro Core"]
         E["@astrojs/compiler-rs\nRust Compiler"]
-        F["23 Vite Plugins"]
+        F["40+ Vite Plugins"]
         G["Integration API\nHooks System"]
         H["Config Resolver"]
     end
@@ -317,7 +317,7 @@ The prebuild step compiles the `astro-island` runtime and client hydration direc
 
 ## Vite Plugins: The Engine Room
 
-Astro ships **23 custom Vite plugins** in `src/vite-plugin-*/`. Each plugin handles a specific transformation or resolution concern within the Vite build pipeline.
+Astro ships **40+ custom Vite plugins** in `src/vite-plugin-*/` and subdirectories. Each plugin handles a specific transformation or resolution concern within the Vite build pipeline.
 
 | Plugin | Purpose |
 |---|---|
@@ -347,7 +347,7 @@ Astro ships **23 custom Vite plugins** in `src/vite-plugin-*/`. Each plugin hand
 
 **Aha:** The plugin architecture is deliberately granular. Instead of one monolithic plugin that does everything, each concern (CSS, HTML, routing, head, scripts, markdown, etc.) lives in its own plugin. This makes the build pipeline composable and debuggable — you can trace a CSS issue directly to `vite-plugin-css` without wading through unrelated code.
 
-**Source:** `packages/astro/src/vite-plugin-*/` — 23 directories
+**Source:** `packages/astro/src/vite-plugin-*/` and subdirectories (assets, container, env, i18n, prefetch, toolbar, transitions, middleware, server-islands, session, cache, fetch, content, actions) — 40+ plugins total
 
 ---
 
@@ -448,7 +448,7 @@ This overview sets the stage for deeper exploration of individual systems:
 - [Architecture](./01-architecture.md) — Full monorepo dependency graph, layer diagram, and module map
 - [Configuration & Routing](./02-config-routing.md) — AstroConfig schema, settings resolution, file-based routing
 - [Component Model](./03-component-model.md) — `.astro` syntax, frontmatter processing, JSX rendering
-- [Vite Plugins](./04-vite-plugins.md) — Deep dive into all 23 Vite plugins
+- [Vite Plugins](./04-vite-plugins.md) — Deep dive into all 40+ Vite plugins
 - [Build Pipeline](./05-build-pipeline.md) — Three-environment build process in detail
 - [SSR Runtime](./06-ssr-runtime.md) — App class, manifest generation, request handling
 - [Integration API](./07-integration-api.md) — Hook system and plugin injection

@@ -195,10 +195,10 @@ Source: `compiler-rs/crates/astro_napi/src/lib.rs:304-411`
 ## Synchronous API
 
 ```rust
-// crates/astro_napi/src/lib.rs:428-432
+// crates/astro_napi/src/lib.rs:429-432
 #[napi]
 pub fn compile_astro_sync(
-    source_text: String, 
+    source_text: String,
     options: Option<CompileOptions>
 ) -> CompileResult {
     let options = options.unwrap_or_default();
@@ -206,7 +206,7 @@ pub fn compile_astro_sync(
 }
 ```
 
-Source: `compiler-rs/crates/astro_napi/src/lib.rs:428-432`
+Source: `compiler-rs/crates/astro_napi/src/lib.rs:429-432`
 
 ## Asynchronous API
 
@@ -280,7 +280,7 @@ Source: `compiler-rs/crates/astro_napi/src/lib.rs:486-564`
 `extractStylesSync` lets callers preprocess CSS before compilation:
 
 ```rust
-// crates/astro_napi/src/lib.rs:230-276
+// crates/astro_napi/src/lib.rs:234-276
 #[napi(object)]
 pub struct StyleBlock {
     pub index: u32,
@@ -305,7 +305,7 @@ pub fn extract_styles_sync(source_text: String) -> Vec<StyleBlock> {
 }
 ```
 
-Source: `compiler-rs/crates/astro_napi/src/lib.rs:230-276`
+Source: `compiler-rs/crates/astro_napi/src/lib.rs:234-276`
 
 This enables the "Rust extract -> TypeScript preprocess -> Rust compile" pipeline for Sass/PostCSS support.
 

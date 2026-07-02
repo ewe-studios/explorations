@@ -483,10 +483,10 @@ The size difference across the ecosystem is dramatic, and it matters for every p
 | Library | Lines | Minified (approx) | Gzip (approx) | Dependencies |
 |---------|-------|-------------------|---------------|--------------|
 | hyperscript (max) | 11,981 | ~350 KB | ~90 KB | None |
-| hyperscript (std) | 10,527 | ~300 KB | ~75 KB | None |
+| hyperscript (std) | 10,526 | ~300 KB | ~75 KB | None |
 | htmx | 5,342 | ~50 KB | ~15 KB | None |
 | intercooler | 2,084 | ~25 KB | ~8 KB | jQuery |
-| idiomorph | 1,383 | ~12 KB | ~4 KB | None |
+| idiomorph | 1,390 | ~12 KB | ~4 KB | None |
 | rexi | 115 | ~1 KB | ~500 B | None |
 | moxi | 110 | ~1 KB | ~500 B | None |
 | ssexi | 89 | ~1 KB | ~400 B | None |

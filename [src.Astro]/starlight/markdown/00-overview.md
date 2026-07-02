@@ -154,14 +154,15 @@ packages/starlight/
 
 ## Key Dependencies
 
-Starlight has 23 runtime dependencies:
+Starlight has 30 runtime dependencies:
 
 | Dependency | Purpose |
 |------------|---------|
 | `astro ^7.0.2` | Peer dependency, the framework Starlight extends |
 | `@astrojs/mdx ^7.0.0` | MDX support for component-aware content |
 | `@astrojs/sitemap ^3.7.2` | Sitemap generation |
-| `@astrojs/markdown-satteri ^0.3.2` | Markdown processing (Astro's default processor) |
+| `@astrojs/markdown-remark` ^7.2.0 | Peer dependency (optional), Astro's default Markdown processor |
+| `@astrojs/markdown-satteri` ^0.3.2 | Markdown processing (Starlight's runtime default processor) |
 | `satteri ^0.9.1` | Markdown processor |
 | `astro-expressive-code ^0.44.0` | Code block syntax highlighting |
 | `pagefind ^1.5.2` | Static full-text search engine |

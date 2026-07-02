@@ -66,7 +66,7 @@ Source: `packages/starlight/loaders.ts`
 import { glob, type Loader, type LoaderContext } from 'astro/loaders';
 import { getCollectionPathFromRoot, type StarlightCollection } from './utils/collection';
 
-const docsExtensions = ['markdown', 'mdown', 'mkdn', 'md', 'mdwn', 'mdx'];
+const docsExtensions = ['markdown', 'mdown', 'mkdn', 'mkd', 'mdwn', 'md', 'mdx'];
 const i18nExtensions = ['json', 'yml', 'yaml'];
 
 export function docsLoader({ generateId }: { generateId?: GenerateIdFunction } = {}): Loader {

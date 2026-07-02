@@ -361,6 +361,7 @@ Source: `compiler/SYNTAX_SPEC.md:143-149`
 | `transition:animate` | Any | View transition animation |
 | `transition:name` | Any | View transition name mapping |
 | `transition:persist` | Any | Persist element across transitions |
+| `transition:persist-props` | Any | Persist with props (preserves component props) |
 | `server:defer` | Component | Defer to client for rendering |
 | `data-astro-reload` | `<a>`, `<form>`, `<area>` | Full page reload instead of VT |
 

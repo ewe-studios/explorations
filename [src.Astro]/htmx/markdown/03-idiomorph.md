@@ -5,7 +5,7 @@ explored_at: 2026-07-02
 
 # Idiomorph: ID-Based DOM Morphing
 
-Idiomorph is a DOM morphing library that uses **ID-based element matching** to minimize destructive DOM operations. Instead of replacing entire subtrees when server-sent HTML arrives, idiomorph identifies elements by their `id` attribute, morphs matching elements in place, and only creates or removes nodes where no match exists. This preserves focus, selection, animations, event listeners, and third-party widget state that would be destroyed by naive innerHTML replacement. The library is 1,383 lines (version 0.7.4), published at `https://github.com/bigskysoftware/idiomorph`, and serves as the default morphing engine for htmx 2.0.
+Idiomorph is a DOM morphing library that uses **ID-based element matching** to minimize destructive DOM operations. Instead of replacing entire subtrees when server-sent HTML arrives, idiomorph identifies elements by their `id` attribute, morphs matching elements in place, and only creates or removes nodes where no match exists. This preserves focus, selection, animations, event listeners, and third-party widget state that would be destroyed by naive innerHTML replacement. The library is 1,390 lines (version 0.7.4), published at `https://github.com/bigskysoftware/idiomorph`, and serves as the default morphing engine for htmx 2.0.
 
 ---
 
@@ -131,16 +131,24 @@ function morph(oldNode, newContent, config = {}) {
     const newNode = normalizeParent(newContent);
     const ctx = createMorphContext(oldNode, newNode, config);
 
-    return saveAndRestoreFocus(ctx, () => {
-        return withHeadBlocking(ctx, oldNode, newNode, (ctx, oldNode, newNode) => {
-            if (ctx.morphStyle === "innerHTML") {
-                morphChildren(ctx, oldNode, newNode);
-                return oldNode.children;
-            } else {
-                return morphOuterHTML(ctx, oldNode, newNode);
-            }
-        });
+    const morphedNodes = saveAndRestoreFocus(ctx, () => {
+      return withHeadBlocking(
+        ctx,
+        oldNode,
+        newNode,
+        /** @param {MorphContext} ctx */ (ctx) => {
+          if (ctx.morphStyle === "innerHTML") {
+            morphChildren(ctx, oldNode, newNode);
+            return Array.from(oldNode.childNodes);
+          } else {
+            return morphOuterHTML(ctx, oldNode, newNode);
+          }
+        },
+      );
     });
+
+    ctx.pantry.remove();
+    return morphedNodes;
 }
 ```
 
@@ -181,15 +189,21 @@ When `morphStyle` is `"outerHTML"`, the morph includes the target element itself
 ```javascript
 // idiomorph/dist/idiomorph.js:189-200
 function morphOuterHTML(ctx, oldNode, newNode) {
-    const oldParent = oldNode.parentNode;
-    let marker = oldParent.appendChild(document.createTextNode(''));
-    morphChildren(ctx, oldParent, newNode, marker, marker);
-    marker.remove();
-    return Array.from(oldParent.children);
+    const oldParent = normalizeParent(oldNode);
+    morphChildren(
+      ctx,
+      oldParent,
+      newNode,
+      // these two optional params are the secret sauce
+      oldNode, // start point for iteration
+      oldNode.nextSibling, // end point for iteration
+    );
+    // this is safe even with siblings, because normalizeParent returns a SlicedParentNode if needed.
+    return Array.from(oldParent.childNodes);
 }
 ```
 
-This creates a temporary text node marker at the position of the old element, calls `morphChildren` on the parent with the marker as both the start and end boundary, then removes the marker. The marker acts as an anchor so that morphChildren knows where in the parent's children list the morph is happening. The result is an array of the parent's children after the morph completes.
+This normalizes the old node's parent (handling edge cases like detached nodes via `SlicedParentNode`), then calls `morphChildren` on that parent with `oldNode` as the start boundary and `oldNode.nextSibling` as the end boundary. This tells `morphChildren` exactly which range of siblings to process, avoiding the need for temporary marker nodes. The result is an array of the parent's children after the morph completes.
 
 ### morphChildren
 
@@ -338,7 +352,7 @@ Three approaches to updating the DOM after receiving new content:
 | Focus preservation | Manual (refs) | Partial | Automatic (restoreFocus) |
 | Event listener handling | Framework-managed | Browser-native | Browser-native |
 | Tree representation | Virtual (JS objects) | Real DOM | Real DOM |
-| Typical size | 10K+ lines | 300+ lines | 1,383 lines |
+| Typical size | 10K+ lines | 300+ lines | 1,390 lines |
 | Best for | Complex client-side UIs | Server-rendered fragments | Server-rendered fragments with stable IDs |
 
 ---
@@ -472,7 +486,7 @@ Idiomorph.morph(document.body, fullPageHtml, {
 - The pantry pattern uses a hidden div as a workspace for parsing and repositioning nodes without triggering browser reflows.
 - Focus preservation is automatic when `restoreFocus` is enabled, with `ignoreActive` and `ignoreActiveValue` providing additional protection for user input.
 - Idiomorph integrates with htmx as the default morphing engine for `hx-swap="morph"`, and with Alpine.js through the `alpine-morph` extension.
-- Compared to virtual DOM diffing, idiomorph trades the overhead of building virtual trees for direct DOM operations with identity preservation. The result is simpler code (1,383 lines vs 10,000+) and better runtime state preservation.
+- Compared to virtual DOM diffing, idiomorph trades the overhead of building virtual trees for direct DOM operations with identity preservation. The result is simpler code (1,390 lines vs 10,000+) and better runtime state preservation.
 
 ---
 

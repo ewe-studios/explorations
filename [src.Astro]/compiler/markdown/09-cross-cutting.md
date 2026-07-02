@@ -32,11 +32,14 @@ Source: `internal/printer/printer.go:547-558`
 The `sourcemap.ChunkBuilder` (`internal/sourcemap/sourcemap.go`) maps source positions to output positions incrementally as the printer emits bytes.
 
 ```go
-// internal/sourcemap/sourcemap.go
-type ChunkBuilder interface {
-    AddSourceMapping(location loc.Loc, output []byte)
-    GenerateChunk(output []byte) Chunk
+// internal/sourcemap/sourcemap.go:575-595
+type ChunkBuilder struct {
+    inputSourceMap      *SourceMap
+    sourceMap           []byte
+    prevLoc             loc.Loc
+    // ... more fields
 }
+// Methods: AddSourceMapping, GenerateChunk, GetLineAndColumnForLocation, etc.
 ```
 
 Source: `internal/sourcemap/sourcemap.go`

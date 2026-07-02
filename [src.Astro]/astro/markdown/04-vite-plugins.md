@@ -14,7 +14,7 @@ Astro's Vite configuration is constructed in two phases. The first phase runs du
 
 ### Dev/Build Base Plugins (`createVite`)
 
-The function `createVite` at `packages/astro/src/core/create-vite.ts:104` is the single entry point for assembling the base Vite config. It returns a `vite.InlineConfig` whose `plugins` array contains the flattened list of all Astro plugins. The order matters plugins that must run early (like `vitePluginRenderers` with `enforce: 'pre'`) appear first, while fallback plugins (like `configAliasVitePlugin` with `enforce: 'post'`) appear later. Source:
+The function `createVite` at `packages/astro/src/core/create-vite.ts:161` is the single entry point for assembling the base Vite config. It returns a `vite.InlineConfig` whose `plugins` array contains the flattened list of all Astro plugins. The order matters plugins that must run early (like `vitePluginRenderers` with `enforce: 'pre'`) appear first, while fallback plugins (like `configAliasVitePlugin` with `enforce: 'post'`) appear later. Source:
 
 ```typescript
 // packages/astro/src/core/create-vite.ts:169
@@ -154,7 +154,7 @@ flowchart TD
     SSR + Prerender --> Build Only
 ```
 
-## The 23 Vite Plugins, In Detail
+## The 40+ Vite Plugins, In Detail
 
 ### 1. vite-plugin-astro: Core .astro Transformation
 
@@ -187,7 +187,7 @@ The `astro:server` plugin is **dev-only** (`applyToEnvironment` restricts to `ss
 1. Create handlers for both the `ssr` and `prerender` environments using `createViteLoader` and `createAstroServerApp`.
 2. Register an `unhandledRejection` listener that routes errors to the appropriate handler and broadcasts them via WebSocket.
 3. Push middleware onto the Vite dev server stack (in order of execution):
-   - `secFetchMiddleware`: Validates `Sec-Fetch-*` headers for security
+   - `secFetchMiddleware`: Validates request `Host` header against `server.allowedHosts` config for security
    - `routeGuardMiddleware`: Prevents serving files outside `srcDir`/`publicDir`
    - `trailingSlashMiddleware`: Enforces trailing slash configuration
    - `baseMiddleware`: Handles the `base` path prefix

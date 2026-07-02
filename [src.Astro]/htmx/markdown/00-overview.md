@@ -53,7 +53,7 @@ flowchart TB
     end
 
     subgraph Morphing["DOM Morphing"]
-        idi["idiomorph.js\n(1383 lines, v0.7.4)\nID-based DOM diff/patch"]
+        idi["idiomorph.js\n(1390 lines, v0.7.4)\nID-based DOM diff/patch"]
     end
 
     subgraph Extensions["htmx Extensions (23 built-in)"]
@@ -61,7 +61,7 @@ flowchart TB
     end
 
     subgraph Predecessor["Predecessor"]
-        ic["Intercooler.js\n(v1.2.4, MIT)\nOriginal attribute-AJAX lib"]
+        ic["Intercooler.js\n(v1.2.4, 2084 lines, MIT)\nOriginal attribute-AJAX lib"]
     end
 
     subgraph Lightweight["Lightweight Variants"]
@@ -103,7 +103,7 @@ flowchart TB
 
 **_hyperscript** is a small scripting language designed to complement htmx when attributes are not enough. It provides event handling, DOM manipulation, transitions, and flow control in a readable syntax that embeds directly in HTML attributes. At 10526 lines, it is larger than htmx itself, reflecting the complexity of a general-purpose scripting language versus a focused AJAX engine.
 
-**idiomorph** is a 1383-line DOM morphing library. It diff-and-patches two HTML fragments by element ID, preserving focus, animation state, and scroll position across swaps. It is the algorithmic alternative to htmx's built-in swap styles.
+**idiomorph** is a 1390-line DOM morphing library. It diff-and-patches two HTML fragments by element ID, preserving focus, animation state, and scroll position across swaps. It is the algorithmic alternative to htmx's built-in swap styles.
 
 **23 built-in extensions** ship with htmx in `dist/ext/`. They add SSE/WebSocket support, JSON encoding, head tag merging, class management, path-based dependencies, preloading, and more.
 
@@ -222,7 +222,7 @@ function swapWithStyle(swapStyle, elt, target, fragment, settleInfo) {
 }
 ```
 
-The nine swap styles are: `none`, `outerHTML`, `innerHTML`, `afterbegin`, `beforebegin`, `beforeend`, `afterend`, `delete`, and `textContent`. The `delete` style removes the target element entirely. The `none` style makes the request but performs no DOM change, useful for triggering side effects.
+The nine swap styles are: `none`, `innerHTML`, `outerHTML`, `afterbegin`, `beforebegin`, `beforeend`, `afterend`, `delete`, and `textContent`. The `delete` style removes the target element entirely. The `none` style makes the request but performs no DOM change, useful for triggering side effects. The `textContent` style sets the target's text content without parsing HTML, handled separately in the `swap` function rather than `swapWithStyle`.
 
 Unknown swap styles are offered to extensions first. This is how `morphdom-swap` and `idiomorph-swap` work: they register as extensions that handle their own swap style name. If no extension claims it, the default (`innerHTML`) is used.
 
@@ -397,7 +397,7 @@ The `hx-confirm` uses the browser's native `confirm()` dialog. The `delete` swap
 |---------|----------|-------|-------|
 | **htmx** | You need full hypermedia AJAX with extensions, history, and all swap styles | 5342 | Always start here |
 | **_hyperscript** | You need client-side event orchestration, DOM transitions, or logic that attributes alone cannot express | 10526 | Add alongside htmx when `hx-on:` is not enough |
-| **idiomorph** | You need smooth DOM morphing (preserving focus, animations, input state) during swaps | 1383 | Use as swap strategy via `hx-swap="morph:idiomorph"` |
+| **idiomorph** | You need smooth DOM morphing (preserving focus, animations, input state) during swaps | 1390 | Use as swap strategy via `hx-swap="morph:idiomorph"` |
 | **missing.css** | You want decent-looking pages without writing custom CSS | N/A | Drop into any htmx project for baseline styling |
 | **fixi** | You need the absolute minimum: fixed-content AJAX with no extensions, no history | 90 | Embedded systems, single-purpose widgets |
 | **moxi** | You target mobile-first with reduced feature set | 110 | Progressive enhancement on constrained devices |
@@ -446,7 +446,7 @@ The request handling config at lines 264-268 reveals another insight: htmx uses 
 | `htmx/package.json` | Package metadata, v2.0.10, 0BSD license | N/A |
 | `htmx/dist/ext/*.js` | 23 built-in extensions | Varies |
 | `_hyperscript/dist/_hyperscript.js` | Hyperscript scripting language | 10526 |
-| `idiomorph/dist/idiomorph.js` | DOM morphing library | 1383 |
+| `idiomorph/dist/idiomorph.js` | DOM morphing library | 1390 |
 | `intercooler-js/dist/intercooler.js` | Predecessor library (v1.2.4) | N/A |
 | `fixi/fixi.js` | Minimal AJAX variant | 90 |
 | `moxi/moxi.js` | Mobile-first variant | 110 |

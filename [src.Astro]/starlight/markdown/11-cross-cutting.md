@@ -414,17 +414,16 @@ Starlight uses CSS cascade layers for style specificity control:
 Source: `packages/starlight/style/layers.css`
 
 ```css
-@layer starlight.props, starlight.optional, starlight.reset,
-       starlight.asides, starlight.util, starlight.base;
+@layer starlight.base, starlight.reset, starlight.core, starlight.content, starlight.components, starlight.utils;
 ```
 
 Layer order (lowest to highest specificity):
-1. **`starlight.props`** -- CSS custom property definitions
-2. **`starlight.optional`** -- Optional feature styles (e.g., heading links)
-3. **`starlight.reset`** -- CSS reset styles
-4. **`starlight.asides`** -- Aside/callout styles
-5. **`starlight.util`** -- Utility classes
-6. **`starlight.base`** -- Base component styles
+1. **`starlight.base`** -- Base component styles
+2. **`starlight.reset`** -- CSS reset styles
+3. **`starlight.core`** -- Core layout styles
+4. **`starlight.content`** -- Content area styles
+5. **`starlight.components`** -- Individual component styles
+6. **`starlight.utils`** -- Utility classes
 
 User custom CSS (imported via `virtual:starlight/user-css`) falls OUTSIDE these layers, so it can override any Starlight style without needing `!important` or high specificity selectors.
 

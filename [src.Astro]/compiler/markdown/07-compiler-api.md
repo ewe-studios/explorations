@@ -36,46 +36,46 @@ Source: `compiler/packages/compiler/` directory structure.
 ## Shared Type Definitions
 
 ```typescript
-// packages/compiler/src/shared/types.ts
+// packages/compiler/src/shared/types.ts:42-62
 export interface TransformOptions {
+  internalURL?: string;
   filename?: string;
   normalizedFilename?: string;
-  internalURL?: string;
-  sourcemap?: 'external' | 'inline' | 'both';
+  sourcemap?: boolean | 'inline' | 'external' | 'both';
   astroGlobalArgs?: string;
-  compact?: 'none' | 'html' | 'jsx';
+  compact?: boolean | 'jsx';
   resultScopedSlot?: boolean;
   scopedStyleStrategy?: 'where' | 'class' | 'attribute';
   transitionsAnimationURL?: string;
+  resolvePath?: (specifier: string) => Promise<string> | string;
+  preprocessStyle?: (content: string, attrs: Record<string, string>) => null | Promise<PreprocessorResult | PreprocessorError>;
   annotateSourceFile?: boolean;
-  stripSlotComments?: boolean;
-  resolvePath?: (specifier: string) => string;
-  resolvePathProvided?: boolean;
-  preprocessedStyles?: (string | undefined)[];
+  // Deprecated: as?: 'document' | 'fragment';
 }
 
 export interface TransformResult {
   code: string;
   map: string;
   scope: string;
-  css: string[];
-  scripts: HoistedScript[];
-  hydratedComponents: Component[];
-  clientOnlyComponents: Component[];
-  serverComponents: Component[];
-  containsHead: boolean;
-  propagation: boolean;
   styleError: string[];
   diagnostics: DiagnosticMessage[];
+  css: string[];
+  scripts: HoistedScript[];
+  hydratedComponents: HydratedComponent[];
+  clientOnlyComponents: HydratedComponent[];
+  serverComponents: HydratedComponent[];
+  containsHead: boolean;
+  propagation: boolean;
 }
 
 export interface HoistedScript {
-  type: 'inline' | 'external';
-  code?: string;
-  src?: string;
-}
+  type: string;
+} & (
+  | { type: 'external'; src: string; }
+  | { type: 'inline'; code: string; map: string; }
+);
 
-export interface Component {
+export interface HydratedComponent {
   exportName: string;
   localName: string;
   specifier: string;
@@ -83,7 +83,7 @@ export interface Component {
 }
 ```
 
-Source: `compiler/packages/compiler/src/shared/types.ts` and `compiler-rs/crates/astro_napi/src/lib.rs:77-228`.
+Source: `compiler/packages/compiler/src/shared/types.ts:42-110`
 
 ## WASM-Based API (Go Compiler)
 
@@ -289,30 +289,47 @@ Source: `compiler-rs/crates/astro_napi/src/lib.rs:413-432`
 
 ## TransformOptions Deep Dive
 
-Key options and their effects:
+Key options and their effects (from the TypeScript API):
 
 | Option | Effect | Default |
 |--------|--------|---------|
 | `filename` | Component name derivation, sourcemap source | `"<stdin>"` |
 | `normalizedFilename` | Hash computation (different files = different hashes) | filename |
-| `sourcemap` | Source map output mode | `undefined` (no map) |
-| `compact` | Whitespace collapsing strategy | `"none"` |
+| `sourcemap` | Source map output mode (`boolean` or `'inline'`/`'external'`/`'both'`) | `false` (no map) |
+| `compact` | Whitespace collapsing (`boolean` or `'jsx'`) | `false` |
 | `internalURL` | Runtime import path | `"astro/runtime/server/index.js"` |
 | `scopedStyleStrategy` | CSS scoping selector style | `"where"` |
-| `resolvePathProvided` | Skip `$$metadata` emission | `false` |
-| `preprocessedStyles` | Preprocessed CSS content per style block | `undefined` |
+| `resolvePath` | Custom path resolver (returns `Promise<string>` or `string`) | none |
+| `preprocessStyle` | Style preprocessing callback | none |
+
+Note: `stripSlotComments`, `resolvePathProvided`, and `preprocessedStyles` are Rust compiler internals not exposed in the TypeScript API. The Rust `CompactOptions` enum (`'none'`/`'html'`/`'jsx'`) is broader than the TypeScript `compact` type (`boolean | 'jsx'`).
 
 ## Error Handling
 
 Both APIs return diagnostics in the result:
 
 ```typescript
-interface DiagnosticMessage {
-  severity: 'error' | 'warning' | 'info' | 'hint';
-  code: string;
-  message: string;
-  loc?: { file?: string; line: number; column: number };
+// packages/compiler/src/shared/types.ts:18-40
+export enum DiagnosticSeverity {
+  Error = 1,
+  Warning = 2,
+  Information = 3,
+  Hint = 4,
+}
+
+export interface DiagnosticMessage {
+  severity: DiagnosticSeverity;
+  code: DiagnosticCode;
+  location: DiagnosticLocation;
   hint?: string;
+  text: string;
+}
+
+export interface DiagnosticLocation {
+  file: string;
+  line: number;    // 1-based
+  column: number;  // 1-based
+  length: number;
 }
 ```
 

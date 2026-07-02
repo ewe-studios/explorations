@@ -271,8 +271,7 @@ Source: `packages/starlight/style/layers.css`
 
 ```css
 /* packages/starlight/style/layers.css */
-@layer starlight.props, starlight.optional, starlight.reset,
-       starlight.asides, starlight.util, starlight.base;
+@layer starlight.base, starlight.reset, starlight.core, starlight.content, starlight.components, starlight.utils;
 ```
 
 Aha: **Starlight uses a Vite plugin to inject `@layer` ordering at the top of the CSS cascade, ensuring Starlight's styles always take precedence over user styles regardless of import order.** The `vitePluginStarlightCssLayerOrder` plugin generates an inline style that declares the layer order before any CSS is processed. This solves the classic problem of "my custom CSS is being overridden by Starlight's CSS" without requiring users to use `!important` or specificity hacks.

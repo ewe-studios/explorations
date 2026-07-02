@@ -13,7 +13,7 @@ The libraries are organized around three concerns:
 | Library | Concern | Lines | Key Pattern |
 |---------|---------|-------|-------------|
 | fixi | Fixed-content AJAX (triggers, requests, swaps) | 90 | MutationObserver + event-driven lifecycle |
-| moxi | Mobile-first DOM interaction (event handlers, reactive queries) | 110 | Proxy-based DOM queries + XPath scanning |
+| moxi | Mobile-first DOM interaction (event handlers, reactive queries) | 110 | Proxy-based DOM queries + XPath evaluation |
 | rexi | Fluent HTTP API (fetch wrapper, body encoding) | 115 | Method-chain fetch with automatic encoding |
 | ssexi | Server-Sent Events streaming | 89 | SSE parser + `fx:config` event hook |
 
@@ -340,7 +340,7 @@ The handler body is compiled with `new AsyncFunction("event", "q", "wait", "trig
 
 ### Reactive live Attributes
 
-moxi supports a `live` attribute that defines a reactive query. The value is compiled into an async function that receives `q`, `wait`, `trigger`, and `debounce`. This function is added to a `liveFns` set and re-executed whenever the DOM changes:
+moxi supports a `live` attribute that defines a reactive expression. The attribute value is compiled into an async function that receives four implicit arguments: `q` (query proxy), `wait` (event/timeout waiter), `trigger` (event dispatcher), and `debounce` (debounce utility). This function is added to a `liveFns` set and re-executed whenever the DOM changes:
 
 ```javascript
 // moxi/moxi.js:66-71

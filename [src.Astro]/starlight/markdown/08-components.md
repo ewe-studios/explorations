@@ -181,7 +181,7 @@ sequenceDiagram
 
 ## The Component Override System
 
-Any of 27+ components can be overridden through the `components` config:
+Any of 29 components can be overridden through the `components` config:
 
 Source: `packages/starlight/schemas/components.ts`
 

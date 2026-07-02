@@ -6,7 +6,7 @@ next: "05-fixi-family.md"
 
 # Intercooler.js — The Ancestor of htmx
 
-Intercooler.js is the original attribute-driven AJAX library that introduced the `ic-*` prefix convention and the idea that HTML attributes could declaratively describe server communication, DOM updates, and client-side actions without writing JavaScript functions. It is the direct predecessor of htmx. Every concept in htmx — attribute-driven requests, swap strategies, event triggers, loading indicators, out-of-band updates — traces its lineage back to this 2084-line library. Understanding Intercooler.js means understanding why htmx exists and how its design decisions evolved from a jQuery-dependent prototype into a standalone runtime.
+Intercooler.js is the original attribute-driven AJAX library that introduced the `ic-*` prefix convention and the idea that HTML attributes could declaratively describe server communication, DOM updates, and client-side actions without writing JavaScript functions. It is the direct predecessor of htmx. Every concept in htmx -- attribute-driven requests, swap strategies, event triggers, loading indicators, out-of-band updates -- traces its lineage back to this 2,084-line library. Understanding Intercooler.js means understanding why htmx exists and how its design decisions evolved from a jQuery-dependent prototype into a standalone runtime.
 
 Related: [00-overview.md](00-overview.md) for the project landscape, [01-htmx-core.md](01-htmx-core.md) for the htmx request pipeline it inspired, [05-fixi-family.md](05-fixi-family.md) for the lightweight variants that followed, and [07-cross-cutting.md](07-cross-cutting.md) for patterns that span all documents.
 

@@ -508,7 +508,7 @@ Astro does not use React's JSX runtime. Instead, it provides its own `jsx-runtim
 The `createVNode` function (exported as `jsx`, `jsxDEV`, and `jsxs`) creates virtual node objects:
 
 ```typescript
-// packages/astro/src/runtime/server/jsx-runtime/index.ts
+// packages/astro/src/jsx-runtime/index.ts
 interface AstroVNode {
   [Renderer]: string;
   [AstroJSX]: boolean;
@@ -519,13 +519,13 @@ interface AstroVNode {
 export function createVNode(type, props = {}, key?): AstroVNode
 ```
 
-The `[Renderer]` symbol identifies which renderer (React, Vue, Svelte, etc.) should handle the component. The `[AstroJSX]` symbol identifies the object as an Astro VNode.
+The `[Renderer]` symbol identifies which renderer (React, Vue, Svelte, etc.) should handle the component. The `[AstroJSX]` property is the string constant `'astro:jsx'` that identifies the object as an Astro VNode.
 
 ### transformSlots
 
 The `transformSlots` function extracts `slot` attributes from children and moves them into the VNode's props. This enables named slot handling at render time. It also transforms `set:html` and `set:text` directives into VNode props with `$$slot` markers.
 
-**Source:** `packages/astro/src/runtime/server/jsx-runtime/index.ts` — `transformSlots(vnode: AstroVNode)`.
+**Source:** `packages/astro/src/jsx-runtime/index.ts` — `transformSlots(vnode: AstroVNode)`.
 
 ### renderJSX
 
