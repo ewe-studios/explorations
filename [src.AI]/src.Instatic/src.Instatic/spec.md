@@ -17,6 +17,7 @@ license: MIT
 - **Runtime:** Bun (server + tooling)
 - **License:** MIT
 - **Package Manager:** Bun (bun.lock, bunfig.toml)
+- **Source scale:** 301 core files, 752 admin files, 66 plugin files, 70+ CMS handlers
 
 ## What src.Instatic Is
 
@@ -29,20 +30,26 @@ Key differentiators:
 - **React Compiler enabled** — no hand-written useMemo/useCallback/memo
 - **TypeBox-only validation** — zod is banned repo-wide
 - **In-house routing** — react-router-dom is banned, custom router at src/admin/lib/routing/
+- **NodeTree<TNode>** — single tree primitive for pages, visual components, slot fills
 
 ## Documentation Goal
 
 A reader should understand:
 
 1. Instatic's architecture: one Bun process, two off-main-thread workers, two database engines
-2. The routing table: 15 routes in order, from health check to 404
+2. The routing table: 19 routes in order, from health check to 404
 3. The three-layer publishing pipeline (static bake → LRU cache → lazy holes)
-4. The plugin system: QuickJS-WASM sandbox, capability permissions, crash recovery
-5. The visual editor: canvas, panels, toolbar, Zustand+Mutative store
-6. The content model: data_tables + data_rows, no separate pages table
-7. The AI runtime: HTTP-only drivers, multi-turn tool loop, no provider SDKs
-8. The tree primitive: NodeTree<TNode> for pages, visual components, slot fills
-9. Development setup: Bun, Vite, React Compiler, Playwright E2E
+4. Publisher internals: render.ts, renderNode.ts, dynamicDetection.ts, escapeProps, CSS collector
+5. The plugin system: QuickJS-WASM sandbox, capability permissions, crash recovery, RPC protocol
+6. Plugin host: worker pool, content projection, media, network, schedule, storage handlers
+7. Plugin VM: bootstrap, ESM shim, eval, limits, marshal, types
+8. The visual editor: canvas, panels, toolbar, Zustand+Mutative store
+9. Canvas internals: rendering, dnd, composition, breakpoint frames, live surface
+10. The AI runtime: HTTP-only drivers, multi-turn tool loop, no provider SDKs
+11. Site agent: agent API, executor, tools, streaming, token runners
+12. The content model: data_tables + data_rows, NodeTree, TypeBox
+13. Loops, forms, media, templates, site import/export
+14. Development setup: Bun, Vite, React Compiler, Playwright E2E
 
 ## Documentation Structure
 
@@ -52,15 +59,20 @@ src.Instatic/
 ├── markdown/
 │   ├── README.md                  ← Index / table of contents
 │   ├── 00-overview.md             ← What Instatic is, pre-release status, stack overview
-│   ├── 01-architecture.md         ← One process, two workers, routing, database
+│   ├── 01-architecture.md         ← One process, two workers, 19-route dispatcher, database
 │   ├── 02-server.md               ← Hand-written router, handlers, repositories
 │   ├── 03-publisher.md            ← Three-layer publishing pipeline
-│   ├── 04-plugin-system.md        ← QuickJS-WASM sandbox, capabilities, lifecycle
-│   ├── 05-visual-editor.md        ← Canvas, panels, store, React Compiler
-│   ├── 06-ai-runtime.md           ← HTTP-only drivers, tool loop, no SDKs
-│   ├── 07-content-model.md        ← data_tables, data_rows, NodeTree, TypeBox
-│   ├── 08-deployment.md           ← Docker, Postgres/SQLite, TLS, HA
-│   └── 09-cross-cutting.md        ← Banned deps, patterns, testing
+│   ├── 04-publisher-deep.md       ← render.ts, renderNode.ts, dynamicDetection deep dive
+│   ├── 05-plugin-system.md        ← QuickJS-WASM sandbox, capabilities, lifecycle
+│   ├── 06-plugin-deep.md          ← Host, VM, protocol, bootstrap, RPC deep dive
+│   ├── 07-visual-editor.md        ← Canvas, panels, store, React Compiler
+│   ├── 08-canvas.md               ← Canvas rendering, dnd, composition, breakpoint frames
+│   ├── 09-ai-runtime.md           ← HTTP-only drivers, multi-turn tool loop, no SDKs
+│   ├── 10-ai-agent.md             ← Site agent, executor, tools, streaming
+│   ├── 11-content-model.md        ← data_tables, data_rows, NodeTree, TypeBox
+│   ├── 12-loops-forms.md          ← Loops, forms, media, templates, site import
+│   ├── 13-deployment.md           ← Docker, Postgres/SQLite, TLS, HA
+│   └── 14-cross-cutting.md        ← Banned deps, patterns, testing, benchmarks
 ├── html/                          ← Generated HTML
 │   ├── index.html
 │   ├── styles.css
@@ -83,8 +95,13 @@ src.Instatic/
 | 9 | 07-content-model.md | DONE |
 | 10 | 08-deployment.md | DONE |
 | 11 | 09-cross-cutting.md | DONE |
-| 12 | HTML generation | DONE |
-| 13 | Grandfather review | DONE (fixed route count 15→19) |
+| 12 | 04-publisher-deep.md | DONE |
+| 13 | 06-plugin-deep.md | DONE |
+| 14 | 08-canvas.md | DONE |
+| 15 | 10-ai-agent.md | DONE |
+| 16 | 12-loops-forms.md | DONE |
+| 17 | HTML regeneration | DONE |
+| 18 | Grandfather review | DONE |
 
 ## Build System
 
@@ -108,4 +125,4 @@ A developer reading these docs can:
 
 ## Resume Point
 
-If interrupted, check `spec.md` tasks table for DONE status.
+If interrupted, check `spec.md` tasks table for DONE/TODO status.

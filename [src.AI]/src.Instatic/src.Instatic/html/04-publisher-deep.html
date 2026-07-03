@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Publisher Deep Dive: render, renderNode, dynamicDetection -- src.Instatic</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.Instatic/docs</span>
+    <div class="nav-actions">
+      <a href="02-server.html" class="nav-breadcrumb">Server: Hand-Written Router and Handlers</a><a href="03-publisher.html" class="nav-breadcrumb">Publisher: Three-Layer Publishing Pipeline</a><a href="04-plugin-system.html" class="nav-breadcrumb">Plugin System: QuickJS-WASM Sandbox</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="04-plugin-system.html" class="nav-btn" title="Previous: Plugin System: QuickJS-WASM Sandbox">← prev</a>
+      <a href="05-visual-editor.html" class="nav-btn nav-btn-next" title="Next: Visual Editor: Canvas, Panels, and Store">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Publisher Deep Dive: render, renderNode, dynamicDetection</h1>
+<p>This document provides source-level detail of the three core publisher files: <code>render.ts</code> (page orchestrator), <code>renderNode.ts</code> (recursive node renderer), and <code>dynamicDetection.ts</code> (static/dynamic classification).</p>
+<p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Instatic/Instatic/src/core/publisher/</code></p>
+<h2>File Map</h2>
+<table><tr><th>File</th><th>Purpose</th></tr><tr><td>`render.ts`</td><td>`publishPage()` — page-level orchestration, `<head>`/`<body>` assembly</td></tr><tr><td>`renderNode.ts`</td><td>`renderNode()` — recursive bottom-up node walk</td></tr><tr><td>`renderConfig.ts`</td><td>`RenderConfig`, `RenderAccumulators`, `RenderNodeFn` types</td></tr><tr><td>`renderVisualComponentRef.ts`</td><td>Specialized renderer for `base.visual-component-ref`</td></tr><tr><td>`renderLoop.ts`</td><td>Specialized renderer for `base.loop` — data iteration, round-robin</td></tr><tr><td>`dynamicDetection.ts`</td><td>`findDynamicNodeIds()` — 4-rule auto-detection</td></tr><tr><td>`escapeProps.ts`</td><td>Constraint #211: escape string props before render()</td></tr><tr><td>`classInjection.ts`</td><td>Inject author classIds, node IDs, inline styles</td></tr><tr><td>`classCss.ts`</td><td>Compile StyleRule entries → CSS, bag to inline style</td></tr><tr><td>`cssCollector.ts`</td><td>`CssCollector` — dedup CSS by moduleId (~60-80% reduction)</td></tr><tr><td>`cspPlan.ts`</td><td>Content-Security-Policy plan generation</td></tr><tr><td>`frameworkCss.ts`</td><td>Site framework CSS (spacing scale, typography)</td></tr><tr><td>`reset.ts`</td><td>`PUBLISHER_RESET_CSS` — cross-browser baseline</td></tr><tr><td>`siteCssBundle.ts`</td><td>Hash-named bundle composition</td></tr><tr><td>`userStylesheets.ts`</td><td>Site-level user stylesheets</td></tr><tr><td>`sizesResolver.ts`</td><td>`<img sizes>` from layout (caps, fractions, grid tracks)</td></tr><tr><td>`holeSubtreeModules.ts`</td><td>Collect module IDs inside hole subtrees</td></tr><tr><td>`utils.ts`</td><td>`escapeHtml`, `isSafeUrl`, `sanitiseCssValue`</td></tr></table>
+<h2>publishPage: Page Orchestrator</h2>
+<p><strong>Source:</strong> <code>src/core/publisher/render.ts</code></p>
+<pre><code class="language-typescript">// src/core/publisher/render.ts
+interface PublishPageOptions {
+  breakpointId?: string
+  templateContext?: TemplateRenderDataContext
+  runtimeAssets?: PublishedPageRuntimeAssets
+  loopData?: Map&lt;string, ResolvedLoopRenderData&gt;
+  mediaAssets?: Map&lt;string, RenderResolvedMedia&gt;
+  loopEndpointBaseUrl?: string
+  cssMode?: &#x27;inline&#x27; | &#x27;external&#x27;
+}
+
+interface PublishedPage {
+  filename: string    // e.g. &quot;index.html&quot;, &quot;about-us.html&quot;
+  html: string        // Complete &lt;!DOCTYPE html&gt; document
+  jsModuleIds: string[] // Module-JS candidates for script injection
+}
+</code></pre>
+<p>The <code>publishPage()</code> function:</p>
+<ol><li><strong>Resolve template context</strong> — page/site/route frames via <code>buildPageFrame</code>, <code>buildSiteFrame</code>, <code>buildRouteFrame</code></li><li><strong>Detect dynamic nodes</strong> — <code>findDynamicNodeIds(page, site, registry)</code> returns set of dynamic node IDs</li><li><strong>Check Layer A viability</strong> — if no dynamic nodes and no loops, page can be fully static</li><li><strong>Build <code><body></code> classes</strong> — <code>classNamesForClassIds(rootNode.classIds)</code> injects root node classes</li><li><strong>Build <code><head></code></strong> — title, description, favicon, lang, importmap, runtime <code><script></code>s, CSP</li><li><strong>Call <code>renderNode(rootNodeId)</code></strong> — recursive bottom-up walk</li><li><strong>Collect CSS</strong> — <code>collectClassCSS()</code> + <code>sanitizeModuleCSS()</code> + <code>collectUserStylesheetCss()</code></li><li><strong>Emit CSS</strong> — inline <code><style></code> or external <code><link></code> tags based on <code>cssMode</code></li><li><strong>Assemble document</strong> — <code><!DOCTYPE html></code> + <code><html></code> + <code><head></code> + <code><body></code></li></ol>
+<h3>CSS Emission Modes</h3>
+<table><tr><th>Mode</th><th>Output</th><th>Use case</th></tr><tr><td>`inline` (default)</td><td>Single `<style>` block with reset + framework + module + user CSS</td><td>Self-contained exports, iframe preview, tests</td></tr><tr><td>`external`</td><td>Three `<link rel="stylesheet">` tags</td><td>Server-served pages where CSS is cached separately</td></tr></table>
+<h3>CSP Generation</h3>
+<pre><code class="language-typescript">// src/core/publisher/cspPlan.ts
+// createBaseCspPlan() → Content-Security-Policy meta tag
+// Handles script-src, style-src, img-src, font-src, connect-src
+</code></pre>
+<h2>renderNode: Recursive Walker</h2>
+<p><strong>Source:</strong> <code>src/core/publisher/renderNode.ts</code></p>
+<p>The <code>renderNode()</code> function is the recursive bottom-up walker. Two paths:</p>
+<h3>Path 1: Specialized Renderers</h3>
+<pre><code class="language-typescript">// renderNode checks for specialized renderers by moduleId:
+if (moduleId === &#x27;base.visual-component-ref&#x27;) {
+  return renderVisualComponentRef(nodeId, config, acc, renderNode)
+}
+if (moduleId === &#x27;base.loop&#x27;) {
+  return renderLoop(nodeId, config, acc, renderNode)
+}
+</code></pre>
+<p><strong>Aha:</strong> Specialized renderers receive <code>renderNode</code> as a callback so the file graph stays acyclic — only <code>renderNode.ts</code> knows both ends of the recursion. This prevents circular dependencies between the walker and specialized renderers.</p>
+<h3>Path 2: renderStandardNode</h3>
+<p>For all other nodes, the bottom-up flow:</p>
+<ol><li><strong>Render children</strong> — <code>renderNode(childId)</code> for each child</li><li><strong>Resolve page refs</strong> — <code>resolvePageRefProps()</code> converts <code>cms:page:<id></code> to public paths</li><li><strong>Resolve effective props</strong> — <code>resolveProps()</code> from page-tree</li><li><strong>Resolve dynamic props</strong> — <code>resolveDynamicProps()</code> for request-dependent bindings</li><li><strong>Attach media</strong> — <code>attachResolvedMediaByKey()</code> for multi-media props</li><li><strong>Resolve sizes</strong> — <code>resolveAutoSizes()</code> for responsive images</li><li><strong>Escape props</strong> — <code>escapeProps()</code> (Constraint #211)</li><li><strong>Validate</strong> — <code>validateNodeProps()</code> against module schema</li><li><strong>Call module.render()</strong> — pure function returning HTML (Constraint #179)</li><li><strong>Collect CSS</strong> — <code>collectClassCSS()</code> deduped by moduleId</li><li><strong>Inject classes</strong> — <code>injectNodeClassIds()</code>, <code>injectNodeId()</code>, <code>injectNodeInlineStyles()</code></li><li><strong>Sanitize richtext</strong> — <code>sanitizeRichtext()</code> via DOMPurify</li></ol>
+<pre><code class="language-typescript">// renderNode.ts:46-76 — Page ref resolution
+function resolvePageRefProps(
+  props: Record&lt;string, unknown&gt;,
+  pages: RenderConfig[&#x27;site&#x27;][&#x27;pages&#x27;],
+): Record&lt;string, unknown&gt; {
+  let out: Record&lt;string, unknown&gt; | null = null
+  for (const [key, value] of Object.entries(props)) {
+    if (!isPageRef(value)) continue
+    const resolved = resolvePageRef(value, pages)
+    if (resolved === null) continue
+    if (!out) out = { ...props }
+    out[key] = resolved
+  }
+  return out ?? props
+}
+</code></pre>
+<h2>dynamicDetection: Four-Rule Classifier</h2>
+<p><strong>Source:</strong> <code>src/core/publisher/dynamicDetection.ts</code></p>
+<p>The <code>findDynamicNodeIds()</code> function walks the page tree once and classifies every node as static or dynamic. It's the single source of truth used by both Layer A (should we bake to disk?) and Layer C (should we emit <code><instatic-hole></code>?).</p>
+<h3>Detection Rules</h3>
+<table><tr><th>Rule</th><th>Condition</th><th>Effect</th></tr><tr><td>1</td><td>Module flagged `dynamic: true` in registry</td><td>Node is dynamic</td></tr><tr><td>2</td><td>`dynamicBindings` entry with request-dependent source (`route.query.*`)</td><td>Node is dynamic</td></tr><tr><td>2b</td><td>String prop value contains `{source.field}` token with request-dependent source</td><td>Node is dynamic</td></tr><tr><td>3</td><td>`base.loop` with `requestDependent: true` source</td><td>Node is dynamic</td></tr><tr><td>4</td><td>`base.visual-component-ref` whose VC tree contains any dynamic node</td><td>Outer VC ref is dynamic</td></tr></table>
+<h3>Request-Dependent Binding Sources</h3>
+<table><tr><th>Source</th><th>Request-Dependent?</th><th>Reason</th></tr><tr><td>`route.query.*`</td><td>Yes</td><td>Varies per visitor URL</td></tr><tr><td>`currentEntry.*`</td><td>No</td><td>Entry known at publish</td></tr><tr><td>`parentEntry.*`</td><td>No</td><td>Parent entry known at publish</td></tr><tr><td>`page.*`</td><td>No</td><td>Page-level, static</td></tr><tr><td>`site.*`</td><td>No</td><td>Site-level, static</td></tr><tr><td>`route.path`</td><td>No</td><td>Fixed per static route</td></tr><tr><td>`route.slug`</td><td>No</td><td>Fixed per static route</td></tr></table>
+<h3>VC Ref Subtlety</h3>
+<p>When a VC definition tree is dynamic, the <strong>outer VC ref node ID</strong> (in the page tree) goes into <code>dynamicPageNodeIds</code> — not the inner VC node IDs. The hole boundary is the VC ref, not any inner node. Diagnostic reasons collected from inner VC traversal are still appended to the reason list so authors can see WHICH inner construct made the VC dynamic.</p>
+<pre><code class="language-typescript">// dynamicDetection.ts:63-80 — Binding source classification
+function isBindingSourceRequestDependent(source: string, field: string): boolean {
+  switch (source) {
+    case &#x27;route&#x27;:
+      return field === &#x27;query&#x27; || field.startsWith(&#x27;query.&#x27;)
+    case &#x27;currentEntry&#x27;:
+    case &#x27;parentEntry&#x27;:
+    case &#x27;page&#x27;:
+    case &#x27;site&#x27;:
+      return false
+    default:
+      // Unknown source — conservatively treated as publish-time deterministic
+      // to avoid false positives forcing unnecessary dynamic rendering.
+      return false
+  }
+}
+</code></pre>
+<p><strong>Aha:</strong> Unknown binding sources are conservatively treated as publish-time deterministic. This avoids false positives where every plugin-registered source would force dynamic rendering. Plugin authors adding request-dependent sources should update this function or register sources via a future plugin-source registry.</p>
+<h3>Hole Subtree Collection</h3>
+<p>After identifying dynamic nodes, <code>collectHoleSubtreeModuleIds()</code> collects all module IDs inside hole subtrees. This ensures the correct module-JS bundles are injected for pages with dynamic content.</p>
+<h2>escapeProps: Constraint #211</h2>
+<p><strong>Source:</strong> <code>src/core/publisher/escapeProps.ts</code></p>
+<p>Every node's props pass through <code>escapeProps()</code> before <code>module.render()</code>. This dispatches per-prop based on the schema control <code>type</code>:</p>
+<ul><li>Strings are HTML-escaped (<code>escapeHtml</code>)</li><li>URLs are validated (<code>isSafeUrl</code>)</li><li>Numbers, booleans, and objects pass through unchanged</li></ul>
+<p>This prevents XSS at the render boundary — even if a module accidentally returns user-controlled HTML, it gets escaped.</p>
+<h2>CSS Collector: Decision #308</h2>
+<p><strong>Source:</strong> <code>src/core/publisher/cssCollector.ts</code></p>
+<p>CSS is deduplicated by <code>moduleId</code>. If two nodes use the same module with the same classIds, the CSS is emitted once. This achieves ~60-80% size reduction on typical pages.</p>
+<pre><code class="language-typescript">// CssCollector — accumulates class CSS, deduped by moduleId
+// collectClassCSS(modules, classIds, registry) → CSS string
+// sanitizeModuleCSS(moduleId, css) → safe CSS for injection
+</code></pre>
+<h2>Next</h2>
+<p>Continue to <a href="06-plugin-deep.md">06-plugin-deep</a> for the plugin host, VM, protocol, and RPC deep dive.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
