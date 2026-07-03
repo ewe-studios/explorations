@@ -47,7 +47,7 @@ src.UIComponents/
 ├── spec.md
 ├── markdown/
 │   ├── README.md                  ← Index / table of contents
-│   ├── 00-overview.md             ← What src.UIComponents is, 4-project breakdown
+│   ├── 00-overview.md             ← What src.UIComponents is, 5-project breakdown
 │   ├── 01-architecture.md         ← Architecture of each project, dependency graphs
 │   ├── 02-kumo.md                 ← Kumo: Cloudflare's component library deep dive
 │   ├── 03-kumo-packages.md        ← Kumo: monorepo packages (docs, figma, screenshot-worker)
@@ -55,7 +55,9 @@ src.UIComponents/
 │   ├── 05-mapcn.md                ← mapcn: MapLibre registry and blocks
 │   ├── 06-next-maps.md            ← next-maps: Mapbox integration
 │   ├── 07-table-forge.md          ← table-forge: MDX-driven table showcase
-│   └── 08-cross-cutting.md        ← Patterns across all 4 projects
+│   ├── 08-cross-cutting.md        ← Patterns across all 5 projects
+│   ├── 09-remote-dom.md           ← remote-dom: DOM rendering from sandboxed environments
+│   └── 10-kumo-deep.md            ← Kumo: every component, every primitive, source-level
 ├── html/                          ← Generated HTML
 │   ├── index.html
 │   ├── styles.css
@@ -77,8 +79,10 @@ src.UIComponents/
 | 8 | 06-next-maps.md | DONE |
 | 9 | 07-table-forge.md | DONE |
 | 10 | 08-cross-cutting.md | DONE |
-| 11 | HTML generation | DONE |
-| 12 | Grandfather review | DONE |
+| 11 | 09-remote-dom.md | DONE |
+| 12 | 10-kumo-deep.md | DONE |
+| 13 | HTML generation | DONE |
+| 14 | Grandfather review | DONE |
 
 ## Build System
 

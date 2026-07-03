@@ -15,7 +15,7 @@ Output location: `[src.AI]/<project>/` with `spec.md`, `markdown/`, `html/`, `bu
 
 | # | Project | Source Path | Status |
 |---|---------|-------------|--------|
-| 1 | src.UIComponents | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.UIComponents/` | DONE — 11 docs (spec + 10 markdown), HTML built, grandfather review passed |
+| 1 | src.UIComponents | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.UIComponents/` | DONE — 13 docs (including remote-dom, kumo-deep with every component/primitive source-level), HTML built, grandfather review passed |
 | 2 | src.TenFramework | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.TenFramework/` | TODO |
 | 3 | src.Moltis | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/` | DONE — 14 docs (including gateway-deep, agents-deep, providers-deep, tools-deep), HTML built, grandfather review passed |
 | 4 | src.PDFToMarkdown | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.PDFToMarkdown/` | TODO |

@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kumo Deep Dive: Every Component, Every Primitive, Source-Level -- src.UIComponents</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.UIComponents/docs</span>
+    <div class="nav-actions">
+      <a href="07-table-forge.html" class="nav-breadcrumb">table-forge: MDX-Driven Table Showcase</a><a href="08-cross-cutting.html" class="nav-breadcrumb">Cross-Cutting Patterns</a><a href="09-remote-dom.html" class="nav-breadcrumb">Remote DOM: DOM Rendering from Sandboxed Environments</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="09-remote-dom.html" class="nav-btn" title="Previous: Remote DOM: DOM Rendering from Sandboxed Environments">← prev</a>
+      <a href="README.html" class="nav-btn nav-btn-next" title="Next: src.UIComponents Documentation — Deep Dive">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Kumo Deep Dive: Every Component, Every Primitive, Source-Level</h1>
+<p>Comprehensive source-level documentation of every kumo component and primitive.</p>
+<p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.UIComponents/kumo/packages/kumo/src/</code></p>
+<h2>Source Map</h2>
+<table><tr><th>Directory</th><th>Files</th><th>Purpose</th></tr><tr><td>`src/components/`</td><td>~100</td><td>35+ styled components</td></tr><tr><td>`src/primitives/`</td><td>~30</td><td>30+ Base UI wrappers</td></tr><tr><td>`src/blocks/`</td><td>~10</td><td>Composite page patterns</td></tr><tr><td>`src/utils/`</td><td>~10</td><td>Utilities (cn, link-provider, portal-provider)</td></tr><tr><td>`src/registry/`</td><td>~5</td><td>Component metadata, AI schemas</td></tr><tr><td>`src/catalog/`</td><td>~5</td><td>Component catalog system</td></tr><tr><td>`src/code/`</td><td>~5</td><td>Syntax highlighting (Shiki)</td></tr><tr><td>`src/command-line/`</td><td>~10</td><td>CLI implementation</td></tr><tr><td>`src/styles/`</td><td>~5</td><td>CSS build outputs</td></tr></table>
+<hr>
+<h2>Components</h2>
+<h3>Button (<code>src/components/button/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/button/button.tsx</code></p>
+<h4>Exports</h4>
+<table><tr><th>Export</th><th>Type</th></tr><tr><td>`Button`</td><td>Main button component</td></tr><tr><td>`RefreshButton`</td><td>Button with refresh icon</td></tr><tr><td>`LinkButton`</td><td>Button that renders as a link</td></tr><tr><td>`buttonVariants`</td><td>Class generator function</td></tr><tr><td>`ButtonProps`</td><td>TypeScript type</td></tr><tr><td>`LinkButtonProps`</td><td>TypeScript type</td></tr></table>
+<h4>Variants</h4>
+<pre><code class="language-typescript">// src/components/button/button.tsx:10-87
+export const KUMO_BUTTON_VARIANTS = {
+  shape: {
+    base: { classes: &quot;&quot;, description: &quot;Default rectangular button&quot; },
+    square: { classes: &quot;items-center justify-center p-0&quot;, description: &quot;Square icon-only&quot; },
+    circle: { classes: &quot;items-center justify-center p-0 rounded-full&quot;, description: &quot;Circular icon-only&quot; },
+  },
+  size: {
+    xs: { classes: &quot;h-5 gap-1 rounded-sm px-1.5 text-xs&quot; },
+    sm: { classes: &quot;h-6.5 gap-1 rounded-md px-2 text-xs&quot; },
+    base: { classes: &quot;h-9 gap-1.5 rounded-lg px-3 text-base&quot; },
+    lg: { classes: &quot;h-10 gap-2 rounded-lg px-4 text-base&quot; },
+  },
+  variant: {
+    primary: { classes: &quot;bg-(--kumo-button-emphasis-bg) !text-white ring ring-(--kumo-button-emphasis-ring)...&quot; },
+    secondary: { classes: &quot;bg-kumo-base !text-kumo-default ring not-disabled:hover:bg-kumo-tint...&quot; },
+    ghost: { classes: &quot;text-kumo-default hover:bg-kumo-tint shadow-none bg-inherit&quot; },
+    destructive: { classes: &quot;bg-(--kumo-button-emphasis-bg) !text-white ring...&quot; },
+    &quot;secondary-destructive&quot;: { classes: &quot;bg-kumo-base !text-kumo-danger ring...&quot; },
+    outline: { classes: &quot;bg-transparent text-kumo-default ring ring-kumo-line...&quot; },
+  },
+} as const;
+</code></pre>
+<h4>Default Variants</h4>
+<pre><code class="language-typescript">export const KUMO_BUTTON_DEFAULT_VARIANTS = {
+  shape: &quot;base&quot;,
+  size: &quot;base&quot;,
+  variant: &quot;secondary&quot;,
+} as const;
+</code></pre>
+<h4>buttonVariants()</h4>
+<pre><code class="language-typescript">// src/components/button/button.tsx:125-162
+export function buttonVariants({
+  variant = &quot;secondary&quot;,
+  size = &quot;base&quot;,
+  shape = &quot;base&quot;,
+}: KumoButtonVariantsProps = {}) {
+  const isCompactShape = shape === &quot;square&quot; || shape === &quot;circle&quot;;
+  return cn(
+    &quot;group flex w-max shrink-0 items-center font-medium select-none&quot;,
+    &quot;border-0 shadow-xs&quot;,
+    &quot;focus:outline-none focus:ring-kumo-focus/50 focus-visible:ring-2&quot;,
+    &quot;cursor-pointer&quot;,
+    &quot;disabled:cursor-not-allowed disabled:text-kumo-subtle&quot;,
+    resolveVariant(KUMO_BUTTON_VARIANTS.size, size, &quot;base&quot;).classes,
+    resolveVariant(KUMO_BUTTON_VARIANTS.shape, shape, &quot;base&quot;).classes,
+    isCompactShape &amp;&amp; resolveVariant(KUMO_BUTTON_VARIANTS.compactSize, size, &quot;base&quot;).classes,
+    resolveVariant(KUMO_BUTTON_VARIANTS.variant, variant, &quot;secondary&quot;).classes,
+  );
+}
+</code></pre>
+<h4>Emphasis Token System</h4>
+<pre><code class="language-typescript">// src/components/button/button.tsx:172-188
+const getEmphasisToken = (variant: KumoButtonVariant) =&gt; {
+  if (variant === &quot;primary&quot;) return &quot;var(--color-kumo-brand)&quot;;
+  if (variant === &quot;destructive&quot;) return &quot;var(--color-kumo-danger)&quot;;
+  return undefined;
+};
+
+const getEmphasisStyle = (variant: KumoButtonVariant) =&gt; {
+  const token = getEmphasisToken(variant);
+  if (!token) return undefined;
+  return {
+    &quot;--kumo-button-emphasis-ring&quot;: `color-mix(in oklch, ${token}, black 10%)`,
+    &quot;--kumo-button-emphasis-bg&quot;: `color-mix(in oklch, ${token}, white 30%)`,
+    &quot;--kumo-button-emphasis-gradient-start&quot;: `color-mix(in oklch, ${token}, white 15%)`,
+    &quot;--kumo-button-emphasis-gradient-end&quot;: token,
+  };
+};
+</code></pre>
+<p><strong>Aha:</strong> Primary and destructive buttons use CSS <code>color-mix()</code> for gradient backgrounds and ring colors. The emphasis style is computed as CSS custom properties and applied inline, so the button automatically adapts to theme changes without needing separate dark variant classes.</p>
+<h4>Button Component</h4>
+<pre><code class="language-typescript">type ButtonBaseProps = React.ButtonHTMLAttributes&lt;HTMLButtonElement&gt; &amp; {
+  children?: React.ReactNode;
+  className?: string;
+  icon?: Icon | React.ReactNode;    // @phosphor-icons/react or React element
+  loading?: boolean;                // Shows spinner, disables interaction
+  title?: React.ReactNode;          // Wraps in Tooltip when set
+};
+
+// Discriminated union: icon-only buttons require aria-label
+type ButtonWithIconProps = ButtonBaseProps &amp; {
+  shape: &quot;square&quot; | &quot;circle&quot;;
+  &quot;aria-label&quot;: string;             // Required for accessibility
+  icon: Icon | React.ReactNode;
+};
+</code></pre>
+<h4>RefreshButton</h4>
+<p>A Button with a built-in <code>ArrowsClockwise</code> icon from <code>@phosphor-icons/react</code>:</p>
+<pre><code class="language-typescript">export function RefreshButton(props: ButtonProps) {
+  return &lt;Button icon={ArrowsClockwise} {...props} /&gt;;
+}
+</code></pre>
+<h4>LinkButton</h4>
+<p>A Button that renders as an anchor tag, using <code>useLinkComponent</code> for custom link routing:</p>
+<pre><code class="language-typescript">export function LinkButton({ href, ...props }: LinkButtonProps) {
+  const LinkComponent = useLinkComponent();
+  return &lt;Button as={LinkComponent} href={href} {...props} /&gt;;
+}
+</code></pre>
+<h3>Badge (<code>src/components/badge/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/badge/badge.tsx</code></p>
+<p>Renders a small label/tag. Variants: default, success, warning, error, info. Sizes: sm, base, lg.</p>
+<h3>Banner (<code>src/components/banner/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/banner/banner.tsx</code></p>
+<p>Renders a full-width notification banner. Variants: info, warning, error, success.</p>
+<h3>Checkbox (<code>src/components/checkbox/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/checkbox/checkbox.tsx</code></p>
+<p>Wraps the Base UI Checkbox primitive. Props: <code>checked</code>, <code>onChange</code>, <code>disabled</code>, <code>indeterminate</code>. Includes legend support via <code>CheckboxLegendProps</code>.</p>
+<h3>Collapsible (<code>src/components/collapsible/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/collapsible/collapsible.tsx</code></p>
+<p>Wraps Base UI Collapsible. Compound component pattern with <code>CollapsibleRoot</code>, <code>CollapsibleTrigger</code>, <code>CollapsiblePanel</code>.</p>
+<h3>Combobox (<code>src/components/combobox/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/combobox/combobox.tsx</code></p>
+<p>Combines input with dropdown list. Supports search, async loading, multi-select. Built on Base UI Combobox primitive.</p>
+<h3>Date Picker (<code>src/components/date-picker/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/date-picker/date-picker.tsx</code></p>
+<p>Built on <code>react-day-picker ^9.13.2</code>. Supports single date, date range, and disabled date patterns.</p>
+<h3>Date Range Picker (<code>src/components/date-range-picker/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/date-range-picker/date-range-picker.tsx</code></p>
+<p><strong>Deprecated</strong> — use <code>DatePicker</code> with <code>mode="range"</code> instead.</p>
+<h3>Dialog (<code>src/components/dialog/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/dialog/dialog.tsx</code></p>
+<p>Compound component: <code>DialogRoot</code>, <code>DialogTrigger</code>, <code>DialogTitle</code>, <code>DialogDescription</code>, <code>DialogClose</code>. Uses Base UI Dialog primitive.</p>
+<h3>Dropdown (<code>src/components/dropdown/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/dropdown/dropdown.tsx</code></p>
+<p>Dropdown menu built on Base UI Menu primitive. Supports nested submenus, icons, keyboard navigation.</p>
+<h3>Field (<code>src/components/field/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/field/field.tsx</code></p>
+<p>Form field wrapper with label, description, error message. Variants: default, inline.</p>
+<h3>Grid (<code>src/components/grid/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/grid/grid.tsx</code></p>
+<p>CSS grid layout component. Variants: auto (responsive), fixed, mixed. Supports gap, columns, breakpoints.</p>
+<h3>Input (<code>src/components/input/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/input/input.tsx</code></p>
+<p>Text input with variants. Includes <code>InputArea</code>/<code>Textarea</code> for multi-line input.</p>
+<h3>Input Group (<code>src/components/input-group/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/input-group/input-group.tsx</code></p>
+<p>Groups input with addon/suffix/button. Compound component: <code>InputGroupRoot</code>, <code>InputGroupAddon</code>, <code>InputGroupSuffix</code>, <code>InputGroupInput</code>, <code>InputGroupButton</code>.</p>
+<h3>Label (<code>src/components/label/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/label/label.tsx</code></p>
+<p>Form label with variants. Wraps Base UI Label primitive.</p>
+<h3>Layer Card (<code>src/components/layer-card/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/layer-card/layer-card.tsx</code></p>
+<p>Card component for layered content. <strong>Replaces the deprecated <code>Surface</code> component.</strong></p>
+<h3>Link (<code>src/components/link/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/link/link.tsx</code></p>
+<p>Styled link component. Uses <code>useLinkComponent</code> for custom routing. Variants: default, subtle, brand.</p>
+<h3>Loader (<code>src/components/loader/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/loader/loader.tsx</code></p>
+<p>Loading spinner with variants. Includes <code>SkeletonLine</code> for content placeholders.</p>
+<h3>Menu Bar (<code>src/components/menubar/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/menubar/menubar.tsx</code></p>
+<p>Horizontal menu bar. Uses <code>useMenuNavigation</code> hook for keyboard navigation.</p>
+<h3>Meter (<code>src/components/meter/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/meter/meter.tsx</code></p>
+<p>Progress/level indicator. Variants: bar, circular.</p>
+<h3>Pagination (<code>src/components/pagination/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/pagination/pagination.tsx</code></p>
+<p>Page navigation with prev/next, page numbers, and ellipsis for large page counts.</p>
+<h3>Popover (<code>src/components/popover/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/popover/popover.tsx</code></p>
+<p>Floating panel. Compound component: <code>PopoverRoot</code>, <code>PopoverTrigger</code>, <code>PopoverContent</code>, <code>PopoverTitle</code>, <code>PopoverDescription</code>, <code>PopoverClose</code>.</p>
+<h3>Radio (<code>src/components/radio/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/radio/radio.tsx</code></p>
+<p>Radio group with variants. Supports legend, descriptions, and custom appearances.</p>
+<h3>Select (<code>src/components/select/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/select/select.tsx</code></p>
+<p>Dropdown select built on Base UI Select primitive. Supports search, multi-select, async loading.</p>
+<h3>Sensitive Input (<code>src/components/sensitive-input/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/sensitive-input/sensitive-input.tsx</code></p>
+<p>Password-style input with show/hide toggle. For API keys, passwords, tokens.</p>
+<h3>Sidebar (<code>src/components/sidebar/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/sidebar/sidebar.tsx</code></p>
+<p>Full sidebar component with collapsible groups, resize handle, sliding views. Compound component with 20+ sub-components: <code>SidebarProvider</code>, <code>SidebarRoot</code>, <code>SidebarHeader</code>, <code>SidebarContent</code>, <code>SidebarFooter</code>, <code>SidebarGroup</code>, <code>SidebarMenu</code>, <code>SidebarMenuButton</code>, <code>SidebarMenuSub</code>, <code>SidebarSeparator</code>, <code>SidebarTrigger</code>, <code>SidebarRail</code>, <code>SidebarResizeHandle</code>, <code>SidebarCollapsible</code>, etc.</p>
+<p><strong>Aha:</strong> The Sidebar is one of kumo's most complex components at 300+ lines. It supports:</p>
+<ul><li>Two variants: floating, inset</li><li>Two sides: left, right</li><li>Collapsible with stored state</li><li>Resizable with drag handle</li><li>Sliding views for nested navigation</li><li>Menu groups with chevron expand/collapse</li></ul>
+<h3>Switch (<code>src/components/switch/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/switch/switch.tsx</code></p>
+<p>Toggle switch with legend support. Wraps Base UI Switch primitive.</p>
+<h3>Table (<code>src/components/table/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/table/table.tsx</code></p>
+<p>Data table with sortable columns, row selection, and pagination support.</p>
+<h3>Table of Contents (<code>src/components/table-of-contents/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/table-of-contents/table-of-contents.tsx</code></p>
+<p>Sticky TOC with active item tracking. Variants: default, compact.</p>
+<h3>Tabs (<code>src/components/tabs/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/tabs/tabs.tsx</code></p>
+<p>Tab navigation. Wraps Base UI Tabs primitive. Variants: default, underline.</p>
+<h3>Text (<code>src/components/text/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/text/text.tsx</code></p>
+<p>Typography component. Variants: heading, body, caption, code. Sizes: xs through 2xl.</p>
+<h3>Toast (<code>src/components/toast/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/toast/toast.tsx</code></p>
+<p>Toast notification system. Exports: <code>Toasty</code> (component), <code>ToastProvider</code>, <code>Toast</code>, <code>useKumoToastManager</code>, <code>createKumoToastManager</code>.</p>
+<h3>Toolbar (<code>src/components/toolbar/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/toolbar/toolbar.tsx</code></p>
+<p>Horizontal toolbar with buttons, inputs, separators. Variants: default, compact. Includes <code>ToolbarInputGroup</code> for grouped inputs.</p>
+<h3>Tooltip (<code>src/components/tooltip/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/tooltip/tooltip.tsx</code></p>
+<p>Tooltip wrapper. Wraps Base UI Tooltip primitive. Use <code>TooltipProvider</code> at app root.</p>
+<h3>Autocomplete (<code>src/components/autocomplete/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/autocomplete/autocomplete.tsx</code></p>
+<p>Autocomplete input with async search. Supports keyboard navigation, multi-select, custom rendering.</p>
+<h3>Breadcrumbs (<code>src/components/breadcrumbs/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/breadcrumbs/breadcrumbs.tsx</code></p>
+<p>Breadcrumb navigation. Supports custom separators, overflow truncation.</p>
+<h3>Clipboard Text (<code>src/components/clipboard-text/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/clipboard-text/clipboard-text.tsx</code></p>
+<p>Clickable text that copies to clipboard. Shows "copied" feedback.</p>
+<h3>Cloudflare Logo (<code>src/components/cloudflare-logo/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/cloudflare-logo/cloudflare-logo.tsx</code></p>
+<p>Cloudflare logo component with variants. Exports: <code>CloudflareLogo</code>, <code>PoweredByCloudflare</code>, <code>generateCloudflareLogoSvg</code>.</p>
+<h3>Code (<code>src/components/code/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/code/code.tsx</code></p>
+<p>Code display with syntax highlighting (Shiki). Exports: <code>Code</code> (inline), <code>CodeBlock</code> (block).</p>
+<h3>Command Palette (<code>src/components/command-palette/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/command-palette/command-palette.tsx</code></p>
+<p>Command palette (⌘K dialog). Supports groups, keyboard navigation, fuzzy search.</p>
+<h3>Empty (<code>src/components/empty/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/empty/empty.tsx</code></p>
+<p>Empty state placeholder. For showing "no results" or "nothing here yet" states.</p>
+<h3>Flow (<code>src/components/flow/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/flow/flow.tsx</code></p>
+<p>Flow/step indicator component. Variants: horizontal, vertical.</p>
+<h3>Chart (<code>src/components/chart/</code>)</h3>
+<p><strong>Source:</strong> <code>src/components/chart/chart.tsx</code></p>
+<p>Chart components built on ECharts. Exports: <code>Chart</code>, <code>SankeyChart</code>, <code>TimeseriesChart</code>, <code>ChartLegend</code>, <code>BubbleMap</code>. Requires <code>echarts ^6.0.0</code> peer dependency.</p>
+<hr>
+<h2>Primitives</h2>
+<p>Primitives are generated by <code>scripts/generate-primitives.ts</code> from Base UI. They provide accessibility without opinions.</p>
+<h3>Generated Primitives</h3>
+<table><tr><th>Primitive</th><th>Base UI Component</th><th>Purpose</th></tr><tr><td>`Accordion`</td><td>`Accordion`</td><td>Expandable sections</td></tr><tr><td>`AlertDialog`</td><td>`AlertDialog`</td><td>Confirmation dialogs</td></tr><tr><td>`Autocomplete`</td><td>`Autocomplete`</td><td>Autocomplete input</td></tr><tr><td>`Avatar`</td><td>`Avatar`</td><td>User avatar</td></tr><tr><td>`Button`</td><td>`Button`</td><td>Base button</td></tr><tr><td>`Checkbox`</td><td>`Checkbox`</td><td>Checkbox input</td></tr><tr><td>`CheckboxGroup`</td><td>`CheckboxGroup`</td><td>Checkbox group</td></tr><tr><td>`Collapsible`</td><td>`Collapsible`</td><td>Expand/collapse</td></tr><tr><td>`Combobox`</td><td>`Combobox`</td><td>Combobox input</td></tr><tr><td>`ContextMenu`</td><td>`ContextMenu`</td><td>Right-click menu</td></tr><tr><td>`CspProvider`</td><td>—</td><td>Content Security Policy provider</td></tr><tr><td>`Dialog`</td><td>`Dialog`</td><td>Modal dialog</td></tr><tr><td>`DirectionProvider`</td><td>—</td><td>RTL/LTR direction provider</td></tr><tr><td>`Drawer`</td><td>`Drawer`</td><td>Slide-out panel</td></tr><tr><td>`Field`</td><td>`Field`</td><td>Form field</td></tr><tr><td>`Fieldset`</td><td>`Fieldset`</td><td>Form fieldset</td></tr><tr><td>`Form`</td><td>`Form`</td><td>Form wrapper</td></tr><tr><td>`Input`</td><td>`Input`</td><td>Text input</td></tr><tr><td>`Menu`</td><td>`Menu`</td><td>Dropdown menu</td></tr><tr><td>`Menubar`</td><td>`Menubar`</td><td>Menu bar</td></tr><tr><td>`Meter`</td><td>`Meter`</td><td>Progress indicator</td></tr><tr><td>`NavigationMenu`</td><td>`NavigationMenu`</td><td>Nav menu</td></tr><tr><td>`NumberField`</td><td>`NumberField`</td><td>Number input</td></tr><tr><td>`OtpField`</td><td>`OtpField`</td><td>One-time password input</td></tr><tr><td>`Popover`</td><td>`Popover`</td><td>Floating panel</td></tr><tr><td>`PreviewCard`</td><td>—</td><td>Preview card</td></tr><tr><td>`Progress`</td><td>`Progress`</td><td>Progress bar</td></tr><tr><td>`Radio`</td><td>`Radio`</td><td>Radio input</td></tr><tr><td>`RadioGroup`</td><td>`RadioGroup`</td><td>Radio group</td></tr><tr><td>`ScrollArea`</td><td>`ScrollArea`</td><td>Custom scroll area</td></tr><tr><td>`Select`</td><td>`Select`</td><td>Select dropdown</td></tr><tr><td>`Separator`</td><td>`Separator`</td><td>Divider</td></tr><tr><td>`Slider`</td><td>`Slider`</td><td>Range slider</td></tr><tr><td>`Switch`</td><td>`Switch`</td><td>Toggle switch</td></tr><tr><td>`Tabs`</td><td>`Tabs`</td><td>Tab navigation</td></tr><tr><td>`Toast`</td><td>`Toast`</td><td>Toast notification</td></tr><tr><td>`Toggle`</td><td>`Toggle`</td><td>Toggle button</td></tr><tr><td>`ToggleGroup`</td><td>`ToggleGroup`</td><td>Toggle group</td></tr><tr><td>`Toolbar`</td><td>`Toolbar`</td><td>Toolbar</td></tr><tr><td>`Tooltip`</td><td>`Tooltip`</td><td>Tooltip</td></tr></table>
+<hr>
+<h2>Blocks</h2>
+<p>Blocks are composite page-level components installed via CLI (<code>npx @cloudflare/kumo add <block></code>):</p>
+<table><tr><th>Block</th><th>Purpose</th></tr><tr><td>`delete-resource`</td><td>Confirmation dialog for resource deletion</td></tr><tr><td>`page-header`</td><td>Page header with title, actions, breadcrumbs</td></tr><tr><td>`resource-list`</td><td>List of resources with selection and actions</td></tr></table>
+<hr>
+<h2>Utilities</h2>
+<h3>cn()</h3>
+<pre><code class="language-typescript">// src/utils/cn.ts
+import { clsx } from &quot;clsx&quot;;
+import { twMerge } from &quot;tailwind-merge&quot;;
+
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
+}
+</code></pre>
+<p>Merges Tailwind classes, resolving conflicts.</p>
+<h3>link-provider</h3>
+<pre><code class="language-typescript">// src/utils/link-provider.tsx
+// Provides custom link component for routing
+export { LinkProvider, useLinkComponent, type LinkComponentProps };
+</code></pre>
+<h3>portal-provider</h3>
+<pre><code class="language-typescript">// src/utils/portal-provider.tsx
+// Provides portal container for overlays
+export { KumoPortalProvider, type PortalContainer };
+</code></pre>
+<h3>safeRandomId()</h3>
+<pre><code class="language-typescript">// src/utils/cn.ts
+export function safeRandomId(): string;
+</code></pre>
+<p>Generates a safe random ID for accessibility attributes.</p>
+<hr>
+<h2>CLI</h2>
+<p><strong>Source:</strong> <code>src/command-line/</code></p>
+<p>The kumo CLI provides:</p>
+<pre><code class="language-bash">npx @cloudflare/kumo ls          # List all components
+npx @cloudflare/kumo doc Button  # Get component documentation
+npx @cloudflare/kumo docs        # Get all component docs
+</code></pre>
+<h3>Commands</h3>
+<table><tr><th>Command</th><th>File</th><th>Purpose</th></tr><tr><td>`ls`</td><td>`commands/list.ts`</td><td>List all components</td></tr><tr><td>`doc`</td><td>`commands/doc.ts`</td><td>Get component documentation</td></tr><tr><td>`docs`</td><td>`commands/docs.ts`</td><td>Get all component documentation</td></tr></table>
+<h3>AI Registry</h3>
+<p>The CLI reads from <code>ai/component-registry.json</code> which is generated from TypeScript types + demo examples. This provides machine-readable component metadata for AI tools.</p>
+<p><strong>Source:</strong> <code>ai/component-registry.json</code>, <code>scripts/component-registry/</code>.</p>
+<hr>
+<h2>Next</h2>
+<p>Return to the <a href="README.md">README</a> for the full index, or continue to <a href="08-cross-cutting.md">08-cross-cutting</a> for shared patterns across all src.UIComponents projects.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

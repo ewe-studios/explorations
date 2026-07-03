@@ -1,38 +1,42 @@
-# src.UIComponents Documentation
+# src.UIComponents Documentation — Deep Dive
 
-Four distinct React/Next.js UI component projects, each solving a different problem domain.
+Five distinct projects covering the full spectrum of React/Next.js component distribution: from enterprise npm packages to shadcn registries to DOM sandboxing libraries.
 
-## Projects
-
-| Project | Description | Tech Stack | Key Feature |
-|---------|-------------|------------|-------------|
-| [kumo](02-kumo.md) | Cloudflare's production component library | Base UI, Tailwind CSS v4, React 19 | 35+ accessible components, AI registry, Figma sync |
-| [mapcn](05-mapcn.md) | shadcn-style map component registry | MapLibre GL, Next.js 15, shadcn | 8 pre-built map blocks, zero-config setup |
-| [next-maps](06-next-maps.md) | Mapbox map showcase for Next.js | Mapbox GL JS, Next.js, shadcn | Search integration, custom markers, theme toggle |
-| [table-forge](07-table-forge.md) | MDX-driven table component showcase | Next.js 15, MDX, Tailwind CSS 4 | 10+ table variations with one-click code copy |
+| Project | Files | Type | Key Feature |
+|---------|-------|------|-------------|
+| [kumo](02-kumo.md) | 644 | npm package (`@cloudflare/kumo`) | 35+ components, 30+ primitives, AI registry |
+| [remote-dom](09-remote-dom.md) | 207 | npm monorepo (`@remote-dom/*`) | DOM rendering from sandboxed environments |
+| [mapcn](05-mapcn.md) | 124 | shadcn registry | MapLibre map components + 8 blocks |
+| [table-forge](07-table-forge.md) | 49 | documentation site | MDX-driven table examples |
+| [next-maps](06-next-maps.md) | 36 | standalone app | Mapbox GL showcase |
 
 ## Navigation
 
-Start here:
+Foundation:
 
-- **[00-overview](00-overview.md)** — What src.UIComponents is, why these 4 projects exist together
-- **[01-architecture](01-architecture.md)** — Architecture diagrams and dependency graphs for all 4 projects
+- **[00-overview](00-overview.md)** — What src.UIComponents is, 5-project breakdown
+- **[01-architecture](01-architecture.md)** — Architecture diagrams, dependency graphs for all 5 projects
 
-Then deep dive into each:
+kumo deep dives:
 
-- **[02-kumo](02-kumo.md)** — Cloudflare's component library: primitives, components, theming, AI registry
-- **[03-kumo-packages](03-kumo-packages.md)** — Kumo's monorepo: docs site, Figma plugin, screenshot worker
-- **[04-kumo-ci](04-kumo-ci.md)** — CI/CD pipeline: changesets, visual regression testing, release automation
+- **[02-kumo](02-kumo.md)** — Cloudflare's component library: components, primitives, theming
+- **[03-kumo-packages](03-kumo-packages.md)** — Monorepo packages: docs, figma, screenshot-worker
+- **[04-kumo-ci](04-kumo-ci.md)** — CI/CD: changesets, visual regression, release automation
+- **[10-kumo-deep](10-kumo-deep.md)** — Every component, every primitive, source-level detail
 
-Map projects:
+map projects:
 
-- **[05-mapcn](05-mapcn.md)** — MapLibre-based map registry with 8 pre-built blocks
-- **[06-next-maps](06-next-maps.md)** — Mapbox-based map showcase with search and theming
+- **[05-mapcn](05-mapcn.md)** — MapLibre registry and blocks
+- **[06-next-maps](06-next-maps.md)** — Mapbox integration
 
-Table project:
+tables:
 
-- **[07-table-forge](07-table-forge.md)** — Table component examples with MDX documentation
+- **[07-table-forge](07-table-forge.md)** — MDX table showcase
 
-Cross-cutting:
+cross-cutting:
 
-- **[08-cross-cutting](08-cross-cutting.md)** — Shared patterns: shadcn/ui adoption, Tailwind CSS v4, Next.js 15 App Router
+- **[08-cross-cutting](08-cross-cutting.md)** — Shared patterns across all projects
+
+remote-dom:
+
+- **[09-remote-dom](09-remote-dom.md)** — DOM rendering from sandboxed environments (iframe, web worker)
