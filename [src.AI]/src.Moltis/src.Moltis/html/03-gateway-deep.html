@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Gateway Deep Dive: Startup, Services, and State -- src.Moltis</title>
+  <title>Moltis Deep Dive: Voice, Channels, Agents, Providers, Native Apps -- src.Moltis</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
   <script>
@@ -132,113 +132,533 @@
     </div>
   </nav>
   <article class="prose">
-<h1>Gateway Deep Dive: Startup, Services, and State</h1>
-<p>The gateway crate is the server's core — it loads configuration, runs migrations, wires all services, and returns a <code>PreparedGatewayCore</code> that can be consumed by HTTP or non-HTTP consumers.</p>
-<p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/crates/gateway/src/</code></p>
-<h2>prepare_gateway_core()</h2>
-<p><strong>Source:</strong> <code>server/prepare_core.rs:47+</code></p>
-<pre><code class="language-rust">pub async fn prepare_gateway_core(
-    bind: &amp;str,
-    port: u16,
-    no_tls: bool,
-    log_buffer: Option&lt;LogBuffer&gt;,
-    config_dir: Option&lt;PathBuf&gt;,
-    data_dir: Option&lt;PathBuf&gt;,
-    tailscale_mode_override: Option&lt;String&gt;,
-    tailscale_reset_on_exit_override: Option&lt;bool&gt;,
-    session_event_bus: Option&lt;SessionEventBus&gt;,
-) -&gt; anyhow::Result&lt;PreparedGatewayCore&gt;
+<h1>Moltis Deep Dive: Voice, Channels, Agents, Providers, Native Apps</h1>
+<p>Comprehensive source-level documentation covering the full Moltis system: voice configuration with 11 STT and 6 TTS providers, channel implementations (WhatsApp via Linked Devices, Slack via webhooks, Discord via Serenity gateway), the agent loop with parallel tool execution, provider registry with 10+ providers, native iOS/macOS apps with FFI bridges, and the full startup sequence.</p>
+<p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/</code></p>
+<hr>
+<h2>Voice: 11 STT Providers, 6 TTS Providers</h2>
+<p><strong>Source:</strong> <code>crates/voice/src/</code></p>
+<h3>STT (Speech-to-Text) — 11 Providers</h3>
+<table><tr><th>Provider</th><th>File</th><th>Type</th><th>Key Details</th></tr><tr><td>**Whisper (API)**</td><td>`stt/whisper.rs`</td><td>Cloud</td><td>OpenAI Whisper API</td></tr><tr><td>**Whisper CLI**</td><td>`stt/whisper_cli.rs`</td><td>Local</td><td>CLI wrapper around `whisper.cpp` binary</td></tr><tr><td>**Whisper Local**</td><td>`stt/whisper_local.rs`</td><td>Local</td><td>Direct `whisper.cpp` library binding</td></tr><tr><td>**Deepgram**</td><td>`stt/deepgram.rs`</td><td>Cloud</td><td>Deepgram API, streaming support</td></tr><tr><td>**ElevenLabs**</td><td>`stt/elevenlabs.rs`</td><td>Cloud</td><td>ElevenLabs STT API</td></tr><tr><td>**Google**</td><td>`stt/google.rs`</td><td>Cloud</td><td>Google Cloud Speech-to-Text</td></tr><tr><td>**Groq**</td><td>`stt/groq.rs`</td><td>Cloud</td><td>Groq's Whisper-compatible API</td></tr><tr><td>**Mistral**</td><td>`stt/mistral.rs`</td><td>Cloud</td><td>Mistral's Whisper API</td></tr><tr><td>**Sherpa-ONNX**</td><td>`stt/sherpa_onnx.rs`</td><td>Local</td><td>ONNX runtime, offline</td></tr><tr><td>**Voxtral Local**</td><td>`stt/voxtral_local.rs`</td><td>Local</td><td>Local Voxtral model</td></tr><tr><td>**OpenAI-compat**</td><td>`stt/openai_compat.rs`</td><td>Cloud</td><td>Any OpenAI-compatible STT endpoint</td></tr></table>
+<h3>SttProvider Trait</h3>
+<pre><code class="language-rust">// stt/mod.rs:75-87
+#[async_trait]
+pub trait SttProvider: Send + Sync {
+    fn id(&amp;self) -&gt; &amp;&#x27;static str;
+    fn name(&amp;self) -&gt; &amp;&#x27;static str;
+    async fn transcribe(&amp;self, req: TranscribeRequest) -&gt; Result&lt;Transcript&gt;;
+}
 </code></pre>
-<h3>Startup Sequence</h3>
-<ol><li><strong>Directory overrides</strong> (lines 63-68):</li></ol>
-<p>   ``<code>rust    if let Some(dir) = config_dir { moltis_config::set_config_dir(dir); }    if let Some(dir) = data_dir { moltis_config::set_data_dir(dir.clone()); }    </code>``</p>
-<ol><li><strong>Auth resolution</strong> (lines 71-76):</li></ol>
-<p>   ``<code>rust    let token = std::env::var("MOLTIS_TOKEN").ok();    let password = std::env::var("MOLTIS_PASSWORD").ok();    let resolved_auth = auth::resolve_auth(token, password.clone());    </code>``</p>
-<ol><li><strong>Config loading</strong> (line 81):</li></ol>
-<p>   ``<code>rust    let mut config = moltis_config::discover_and_load();    </code>`<code>    Loads from </code>moltis.toml<code>, </code>.yaml<code>, or </code>.json`.</p>
-<ol><li><strong>Memory probe</strong> (lines 90-91):</li></ol>
-<p>   ``<code>rust    let mut startup_mem_probe = StartupMemProbe::new();    startup_mem_probe.checkpoint("prepare_gateway.start");    </code>``</p>
-<ol><li><strong>TLS configuration</strong> (lines 94-100):</li></ol>
-<ul><li><code>--no-tls</code> flag overrides config</li><li><code>MOLTIS_BEHIND_PROXY</code> env flag</li><li><code>MOLTIS_ALLOW_TLS_BEHIND_PROXY</code> env flag</li></ul>
-<h3>Service Initialization</h3>
-<p>After <code>prepare_gateway_core()</code> completes, the following services are wired:</p>
-<table><tr><th>Service</th><th>Source</th><th>Purpose</th></tr><tr><td>`LiveModelService`</td><td>`chat.rs`</td><td>Model/chat management</td></tr><tr><td>`LiveSessionService`</td><td>`session.rs`</td><td>Session lifecycle</td></tr><tr><td>`LiveProviderSetupService`</td><td>`provider_setup.rs`</td><td>LLM provider setup</td></tr><tr><td>`LiveExecApprovalService`</td><td>`approval.rs`</td><td>Execution approval workflow</td></tr><tr><td>`Broadcast`</td><td>`broadcast.rs`</td><td>Event broadcasting</td></tr><tr><td>`ProviderRegistry`</td><td>`moltis_providers`</td><td>LLM provider registry</td></tr><tr><td>`ProjectStore`</td><td>`moltis_projects`</td><td>Project management</td></tr><tr><td>`SessionStore`</td><td>`moltis_sessions`</td><td>Session storage</td></tr><tr><td>`SessionEventBus`</td><td>`session_events`</td><td>Session event bus</td></tr></table>
-<h3>Channel Initialization</h3>
-<p><strong>Source:</strong> <code>server/init_channels.rs</code></p>
-<p>Initializes all configured channels from <code>config.channels.offered</code>:</p>
-<pre><code class="language-rust">info!(offered_channels = ?config.channels.offered, &quot;loaded offered channels&quot;);
+<h3>TranscribeRequest / Transcript</h3>
+<pre><code class="language-rust">// stt/mod.rs:33-68
+pub struct TranscribeRequest {
+    pub audio: Bytes,                    // Raw audio data
+    pub format: AudioFormat,             // Audio format
+    pub language: Option&lt;String&gt;,        // ISO 639-1 hint (e.g. &quot;en&quot;)
+    pub prompt: Option&lt;String&gt;,          // Context/terminology guide
+}
+
+pub struct Transcript {
+    pub text: String,                    // Transcribed text
+    pub language: Option&lt;String&gt;,        // Detected language
+    pub confidence: Option&lt;f32&gt;,         // 0.0 - 1.0
+    pub duration_seconds: Option&lt;f32&gt;,   // Audio duration
+    pub words: Option&lt;Vec&lt;Word&gt;&gt;,        // Word-level timestamps
+}
+
+pub struct Word {
+    pub word: String,
+    pub start: f32,                      // Start time (seconds)
+    pub end: f32,                        // End time (seconds)
+}
 </code></pre>
-<p>Each channel is initialized with its specific configuration (Telegram bot token, Discord bot token, etc.).</p>
-<h3>Memory Initialization</h3>
-<p><strong>Source:</strong> <code>server/init_memory.rs</code></p>
-<p>Initializes the memory/RAG system with SQLite + FTS + vector search.</p>
-<h3>Code Index Initialization</h3>
-<p><strong>Source:</strong> <code>server/init_code_index.rs</code></p>
-<p>Initializes the code indexing system for repository analysis.</p>
-<h2>GatewayState</h2>
-<p><strong>Source:</strong> <code>state.rs</code></p>
-<p>The <code>GatewayState</code> holds all core services:</p>
-<pre><code class="language-rust">pub struct GatewayState {
-    pub config: GatewayConfig,
-    pub services: GatewayServices,
-    pub broadcast: BroadcastHandle,
-    pub session_event_bus: SessionEventBus,
+<h3>TTS (Text-to-Speech) — 6 Providers</h3>
+<table><tr><th>Provider</th><th>File</th><th>Type</th><th>Key Details</th></tr><tr><td>**ElevenLabs**</td><td>`tts/elevenlabs.rs`</td><td>Cloud</td><td>Default: Rachel voice, Flash v2.5 model (~75ms latency)</td></tr><tr><td>**OpenAI**</td><td>`tts/openai.rs`</td><td>Cloud</td><td>OpenAI TTS API</td></tr><tr><td>**Google**</td><td>`tts/google.rs`</td><td>Cloud</td><td>Google Cloud TTS</td></tr><tr><td>**Coqui**</td><td>`tts/coqui.rs`</td><td>Local</td><td>Coqui TTS, offline</td></tr><tr><td>**Piper**</td><td>`tts/piper.rs`</td><td>Local</td><td>Piper TTS, lightweight offline</td></tr><tr><td>**Mock**</td><td>`tts/mock.rs`</td><td>Test</td><td>Mock TTS for testing</td></tr></table>
+<h3>TtsProvider Trait</h3>
+<pre><code class="language-rust">// tts/mod.rs
+#[async_trait]
+pub trait TtsProvider: Send + Sync {
+    fn id(&amp;self) -&gt; &amp;&#x27;static str;
+    fn name(&amp;self) -&gt; &amp;&#x27;static str;
+    async fn list_voices(&amp;self) -&gt; Result&lt;Vec&lt;Voice&gt;&gt;;
+    async fn synthesize(&amp;self, req: SynthesizeRequest) -&gt; Result&lt;AudioOutput&gt;;
+}
+</code></pre>
+<h3>ElevenLabs TTS Implementation</h3>
+<pre><code class="language-rust">// tts/elevenlabs.rs:30-68
+pub struct ElevenLabsTts {
+    client: Client,
+    api_key: Option&lt;Secret&lt;String&gt;&gt;,
+    default_voice_id: String,    // Default: &quot;21m00Tcm4TlvDq8ikWAM&quot; (Rachel)
+    default_model: String,       // Default: &quot;eleven_flash_v2_5&quot;
+}
+</code></pre>
+<p>API endpoint: <code>POST https://api.elevenlabs.io/v1/text-to-speech/{voice_id}</code></p>
+<h3>AudioFormat</h3>
+<pre><code class="language-rust">// tts/audio.rs:38-68
+pub enum AudioFormat {
+    Mp3,    // &quot;audio/mpeg&quot; — widely compatible
+    Opus,   // &quot;audio/ogg&quot; — good for Telegram voice notes
+    Aac,    // &quot;audio/aac&quot;
+    Pcm,    // &quot;audio/pcm&quot; — raw
+    Wav,    // &quot;audio/wav&quot;
+    Webm,   // &quot;audio/webm&quot; — browser MediaRecorder default
+}
+</code></pre>
+<h3>Voice Configuration in Config</h3>
+<pre><code class="language-rust">// config schema (from config crate)
+pub struct VoiceConfig {
+    pub stt: SttConfig,
+    pub tts: TtsConfig,
+}
+
+pub struct SttConfig {
+    pub provider: SttProviderId,  // whisper, deepgram, google, groq, mistral, etc.
+    pub whisper: Option&lt;WhisperConfig&gt;,
+    pub whisper_local: Option&lt;WhisperLocalConfig&gt;,
+    pub deepgram: Option&lt;DeepgramConfig&gt;,
+    pub google: Option&lt;GoogleSttConfig&gt;,
+    pub groq: Option&lt;GroqSttConfig&gt;,
+    pub mistral: Option&lt;MistralSttConfig&gt;,
+    pub elevenlabs: Option&lt;ElevenLabsSttConfig&gt;,
+    pub sherpa_onnx: Option&lt;SherpaOnnxConfig&gt;,
+    pub voxtral_local: Option&lt;VoxtralLocalConfig&gt;,
+}
+
+pub struct TtsConfig {
+    pub provider: TtsProviderId,  // elevenlabs, openai, google, coqui, piper
+    pub elevenlabs: Option&lt;ElevenLabsConfig&gt;,
+    pub openai: Option&lt;OpenAiTtsConfig&gt;,
+    pub google: Option&lt;GoogleTtsConfig&gt;,
+    pub coqui: Option&lt;CoquiTtsConfig&gt;,
+    pub piper: Option&lt;PiperTtsConfig&gt;,
+}
+</code></pre>
+<h3>Voice Persona</h3>
+<pre><code class="language-rust">// voice/src/config.rs
+pub struct VoicePersona {
+    pub name: String,
+    pub provider: VoicePersonaProviderBinding,
+    pub prompt: VoicePersonaPrompt,
+}
+</code></pre>
+<hr>
+<h2>Channels: WhatsApp, Slack, Discord, Telegram, Signal, Matrix, MS Teams, Nostr, CalDAV</h2>
+<p>All channels implement the <code>ChannelPlugin</code> trait from <code>moltis_channels</code>:</p>
+<pre><code class="language-rust">// crates/channels/src/plugin.rs
+#[async_trait]
+pub trait ChannelPlugin: Send + Sync {
+    fn channel_type(&amp;self) -&gt; ChannelType;
+    fn register_account(&amp;self, account_id: String, config: serde_json::Value) -&gt; ChannelResult&lt;()&gt;;
+    fn start_account(&amp;self, account_id: &amp;str, config: serde_json::Value) -&gt; ChannelResult&lt;()&gt;;
+    fn stop_account(&amp;self, account_id: &amp;str) -&gt; ChannelResult&lt;()&gt;;
+    fn outbound(&amp;self) -&gt; Arc&lt;dyn ChannelOutbound&gt;;
+    fn status(&amp;self, account_id: &amp;str) -&gt; ChannelResult&lt;ChannelStatus&gt;;
+    fn probe(&amp;self, account_id: &amp;str) -&gt; ChannelResult&lt;ChannelHealthSnapshot&gt;;
+    fn supports_otp(&amp;self) -&gt; bool;
+    // ... more methods
+}
+</code></pre>
+<h3>WhatsApp: Linked Devices via QR Code Pairing</h3>
+<p><strong>Source:</strong> <code>crates/whatsapp/src/</code></p>
+<pre><code class="language-">whatsapp/
+├── lib.rs              ← WhatsAppPlugin entry point
+├── plugin.rs           ← ChannelPlugin implementation
+├── connection.rs       ← Bot builder, event loop
+├── handlers.rs         ← Event handling (messages, media, reactions)
+├── outbound.rs         ← Message sending
+├── config.rs           ← WhatsAppAccountConfig
+├── access.rs           ← Access control
+├── state.rs            ← AccountState, AccountStateMap
+├── otp.rs              ← OTP challenges
+├── memory_store.rs     ← In-memory store
+└── sled_store.rs       ← Persistent sled store
+</code></pre>
+<h4>Connection Setup</h4>
+<pre><code class="language-rust">// connection.rs:17-87
+pub async fn start_connection(
+    account_id: String,
+    config: WhatsAppAccountConfig,
+    accounts: AccountStateMap,
+    data_dir: PathBuf,
+    message_log: Option&lt;Arc&lt;dyn MessageLog&gt;&gt;,
+    event_sink: Option&lt;Arc&lt;dyn ChannelEventSink&gt;&gt;,
+) -&gt; Result&lt;()&gt; {
+    // Persistent sled store at &lt;data_dir&gt;/whatsapp/&lt;account_id&gt;/
+    let store_path = config.store_path
+        .unwrap_or_else(|| data_dir.join(&quot;whatsapp&quot;).join(&amp;account_id));
+
+    let backend = Arc::new(SledStore::open(&amp;store_path)?);
+
+    let mut bot = whatsapp_rust::bot::Bot::builder()
+        .with_backend(backend)
+        .with_transport_factory(TokioWebSocketTransportFactory::new())
+        .with_http_client(UreqHttpClient::new())
+        .with_runtime(whatsapp_rust::TokioRuntime)
+        .skip_history_sync()
+        .with_device_props(Some(&quot;Moltis&quot;.to_string()), None, Some(PlatformType::Desktop))
+        .with_push_name(&quot;Moltis&quot;)
+        .on_event(move |event, client| {
+            async move {
+                if let Some(state) = state_ref.get() {
+                    handlers::handle_event(event, client, state, accounts).await;
+                }
+            }
+        })
+        .build()
+        .await?;
+}
+</code></pre>
+<p><strong>Key details:</strong></p>
+<ul><li>Uses <code>whatsapp_rust</code> library for Linked Devices protocol</li><li>QR code pairing — session persists across restarts via sled store</li><li>Registers as "Moltis" desktop device</li><li><code>skip_history_sync()</code> — doesn't download full message history</li></ul>
+<h3>Slack: Events API Webhooks</h3>
+<p><strong>Source:</strong> <code>crates/slack/src/</code></p>
+<pre><code class="language-">slack/
+├── lib.rs              ← SlackPlugin entry point
+├── plugin.rs           ← ChannelPlugin implementation
+├── webhook.rs          ← Events API webhook handler
+├── socket.rs           ← Socket Mode connection
+├── outbound.rs         ← Message sending
+├── commands.rs         ← Slash commands
+├── markdown.rs         ← Slack markdown conversion
+├── config.rs           ← SlackAccountConfig
+├── state.rs            ← AccountState, AccountStateMap
+└── channel_webhook_verifier.rs ← Webhook signature verification
+</code></pre>
+<h4>Webhook Ingestion</h4>
+<pre><code class="language-rust">// plugin.rs:58-66
+pub async fn ingest_webhook(
+    &amp;self,
+    account_id: &amp;str,
+    body: &amp;[u8],
+    timestamp: &amp;str,
+    signature: &amp;str,
+) -&gt; ChannelResult&lt;Option&lt;String&gt;&gt; {
+    crate::webhook::handle_webhook(account_id, body, timestamp, signature, &amp;self.accounts).await
+}
+
+pub async fn ingest_interaction_webhook(
+    &amp;self,
+    account_id: &amp;str,
+    body: &amp;[u8],
+    timestamp: &amp;str,
+    signature: &amp;str,
+) -&gt; ChannelResult&lt;()&gt; {
+    crate::webhook::handle_interaction_webhook(account_id, body, timestamp, signature, &amp;self.accounts).await
+}
+</code></pre>
+<p>Supports both Events API webhooks and Socket Mode.</p>
+<h3>Discord: Serenity Gateway</h3>
+<p><strong>Source:</strong> <code>crates/discord/src/</code></p>
+<pre><code class="language-">discord/
+├── lib.rs              ← DiscordPlugin entry point
+├── plugin.rs           ← ChannelPlugin implementation
+├── handler/
+│   ├── mod.rs          ← Handler module
+│   └── implementation.rs ← Serenity EventHandler
+├── outbound.rs         ← Message sending
+├── commands.rs         ← Slash commands
+├── config.rs           ← DiscordAccountConfig
+├── state.rs            ← AccountState, AccountStateMap
+└── access.rs           ← Access control
+</code></pre>
+<h4>Gateway Intents</h4>
+<pre><code class="language-rust">// handler/implementation.rs:41-48
+pub fn required_intents() -&gt; GatewayIntents {
+    GatewayIntents::GUILD_MESSAGES
+        | GatewayIntents::DIRECT_MESSAGES
+        | GatewayIntents::MESSAGE_CONTENT
+        | GatewayIntents::GUILDS
+        | GatewayIntents::GUILD_MESSAGE_REACTIONS
+        | GatewayIntents::DIRECT_MESSAGE_REACTIONS
+}
+</code></pre>
+<h4>Serenity Handler</h4>
+<pre><code class="language-rust">// handler/implementation.rs:51-66
+pub struct Handler {
+    pub account_id: String,
+    pub accounts: AccountStateMap,
+    downloader: DiscordInboundMediaDownloader,
+}
+</code></pre>
+<p>Uses the <code>serenity</code> crate for Discord gateway connections.</p>
+<h3>Other Channels</h3>
+<table><tr><th>Channel</th><th>Source</th><th>Connection Method</th></tr><tr><td>Telegram</td><td>`crates/telegram/`</td><td>Bot API polling/webhooks</td></tr><tr><td>Signal</td><td>`crates/signal/`</td><td>Signal CLI / signald</td></tr><tr><td>Matrix</td><td>`crates/matrix/`</td><td>Matrix client-server API</td></tr><tr><td>MS Teams</td><td>`crates/msteams/`</td><td>Bot Framework API</td></tr><tr><td>Nostr</td><td>`crates/nostr/`</td><td>Nostr relay protocol</td></tr><tr><td>CalDAV</td><td>`crates/caldav/`</td><td>CalDAV protocol</td></tr></table>
+<hr>
+<h2>Agent Loop: Parallel Tool Execution</h2>
+<p><strong>Source:</strong> <code>crates/agents/src/runner/streaming.rs</code></p>
+<h3>The Core Loop</h3>
+<pre><code class="language-rust">loop {
+    iterations += 1;
+    if iterations &gt; max_iterations {
+        return Err(AgentRunError::Other(&quot;agent loop exceeded max iterations&quot;));
+    }
+
+    // 1. Build tool schemas (filtered by active tools)
+    let schemas_for_api = ...;
+
+    // 2. Enforce context budget (compact old tool results if needed)
+    enforce_tool_result_context_budget(...)?;
+
+    // 3. Dispatch BeforeLLMCall hook (can block or modify)
+    dispatch_before_llm_call_hook(...)?;
+
+    // 4. Stream from LLM provider
+    let mut stream = provider.stream_with_tools_and_options(messages, schemas, tool_controls);
+
+    // 5. Accumulate text, reasoning, and tool calls from stream
+    while let Some(event) = stream.next().await { ... }
+
+    // 6. Parse tool call arguments
+    for (stream_idx, args_str) in &amp;tool_call_args { ... }
+
+    // 7. Fallback: parse tool calls from text if no structured calls
+    if tool_calls.is_empty() { parse_tool_calls_from_text(...); }
+
+    // 8. If no tool calls → return text answer (or auto-continue)
+    if tool_calls.is_empty() { return Ok(final_text); }
+
+    // 9. Execute ALL tool calls CONCURRENTLY
+    let tool_futures: Vec&lt;_&gt; = tool_calls.iter().map(|tc| {
+        // Pre-dispatch schema validation
+        let validation_error = validate_tool_args(...);
+
+        async move {
+            if let Some(err) = validation_error {
+                return (false, json!({&quot;error&quot;: err}), Some(err), true);
+            }
+            // BeforeToolCall hook (can block or modify args)
+            dispatch_before_tool_call_hook(...)?;
+            // Execute tool
+            match tool.execute(args).await {
+                Ok(val) =&gt; (true, json!({&quot;result&quot;: val}), None, false),
+                Err(e) =&gt; (false, json!({&quot;error&quot;: e}), Some(e), false),
+            }
+        }
+    }).collect();
+
+    // 10. Await ALL tools concurrently
+    let results = futures::future::join_all(tool_futures).await;
+
+    // 11. Process results in original order
+    for (tc, (success, result, error, rejected)) in tool_calls.iter().zip(results) {
+        messages.push(ChatMessage::tool(tc.id.clone(), result));
+    }
+
+    // 12. Loop back for next iteration
+}
+</code></pre>
+<h3>Parallel Execution Details</h3>
+<pre><code class="language-rust">// streaming.rs:689-891
+let tool_futures: Vec&lt;_&gt; = tool_calls
+    .iter()
+    .map(|tc| {
+        // Each tool call becomes an async future
+        async move {
+            // 1. Sanitize tool name
+            let sanitized = sanitize_tool_name(&amp;tc.name);
+
+            // 2. Resolve tool from registry (handles legacy aliases)
+            let (tool, resolved_name) = resolve_tool_lookup(tools, sanitized);
+
+            // 3. Merge tool_context into args
+            for (k, v) in ctx_obj { args_obj.insert(k.clone(), v.clone()); }
+
+            // 4. Pre-dispatch schema validation (synchronous)
+            let validation_error = validate_tool_args(&amp;schema, &amp;args);
+
+            // 5. BeforeToolCall hook
+            dispatch_before_tool_call_hook(...)?;
+
+            // 6. Execute tool
+            tool.execute(args).await
+
+            // 7. AfterToolCall hook
+            dispatch_after_tool_call_hook(...)?;
+        }
+    })
+    .collect();
+
+// ALL tools run concurrently
+let results = futures::future::join_all(tool_futures).await;
+</code></pre>
+<h3>Auto-Continue</h3>
+<p>If the model stops making tool calls but hasn't finished its task:</p>
+<pre><code class="language-rust">// streaming.rs:590-616
+if !is_substantive_answer_text(&amp;accumulated_text)
+    &amp;&amp; total_tool_calls &gt; 0
+    &amp;&amp; total_tool_calls &gt;= auto_continue_min_tool_calls
+    &amp;&amp; auto_continue_count &lt; max_auto_continues
+{
+    auto_continue_count += 1;
+    messages.push(ChatMessage::user(AUTO_CONTINUE_NUDGE));
+    continue;  // Ask model to keep going
+}
+</code></pre>
+<h3>Tool Loop Detection</h3>
+<pre><code class="language-rust">let mut loop_detector = ToolLoopDetector::new(
+    config.tools.agent_loop_detector_window,
+    config.tools.agent_loop_detector_strip_tools_on_second_fire,
+);
+</code></pre>
+<p>On first detection: warn. On second detection: strip tools (force text-only response).</p>
+<hr>
+<h2>Provider Registry: 10+ LLM Providers</h2>
+<p><strong>Source:</strong> <code>crates/providers/src/</code></p>
+<h3>Provider Implementations</h3>
+<table><tr><th>Provider</th><th>File</th><th>Feature Flag</th><th>API</th></tr><tr><td>**Anthropic**</td><td>`anthropic.rs`</td><td>—</td><td>Messages API, SSE streaming</td></tr><tr><td>**OpenAI**</td><td>`openai.rs`</td><td>—</td><td>Chat Completions API</td></tr><tr><td>**OpenAI-compat**</td><td>`openai_compat.rs`</td><td>—</td><td>Any OpenAI-compatible endpoint</td></tr><tr><td>**Ollama**</td><td>`ollama.rs`</td><td>—</td><td>`/api/chat` endpoint</td></tr><tr><td>**Google GenAI**</td><td>`genai_provider.rs`</td><td>`provider-genai`</td><td>Google AI Studio API</td></tr><tr><td>**GitHub Copilot**</td><td>`github_copilot/`</td><td>`provider-github-copilot`</td><td>Copilot API</td></tr><tr><td>**Kimi Code**</td><td>`kimi_code.rs`</td><td>`provider-kimi-code`</td><td>Kimi API</td></tr><tr><td>**NearAI**</td><td>`nearai.rs`</td><td>—</td><td>NearAI API</td></tr><tr><td>**OpenCode Zen**</td><td>`opencode_zen.rs`</td><td>—</td><td>OpenCode Zen API</td></tr><tr><td>**Local GGUF**</td><td>`local_gguf/`</td><td>`local-llm`</td><td>llama-cpp-2, offline</td></tr><tr><td>**Local LLM**</td><td>`local_llm/`</td><td>`local-llm`</td><td>llama.cpp server</td></tr><tr><td>**OpenAI Codex**</td><td>`openai_codex/`</td><td>`provider-openai-codex`</td><td>Codex CLI API</td></tr></table>
+<h3>Provider Registry</h3>
+<pre><code class="language-rust">// registry.rs
+pub struct ProviderRegistry {
+    providers: HashMap&lt;String, Box&lt;dyn LlmProvider&gt;&gt;,
+}
+</code></pre>
+<h3>Model Discovery</h3>
+<pre><code class="language-rust">// discovered_model.rs
+pub struct DiscoveredModel {
+    pub id: String,
+    pub name: String,
+    pub provider: String,
+    pub capabilities: ModelCapabilities,
+}
+</code></pre>
+<h3>Model Capabilities</h3>
+<pre><code class="language-rust">// model_capabilities.rs
+pub struct ModelCapabilities {
+    pub supports_tools: bool,
+    pub supports_vision: bool,
+    pub supports_reasoning: bool,
+    pub context_window: usize,
+    pub max_output_tokens: usize,
+}
+</code></pre>
+<hr>
+<h2>Native Apps: iOS and macOS</h2>
+<h3>iOS App</h3>
+<p><strong>Source:</strong> <code>apps/ios/Sources/MoltisApp.swift</code></p>
+<pre><code class="language-swift">@main
+struct MoltisApp: App {
+    @StateObject private var authManager = AuthManager()
+    @StateObject private var connectionStore = ConnectionStore()
+    @StateObject private var settingsStore = SettingsStore()
+    @StateObject private var locationSharingStore = LocationSharingStore()
     // ...
 }
 </code></pre>
-<h2>PreparedGatewayCore</h2>
-<p><strong>Source:</strong> <code>server/prepared.rs</code></p>
-<pre><code class="language-rust">pub struct PreparedGatewayCore {
-    pub state: Arc&lt;GatewayState&gt;,
-    // HTTP router is NOT yet attached — this is transport-agnostic
-}
-</code></pre>
-<p>HTTP consumers call <code>prepare_gateway()</code> which delegates to <code>prepare_gateway_core()</code> and then adds the router + middleware.</p>
-<h2>Auth System</h2>
-<p><strong>Source:</strong> <code>auth.rs</code></p>
-<h3>Auth Resolution</h3>
-<pre><code class="language-rust">// auth.rs
-pub fn resolve_auth(token: Option&lt;String&gt;, password: Option&lt;String&gt;) -&gt; ResolvedAuth {
-    // MOLTIS_TOKEN takes precedence over MOLTIS_PASSWORD
-    // Returns token-based or password-based auth
-}
-</code></pre>
-<h3>WebAuthn</h3>
-<p><strong>Source:</strong> <code>auth_webauthn.rs</code></p>
-<p>WebAuthn/FIDO2 passkey authentication:</p>
-<ul><li>Registration flow</li><li>Authentication flow</li><li>Credential management</li></ul>
-<h2>Broadcast</h2>
-<p><strong>Source:</strong> <code>broadcast.rs</code></p>
-<p>Event broadcasting to connected WebSocket clients:</p>
-<pre><code class="language-rust">pub struct BroadcastOpts {
-    pub channel_capacity: usize,
-}
+<h3>macOS App</h3>
+<p><strong>Source:</strong> <code>apps/macos/Sources/MoltisApp.swift</code></p>
+<pre><code class="language-swift">@main
+struct MoltisApp: App {
+    @StateObject private var settings: AppSettings
+    @StateObject private var chatStore: ChatStore
+    @StateObject private var onboardingState: OnboardingState
+    @StateObject private var providerStore: ProviderStore
+    @StateObject private var logStore: LogStore
+    @StateObject private var networkAuditStore: NetworkAuditStore
 
-pub fn broadcast(opts: BroadcastOpts) -&gt; BroadcastHandle;
+    init() {
+        // Install Rust→Swift log bridge
+        MoltisClient.installLogCallback(logStore: logStore)
+        // Install Rust→Swift session event bridge
+        MoltisClient.installSessionEventCallback(chatStore: chatStore)
+        // Install Rust→Swift network audit bridge
+        MoltisClient.installNetworkAuditCallback(store: networkAuditStore)
+    }
+}
 </code></pre>
-<h2>Channel Events</h2>
-<p><strong>Source:</strong> <code>channel_events/</code></p>
-<h3>Dispatch</h3>
-<p><strong>Source:</strong> <code>channel_events/dispatch.rs</code></p>
-<p>Dispatches incoming channel events to the appropriate handler based on channel type.</p>
-<h3>Commands</h3>
-<p><strong>Source:</strong> <code>channel_events/commands/</code></p>
-<table><tr><th>File</th><th>Purpose</th></tr><tr><td>`mod.rs`</td><td>Command module entry</td></tr><tr><td>`dispatch.rs`</td><td>Command dispatch</td></tr><tr><td>`formatting.rs`</td><td>Message formatting</td></tr><tr><td>`attachments.rs`</td><td>Attachment handling</td></tr><tr><td>`media.rs`</td><td>Media handling</td></tr><tr><td>`location.rs`</td><td>Location data</td></tr><tr><td>`control_handlers.rs`</td><td>Control commands</td></tr><tr><td>`session_handlers.rs`</td><td>Session commands</td></tr><tr><td>`quick_actions.rs`</td><td>Quick actions</td></tr></table>
-<h2>Webhook Middleware</h2>
-<p><strong>Source:</strong> <code>channel_webhook_*.rs</code></p>
-<table><tr><th>File</th><th>Purpose</th></tr><tr><td>`channel_webhook_dedup.rs`</td><td>Deduplicate webhook events</td></tr><tr><td>`channel_webhook_middleware.rs`</td><td>Webhook middleware chain</td></tr><tr><td>`channel_webhook_rate_limit.rs`</td><td>Rate limiting</td></tr></table>
-<h2>MCP Service</h2>
-<p><strong>Source:</strong> <code>mcp_service.rs</code></p>
-<p>Model Context Protocol server:</p>
-<ul><li>stdio transport</li><li>HTTP/SSE transport</li><li>Tool listing and execution</li></ul>
-<h2>Network Audit</h2>
-<p><strong>Source:</strong> <code>network_audit.rs</code></p>
-<p>Network audit logging for security.</p>
-<h2>Logs</h2>
-<p><strong>Source:</strong> <code>logs.rs</code></p>
-<p>Logging infrastructure with buffer support for TUI display.</p>
+<h3>Swift Bridge</h3>
+<p><strong>Source:</strong> <code>crates/swift-bridge/</code></p>
+<p>Three FFI bridges:</p>
+<ol><li><strong>Log callback</strong> — Rust <code>tracing</code> logs → Swift <code>LogStore</code></li><li><strong>Session event callback</strong> — Gateway session events → Swift <code>ChatStore</code></li><li><strong>Network audit callback</strong> — Network audit events → Swift <code>NetworkAuditStore</code></li></ol>
+<hr>
+<h2>Gateway Startup Sequence</h2>
+<p><strong>Source:</strong> <code>crates/gateway/src/server/prepare_core.rs</code></p>
+<pre><code class="language-rust">pub async fn prepare_gateway_core(
+    bind: &amp;str, port: u16, no_tls: bool, ...
+) -&gt; anyhow::Result&lt;PreparedGatewayCore&gt; {
+    // 1. Apply directory overrides
+    moltis_config::set_config_dir(dir);
+    moltis_config::set_data_dir(dir);
+
+    // 2. Resolve auth from environment
+    let token = std::env::var(&quot;MOLTIS_TOKEN&quot;).ok();
+    let password = std::env::var(&quot;MOLTIS_PASSWORD&quot;).ok();
+    let resolved_auth = auth::resolve_auth(token, password);
+
+    // 3. Load config (moltis.toml/.yaml/.json)
+    let mut config = moltis_config::discover_and_load();
+
+    // 4. Validate TLS/proxy configuration
+    validate_proxy_tls_configuration(...)?;
+
+    // 5. Migrate voice API keys to credential store
+    #[cfg(feature = &quot;voice&quot;)]
+    crate::voice::migrate_voice_keys_to_key_store(&amp;config);
+
+    // 6. Merge saved API keys into provider config
+    let effective_providers = config_with_saved_keys(...);
+
+    // 7. Auto-detect providers from env vars
+    let auto_detected = detect_auto_provider_sources_with_overrides(...);
+
+    // 8. Build ProviderRegistry
+    let provider_registry = ProviderRegistry::new(...);
+
+    // 9. Initialize services (session, model, provider setup)
+    let session_service = LiveSessionService::new(...);
+    let model_service = LiveModelService::new(...);
+
+    // 10. Initialize channels
+    init_channels::init(&amp;config, ...)?;
+
+    // 11. Initialize memory
+    init_memory::init(&amp;config, ...)?;
+
+    // 12. Initialize code index
+    init_code_index::init(&amp;config, ...)?;
+
+    // 13. Seed workspace markdown files
+    seed_default_workspace_markdown_files(...)?;
+
+    // 14. Spawn background tasks (cron, update checks, MCP health)
+    maybe_deliver_cron_output(...);
+
+    // 15. Return PreparedGatewayCore (transport-agnostic)
+    Ok(PreparedGatewayCore { state, ... })
+}
+</code></pre>
+<hr>
+<h2>Crate Dependency Map</h2>
+<pre><code class="language-">apps/courier (CLI entry point)
+├── gateway (HTTP/WS server, RPC, MCP)
+│   ├── agents (agent loop, streaming)
+│   │   ├── providers (LLM providers)
+│   │   └── tools (tool execution)
+│   │       └── sandbox (Docker/Podman/WASM)
+│   ├── channels (channel abstraction)
+│   │   ├── telegram
+│   │   ├── discord (serenity)
+│   │   ├── slack (webhooks)
+│   │   ├── whatsapp (whatsapp-rust)
+│   │   ├── signal
+│   │   ├── matrix
+│   │   ├── msteams
+│   │   ├── nostr
+│   │   └── caldav
+│   ├── chat (chat engine)
+│   ├── memory (SQLite + FTS + vector)
+│   ├── auth (credential store, WebAuthn)
+│   ├── config (config loading, schema)
+│   ├── voice (STT: 11 providers, TTS: 6 providers)
+│   ├── mcp (MCP protocol)
+│   ├── sessions (session management)
+│   ├── projects (project management)
+│   └── swift-bridge (Rust-Swift FFI)
+├── ios (Swift app)
+└── macos (Swift app)
+</code></pre>
 <h2>Next</h2>
-<p>Continue to <a href="06-providers-deep.md">06-providers-deep</a> for the LLM provider implementations.</p>
+<p>Return to the <a href="README.md">README</a> for the full index.</p>
   </article>
   <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
 </body>
