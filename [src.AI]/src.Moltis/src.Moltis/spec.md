@@ -15,7 +15,8 @@ license: MIT
 - **Language:** Rust (core) + Swift (iOS/macOS apps)
 - **License:** MIT
 - **Rust Edition:** 2024
-- **Workspace:** 59+ crates, ~270K lines of Rust
+- **Workspace:** 68 crates, ~270K lines of Rust, 1038 Rust files
+- **Native Apps:** 51 iOS Swift files, 31 macOS Swift files
 
 ## What src.Moltis Is
 
@@ -25,14 +26,17 @@ Moltis is a secure, persistent personal agent server written in Rust. One binary
 
 A reader should understand:
 
-1. Moltis's architecture: one Rust binary, 59 crates, multiple native apps
+1. Moltis's architecture: one Rust binary, 68 crates, multiple native apps
 2. The crate dependency graph: gateway → agents → chat → providers → tools
-3. Communication channels: Telegram, Signal, Discord, Slack, WhatsApp, Matrix, MS Teams, Nostr, CalDAV
-4. The tool system: sandboxing (Docker, WASM, Apple Container), skill execution
-5. Memory/RAG: SQLite + FTS + vector search
-6. The gateway: HTTP/WS server, RPC, auth, MCP support
-7. Native apps: iOS (with Live Activity widget) and macOS (with multiple panes)
-8. Security: sandboxing, vault, passkey auth, API keys
+3. Gateway internals: 129 files, 55.6K LoC of HTTP/WS/RPC/MCP
+4. Agent loop internals: 46 files, 20.3K LoC of agent orchestration
+5. Chat engine internals: 27 files, 17.5K LoC of conversation management
+6. Provider implementations: 72 files, 33.2K LoC across multiple LLM providers
+7. Tools internals: 90 files, 52.9K LoC of tool execution and sandboxing
+8. Communication channels: Telegram (27 files), Matrix (14 files), MS Teams (15 files), etc.
+9. Memory/RAG: SQLite + FTS + vector search
+10. Native apps: iOS (51 Swift files with Live Activity) and macOS (31 Swift files)
+11. Security: sandboxing, vault, passkey auth, API keys
 
 ## Documentation Structure
 
@@ -44,12 +48,16 @@ src.Moltis/
 │   ├── 00-overview.md             ← What Moltis is, installation, comparison
 │   ├── 01-architecture.md         ← Workspace structure, crate map, dependency graph
 │   ├── 02-gateway.md              ← HTTP/WS server, RPC, auth, MCP
-│   ├── 03-agents-chat.md          ← Agent loop, chat engine, providers
-│   ├── 04-channels.md             ← Telegram, Signal, Discord, Slack, WhatsApp, Matrix, etc.
-│   ├── 05-tools-sandbox.md        ← Tool execution, sandboxing, WASM, skills
-│   ├── 06-memory.md               ← SQLite + FTS + vector memory
-│   ├── 07-native-apps.md          ← iOS and macOS Swift apps
-│   └── 08-security.md             ← Sandboxing, vault, auth, security model
+│   ├── 03-gateway-deep.md         ← Gateway internals: 129 files, 55.6K LoC
+│   ├── 04-agents-chat.md          ← Agent loop, chat engine, providers
+│   ├── 05-agents-deep.md          ← Agent internals: 46 files, 20.3K LoC
+│   ├── 06-providers-deep.md       ← Provider internals: 72 files, 33.2K LoC
+│   ├── 07-channels.md             ← Telegram, Signal, Discord, Slack, WhatsApp, Matrix, etc.
+│   ├── 08-tools-sandbox.md        ← Tool execution, sandboxing, WASM, skills
+│   ├── 09-tools-deep.md           ← Tools internals: 90 files, 52.9K LoC
+│   ├── 10-memory.md               ← SQLite + FTS + vector memory
+│   ├── 11-native-apps.md          ← iOS and macOS Swift apps
+│   └── 12-security.md             ← Sandboxing, vault, auth, security model
 ├── html/
 │   ├── index.html
 │   └── *.html
@@ -64,14 +72,18 @@ src.Moltis/
 | 2 | 00-overview.md | DONE |
 | 3 | 01-architecture.md | DONE |
 | 4 | 02-gateway.md | DONE |
-| 5 | 03-agents-chat.md | DONE |
-| 6 | 04-channels.md | DONE |
-| 7 | 05-tools-sandbox.md | DONE |
-| 8 | 06-memory.md | DONE |
-| 9 | 07-native-apps.md | DONE |
-| 10 | 08-security.md | DONE |
-| 11 | HTML generation | DONE |
-| 12 | Grandfather review | DONE (fixed crate count 59→68) |
+| 5 | 03-gateway-deep.md | DONE |
+| 6 | 04-agents-chat.md | DONE |
+| 7 | 05-agents-deep.md | DONE |
+| 8 | 06-providers-deep.md | DONE |
+| 9 | 07-channels.md | DONE |
+| 10 | 08-tools-sandbox.md | DONE |
+| 11 | 09-tools-deep.md | DONE |
+| 12 | 10-memory.md | DONE |
+| 13 | 11-native-apps.md | DONE |
+| 14 | 12-security.md | DONE |
+| 15 | HTML generation | DONE |
+| 16 | Grandfather review | DONE |
 
 ## Build System
 

@@ -23,11 +23,14 @@ Output location: `[src.AI]/<project>/` with `spec.md`, `markdown/`, `html/`, `bu
 | 6 | bolt.diy | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/bolt.diy/` | TODO |
 | 7 | src.Google | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Google/` | TODO |
 | 8 | src.Hedr | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Hedr/` | TODO |
-| 9 | src.Instatic | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Instatic/` | DONE — 11 docs, HTML built, grandfather review passed (fixed route count 15→19) |
+| 9 | src.Instatic | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Instatic/` | DONE — 15 docs (including publisher-deep, plugin-deep, canvas, ai-agent, loops-forms), HTML built, grandfather review passed |
 | 10 | ponytail (PromptOptimizations) | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.PromptOptimizations/ponytail/` | TODO |
 | 11 | src.streamlit | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.streamlit/` | TODO |
 | 12 | src.strukto-ai | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.strukto-ai/` | TODO |
 | 13 | superdesign (src.superdesign) | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.superdesign/superdesign/` | DONE — 6 docs, HTML built, grandfather review passed |
+|14| src.opendesign | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Opendesign/` | TODO |
+|15| src.opendesign | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.DesignSkills/` | TODO |
+|15| goose | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.block/goose/` | TODO |
 
 ## Notes
 
