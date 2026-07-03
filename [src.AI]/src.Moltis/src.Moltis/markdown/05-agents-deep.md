@@ -1,98 +1,46 @@
-# Agents Deep Dive: Agent Loop, Streaming, Prompt Assembly, Tool Execution
+# Agents Deep Dive: The Streaming Agent Loop
 
-The agents crate (`moltis-agents`) manages the agent loop, streaming, prompt assembly, and tool execution. At 46 files and ~20,280 lines of Rust, it's the brain of Moltis.
+The agents crate implements the core agent loop — the conversation engine that calls LLMs, executes tools, and manages the conversation flow. This document covers the actual implementation.
 
 **Source:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/crates/agents/src/`
 
-## Crate Structure (46 files)
+## Crate Structure
 
-### Core Runner
-
-| Module | Purpose |
-|--------|---------|
-| `runner/mod.rs` | Agent runner entry point, re-exports |
-| `runner/streaming.rs` | Streaming agent loop with real-time UI updates |
-| `runner/non_streaming.rs` | Non-streaming agent loop |
-| `runner/helpers.rs` | Agent loop limits, error types, event types |
-| `runner/retry.rs` | Retry logic for rate limits and context windows |
-| `runner/tool_result.rs` | Tool result extraction and sanitization |
-
-### Model Layer
-
-| Module | Purpose |
-|--------|---------|
-| `model/mod.rs` | Model types re-exports |
-| `model/chat.rs` | Chat message types |
-| `model/convert.rs` | Message conversion utilities |
-| `model/stream.rs` | Stream event types |
-| `model/types.rs` | LLM provider interface, tool types |
-
-### Prompt System
-
-| Module | Purpose |
-|--------|---------|
-| `prompt.rs` | Prompt module entry point |
-| `prompt/builder.rs` | Prompt builder for assembling system + user messages |
-| `prompt/formatting.rs` | Prompt formatting utilities |
-| `prompt/types.rs` | Prompt type definitions |
-| `prompt/tests.rs` | Prompt tests |
-
-### Tool System
-
-| Module | Purpose |
-|--------|---------|
-| `tool_registry.rs` | Tool registration and lookup |
-| `tool_parsing.rs` | Parse tool calls from LLM response text |
-| `tool_arg_validator.rs` | Validate tool arguments against schemas |
-| `tool_loop_detector.rs` | Detect infinite tool call loops |
-| `response_sanitizer.rs` | Sanitize LLM responses |
-| `json_repair.rs` | Repair malformed JSON from LLM |
-
-### Features
-
-| Module | Purpose |
-|--------|---------|
-| `auth_profiles.rs` | Authentication profiles for agents |
-| `docs.rs` | Documentation injection into prompts |
-| `lazy_tools.rs` | Lazy tool loading |
-| `memory_writer.rs` | Memory write operations |
-| `multimodal.rs` | Multimodal (image) support |
-| `provider_chain.rs` | Provider fallback chain |
-| `skills.rs` | Skill definitions |
-| `silent_turn.rs` | Silent (no-output) agent turns |
-| `title.rs` | Conversation title generation |
-
-## runner/mod.rs: Agent Runner Entry Point
-
-**Source:** `crates/agents/src/runner/mod.rs` (53 lines)
-
-### Re-exports
-
-```rust
-// crates/agents/src/runner/mod.rs
-pub use helpers::{AgentLoopLimits, AgentRunError, AgentRunResult, OnEvent, RunnerEvent};
-pub use non_streaming::{run_agent, run_agent_loop, run_agent_loop_with_context, run_agent_loop_with_context_and_limits};
-pub use streaming::{run_agent_loop_streaming, run_agent_loop_streaming_with_limits};
-pub use tool_result::{ExtractedImage, sanitize_tool_result, tool_result_to_content};
+```
+crates/agents/src/
+├── runner/
+│   ├── mod.rs              ← Entry point, re-exports, SteerInbox
+│   ├── streaming.rs        ← Streaming agent loop (~500 lines)
+│   ├── non_streaming.rs    ← Non-streaming variant
+│   ├── helpers.rs          ← Helper functions (~500 lines)
+│   ├── retry.rs            ← Retry logic for rate limits
+│   └── tool_result.rs      ← Tool result sanitization
+├── model/
+│   ├── mod.rs              ← Model types
+│   ├── chat.rs             ← ChatMessage enum
+│   ├── stream.rs           ← StreamEvent enum
+│   ├── types.rs            ← LlmProvider trait, ToolCall, Usage
+│   └── convert.rs          ← Message conversion
+├── prompt/
+│   ├── builder.rs          ← Prompt builder
+│   ├── formatting.rs       ← Prompt formatting
+│   └── types.rs            ← Prompt types
+├── tool_registry.rs        ← Tool registration
+├── tool_parsing.rs         ← Parse tool calls from text
+├── tool_arg_validator.rs   ← Validate tool arguments
+├── tool_loop_detector.rs   ← Detect infinite tool loops
+├── response_sanitizer.rs   ← Sanitize LLM responses
+└── json_repair.rs          ← Repair malformed JSON
 ```
 
-### SteerInbox
+## The Streaming Agent Loop
+
+**Source:** `runner/streaming.rs`
+
+### Entry Point
 
 ```rust
-// crates/agents/src/runner/mod.rs:32
-pub type SteerInbox = std::sync::Arc<tokio::sync::Mutex<Vec<String>>>;
-```
-
-Shared inbox for mid-flight steering text (populated by `/steer` command). The agent loop drains this between iterations and injects the text as a system notice so the LLM sees the guidance on its next call.
-
-## runner/streaming.rs: Streaming Agent Loop
-
-**Source:** `crates/agents/src/runner/streaming.rs` (~600 lines)
-
-### run_agent_loop_streaming()
-
-```rust
-// crates/agents/src/runner/streaming.rs:57-83
+// runner/streaming.rs:57-83
 pub async fn run_agent_loop_streaming(
     provider: Arc<dyn LlmProvider>,
     tools: &ToolRegistry,
@@ -103,218 +51,201 @@ pub async fn run_agent_loop_streaming(
     tool_context: Option<serde_json::Value>,
     hook_registry: Option<Arc<HookRegistry>>,
     sender_name: Option<String>,
-    steer_inbox: Option<super::SteerInbox>,
+    steer_inbox: Option<SteerInbox>,
 ) -> Result<AgentRunResult, AgentRunError>
 ```
 
-The streaming agent loop. Unlike the non-streaming variant, this sends text deltas to the UI as they arrive, providing real-time UX. Tool calls are accumulated from the stream and executed after the stream completes, then the loop continues.
+Delegates to `run_agent_loop_streaming_with_limits()` with default `AgentLoopLimits`.
 
-### The Streaming Loop
+### Main Loop Logic
 
-1. **Initialize** — Load config, set up limits, prepare history
-2. **Before agent start hook** — Dispatch hook if registered
-3. **Loop iteration** (up to `limits.max_iterations`):
-   a. **Check steer inbox** — Drain any steering text and inject as system notice
-   b. **Apply loop detector intervention** — Check for tool loops
-   c. **Before LLM call hook** — Modify payload if needed
-   d. **Call provider** — Stream LLM response
-   e. **Process stream** — Accumulate text, tool calls, usage
-   f. **Dispatch events** — Send text deltas, tool calls to UI
-   g. **After LLM call hook** — Post-processing
-   h. **Check for tool calls**:
-      - If no tool calls and substantive answer → finish
-      - If tool calls → execute each tool, accumulate results
-   i. **Check limits** — Token budget, iteration count
-4. **Finish** — Return `AgentRunResult` with accumulated text, usage, tool calls
+**Source:** `runner/streaming.rs:85-500+`
 
-### Stream Processing
+The loop flow:
 
-```rust
-// Process each stream event:
-// - Text delta → emit to UI, accumulate in answer
-// - Tool call → accumulate in tool_calls list
-// - Usage → accumulate in usage counter
-// - Raw event → push to capped event list (for debugging)
-```
+1. **Initialize** (lines 97-181):
+   - Load config from `moltis_config::discover_and_load()`
+   - Get `max_tool_result_bytes`, `agent_max_auto_continues`, `compaction_ratio`, etc.
+   - Resolve `max_iterations` — tripled for lazy mode (`config.tools.registry_mode == Lazy`)
+   - Build initial messages: `[system_prompt] + history + user_message`
+   - Create `ToolLoopDetector` with configured window size
+
+2. **Loop iteration** (lines 182+):
+   - Check iteration count against `max_iterations`
+   - Build `schemas_for_api` — tool schemas for this turn
+   - Enforce context budget via `enforce_tool_result_context_budget()`
+   - Dispatch `BeforeLLMCall` hook (can block or modify payload)
+   - Call `provider.stream_with_tools_and_options()`
+
+3. **Stream processing** (lines 314+):
+   ```rust
+   while let Some(event) = stream.next().await {
+       StreamEvent::Delta(text)     → accumulate answer text
+       StreamEvent::ReasoningDelta(text) → accumulate reasoning
+       StreamEvent::ToolCallStart{id, name, index} → start tool call
+       StreamEvent::ToolCallArgumentsDelta{index, delta} → accumulate args
+       StreamEvent::Done(usage)     → finalize usage tracking
+   }
+   ```
+
+4. **Post-stream processing**:
+   - Parse accumulated tool call arguments from JSON
+   - Validate tool arguments via `validate_tool_args()`
+   - Check for tool loops via `ToolCallFingerprint`
+   - If loop detected: either strip tools or return error
+
+5. **Tool execution**:
+   - If tool calls found: execute each via `resolve_tool_lookup()`
+   - Sanitize results via `sanitize_tool_result()`
+   - Add tool result messages to conversation
+   - Continue loop for next iteration
+
+6. **Completion**:
+   - If no tool calls and substantive answer: return `AgentRunResult`
+   - If empty answer but previous had tool calls: use `last_answer_text`
+   - If answer is empty: return error
+
+### Key Constants and Config
+
+| Config | Source | Default |
+|--------|--------|---------|
+| `max_tool_result_bytes` | `config.tools` | — |
+| `agent_max_iterations` | `config.tools` | — |
+| `agent_max_auto_continues` | `config.tools` | — |
+| `tool_result_compaction_ratio` | `config.tools` | — |
+| `compaction_min_iterations` | `config.tools` | — |
+| `agent_loop_detector_window` | `config.tools` | — |
+| `RATE_LIMIT_MAX_RETRIES` | `retry.rs` | — |
 
 ### Tool Loop Detection
 
+**Source:** `tool_loop_detector.rs`
+
 ```rust
-let mut loop_detector = ToolLoopDetector::new();
-// For each tool call:
-let fingerprint = ToolCallFingerprint::from(&tool_call);
-if loop_detector.is_loop(&fingerprint) {
-    // Break the loop by returning early or injecting a nudge
+pub struct ToolLoopDetector {
+    window: usize,
+    strip_tools_on_second_fire: bool,
+    recent_calls: VecDeque<ToolCallFingerprint>,
 }
 ```
 
-### Retry Logic
+The detector tracks recent tool calls and detects when the same pattern repeats within the window. On first fire it warns; on second fire it can strip tools (force text-only response) or error.
+
+### Context Budget Enforcement
+
+**Source:** `runner/helpers.rs`
 
 ```rust
-// crates/agents/src/runner/retry.rs
-// - Rate limit errors → exponential backoff, up to RATE_LIMIT_MAX_RETRIES
-// - Context window errors → compact tool results, retry
-// - Other errors → fail immediately
+fn enforce_tool_result_context_budget(
+    messages: &mut Vec<ChatMessage>,
+    tool_schemas: &[serde_json::Value],
+    context_window: usize,
+    compaction_ratio: usize,
+    overflow_ratio: usize,
+) -> Result<(), AgentRunError>
 ```
 
-## runner/non_streaming.rs: Non-Streaming Agent Loop
+Compacts old tool results when the context approaches the model's limit. Uses `compaction_ratio` to determine how aggressively to compact.
 
-Similar to streaming but processes the full response at once instead of streaming deltas.
+### Response Sanitization
 
-## runner/helpers.rs: Helper Functions
-
-**Source:** `crates/agents/src/runner/helpers.rs` (~500 lines)
-
-### AgentLoopLimits
+**Source:** `response_sanitizer.rs`
 
 ```rust
-pub struct AgentLoopLimits {
-    pub max_iterations: Option<usize>,      // Max loop iterations
-    pub max_tokens: Option<usize>,          // Max token budget
-    pub max_tool_calls: Option<usize>,      // Max tool calls per iteration
-}
+pub fn clean_response(text: &str) -> (String, Vec<ToolCall>)
 ```
 
-### AgentRunError / AgentRunResult
+Cleans the LLM response text and recovers any tool calls that were embedded in the text rather than properly structured.
 
-```rust
-pub enum AgentRunError {
-    ProviderError(String),      // LLM provider failure
-    ToolExecutionError(String), // Tool execution failure
-    ContextWindowExceeded,      // Context window overflow
-    RateLimited,                // Rate limit hit
-    Steered(String),            // User steered the conversation
-}
+## The LlmProvider Trait
 
-pub struct AgentRunResult {
-    pub text: String,                    // Accumulated answer text
-    pub tool_calls: Vec<ToolCall>,       // All tool calls made
-    pub tool_results: Vec<ToolResult>,   // All tool results
-    pub usage: Usage,                    // Token usage
-    pub history: Vec<ChatMessage>,       // Full conversation history
-}
-```
-
-### Key Helper Functions
-
-#### `has_named_tool_call()`
-
-Checks if the LLM response contains any named tool calls (as opposed to text that looks like tool calls but isn't).
-
-#### `find_empty_tool_name_call()`
-
-Finds tool calls with empty names — triggers a retry with the error message.
-
-#### `sanitize_tool_name()`
-
-Sanitizes tool names to prevent injection attacks.
-
-#### `apply_loop_detector_intervention()`
-
-If a tool loop is detected, injects a nudge to break the loop or returns early.
-
-#### `dispatch_before_agent_start_hook()` / `dispatch_after_llm_call_hook()`
-
-Dispatches hook registry events for observability and customization.
-
-## model/types.rs: LLM Provider Interface
-
-**Source:** `crates/agents/src/model/types.rs`
-
-### LlmProvider Trait
+**Source:** `model/types.rs`
 
 ```rust
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
-    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse>;
-    async fn chat_stream(&self, request: ChatRequest) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>>>>>;
+    fn name(&self) -> &str;
+    fn id(&self) -> &str;
+    fn context_window(&self) -> usize;
     fn supports_tools(&self) -> bool;
-    fn model_id(&self) -> &str;
+    fn supports_multimodal(&self) -> bool;
+    
+    async fn stream_with_tools_and_options(
+        &self,
+        messages: Vec<ChatMessage>,
+        tool_schemas: Vec<serde_json::Value>,
+        tool_controls: AgentToolControls,
+    ) -> Pin<Box<dyn Stream<Item = StreamEvent>>>;
 }
 ```
 
-### ChatMessage
+## ChatMessage
+
+**Source:** `model/chat.rs`
 
 ```rust
 pub enum ChatMessage {
     System { content: String },
-    User { content: UserContent },
+    User { content: UserContent, name: Option<String> },
     Assistant { content: String, tool_calls: Vec<ToolCall> },
     Tool { tool_call_id: String, content: String },
 }
 ```
 
-### ToolCall
+## StreamEvent
+
+**Source:** `model/stream.rs`
+
+```rust
+pub enum StreamEvent {
+    Delta(String),                    // Answer text
+    ReasoningDelta(String),           // Reasoning text
+    ToolCallStart { id, name, index, metadata },
+    ToolCallArgumentsDelta { index, delta },
+    ToolCallComplete { index },
+    ProviderRaw(serde_json::Value),   // Raw provider event
+    Done(Usage),
+}
+```
+
+## ToolCall
 
 ```rust
 pub struct ToolCall {
     pub id: String,
     pub name: String,
-    pub arguments: String,  // JSON string
+    pub arguments: serde_json::Value,
+    pub argument_diagnostic: Option<String>,
+    pub metadata: Option<serde_json::Value>,
 }
 ```
 
-### StreamEvent
+## Usage Tracking
 
 ```rust
-pub enum StreamEvent {
-    TextDelta { text: String },
-    ToolCallStart { tool_call: ToolCall },
-    ToolCallDelta { tool_call_id: String, arguments: String },
-    ToolCallEnd { tool_call: ToolCall },
-    Usage { usage: Usage },
-    RawEvent { event: String },
+pub struct Usage {
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub cache_read_tokens: u32,
+    pub cache_write_tokens: u32,
 }
 ```
 
-## tool_registry.rs: Tool Registration
+Tracked via `UsageAccumulator` which sums across iterations.
 
-**Source:** `crates/agents/src/tool_registry.rs` (~200 lines)
+## Retry Logic
+
+**Source:** `runner/retry.rs`
 
 ```rust
-pub struct ToolRegistry {
-    tools: HashMap<String, ToolDefinition>,
-}
+pub const RATE_LIMIT_MAX_RETRIES: u8 = 3;
 
-impl ToolRegistry {
-    pub fn register(&mut self, tool: ToolDefinition);
-    pub fn get(&self, name: &str) -> Option<&ToolDefinition>;
-    pub fn list(&self) -> Vec<&ToolDefinition>;
-    pub fn execute(&self, name: &str, args: &str) -> Result<String>;
-}
+pub fn is_context_window_error(error: &str) -> bool;
+pub fn next_retry_delay_ms(retry_count: u8) -> u64;
 ```
 
-## tool_parsing.rs: Tool Call Parsing
-
-**Source:** `crates/agents/src/tool_parsing.rs` (~200 lines)
-
-Parses tool calls from LLM response text when the provider doesn't support native tool calling:
-
-```rust
-pub fn parse_tool_calls_from_text(text: &str) -> Vec<ToolCall>;
-pub fn looks_like_failed_tool_call(text: &str) -> bool;
-```
-
-## tool_loop_detector.rs: Infinite Loop Detection
-
-**Source:** `crates/agents/src/tool_loop_detector.rs` (~150 lines)
-
-```rust
-pub struct ToolLoopDetector {
-    recent_calls: VecDeque<ToolCallFingerprint>,
-    max_window: usize,
-}
-
-impl ToolLoopDetector {
-    pub fn is_loop(&mut self, fingerprint: &ToolCallFingerprint) -> bool;
-}
-```
-
-Detects loops by:
-1. Creating a fingerprint for each tool call (name + hashed arguments)
-2. Checking if the same fingerprint appears N times in the recent window
-3. If yes → loop detected
+Retries on rate limits with exponential backoff, up to `RATE_LIMIT_MAX_RETRIES`.
 
 ## Next
 
-Continue to [06-providers-deep](06-providers-deep.md) for the LLM provider implementations deep dive.
+Continue to [06-providers-deep](06-providers-deep.md) for the LLM provider implementations.
