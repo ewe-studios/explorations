@@ -1,459 +1,499 @@
-# Tools Deep Dive: Exec, Sandboxing, and File Operations
+# macOS FFI Bridges, Tool Registration, and Sandbox Routing
 
-The tools crate implements all agent tools — exec, file read/write/edit, glob, grep, directory listing, and more. This document covers the actual implementation.
+Comprehensive source-level documentation of the Swift-Rust FFI bridges, gateway tool registration flow, sandbox router with multiple backends, and background sandbox tasks.
 
-**Source:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/crates/tools/src/`
+**Source:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/`
 
-## Exec Tool: Shell Command Execution
+---
 
-**Source:** `exec.rs` (~600 lines)
+## Swift-Rust FFI Bridges
 
-### Core Function: `exec_command`
+**Source:** `crates/swift-bridge/src/`
 
-```rust
-// exec.rs:125-196
-pub async fn exec_command(command: &str, opts: &ExecOpts) -> Result<ExecResult>
+### Module Structure
+
+```
+swift-bridge/src/
+├── lib.rs              ← Module declarations
+├── types.rs            ← Request/response structs, error types
+├── state.rs            ← Global bridge state (tokio runtime, registry)
+├── callbacks.rs        ← Log, session event, network audit callbacks
+├── helpers.rs          ← Encoding, parsing, metrics/tracing
+├── chat.rs             ← Chat logic (provider resolution, streaming)
+├── ffi_core.rs         ← Core FFI exports (version, providers, httpd)
+├── ffi_sessions.rs     ← Session FFI exports
+├── ffi_config.rs       ← Config, identity, soul, memory, env var FFI
+├── ffi_auth.rs         ← Authentication FFI exports
+└── ffi_sandbox.rs      ← Sandbox FFI exports
 ```
 
-The implementation:
+### Callback Types
+
+**Source:** `callbacks.rs`
 
 ```rust
-let mut cmd = Command::new("sh");
-cmd.arg("-c").arg(command);
+// Log callback
+pub(crate) type LogCallback = unsafe extern "C" fn(log_json: *const c_char);
+pub(crate) static LOG_CALLBACK: OnceLock<LogCallback> = OnceLock::new();
 
-if let Some(ref dir) = opts.working_dir {
-    cmd.current_dir(dir);
-}
-for (k, v) in &opts.env {
-    cmd.env(k, v);
-}
+// Session event callback
+pub(crate) type SessionEventCallback = unsafe extern "C" fn(event_json: *const c_char);
+pub(crate) static SESSION_EVENT_CALLBACK: OnceLock<SessionEventCallback> = OnceLock::new();
 
-cmd.stdout(std::process::Stdio::piped());
-cmd.stderr(std::process::Stdio::piped());
-cmd.stdin(std::process::Stdio::null());  // Child doesn't inherit stdin
-
-let child = cmd.spawn().map_err(|e| { ... })?;
-let result = tokio::time::timeout(opts.timeout, child.wait_with_output()).await;
+// Network audit callback
+pub(crate) type NetworkAuditCallback = unsafe extern "C" fn(event_json: *const c_char);
+pub(crate) static NETWORK_AUDIT_CALLBACK: OnceLock<NetworkAuditCallback> = OnceLock::new();
 ```
 
-**Key behavior:**
-- Runs via `sh -c` — the shell interprets the command
-- **stdin is null** — child processes cannot read from stdin (security measure)
-- **Timeout** via `tokio::time::timeout` — default 30 seconds, max 1800 seconds (30 minutes)
-- **Output truncated** at `max_output_bytes` (default 200KB) with `... [output truncated]` appended
-
-### ExecResult
+### Log Bridge
 
 ```rust
-// exec.rs:88-93
-pub struct ExecResult {
-    pub stdout: String,
-    pub stderr: String,
-    pub exit_code: i32,  // -1 if signal terminated
+// callbacks.rs:22-58
+struct BridgeLogEvent<'a> {
+    level: &'a str,
+    target: &'a str,
+    message: &'a str,
+    fields: Option<&'a HashMap<&'a str, String>>,
 }
-```
 
-### ExecOpts Defaults
-
-```rust
-// exec.rs:104-113
-impl Default for ExecOpts {
-    fn default() -> Self {
-        Self {
-            timeout: Duration::from_secs(30),
-            max_output_bytes: 200 * 1024,  // 200KB
-            working_dir: None,
-            env: Vec::new(),
+pub(crate) fn emit_log_with_fields(
+    level: &str,
+    target: &str,
+    message: &str,
+    fields: Option<&HashMap<&str, String>>,
+) {
+    if let Some(callback) = LOG_CALLBACK.get() {
+        let event = BridgeLogEvent { level, target, message, fields };
+        if let Ok(json) = serde_json::to_string(&event)
+            && let Ok(c_str) = CString::new(json)
+        {
+            // SAFETY: c_str is valid NUL-terminated, callback copies before returning
+            unsafe { callback(c_str.as_ptr()); }
         }
     }
 }
 ```
 
-### ExecTool: Agent Tool Implementation
+### Session Event Bridge
 
 ```rust
-// exec.rs:199-214
-pub struct ExecTool {
-    pub default_timeout: Duration,
-    pub max_output_bytes: usize,
-    pub working_dir: Option<PathBuf>,
-    approval_manager: Option<Arc<ApprovalManager>>,
-    broadcaster: Option<Arc<dyn ApprovalBroadcaster>>,
-    sandbox: Arc<dyn Sandbox>,
-    sandbox_id: Option<SandboxId>,
-    sandbox_router: Option<Arc<SandboxRouter>>,
-    env_provider: Option<Arc<dyn EnvVarProvider>>,
-    completion_callback: Option<ExecCompletionFn>,
-    node_provider: Option<Arc<dyn NodeExecProvider>>,
-    default_node: Option<String>,
+// callbacks.rs:71-76
+struct BridgeSessionEvent {
+    kind: &'static str,
+    #[serde(rename = "sessionKey")]
+    session_key: String,
 }
-```
 
-The builder pattern:
-
-```rust
-ExecTool::default()
-    .with_approval(manager, broadcaster)
-    .with_sandbox(sandbox, id)
-    .with_sandbox_router(router)
-    .with_env_provider(provider)
-    .with_completion_callback(cb)
-    .with_default_timeout(timeout)
-    .with_max_output_bytes(bytes)
-    .with_node_provider(provider, default_node)
-```
-
-### Tool Schema
-
-```rust
-// exec.rs:325-359
-fn parameters_schema(&self) -> serde_json::Value {
-    serde_json::json!({
-        "type": "object",
-        "properties": {
-            "command": { "type": "string", "description": "The shell command to execute" },
-            "timeout": { "type": "integer", "description": "Timeout in seconds (default 30, max 1800)" },
-            "working_dir": { "type": "string", "description": "Working directory" },
-            "node": { "type": "string", "description": "Node name or ID (if remote nodes connected)" }
-        },
-        "required": ["command"]
-    })
-}
-```
-
-The `node` parameter is **conditionally added** only when remote nodes are connected.
-
-### Execute Method Logic
-
-The execute flow:
-
-1. **Parse command** — required, errors if missing
-2. **Parse timeout** — capped at 1800 seconds (30 minutes)
-3. **Node routing** — if `node_provider` is set and nodes connected:
-   - Model-supplied node values are resolved via `provider.resolve_node_id()`
-   - If no nodes connected but `default_node` is configured → clear error
-   - If model hallucinates a node value with no nodes connected → silently drops it
-4. **Sandbox check** — `router.is_sandboxed(session_key)` or `sandbox_id.is_some()`
-5. **Backend isolation check** — `provides_fs_isolation()` determines if working in container or host
-6. **Working directory resolution**:
-   - Sandbox with container backend → default `/home/sandbox`
-   - Host execution → default `$HOME` (via `moltis_config::home_dir()`)
-   - Explicit `working_dir` validated — if it doesn't exist on host, falls back to default
-   - Relative paths resolved under `/home/sandbox`
-7. **Approval gating** — if `approval_manager` is set, broadcasts request and waits for approval
-8. **Environment injection** — from `env_provider` (API keys, etc.)
-9. **Execute** — either `exec_command()` locally or `provider.exec_on_node()` remotely
-10. **Completion callback** — fires `ExecCompletionEvent` with command, exit code, previews
-
-### Approval Gating
-
-```rust
-// exec.rs:565-592
-if let Some(ref mgr) = self.approval_manager {
-    let request_id = format!("exec-{}", uuid::Uuid::new_v4());
-    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-    
-    mgr.create_request(&request_id, command, session_key, response_tx).await?;
-    self.broadcaster.as_ref().unwrap()
-        .broadcast_request(&request_id, command, session_key).await?;
-    
-    let response = response_rx.await?;
-    match response.decision {
-        ApprovalDecision::Approve => { /* continue */ },
-        ApprovalDecision::Deny => {
-            return Ok(serde_json::json!({
-                "error": "command denied by user",
-                "command": command
-            }));
-        },
-        ApprovalDecision::DenyAndBlock => { /* block future similar commands */ },
+pub(crate) fn emit_session_event(event: &SessionEvent) {
+    if let Some(callback) = SESSION_EVENT_CALLBACK.get() {
+        let event = BridgeSessionEvent {
+            kind: event.kind.as_str(),
+            session_key: event.session_key.clone(),
+        };
+        if let Ok(json) = serde_json::to_string(&event)
+            && let Ok(c_str) = CString::new(json)
+        {
+            unsafe { callback(c_str.as_ptr()); }
+        }
     }
 }
 ```
 
-### Sandbox Recovery
+### Network Audit Bridge
 
 ```rust
-// exec.rs:600-630
-if let Some(ref router) = self.sandbox_router {
-    let session_key = session_key.unwrap_or("main");
-    match router.resolve_backend(session_key).await {
-        SandboxBackend::Docker | SandboxBackend::Podman | SandboxBackend::AppleContainer => {
-            // Execute in container
-        },
-        SandboxBackend::RestrictedHost | SandboxBackend::Cgroup | SandboxBackend::None => {
-            // Execute directly on host
-        },
+// callbacks.rs
+pub(crate) fn emit_network_audit(domain: &str, port: u16, protocol: &str, action: &str, source: &str) {
+    if let Some(callback) = NETWORK_AUDIT_CALLBACK.get() {
+        let event = BridgeNetworkAuditEvent {
+            domain, port, protocol, action, source,
+        };
+        if let Ok(json) = serde_json::to_string(&event)
+            && let Ok(c_str) = CString::new(json)
+        {
+            unsafe { callback(c_str.as_ptr()); }
+        }
     }
 }
 ```
 
-**Aha:** When the sandbox backend doesn't provide filesystem isolation (RestrictedHost, Cgroup, None), commands run directly on the host even when the session mode says "sandboxed." Using `/home/sandbox` as the working directory would fail with ENOENT on the host, so the code falls back to the host data directory.
+### Swift Side: MoltisClient.swift
 
-### Node Execution
+**Source:** `apps/macos/Sources/MoltisClient.swift`
 
-When remote nodes are connected:
+#### Log Callback
+
+```swift
+// MoltisClient.swift:7-47
+private struct BridgeLogPayload: Decodable {
+    let level: String
+    let target: String
+    let message: String
+    let fields: [String: String]?
+}
+
+private var globalLogStore: LogStore?
+
+private func rustLogCallbackHandler(logJson: UnsafePointer<CChar>?) {
+    guard let logJson else { return }
+    let jsonString = String(cString: logJson)
+    let data = Data(jsonString.utf8)
+
+    guard let payload = try? logDecoder.decode(BridgeLogPayload.self, from: data)
+    else { return }
+
+    let level: LogLevel
+    switch payload.level {
+    case "TRACE": level = .trace
+    case "DEBUG": level = .debug
+    case "INFO": level = .info
+    case "WARN": level = .warn
+    case "ERROR": level = .error
+    default: level = .debug
+    }
+
+    DispatchQueue.main.async {
+        globalLogStore?.log(level, target: payload.target, message: payload.message, fields: payload.fields ?? [:])
+    }
+}
+```
+
+#### Session Event Callback
+
+```swift
+// MoltisClient.swift:51-75
+struct BridgeSessionEventPayload: Decodable {
+    let kind: String
+    let sessionKey: String
+}
+
+private var globalChatStore: ChatStore?
+
+private func rustSessionEventCallbackHandler(eventJson: UnsafePointer<CChar>?) {
+    guard let eventJson else { return }
+    let jsonString = String(cString: eventJson)
+    let data = Data(jsonString.utf8)
+
+    guard let payload = try? sessionEventDecoder.decode(BridgeSessionEventPayload.self, from: data)
+    else { return }
+
+    DispatchQueue.main.async {
+        globalChatStore?.handleSessionEvent(payload)
+    }
+}
+```
+
+#### Network Audit Callback
+
+```swift
+// MoltisClient.swift:79-125
+private struct BridgeNetworkAuditPayload: Decodable {
+    let domain: String
+    let port: UInt16
+    let networkProtocol: String
+    let action: String
+    let source: String
+    let method: String?
+    let url: String?
+}
+
+private var globalNetworkAuditStore: NetworkAuditStore?
+
+private func rustNetworkAuditCallbackHandler(eventJson: UnsafePointer<CChar>?) {
+    guard let eventJson else { return }
+    let jsonString = String(cString: eventJson)
+    let data = Data(jsonString.utf8)
+
+    guard let payload = try? networkAuditDecoder.decode(BridgeNetworkAuditPayload.self, from: data)
+    else { return }
+
+    DispatchQueue.main.async {
+        let entry = NetworkAuditEntry(
+            id: UUID(),
+            timestamp: Date(),
+            domain: payload.domain,
+            port: payload.port,
+            networkProtocol: payload.networkProtocol,
+            action: payload.action,
+            source: payload.source,
+            method: payload.method,
+            url: payload.url
+        )
+        globalNetworkAuditStore?.push(entry)
+    }
+}
+```
+
+#### Installation at Startup
+
+**Source:** `apps/macos/Sources/MoltisApp.swift:25-44`
+
+```swift
+init() {
+    let settings = AppSettings()
+    let logStore = LogStore()
+    let networkAuditStore = NetworkAuditStore()
+
+    // Install Rust→Swift log bridge before any FFI calls
+    MoltisClient.installLogCallback(logStore: logStore)
+
+    let providerStore = ProviderStore(logStore: logStore)
+    let chatStore = ChatStore(settings: settings, providerStore: providerStore, logStore: logStore)
+
+    // Install Rust→Swift session event bridge (shares bus with gateway)
+    MoltisClient.installSessionEventCallback(chatStore: chatStore)
+
+    // Install Rust→Swift network audit bridge
+    MoltisClient.installNetworkAuditCallback(store: networkAuditStore)
+
+    _settings = StateObject(wrappedValue: settings)
+    _chatStore = StateObject(wrappedValue: chatStore)
+    // ...
+}
+```
+
+---
+
+## Tool Registration
+
+**Source:** `crates/gateway/src/server/prepare_core/tool_registration.rs`
+
+### Voice Call Tool Registration
 
 ```rust
-let result = provider
-    .exec_on_node(&node_id, command, timeout_secs, cwd, None)
-    .await
-    .map_err(|e| Error::message(format!("node exec failed: {e}")))?;
-```
+// tool_registration.rs:1-16
+#[cfg(feature = "telephony")]
+pub(super) async fn register_voice_call_tool(
+    tool_registry: &mut moltis_agents::tool_registry::ToolRegistry,
+    state: &crate::state::GatewayState,
+) {
+    let webhook_base = state
+        .config
+        .server
+        .effective_external_url()
+        .unwrap_or_default();
 
-The `NodeExecProvider` trait (defined in `exec.rs:60-85`) bridges the tools crate with the gateway crate's `node_exec` module without a direct dependency.
-
----
-
-## File Read Tool
-
-**Source:** `fs/read/tool.rs`
-
-### Schema
-
-```json
-{
-  "type": "object",
-  "properties": {
-    "path": { "type": "string", "description": "File path" },
-    "offset": { "type": "integer", "description": "Start line (0-based)" },
-    "limit": { "type": "integer", "description": "Max lines to read" }
-  },
-  "required": ["path"]
+    if let Some(ref tp) = state.services.telephony_plugin {
+        let voice_tool = moltis_telephony::VoiceCallTool::new(webhook_base, Arc::clone(tp));
+        tool_registry.register(Box::new(voice_tool));
+    }
 }
 ```
 
-### Implementation
+The voice call tool is registered only when:
+1. `telephony` feature is enabled
+2. A telephony plugin is configured in `state.services.telephony_plugin`
+3. The tool uses the gateway's external URL as the webhook base
+
+---
+
+## Sandbox Router: Multiple Backends
+
+**Source:** `crates/gateway/src/server/prepare_core/sandbox.rs`
+
+### Router Construction
 
 ```rust
-// fs/read/tool.rs
-async fn execute(&self, params: Value) -> Result<Value> {
-    let path = params["path"].as_str().unwrap();
-    let offset = params["offset"].as_u64().unwrap_or(0);
-    let limit = params["limit"].as_u64().unwrap_or(1000);
-    
-    // Path validation
-    // Read file
-    // Return JSON: { path, content, total_lines, lines_read, offset }
+// sandbox.rs:30-71
+pub(super) fn build_sandbox_router(
+    sandbox_config: &SandboxConfig,
+    container_prefix: &str,
+    timezone: Option<&str>,
+) -> moltis_tools::sandbox::SandboxRouter {
+    let mut config = sandbox_config.clone();
+    config.container_prefix = Some(container_prefix.to_string());
+    config.timezone = timezone.map(ToOwned::to_owned);
+
+    let mut router = moltis_tools::sandbox::SandboxRouter::new(config.clone());
+
+    // Register additional remote backends that have credentials configured.
+    // Env vars (VERCEL_TOKEN, DAYTONA_API_KEY) are resolved by config crate.
+    for (name, has_creds) in [
+        ("vercel", has_secret(&config.vercel_token)),
+        ("daytona", has_secret(&config.daytona_api_key)),
+    ] {
+        if has_creds && router.backend_name() != name {
+            let backend = moltis_tools::sandbox::router::select_backend_by_name(name, &config);
+            if backend.backend_name() == name {
+                router.register_backend(backend);
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let name = "firecracker";
+        let has_creds = moltis_tools::sandbox::firecracker_bin_available(
+            config.firecracker_bin.as_deref().map(FsPath::new),
+        );
+        if has_creds && router.backend_name() != name {
+            let backend = moltis_tools::sandbox::router::select_backend_by_name(name, &config);
+            if backend.backend_name() == name {
+                router.register_backend(backend);
+            }
+        }
+    }
+
+    router
 }
 ```
 
----
+### Available Sandbox Backends
 
-## File Write Tool
+| Backend | Platform | Credential | Detection |
+|---------|----------|------------|-----------|
+| **Docker** | Linux, macOS | — | Default |
+| **Podman** | Linux, macOS | — | Config setting |
+| **Apple Container** | macOS | — | macOS only |
+| **Vercel** | Cloud | `VERCEL_TOKEN` | Secret not empty |
+| **Daytona** | Cloud | `DAYTONA_API_KEY` | Secret not empty |
+| **Firecracker** | Linux | Binary available | `firecracker_bin_available()` |
+| **WASM** | Cross-platform | — | Config setting |
 
-**Source:** `file_write.rs`
-
-### Schema
-
-```json
-{
-  "type": "object",
-  "properties": {
-    "path": { "type": "string" },
-    "content": { "type": "string" },
-    "append": { "type": "boolean", "default": false }
-  },
-  "required": ["path", "content"]
-}
-```
-
-### Implementation
+### Secret Detection
 
 ```rust
-// file_write.rs
-async fn execute(&self, params: Value) -> Result<Value> {
-    let path = params["path"].as_str().unwrap();
-    let content = params["content"].as_str().unwrap();
-    let append = params["append"].as_bool().unwrap_or(false);
-    
-    // Path validation (no escaping workspace)
-    // Create parent directories if needed
-    // Write (or append)
-    // Return: { path, bytes_written }
+// sandbox.rs:23-27
+fn has_secret(secret: &Option<Secret<String>>) -> bool {
+    secret
+        .as_ref()
+        .is_some_and(|secret| !secret.expose_secret().is_empty())
 }
 ```
 
 ---
 
-## File Edit Tool
+## Background Sandbox Tasks
 
-**Source:** `file_edit.rs`
+**Source:** `crates/gateway/src/server/prepare_core/sandbox.rs`
 
-### Schema
-
-```json
-{
-  "type": "object",
-  "properties": {
-    "path": { "type": "string" },
-    "old_text": { "type": "string", "description": "Text to find" },
-    "new_text": { "type": "string", "description": "Replacement text" },
-    "replace_all": { "type": "boolean", "default": false }
-  },
-  "required": ["path", "old_text", "new_text"]
-}
-```
-
-### Implementation
+### Image Pre-Build
 
 ```rust
-// file_edit.rs
-async fn execute(&self, params: Value) -> Result<Value> {
-    let path = params["path"].as_str().unwrap();
-    let old_text = params["old_text"].as_str().unwrap();
-    let new_text = params["new_text"].as_str().unwrap();
-    let replace_all = params["replace_all"].as_bool().unwrap_or(false);
-    
-    // Read file
-    // Find old_text
-    // If not found → error with "text not found"
-    // If found multiple times and !replace_all → error "multiple matches"
-    // Replace and write
-    // Return: { path, replacements }
+// sandbox.rs:75-120
+pub(super) fn spawn_sandbox_background_tasks(
+    sandbox_router: &Arc<SandboxRouter>,
+    deferred_state: &Arc<DeferredState>,
+) {
+    // Background image pre-build.
+    {
+        let router = Arc::clone(sandbox_router);
+        let backends = router.available_backend_instances();
+        let default_backend_name = router.backend_name().to_string();
+        let packages = router.config().packages.clone();
+        let base_image = router.config().image
+            .clone()
+            .unwrap_or_else(|| moltis_tools::sandbox::DEFAULT_SANDBOX_IMAGE.to_string());
+
+        if should_prebuild_sandbox_image(router.mode(), &packages) {
+            let deferred_for_build = Arc::clone(deferred_state);
+            sandbox_router.building_flag.store(true, Ordering::Relaxed);
+            let build_router = Arc::clone(sandbox_router);
+
+            tokio::spawn(async move {
+                if let Some(state) = deferred_for_build.get() {
+                    broadcast(state, "sandbox.image.build", json!({
+                        "status": "starting",
+                        "base_image": base_image,
+                        "packages": packages,
+                    })).await;
+
+                    match build_router.prebuild_image(&base_image, &packages).await {
+                        Ok(_) => {
+                            broadcast(state, "sandbox.image.build", json!({
+                                "status": "complete",
+                                "base_image": base_image,
+                            })).await;
+                        },
+                        Err(e) => {
+                            broadcast(state, "sandbox.image.build", json!({
+                                "status": "error",
+                                "error": e.to_string(),
+                            })).await;
+                        },
+                    }
+                    sandbox_router.building_flag.store(false, Ordering::Relaxed);
+                }
+            });
+        }
+    }
+
+    // Host provisioning (install packages on host for non-container backends).
+    // Startup container garbage collection (remove leftover containers).
 }
+```
+
+### Build Progress Broadcasting
+
+The sandbox image build progress is broadcast to connected clients via WebSocket:
+
+```json
+{"type": "sandbox.image.build", "data": {"status": "starting", "base_image": "...", "packages": [...]}}
+{"type": "sandbox.image.build", "data": {"status": "complete", "base_image": "..."}}
+{"type": "sandbox.image.build", "data": {"status": "error", "error": "..."}}
 ```
 
 ---
 
-## Glob Tool
+## Provider Discovery and Ranking
 
-**Source:** `glob.rs`
+**Source:** `crates/gateway/src/provider_setup.rs`
 
-### Schema
-
-```json
-{
-  "type": "object",
-  "properties": {
-    "pattern": { "type": "string", "description": "Glob pattern (*.rs, src/**/*.rs)" },
-    "path": { "type": "string", "description": "Search root (default: workspace)" }
-  },
-  "required": ["pattern"]
-}
-```
-
----
-
-## Grep Tool
-
-**Source:** `grep.rs`
-
-### Schema
-
-```json
-{
-  "type": "object",
-  "properties": {
-    "pattern": { "type": "string", "description": "Regex pattern" },
-    "path": { "type": "string", "description": "File or directory" },
-    "case_sensitive": { "type": "boolean" },
-    "max_results": { "type": "integer", "default": 100 }
-  },
-  "required": ["pattern"]
-}
-```
-
----
-
-## List Directory Tool
-
-**Source:** `list_directory.rs`
-
-### Schema
-
-```json
-{
-  "type": "object",
-  "properties": {
-    "path": { "type": "string", "description": "Directory path (default: workspace root)" }
-  }
-}
-```
-
-### Return Format
-
-```json
-{
-  "path": "/workspace/src",
-  "entries": [
-    { "name": "main.rs", "type": "file", "size": 1234 },
-    { "name": "utils", "type": "directory" }
-  ]
-}
-```
-
----
-
-## ToolBase and ToolDispatcher
-
-**Source:** `tool_base.rs`, `tool_dispatcher.rs`
-
-### ToolBase
-
-Abstract base for all tools:
+### Key Store
 
 ```rust
-#[async_trait]
-pub trait AgentTool: Send + Sync {
-    fn name(&self) -> &str;
-    fn description(&self) -> &str;
-    fn parameters_schema(&self) -> serde_json::Value;
-    async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value>;
+// provider_setup.rs
+pub struct KeyStore {
+    // Persisted API keys from previous runs
+}
+
+impl KeyStore {
+    pub fn new() -> Self { ... }
 }
 ```
 
-### ToolDispatcher
-
-Routes tool calls to the correct tool:
+### Config with Saved Keys
 
 ```rust
-// tool_dispatcher.rs
-pub async fn dispatch(&self, tool_name: &str, params: Value) -> Result<ToolResult> {
-    let tool = self.registry.get(tool_name)
-        .ok_or_else(|| Error::message(format!("unknown tool: {tool_name}")))?;
-    
-    // Validate params against schema
-    let schema = tool.parameters_schema();
-    validate_tool_args(&schema, &params)?;
-    
-    // Execute
-    let result = tool.execute(params).await?;
-    
-    // Truncate output if too large
-    truncate_if_needed(&result, self.max_output_bytes);
-    
-    Ok(result)
+pub fn config_with_saved_keys(
+    base_config: &ProviderConfig,
+    key_store: &KeyStore,
+    local_model_ids: &[String],
+) -> EffectiveProviderConfig {
+    // Merge base config with saved API keys
+    // Local models are added if local-llm feature is enabled
 }
 ```
 
----
-
-## ToolResult
-
-**Source:** `tool_result.rs`
+### Auto-Detection
 
 ```rust
-pub struct ToolResult {
-    pub success: bool,
-    pub content: String,
-    pub metadata: Option<serde_json::Value>,
+pub fn detect_auto_provider_sources_with_overrides(
+    providers: &ProviderConfig,
+    deploy_platform: Option<&str>,
+    env_overrides: &EnvOverrides,
+) -> Vec<DetectedProviderSource> {
+    // Detects providers from environment variables:
+    // - OPENAI_API_KEY → OpenAI
+    // - ANTHROPIC_API_KEY → Anthropic
+    // - GROQ_API_KEY → Groq
+    // - GEMINI_API_KEY → Google
+    // - OLLAMA_BASE_URL → Ollama
+    // Hides local providers when deploy_platform is set (cloud deploy)
 }
 ```
 
----
+### Provider Has Explicit Settings
 
-## Sanity Checks
-
-**Source:** `sanity_check.rs`
-
-Pre-execution checks:
-- Path validation (no escaping workspace)
-- Command safety (no destructive commands without approval)
-- Resource limits
+```rust
+pub fn has_explicit_provider_settings(providers: &ProviderConfig) -> bool {
+    // Returns true if user explicitly configured any provider
+    // When true, auto-detection is skipped
+}
+```
 
 ---
 
 ## Next
 
-Return to [03-gateway-deep](03-gateway-deep.md) for the gateway internals.
+Continue to [06-memory](06-memory.md) for the memory system.
