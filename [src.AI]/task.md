@@ -17,7 +17,7 @@ Output location: `[src.AI]/<project>/` with `spec.md`, `markdown/`, `html/`, `bu
 |---|---------|-------------|--------|
 | 1 | src.UIComponents | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.UIComponents/` | DONE — 11 docs (spec + 10 markdown), HTML built, grandfather review passed |
 | 2 | src.TenFramework | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.TenFramework/` | TODO |
-| 3 | src.Moltis | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/` | TODO |
+| 3 | src.Moltis | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/` | DONE — 10 docs, HTML built, grandfather review passed (fixed crate count 59→68) |
 | 4 | src.PDFToMarkdown | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.PDFToMarkdown/` | TODO |
 | 5 | src.Alibaba | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Alibaba/` | TODO |
 | 6 | bolt.diy | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/bolt.diy/` | TODO |
