@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Agents Deep Dive: The Streaming Agent Loop -- src.Moltis</title>
+  <title>Voice Pipeline: STT → Agent → TTS -- src.Moltis</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
   <script>
@@ -132,162 +132,409 @@
     </div>
   </nav>
   <article class="prose">
-<h1>Agents Deep Dive: The Streaming Agent Loop</h1>
-<p>The agents crate implements the core agent loop — the conversation engine that calls LLMs, executes tools, and manages the conversation flow. This document covers the actual implementation.</p>
-<p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/crates/agents/src/</code></p>
-<h2>Crate Structure</h2>
-<pre><code class="language-">crates/agents/src/
-├── runner/
-│   ├── mod.rs              ← Entry point, re-exports, SteerInbox
-│   ├── streaming.rs        ← Streaming agent loop (~500 lines)
-│   ├── non_streaming.rs    ← Non-streaming variant
-│   ├── helpers.rs          ← Helper functions (~500 lines)
-│   ├── retry.rs            ← Retry logic for rate limits
-│   └── tool_result.rs      ← Tool result sanitization
-├── model/
-│   ├── mod.rs              ← Model types
-│   ├── chat.rs             ← ChatMessage enum
-│   ├── stream.rs           ← StreamEvent enum
-│   ├── types.rs            ← LlmProvider trait, ToolCall, Usage
-│   └── convert.rs          ← Message conversion
-├── prompt/
-│   ├── builder.rs          ← Prompt builder
-│   ├── formatting.rs       ← Prompt formatting
-│   └── types.rs            ← Prompt types
-├── tool_registry.rs        ← Tool registration
-├── tool_parsing.rs         ← Parse tool calls from text
-├── tool_arg_validator.rs   ← Validate tool arguments
-├── tool_loop_detector.rs   ← Detect infinite tool loops
-├── response_sanitizer.rs   ← Sanitize LLM responses
-└── json_repair.rs          ← Repair malformed JSON
-</code></pre>
-<h2>The Streaming Agent Loop</h2>
-<p><strong>Source:</strong> <code>runner/streaming.rs</code></p>
-<h3>Entry Point</h3>
-<pre><code class="language-rust">// runner/streaming.rs:57-83
-pub async fn run_agent_loop_streaming(
-    provider: Arc&lt;dyn LlmProvider&gt;,
-    tools: &amp;ToolRegistry,
-    system_prompt: &amp;str,
-    user_content: &amp;UserContent,
-    on_event: Option&lt;&amp;OnEvent&gt;,
-    history: Option&lt;Vec&lt;ChatMessage&gt;&gt;,
-    tool_context: Option&lt;serde_json::Value&gt;,
-    hook_registry: Option&lt;Arc&lt;HookRegistry&gt;&gt;,
-    sender_name: Option&lt;String&gt;,
-    steer_inbox: Option&lt;SteerInbox&gt;,
-) -&gt; Result&lt;AgentRunResult, AgentRunError&gt;
-</code></pre>
-<p>Delegates to <code>run_agent_loop_streaming_with_limits()</code> with default <code>AgentLoopLimits</code>.</p>
-<h3>Main Loop Logic</h3>
-<p><strong>Source:</strong> <code>runner/streaming.rs:85-500+</code></p>
-<p>The loop flow:</p>
-<ol><li><strong>Initialize</strong> (lines 97-181):</li></ol>
-<ul><li>Load config from <code>moltis_config::discover_and_load()</code></li><li>Get <code>max_tool_result_bytes</code>, <code>agent_max_auto_continues</code>, <code>compaction_ratio</code>, etc.</li><li>Resolve <code>max_iterations</code> — tripled for lazy mode (<code>config.tools.registry_mode == Lazy</code>)</li><li>Build initial messages: <code>[system_prompt] + history + user_message</code></li><li>Create <code>ToolLoopDetector</code> with configured window size</li></ul>
-<ol><li><strong>Loop iteration</strong> (lines 182+):</li></ol>
-<ul><li>Check iteration count against <code>max_iterations</code></li><li>Build <code>schemas_for_api</code> — tool schemas for this turn</li><li>Enforce context budget via <code>enforce_tool_result_context_budget()</code></li><li>Dispatch <code>BeforeLLMCall</code> hook (can block or modify payload)</li><li>Call <code>provider.stream_with_tools_and_options()</code></li></ul>
-<ol><li><strong>Stream processing</strong> (lines 314+):</li></ol>
-<p>   ``<code>rust    while let Some(event) = stream.next().await {        StreamEvent::Delta(text)     → accumulate answer text        StreamEvent::ReasoningDelta(text) → accumulate reasoning        StreamEvent::ToolCallStart{id, name, index} → start tool call        StreamEvent::ToolCallArgumentsDelta{index, delta} → accumulate args        StreamEvent::Done(usage)     → finalize usage tracking    }    </code>``</p>
-<ol><li><strong>Post-stream processing</strong>:</li></ol>
-<ul><li>Parse accumulated tool call arguments from JSON</li><li>Validate tool arguments via <code>validate_tool_args()</code></li><li>Check for tool loops via <code>ToolCallFingerprint</code></li><li>If loop detected: either strip tools or return error</li></ul>
-<ol><li><strong>Tool execution</strong>:</li></ol>
-<ul><li>If tool calls found: execute each via <code>resolve_tool_lookup()</code></li><li>Sanitize results via <code>sanitize_tool_result()</code></li><li>Add tool result messages to conversation</li><li>Continue loop for next iteration</li></ul>
-<ol><li><strong>Completion</strong>:</li></ol>
-<ul><li>If no tool calls and substantive answer: return <code>AgentRunResult</code></li><li>If empty answer but previous had tool calls: use <code>last_answer_text</code></li><li>If answer is empty: return error</li></ul>
-<h3>Key Constants and Config</h3>
-<table><tr><th>Config</th><th>Source</th><th>Default</th></tr><tr><td>`max_tool_result_bytes`</td><td>`config.tools`</td><td>—</td></tr><tr><td>`agent_max_iterations`</td><td>`config.tools`</td><td>—</td></tr><tr><td>`agent_max_auto_continues`</td><td>`config.tools`</td><td>—</td></tr><tr><td>`tool_result_compaction_ratio`</td><td>`config.tools`</td><td>—</td></tr><tr><td>`compaction_min_iterations`</td><td>`config.tools`</td><td>—</td></tr><tr><td>`agent_loop_detector_window`</td><td>`config.tools`</td><td>—</td></tr><tr><td>`RATE_LIMIT_MAX_RETRIES`</td><td>`retry.rs`</td><td>—</td></tr></table>
-<h3>Tool Loop Detection</h3>
-<p><strong>Source:</strong> <code>tool_loop_detector.rs</code></p>
-<pre><code class="language-rust">pub struct ToolLoopDetector {
-    window: usize,
-    strip_tools_on_second_fire: bool,
-    recent_calls: VecDeque&lt;ToolCallFingerprint&gt;,
+<h1>Voice Pipeline: STT → Agent → TTS</h1>
+<p>Complete source-level documentation of Moltis voice capabilities: 11 STT providers, 6 TTS providers, auto-speak modes, TTS directives with SSML support, and the full voice pipeline from audio input to speech output.</p>
+<p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/crates/voice/src/</code></p>
+<h2>Configuration</h2>
+<p><strong>Source:</strong> <code>config.rs</code></p>
+<pre><code class="language-rust">pub struct VoiceConfig {
+    pub tts: TtsConfig,
+    pub stt: SttConfig,
 }
-</code></pre>
-<p>The detector tracks recent tool calls and detects when the same pattern repeats within the window. On first fire it warns; on second fire it can strip tools (force text-only response) or error.</p>
-<h3>Context Budget Enforcement</h3>
-<p><strong>Source:</strong> <code>runner/helpers.rs</code></p>
-<pre><code class="language-rust">fn enforce_tool_result_context_budget(
-    messages: &amp;mut Vec&lt;ChatMessage&gt;,
-    tool_schemas: &amp;[serde_json::Value],
-    context_window: usize,
-    compaction_ratio: usize,
-    overflow_ratio: usize,
-) -&gt; Result&lt;(), AgentRunError&gt;
-</code></pre>
-<p>Compacts old tool results when the context approaches the model's limit. Uses <code>compaction_ratio</code> to determine how aggressively to compact.</p>
-<h3>Response Sanitization</h3>
-<p><strong>Source:</strong> <code>response_sanitizer.rs</code></p>
-<pre><code class="language-rust">pub fn clean_response(text: &amp;str) -&gt; (String, Vec&lt;ToolCall&gt;)
-</code></pre>
-<p>Cleans the LLM response text and recovers any tool calls that were embedded in the text rather than properly structured.</p>
-<h2>The LlmProvider Trait</h2>
-<p><strong>Source:</strong> <code>model/types.rs</code></p>
-<pre><code class="language-rust">#[async_trait]
-pub trait LlmProvider: Send + Sync {
-    fn name(&amp;self) -&gt; &amp;str;
-    fn id(&amp;self) -&gt; &amp;str;
-    fn context_window(&amp;self) -&gt; usize;
-    fn supports_tools(&amp;self) -&gt; bool;
-    fn supports_multimodal(&amp;self) -&gt; bool;
-    
-    async fn stream_with_tools_and_options(
-        &amp;self,
-        messages: Vec&lt;ChatMessage&gt;,
-        tool_schemas: Vec&lt;serde_json::Value&gt;,
-        tool_controls: AgentToolControls,
-    ) -&gt; Pin&lt;Box&lt;dyn Stream&lt;Item = StreamEvent&gt;&gt;&gt;;
-}
-</code></pre>
-<h2>ChatMessage</h2>
-<p><strong>Source:</strong> <code>model/chat.rs</code></p>
-<pre><code class="language-rust">pub enum ChatMessage {
-    System { content: String },
-    User { content: UserContent, name: Option&lt;String&gt; },
-    Assistant { content: String, tool_calls: Vec&lt;ToolCall&gt; },
-    Tool { tool_call_id: String, content: String },
-}
-</code></pre>
-<h2>StreamEvent</h2>
-<p><strong>Source:</strong> <code>model/stream.rs</code></p>
-<pre><code class="language-rust">pub enum StreamEvent {
-    Delta(String),                    // Answer text
-    ReasoningDelta(String),           // Reasoning text
-    ToolCallStart { id, name, index, metadata },
-    ToolCallArgumentsDelta { index, delta },
-    ToolCallComplete { index },
-    ProviderRaw(serde_json::Value),   // Raw provider event
-    Done(Usage),
-}
-</code></pre>
-<h2>ToolCall</h2>
-<pre><code class="language-rust">pub struct ToolCall {
-    pub id: String,
-    pub name: String,
-    pub arguments: serde_json::Value,
-    pub argument_diagnostic: Option&lt;String&gt;,
-    pub metadata: Option&lt;serde_json::Value&gt;,
-}
-</code></pre>
-<h2>Usage Tracking</h2>
-<pre><code class="language-rust">pub struct Usage {
-    pub input_tokens: u32,
-    pub output_tokens: u32,
-    pub cache_read_tokens: u32,
-    pub cache_write_tokens: u32,
-}
-</code></pre>
-<p>Tracked via <code>UsageAccumulator</code> which sums across iterations.</p>
-<h2>Retry Logic</h2>
-<p><strong>Source:</strong> <code>runner/retry.rs</code></p>
-<pre><code class="language-rust">pub const RATE_LIMIT_MAX_RETRIES: u8 = 3;
 
-pub fn is_context_window_error(error: &amp;str) -&gt; bool;
-pub fn next_retry_delay_ms(retry_count: u8) -&gt; u64;
+pub struct TtsConfig {
+    pub enabled: bool,                        // Enable TTS globally
+    pub provider: Option&lt;TtsProviderId&gt;,      // None = auto-select first configured
+    pub auto: TtsAutoMode,                    // When to auto-speak
+    pub max_text_length: usize,               // Max chars before skipping (default 2000)
+    pub elevenlabs: ElevenLabsConfig,
+    pub openai: OpenAiTtsConfig,
+    pub google: GoogleTtsConfig,
+    pub piper: PiperTtsConfig,
+    pub coqui: CoquiTtsConfig,
+}
+
+pub enum TtsAutoMode {
+    Always,    // Speak all responses
+    Off,       // Never auto-speak (default)
+    Inbound,   // Only when user sent voice input
+    Tagged,    // Only with explicit [[tts]] markup
+}
 </code></pre>
-<p>Retries on rate limits with exponential backoff, up to <code>RATE_LIMIT_MAX_RETRIES</code>.</p>
+<h2>STT Providers (11)</h2>
+<h3>TranscribeRequest / Transcript</h3>
+<pre><code class="language-rust">// stt/mod.rs
+pub struct TranscribeRequest {
+    pub audio: Bytes,                    // Raw audio data
+    pub format: AudioFormat,             // mp3, opus, wav, webm, etc.
+    pub language: Option&lt;String&gt;,        // ISO 639-1 hint (&quot;en&quot;, &quot;es&quot;, &quot;fr&quot;)
+    pub prompt: Option&lt;String&gt;,          // Context/terminology guide
+}
+
+pub struct Transcript {
+    pub text: String,                    // Transcribed text
+    pub language: Option&lt;String&gt;,        // Detected language
+    pub confidence: Option&lt;f32&gt;,         // 0.0 - 1.0
+    pub duration_seconds: Option&lt;f32&gt;,   // Audio duration
+    pub words: Option&lt;Vec&lt;Word&gt;&gt;,        // Word-level timestamps
+}
+
+pub struct Word {
+    pub word: String,
+    pub start: f32,                      // Start time (seconds)
+    pub end: f32,                        // End time (seconds)
+}
+</code></pre>
+<h3>SttProvider Trait</h3>
+<pre><code class="language-rust">// stt/mod.rs:75
+#[async_trait]
+pub trait SttProvider: Send + Sync {
+    fn id(&amp;self) -&gt; &amp;&#x27;static str;
+    fn name(&amp;self) -&gt; &amp;&#x27;static str;
+    async fn transcribe(&amp;self, req: TranscribeRequest) -&gt; Result&lt;Transcript&gt;;
+}
+</code></pre>
+<h3>Provider Details</h3>
+<table><tr><th>Provider</th><th>File</th><th>API/Method</th><th>Default Model</th></tr><tr><td>**Whisper (API)**</td><td>`stt/whisper.rs`</td><td>`POST /v1/audio/transcriptions`</td><td>whisper-1</td></tr><tr><td>**Whisper CLI**</td><td>`stt/whisper_cli.rs`</td><td>Spawns `whisper` binary</td><td>—</td></tr><tr><td>**Whisper Local**</td><td>`stt/whisper_local.rs`</td><td>Direct `whisper.cpp` FFI</td><td>—</td></tr><tr><td>**Deepgram**</td><td>`stt/deepgram.rs`</td><td>`POST /v1/listen`</td><td>nova-2</td></tr><tr><td>**ElevenLabs**</td><td>`stt/elevenlabs.rs`</td><td>`POST /v1/speech-to-text`</td><td>v1</td></tr><tr><td>**Google**</td><td>`stt/google.rs`</td><td>Google Cloud Speech v2</td><td>latest_long</td></tr><tr><td>**Groq**</td><td>`stt/groq.rs`</td><td>OpenAI-compatible `/v1/audio`</td><td>whisper-large-v3</td></tr><tr><td>**Mistral**</td><td>`stt/mistral.rs`</td><td>OpenAI-compatible</td><td>mistral-stt</td></tr><tr><td>**Sherpa-ONNX**</td><td>`stt/sherpa_onnx.rs`</td><td>ONNX runtime, offline</td><td>—</td></tr><tr><td>**Voxtral Local**</td><td>`stt/voxtral_local.rs`</td><td>Local Voxtral model</td><td>—</td></tr><tr><td>**OpenAI-compat**</td><td>`stt/openai_compat.rs`</td><td>Any OpenAI-compatible endpoint</td><td>—</td></tr></table>
+<h3>Whisper CLI Implementation</h3>
+<pre><code class="language-rust">// stt/whisper_cli.rs
+pub struct WhisperCliStt {
+    binary_path: PathBuf,              // Path to whisper binary
+    model: String,
+    language: Option&lt;String&gt;,
+}
+
+async fn transcribe(&amp;self, req: TranscribeRequest) -&gt; Result&lt;Transcript&gt; {
+    // Write audio to temp file
+    let temp_path = temp_dir().join(format!(&quot;whisper_{}.wav&quot;, uuid()));
+    tokio::fs::write(&amp;temp_path, &amp;req.audio).await?;
+
+    // Spawn whisper binary
+    let output = Command::new(&amp;self.binary_path)
+        .arg(&amp;temp_path)
+        .arg(&quot;--model&quot;)
+        .arg(&amp;self.model)
+        .arg(&quot;--output-format&quot;)
+        .arg(&quot;json&quot;)
+        .output()
+        .await?;
+
+    // Parse JSON output
+    let result: WhisperOutput = serde_json::from_slice(&amp;output.stdout)?;
+    Ok(Transcript { text: result.text, ... })
+}
+</code></pre>
+<h2>TTS Providers (6)</h2>
+<h3>SynthesizeRequest / AudioOutput</h3>
+<pre><code class="language-rust">// tts/mod.rs
+pub struct SynthesizeRequest {
+    pub text: String,
+    pub voice: Option&lt;String&gt;,           // Voice ID
+    pub format: AudioFormat,             // mp3, opus, wav, etc.
+    pub speed: Option&lt;f32&gt;,              // Playback speed (0.5 - 2.0)
+    pub directives: Option&lt;TtsDirectives&gt;, // SSML, pauses, emphasis
+}
+
+pub struct AudioOutput {
+    pub data: Bytes,                     // Raw audio data
+    pub format: AudioFormat,
+    pub duration_ms: Option&lt;u64&gt;,
+}
+</code></pre>
+<h3>TtsProvider Trait</h3>
+<pre><code class="language-rust">// tts/mod.rs
+#[async_trait]
+pub trait TtsProvider: Send + Sync {
+    fn id(&amp;self) -&gt; &amp;&#x27;static str;
+    fn name(&amp;self) -&gt; &amp;&#x27;static str;
+    async fn list_voices(&amp;self) -&gt; Result&lt;Vec&lt;Voice&gt;&gt;;
+    async fn synthesize(&amp;self, req: SynthesizeRequest) -&gt; Result&lt;AudioOutput&gt;;
+}
+</code></pre>
+<h3>Provider Details</h3>
+<table><tr><th>Provider</th><th>File</th><th>API/Method</th><th>Default Voice</th><th>Default Model</th></tr><tr><td>**ElevenLabs**</td><td>`tts/elevenlabs.rs`</td><td>`POST /v1/text-to-speech/{id}`</td><td>Rachel</td><td>eleven_flash_v2_5</td></tr><tr><td>**OpenAI**</td><td>`tts/openai.rs`</td><td>`POST /v1/audio/speech`</td><td>alloy</td><td>tts-1</td></tr><tr><td>**Google**</td><td>`tts/google.rs`</td><td>Google Cloud TTS API</td><td>en-US-Neural2-F</td><td>—</td></tr><tr><td>**Coqui**</td><td>`tts/coqui.rs`</td><td>Local Coqui TTS</td><td>—</td><td>—</td></tr><tr><td>**Piper**</td><td>`tts/piper.rs`</td><td>Local Piper TTS</td><td>—</td><td>—</td></tr><tr><td>**Mock**</td><td>`tts/mock.rs`</td><td>Returns silence (testing)</td><td>—</td><td>—</td></tr></table>
+<h3>ElevenLabs Implementation</h3>
+<pre><code class="language-rust">// tts/elevenlabs.rs
+pub struct ElevenLabsTts {
+    client: Client,
+    api_key: Option&lt;Secret&lt;String&gt;&gt;,
+    default_voice_id: String,    // &quot;21m00Tcm4TlvDq8ikWAM&quot; (Rachel)
+    default_model: String,       // &quot;eleven_flash_v2_5&quot; (~75ms latency)
+}
+
+// API: POST https://api.elevenlabs.io/v1/text-to-speech/{voice_id}
+// Query params: output_format, model_id
+// Body: { text, voice_settings }
+async fn synthesize(&amp;self, req: SynthesizeRequest) -&gt; Result&lt;AudioOutput&gt; {
+    let url = format!(&quot;{API_BASE}/text-to-speech/{}/audio&quot;, voice_id);
+    let resp = self.client.post(&amp;url)
+        .header(&quot;xi-api-key&quot;, api_key)
+        .json(&amp;body)
+        .send()
+        .await?;
+    let data = resp.bytes().await?;
+    Ok(AudioOutput { data, format: req.format })
+}
+</code></pre>
+<h3>OpenAI Implementation</h3>
+<pre><code class="language-rust">// tts/openai.rs
+pub struct OpenAiTts {
+    client: Client,
+    api_key: Option&lt;Secret&lt;String&gt;&gt;,
+    base_url: String,              // Default: https://api.openai.com/v1
+    default_voice: String,         // &quot;alloy&quot;
+    default_model: String,         // &quot;tts-1&quot;
+}
+
+// Available voices: alloy, echo, fable, onyx, nova, shimmer
+// Models: tts-1 (real-time), tts-1-hd (higher quality)
+</code></pre>
+<h3>AudioFormat</h3>
+<pre><code class="language-rust">// tts/audio.rs
+pub enum AudioFormat {
+    Mp3,    // &quot;audio/mpeg&quot; — .mp3
+    Opus,   // &quot;audio/ogg&quot;  — .ogg (Telegram voice notes)
+    Aac,    // &quot;audio/aac&quot;  — .aac
+    Pcm,    // &quot;audio/pcm&quot;  — .pcm (raw)
+    Wav,    // &quot;audio/wav&quot;  — .wav
+    Webm,   // &quot;audio/webm&quot; — .webm (browser MediaRecorder)
+}
+</code></pre>
+<h3>TTS Directives and SSML</h3>
+<pre><code class="language-rust">// tts/mod.rs
+pub struct TtsDirectives {
+    pub ssml: Option&lt;String&gt;,        // Raw SSML override
+    pub pauses: Vec&lt;PauseDirective&gt;, // Insert pauses
+    pub emphasis: Vec&lt;EmphasisDirective&gt;, // Emphasize text
+}
+
+pub fn contains_ssml(text: &amp;str) -&gt; bool;
+pub fn strip_ssml_tags(text: &amp;str) -&gt; String;
+pub fn parse_tts_directives(text: &amp;str) -&gt; TtsDirectives;
+pub fn sanitize_text_for_tts(text: &amp;str) -&gt; String;
+</code></pre>
+<hr>
+<h2>WhatsApp: Linked Devices with QR Code Pairing</h2>
+<p><strong>Source:</strong> <code>crates/whatsapp/src/</code></p>
+<h3>Full Connection Flow</h3>
+<ol><li><strong>Plugin Creation</strong>: <code>WhatsAppPlugin::new(data_dir)</code> creates empty account state</li><li><strong>Account Registration</strong>: <code>register_account()</code> stores config</li><li><strong>Start Connection</strong>: <code>start_account()</code> spawns bot with sled store</li><li><strong>QR Code Generation</strong>: Bot emits <code>Event::PairingQrCode { code }</code> → stored in <code>state.latest_qr</code></li><li><strong>User Scans QR</strong>: WhatsApp pairs device</li><li><strong>Connected</strong>: Bot emits <code>Event::Connected</code> → <code>state.connected = true</code></li><li><strong>Auto-approve Owner</strong>: <code>auto_approve_owner_jid()</code> adds owner's phone to allowlist</li><li><strong>Event Handling</strong>: All messages go through <code>handlers::handle_event()</code></li></ol>
+<h3>Event Handling</h3>
+<pre><code class="language-rust">// handlers.rs:54+
+pub async fn handle_event(
+    event: Event,
+    client: Arc&lt;Client&gt;,
+    state: Arc&lt;AccountState&gt;,
+    accounts: AccountStateMap,
+) {
+    match event {
+        Event::PairingQrCode { code, .. } =&gt; {
+            // Store QR code for REST endpoint
+            *state.latest_qr.write().unwrap() = Some(code.clone());
+            sink.emit(ChannelEvent::PairingQrCode { qr_data: code }).await;
+        },
+        Event::Connected(_) =&gt; {
+            state.connected.store(true, Ordering::Relaxed);
+            // Auto-approve owner&#x27;s phone number
+            let own_pn = state.client.get_pn().await;
+            auto_approve_owner_jid(&amp;accounts, &amp;state.account_id, own_pn.as_ref());
+        },
+        Event::Message { info, message } =&gt; {
+            handle_message(info, message, client, state, accounts).await;
+        },
+        Event::Disconnected(_) =&gt; {
+            state.connected.store(false, Ordering::Relaxed);
+        },
+    }
+}
+</code></pre>
+<h3>Message Handling</h3>
+<pre><code class="language-rust">async fn handle_message(
+    info: MessageInfo,
+    message: Message,
+    client: Arc&lt;Client&gt;,
+    state: Arc&lt;AccountState&gt;,
+    accounts: AccountStateMap,
+) {
+    // Check access control
+    access::check(&amp;state.config.access, &amp;info.sender)?;
+
+    // Handle OTP challenges
+    if is_otp_challenge(&amp;message) {
+        handle_otp(&amp;message, &amp;accounts, &amp;state.account_id).await;
+        return;
+    }
+
+    // Build channel event
+    let event = ChannelEvent::Message {
+        channel_type: ChannelType::Whatsapp,
+        account_id: state.account_id.clone(),
+        sender: info.sender.to_string(),
+        kind: message_to_kind(&amp;message),
+        meta: ChannelMessageMeta {
+            message_id: info.id.clone(),
+            thread_id: info.chat.to_string(),
+            timestamp: info.timestamp,
+        },
+        reply_target: ChannelReplyTarget { ... },
+        attachments: extract_attachments(&amp;message),
+    };
+
+    // Emit to event sink
+    state.event_sink.emit(event).await;
+}
+</code></pre>
+<h3>Persistent Store</h3>
+<pre><code class="language-rust">// sled_store.rs
+pub struct SledStore {
+    db: sled::Db,
+}
+
+impl SledStore {
+    pub fn open(path: &amp;Path) -&gt; Result&lt;Self&gt; {
+        let db = sled::open(path)?;
+        Ok(Self { db })
+    }
+}
+</code></pre>
+<p>Session state persists across restarts at <code><data_dir>/whatsapp/<account_id>/</code>.</p>
+<h3>Outbound Messaging</h3>
+<pre><code class="language-rust">// outbound.rs
+pub struct WhatsAppOutbound {
+    accounts: AccountStateMap,
+}
+
+impl ChannelOutbound for WhatsAppOutbound {
+    async fn send_message(&amp;self, account_id: &amp;str, target: &amp;str, text: &amp;str) -&gt; Result&lt;()&gt; {
+        let accounts = self.accounts.read()?;
+        let state = accounts.get(account_id).ok_or(...)?;
+        state.client.send_text_message(target, text).await?;
+        Ok(())
+    }
+}
+</code></pre>
+<hr>
+<h2>Slack: Events API with HMAC-SHA256 Verification</h2>
+<p><strong>Source:</strong> <code>crates/slack/src/</code></p>
+<h3>Webhook Signature Verification</h3>
+<pre><code class="language-rust">// webhook.rs:93-120
+type HmacSha256 = Hmac&lt;Sha256&gt;;
+
+pub fn verify_signature(
+    signing_secret: &amp;str,
+    timestamp: &amp;str,
+    body: &amp;[u8],
+    signature: &amp;str,
+) -&gt; bool {
+    let sig_hex = signature.strip_prefix(&quot;v0=&quot;).unwrap_or(signature);
+    let sig_bytes = hex::decode(sig_hex).ok()?;
+
+    let mac_str = format!(&quot;v0:{timestamp}:{}&quot;, String::from_utf8_lossy(body));
+    let mut mac = HmacSha256::new_from_slice(signing_secret.as_bytes()).ok()?;
+    mac.update(mac_str.as_bytes());
+
+    mac.verify_slice(&amp;sig_bytes).is_ok()
+}
+</code></pre>
+<p>Slack sends:</p>
+<ul><li><code>X-Slack-Signature</code>: <code>v0=<hex-hmac></code></li><li><code>X-Slack-Request-Timestamp</code>: epoch seconds</li></ul>
+<p>HMAC base string: <code>v0:{timestamp}:{body}</code></p>
+<h3>URL Verification Challenge</h3>
+<pre><code class="language-rust">// webhook.rs
+pub async fn handle_webhook(
+    account_id: &amp;str,
+    body: &amp;[u8],
+    timestamp: &amp;str,
+    signature: &amp;str,
+    accounts: &amp;AccountStateMap,
+) -&gt; Result&lt;Option&lt;String&gt;&gt; {
+    // 1. Verify signature
+    let config = current_config(accounts, account_id, ...);
+    if !verify_signature(&amp;config.signing_secret, timestamp, body, signature) {
+        return Err(&quot;invalid signature&quot;);
+    }
+
+    // 2. Parse event
+    let event: SlackEvent = serde_json::from_slice(body)?;
+
+    // 3. Handle URL verification challenge
+    if let SlackEvent::UrlVerification(challenge) = event {
+        return Ok(Some(challenge.challenge));
+    }
+
+    // 4. Dispatch message events
+    if let SlackEvent::Message(msg) = event {
+        dispatch_message(account_id, msg, accounts).await;
+    }
+
+    Ok(None)
+}
+</code></pre>
+<h3>Socket Mode vs Events API</h3>
+<table><tr><th>Mode</th><th>Connection</th><th>Setup</th></tr><tr><td>Socket Mode</td><td>WebSocket to Slack</td><td>App token + bot token</td></tr><tr><td>Events API</td><td>HTTP webhook</td><td>Signing secret + bot token</td></tr></table>
+<hr>
+<h2>Discord: Serenity Gateway with 6 Intents</h2>
+<p><strong>Source:</strong> <code>crates/discord/src/</code></p>
+<h3>Required Gateway Intents</h3>
+<pre><code class="language-rust">// handler/implementation.rs:41-48
+pub fn required_intents() -&gt; GatewayIntents {
+    GatewayIntents::GUILD_MESSAGES
+        | GatewayIntents::DIRECT_MESSAGES
+        | GatewayIntents::MESSAGE_CONTENT
+        | GatewayIntents::GUILDS
+        | GatewayIntents::GUILD_MESSAGE_REACTIONS
+        | GatewayIntents::DIRECT_MESSAGE_REACTIONS
+}
+</code></pre>
+<h3>Event Handler</h3>
+<pre><code class="language-rust">// handler/implementation.rs
+pub struct Handler {
+    pub account_id: String,
+    pub accounts: AccountStateMap,
+    downloader: DiscordInboundMediaDownloader,
+}
+
+#[async_trait]
+impl EventHandler for Handler {
+    async fn message(&amp;self, ctx: Context, msg: Message) {
+        // Check access control
+        if !access::check(&amp;config.access, &amp;msg.author.id).await {
+            return;
+        }
+
+        // Build channel event
+        let event = ChannelEvent::Message {
+            channel_type: ChannelType::Discord,
+            account_id: self.account_id.clone(),
+            sender: msg.author.id.to_string(),
+            kind: message_to_kind(&amp;msg),
+            meta: ChannelMessageMeta {
+                message_id: msg.id.to_string(),
+                thread_id: msg.channel_id.to_string(),
+                timestamp: msg.timestamp.timestamp_millis(),
+            },
+            attachments: extract_attachments(&amp;msg, &amp;self.downloader).await,
+        };
+
+        // Emit to event sink
+        if let Some(sink) = &amp;state.event_sink {
+            sink.emit(event).await;
+        }
+    }
+}
+</code></pre>
+<h3>Bot Configuration</h3>
+<pre><code class="language-rust">// config.rs
+pub struct DiscordAccountConfig {
+    pub bot_token: Secret&lt;String&gt;,
+    pub activity_type: ActivityType,     // Playing, Watching, Listening
+    pub activity_text: Option&lt;String&gt;,
+    pub online_status: OnlineStatus,     // Online, Idle, DND, Invisible
+    pub access: AccessConfig,
+}
+</code></pre>
+<hr>
 <h2>Next</h2>
-<p>Continue to <a href="06-providers-deep.md">06-providers-deep</a> for the LLM provider implementations.</p>
+<p>Continue to <a href="05-agents-deep.md">05-agents-deep</a> for the agent loop implementation.</p>
   </article>
   <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
 </body>
