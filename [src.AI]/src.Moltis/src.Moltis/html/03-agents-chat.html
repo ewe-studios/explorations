@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Agents and Chat: Agent Loop, Providers, and Chat Engine -- src.Moltis</title>
+  <title>Agents and Chat: How a Message Flows Through the System -- src.Moltis</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
   <script>
@@ -132,51 +132,406 @@
     </div>
   </nav>
   <article class="prose">
-<h1>Agents and Chat: Agent Loop, Providers, and Chat Engine</h1>
-<p>The agent loop and chat engine are at the core of Moltis. The agent orchestrates LLM calls, tool execution, and streaming responses.</p>
-<p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/crates/agents/</code>, <code>chat/</code>, <code>providers/</code></p>
-<h2>Agent Loop</h2>
-<div class="mermaid">
-sequenceDiagram
-    participant User
-    participant Gateway as Gateway
-    participant Agent as Agent Loop
-    participant Providers as LLM Provider
-    participant Tools as Tool Executor
-    participant Memory as Memory
-
-    User-&gt;&gt;Gateway: Send message
-    Gateway-&gt;&gt;Agent: Start agent loop
-    Agent-&gt;&gt;Memory: Load context
-    Agent-&gt;&gt;Agent: Assemble prompt
-    Agent-&gt;&gt;Providers: Stream request
-    Providers--&gt;&gt;Agent: Stream chunks
-    Agent--&gt;&gt;Gateway: Forward to user
-    alt Tool call
-        Providers-&gt;&gt;Agent: Tool call request
-        Agent-&gt;&gt;Tools: Execute tool
-        Tools--&gt;&gt;Agent: Tool result
-        Agent-&gt;&gt;Providers: Continue with result
-        Providers--&gt;&gt;Agent: Final response
-    end
-    Agent--&gt;&gt;Gateway: Response complete
-
-</div>
-<p><strong>Source:</strong> <code>crates/agents/src/</code> (~14.5K LoC).</p>
-<h2>Chat Engine</h2>
-<p>The chat engine manages conversation state, message history, and agent orchestration:</p>
-<pre><code class="language-">crates/chat/              ← Chat engine (~14.2K LoC)
-crates/sessions/          ← Session management
+<h1>Agents and Chat: How a Message Flows Through the System</h1>
+<p>This document explains the complete flow of a user message through Moltis: from the channel event, through prompt building, provider chain failover, streaming response, tool execution, and back to the user.</p>
+<p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/crates/</code></p>
+<hr>
+<h2>The Complete Message Flow</h2>
+<p>When a user sends a message (e.g., on WhatsApp), here's exactly what happens:</p>
+<pre><code class="language-">WhatsApp message → Gateway handler → LiveChatService::send()
+    ↓
+run_with_tools() [chat/src/run_with_tools.rs]
+    ↓
+┌─ Step 1: Resolve runtime limits ──────────────────────────────────┐
+│   - timeout_secs (from agent preset or global default)           │
+│   - max_iterations (from agent preset or global default)         │
+│   - Lazy mode? → triple max_iterations for tool_search discovery │
+└────────────────────────────────────────────────────────────────────┘
+    ↓
+┌─ Step 2: Build filtered tool registry ────────────────────────────┐
+│   - apply_runtime_tool_filters() removes disabled tools          │
+│   - install_agent_scoped_memory_tools() adds memory tools        │
+│   - Lazy mode? → wrap_registry_lazy() for on-demand discovery    │
+└────────────────────────────────────────────────────────────────────┘
+    ↓
+┌─ Step 3: Memory prefetch ─────────────────────────────────────────┐
+│   - If memory.prefetch_enabled AND query ≥ 10 chars:             │
+│   - manager.search(query, prefetch_limit)                        │
+│   - Inject results as &lt;recalled_context&gt; in system prompt        │
+│   - Cache hit/miss/error recorded in metrics                     │
+└────────────────────────────────────────────────────────────────────┘
+    ↓
+┌─ Step 4: Build system prompt ─────────────────────────────────────┐
+│   - Identity: &quot;You are {name} ({emoji}), {soul}.&quot;                │
+│   - User: &quot;The user is {user_name}.&quot;                             │
+│   - Boot text (agent startup instructions)                        │
+│   - Project context (workspace files)                            │
+│   - Runtime context (datetime, sandbox state, node info)         │
+│   - Tool schemas (JSON) or embedded in prompt (text mode)        │
+│   - Memory context (recalled + persistent)                       │
+│   - Guidelines (tool usage rules)                                │
+│   - Voice reply suffix (if voice active)                         │
+└────────────────────────────────────────────────────────────────────┘
+    ↓
+┌─ Step 5: Resolve sandbox mode ────────────────────────────────────┐
+│   - Agent preset sandbox override:                               │
+│     - &quot;all&quot; → force sandbox on                                   │
+│     - &quot;off&quot; → force sandbox off                                  │
+│     - &quot;non-main&quot; → sandbox non-main sessions only                │
+│   - router.is_sandboxed(session_key)                             │
+└────────────────────────────────────────────────────────────────────┘
+    ↓
+┌─ Step 6: Start event forwarder ───────────────────────────────────┐
+│   - Spawn tokio task to forward RunnerEvents to UI               │
+│   - Events: Thinking, TextDelta, ToolCallStart, ToolCallEnd      │
+│   - Persist tool history pairs in session store                  │
+│   - Deliver channel replies (WhatsApp, Slack, Discord, etc.)     │
+└────────────────────────────────────────────────────────────────────┘
+    ↓
+┌─ Step 7: Call agent loop ─────────────────────────────────────────┐
+│   run_agent_loop_streaming_with_limits()                         │
+│   [agents/src/runner/streaming.rs]                               │
+│                                                                  │
+│   Iteration 1:                                                   │
+│   - Build tool schemas for this turn                             │
+│   - enforce_tool_result_context_budget()                         │
+│   - BeforeLLMCall hook (can block or modify)                     │
+│   - provider.stream_with_tools_and_options(messages, schemas)    │
+│   - Accumulate text, reasoning, tool calls from SSE stream       │
+│   - Parse tool call arguments from JSON                          │
+│   - Fallback: parse from text, XML recovery, /sh forcing        │
+│                                                                  │
+│   If tool_calls found:                                           │
+│   - Build futures for ALL tool calls                             │
+│   - Pre-dispatch schema validation                               │
+│   - BeforeToolCall hook                                          │
+│   - futures::future::join_all(tool_futures)  ← CONCURRENT        │
+│   - Process results in original order                            │
+│   - Append [Tool: result] messages                               │
+│   - Loop back to next iteration                                  │
+│                                                                  │
+│   If no tool calls:                                              │
+│   - Auto-continue if model stopped early                         │
+│   - Use last_answer_text fallback if needed                      │
+│   - Return final text                                            │
+└────────────────────────────────────────────────────────────────────┘
+    ↓
+┌─ Step 8: Post-processing ─────────────────────────────────────────┐
+│   - Compact session if context exceeded                          │
+│   - Generate TTS audio if voice active                           │
+│   - Deliver final reply to channels                              │
+│   - Persist assistant message in session store                   │
+│   - Broadcast run complete to UI                                 │
+└────────────────────────────────────────────────────────────────────┘
 </code></pre>
-<p><strong>Source:</strong> <code>crates/chat/src/</code>, <code>crates/sessions/src/</code>.</p>
-<h2>LLM Providers</h2>
-<p>At ~18.9K LoC, the providers crate implements connections to multiple LLM providers:</p>
-<pre><code class="language-">crates/providers/         ← LLM provider implementations (~18.9K LoC)
+<hr>
+<h2>Step 1: Runtime Limits</h2>
+<p><strong>Source:</strong> <code>chat/src/run_with_tools.rs:93-102</code></p>
+<pre><code class="language-rust">let runtime_limits = persona.config.agent_runtime_limits(agent_id);
+// timeout_secs, max_iterations — resolved from agent preset or global defaults
 </code></pre>
-<p>The providers crate supports multiple LLM backends (Anthropic, OpenAI, etc.) through a unified interface.</p>
-<p><strong>Source:</strong> <code>crates/providers/src/</code>.</p>
+<p>Each agent preset can override:</p>
+<ul><li><code>timeout_secs</code> — max wall-clock time for the entire agent run</li><li><code>max_iterations</code> — max LLM call iterations</li></ul>
+<p><strong>Lazy mode triple:</strong> When <code>registry_mode == Lazy</code>, <code>max_iterations *= 3</code> because tool_search needs extra round-trips to discover tools.</p>
+<hr>
+<h2>Step 2: Filtered Tool Registry</h2>
+<p><strong>Source:</strong> <code>chat/src/run_with_tools.rs:109-140</code></p>
+<pre><code class="language-rust">let mut filtered_registry = {
+    let registry_guard = tool_registry.read().await;
+    if tools_enabled {
+        apply_runtime_tool_filters(&amp;registry_guard, &amp;persona.config, skills, mcp_disabled, &amp;policy_ctx)
+    } else {
+        registry_guard.clone_without(&amp;[])
+    }
+};
+
+// Add memory tools if memory manager exists
+if tools_enabled &amp;&amp; let Some(manager) = state.memory_manager() {
+    install_agent_scoped_memory_tools(&amp;mut filtered_registry, manager, provider, agent_id, ...);
+}
+
+// Wrap for lazy mode (on-demand tool discovery)
+if tools_enabled &amp;&amp; matches!(persona.config.tools.registry_mode, ToolRegistryMode::Lazy) {
+    filtered_registry = moltis_agents::lazy_tools::wrap_registry_lazy(filtered_registry);
+}
+</code></pre>
+<p>Three tool modes:</p>
+<ul><li><strong>Native</strong> — Tool schemas sent via API (Anthropic, OpenAI)</li><li><strong>Text</strong> — Tool schemas embedded in prompt, model calls tools via text</li><li><strong>Off</strong> — No tools, minimal prompt</li></ul>
+<hr>
+<h2>Step 3: Memory Prefetch</h2>
+<p><strong>Source:</strong> <code>chat/src/run_with_tools.rs:143-195</code></p>
+<p>Before building the system prompt, query long-term memory:</p>
+<pre><code class="language-rust">if persona.config.memory.enable_prefetch {
+    let query_text = match user_content {
+        UserContent::Text(t) =&gt; Some(t.as_str()),
+        UserContent::Multimodal(parts) =&gt; parts.iter().find_map(|p| match p {
+            ContentPart::Text(t) =&gt; Some(t.as_str()),
+            _ =&gt; None,
+        }),
+    };
+    if let Some(query) = query_text
+        &amp;&amp; query.len() &gt;= 10           // Skip very short queries
+        &amp;&amp; !query.starts_with(&#x27;/&#x27;)     // Skip commands
+        &amp;&amp; let Some(manager) = state.memory_manager()
+    {
+        let limit = persona.config.memory.prefetch_limit.clamp(1, 10);
+        match manager.search(query, limit).await {
+            Ok(results) if !results.is_empty() =&gt; {
+                let recalled = format_recalled_context(&amp;results);
+                // Inject as &lt;recalled_context&gt; in system prompt
+            },
+            Ok(_) =&gt; { /* miss */ },
+            Err(e) =&gt; { warn!(&quot;memory prefetch failed&quot;); },
+        }
+    }
+}
+</code></pre>
+<p><strong>Key detail:</strong> Only queries ≥ 10 characters and not starting with <code>/</code> trigger prefetch. This avoids wasting resources on greetings and commands.</p>
+<hr>
+<h2>Step 4: System Prompt Building</h2>
+<p><strong>Source:</strong> <code>agents/src/prompt/builder.rs</code></p>
+<p>The system prompt is assembled from multiple sections:</p>
+<pre><code class="language-">&quot;You are a helpful assistant. You can use tools when needed.\n\n&quot;
+&quot;You are Moltis (🤖), a personal AI assistant.\n&quot;
+&quot;The user is Alex.\n&quot;
+&quot;# Boot\n{boot_text}\n&quot;
+&quot;# Project Context\n{project_context}\n&quot;
+&quot;# Runtime\nHost: linux, timezone: UTC\n&quot;
+&quot;Sandbox(exec): enabled=true, home=/home/sandbox\n&quot;
+&quot;# Tools\n{tool_schemas_as_json}\n&quot;
+&quot;# Memory\n{memory_text}\n&quot;
+&quot;# Guidelines\n- Start with normal conversational response...\n&quot;
+</code></pre>
+<h3>Guidelines</h3>
+<pre><code class="language-rust">// builder.rs:38-58
+const TOOL_GUIDELINES: &amp;str = concat!(
+    &quot;## Guidelines\n\n&quot;,
+    &quot;- Start with a normal conversational response. Do not call tools for greetings.\n&quot;,
+    &quot;- Use the calc tool for arithmetic.\n&quot;,
+    &quot;- Use the exec tool for shell/system tasks.\n&quot;,
+    &quot;- If the user starts with `/sh `, run it with `exec` exactly as written.\n&quot;,
+    &quot;- Use the browser tool for web pages.\n&quot;,
+    &quot;- For MCP servers, use `mcp__&lt;server&gt;__&lt;tool&gt;` tools.\n&quot;,
+    &quot;- Skills are not callable unless loaded with `read_skill`.\n&quot;,
+    &quot;- Before tool calls, briefly state what you are about to do.\n&quot;,
+    &quot;- For multi-step tasks, execute one step at a time.\n&quot;,
+    &quot;- Be careful with destructive operations, confirm with user first.\n&quot;,
+    &quot;- The UI already shows raw tool output. Summarize outcomes instead.\n&quot;,
+    &quot;- When you have nothing meaningful to add after a tool call, return empty.\n&quot;
+);
+</code></pre>
+<h3>Datetime Injection</h3>
+<p>The datetime is prepended to the <strong>user message</strong>, not the system prompt. This is deliberate — putting it in the system prompt would shift position between turns and break the KV cache prefix matching:</p>
+<pre><code class="language-rust">// builder.rs:230-243
+pub fn prepend_datetime_to_user_content(user_content, runtime_context) -&gt; Option&lt;UserContent&gt; {
+    let datetime_text = runtime_datetime_message(runtime_context)?;
+    // &quot;[The current user datetime is 2026-07-03 14:30:00 UTC.]\n\n{text}&quot;
+}
+</code></pre>
+<hr>
+<h2>Step 5: Sandbox Resolution</h2>
+<p><strong>Source:</strong> <code>chat/src/run_with_tools.rs:244-270</code></p>
+<pre><code class="language-rust">let session_is_sandboxed = if let Some(router) = state.sandbox_router() {
+    match preset.sandbox.mode {
+        Some(PresetSandboxMode::All) =&gt; router.set_agent_override(session_key, true).await,
+        Some(PresetSandboxMode::Off) =&gt; router.set_agent_override(session_key, false).await,
+        _ =&gt; router.remove_agent_override(session_key).await,
+    }
+    router.is_sandboxed(session_key).await
+} else { false };
+</code></pre>
+<p>The sandbox router decides whether <code>exec</code> runs in a container or on the host. Agent presets can override this.</p>
+<hr>
+<h2>Step 6: Event Forwarder</h2>
+<p><strong>Source:</strong> <code>chat/src/run_with_tools.rs:272-400+</code></p>
+<p>A tokio task forwards <code>RunnerEvent</code>s to the UI:</p>
+<pre><code class="language-rust">let (on_event, mut event_rx) = ordered_runner_event_callback();
+let event_forwarder = tokio::spawn(async move {
+    while let Some(event) = event_rx.recv().await {
+        let payload = match event {
+            RunnerEvent::Thinking =&gt; json!({&quot;state&quot;: &quot;thinking&quot;}),
+            RunnerEvent::ThinkingDone =&gt; json!({&quot;state&quot;: &quot;thinking_done&quot;}),
+            RunnerEvent::TextDelta(text) =&gt; json!({&quot;text&quot;: text}),
+            RunnerEvent::ToolCallStart { id, name, arguments, metadata } =&gt; {
+                // Track args for later persistence
+                tool_args_map.insert(id.clone(), arguments.clone());
+                json!({&quot;state&quot;: &quot;tool_call_start&quot;, &quot;tool&quot;: name, &quot;args&quot;: arguments})
+            },
+            RunnerEvent::ToolCallEnd { id, result, duration_ms } =&gt; {
+                // Persist tool history pair
+                persist_tool_history_pair(&amp;store, &amp;sk, assistant_msg, tool_msg).await;
+                // Send result to channels (WhatsApp, Slack, etc.)
+                send_tool_result_to_channels(&amp;sk, &amp;id, &amp;result).await;
+                json!({&quot;state&quot;: &quot;tool_call_end&quot;, &quot;result&quot;: result})
+            },
+            RunnerEvent::AutoContinue { iteration, max_iterations } =&gt; { ... },
+            RunnerEvent::RetryingAfterError { error, delay_ms } =&gt; { ... },
+        };
+        broadcast(&amp;state, &quot;run.event&quot;, payload).await;
+    }
+});
+</code></pre>
+<p><strong>Key detail:</strong> Tool arguments are tracked in <code>tool_args_map</code> during <code>ToolCallStart</code> and used during <code>ToolCallEnd</code> to persist the complete tool call + result pair in the session store.</p>
+<hr>
+<h2>Step 7: Agent Loop</h2>
+<p><strong>Source:</strong> <code>agents/src/runner/streaming.rs</code></p>
+<h3>The Core Loop</h3>
+<pre><code class="language-rust">loop {
+    iterations += 1;
+    if iterations &gt; max_iterations { return Err(&quot;exceeded max iterations&quot;); }
+
+    // 1. Build tool schemas (filtered by active tools)
+    let schemas_for_api = ...;
+
+    // 2. Compact old tool results if approaching context limit
+    enforce_tool_result_context_budget(&amp;mut messages, schemas_for_api, context_window, ratio, overflow)?;
+
+    // 3. BeforeLLMCall hook — can block or modify messages
+    dispatch_before_llm_call_hook(hooks, &amp;payload)?;
+
+    // 4. Stream from LLM
+    let mut stream = provider.stream_with_tools_and_options(messages, schemas, tool_controls);
+
+    // 5. Accumulate from stream
+    while let Some(event) = stream.next().await {
+        match event {
+            Delta(text) =&gt; { accumulated_text += text; cb(TextDelta(text)); },
+            ReasoningDelta(text) =&gt; { accumulated_reasoning += text; cb(ThinkingText(text)); },
+            ToolCallStart { id, name, index } =&gt; { tool_calls.push(...); tool_call_args[index] = &quot;&quot;; },
+            ToolCallArgumentsDelta { index, delta } =&gt; { tool_call_args[index] += delta; },
+            Done(usage) =&gt; { request_usage = usage; },
+            Error(msg) =&gt; { stream_error = Some(msg); break; },
+        }
+    }
+
+    // 6. Parse tool call arguments
+    for (idx, args_str) in &amp;tool_call_args {
+        tool_calls[vec_pos].arguments = decode_tool_call_arguments_from_str(args_str);
+    }
+
+    // 7. Fallback: if no structured tool calls, try text parsing
+    if tool_calls.is_empty() &amp;&amp; !accumulated_text.is_empty() {
+        let (parsed, remaining) = parse_tool_calls_from_text(&amp;accumulated_text);
+        if !parsed.is_empty() { tool_calls = parsed; accumulated_text = remaining; }
+    }
+
+    // 8. Fallback: XML recovery for non-native providers
+    if !native_tools &amp;&amp; tool_calls.is_empty() {
+        let (cleaned, recovered) = recover_tool_calls_from_content(&amp;accumulated_text);
+        if !recovered.is_empty() { tool_calls = recovered; accumulated_text = cleaned; }
+    }
+
+    // 9. Fallback: /sh command forcing
+    if tool_calls.is_empty() &amp;&amp; iterations == 1 &amp;&amp; total_tool_calls == 0
+        &amp;&amp; let Some(command) = explicit_shell_command
+    {
+        tool_calls = vec![ToolCall { name: &quot;exec&quot;, arguments: json!({&quot;command&quot;: command}) }];
+    }
+
+    // 10. If no tool calls → return text
+    if tool_calls.is_empty() {
+        // Auto-continue if model stopped early
+        if !is_substantive_answer_text(&amp;accumulated_text) &amp;&amp; total_tool_calls &gt; 0
+            &amp;&amp; auto_continue_count &lt; max_auto_continues
+        {
+            auto_continue_count += 1;
+            messages.push(ChatMessage::user(AUTO_CONTINUE_NUDGE));
+            continue;  // Ask model to keep going
+        }
+        return Ok(finish_agent_run(accumulated_text, iterations, total_tool_calls, usage));
+    }
+
+    // 11. Execute ALL tool calls CONCURRENTLY
+    let tool_futures: Vec&lt;_&gt; = tool_calls.iter().map(|tc| {
+        async move {
+            // Schema validation
+            let validation_error = validate_tool_args(&amp;schema, &amp;args);
+            if let Some(err) = validation_error {
+                return (false, json!({&quot;error&quot;: err}), Some(err), true);
+            }
+            // BeforeToolCall hook
+            dispatch_before_tool_call_hook(...)?;
+            // Execute
+            match tool.execute(args).await {
+                Ok(val) =&gt; (true, json!({&quot;result&quot;: val}), None, false),
+                Err(e) =&gt; (false, json!({&quot;error&quot;: e}), Some(e), false),
+            }
+        }
+    }).collect();
+
+    let results = futures::future::join_all(tool_futures).await;
+
+    // 12. Process results in original order
+    for (tc, (success, result, error, rejected)) in tool_calls.iter().zip(results) {
+        if success {
+            messages.push(ChatMessage::tool(tc.id.clone(), result));
+        } else {
+            messages.push(ChatMessage::tool(tc.id.clone(), json!({&quot;error&quot;: error})));
+        }
+    }
+
+    total_tool_calls += tool_calls.len();
+    // Loop back to step 1
+}
+</code></pre>
+<h3>Parallel Tool Execution</h3>
+<p><strong>All tool calls execute concurrently</strong> via <code>futures::future::join_all(tool_futures)</code>. This means if the model calls <code>exec("ls")</code>, <code>exec("pwd")</code>, and <code>glob("*.rs")</code> in one turn, all three run in parallel and their results are collected together.</p>
+<h3>Auto-Continue</h3>
+<p>If the model returns text without tool calls but had previously made tool calls, the system asks it to continue:</p>
+<pre><code class="language-rust">if !is_substantive_answer_text(&amp;accumulated_text)
+    &amp;&amp; total_tool_calls &gt; 0
+    &amp;&amp; total_tool_calls &gt;= auto_continue_min_tool_calls
+    &amp;&amp; auto_continue_count &lt; max_auto_continues
+{
+    auto_continue_count += 1;
+    messages.push(ChatMessage::user(&quot;Please continue with the next step.&quot;));
+    continue;
+}
+</code></pre>
+<p>This handles cases where the model says "Let me do that..." then stops — the nudge tells it to actually execute the tools.</p>
+<hr>
+<h2>Step 8: Post-Processing</h2>
+<p><strong>Source:</strong> <code>chat/src/run_with_tools.rs</code> (end of function)</p>
+<p>After the agent loop completes:</p>
+<ol><li><strong>Compact session</strong> if context exceeded — <code>compact_session()</code> replaces old messages with summaries</li><li><strong>Generate TTS audio</strong> if voice is active — <code>generate_tts_audio(final_text)</code></li><li><strong>Deliver final reply</strong> to channels — <code>deliver_channel_replies(session_key, final_text)</code></li><li><strong>Persist assistant message</strong> in session store</li><li><strong>Broadcast run complete</strong> to UI — <code>broadcast(state, "run.complete", payload)</code></li></ol>
+<hr>
+<h2>Chat Messages: The Data Model</h2>
+<p><strong>Source:</strong> <code>agents/src/model/chat.rs</code></p>
+<pre><code class="language-rust">pub enum ChatMessage {
+    System { content: String },
+    User { content: UserContent, name: Option&lt;String&gt; },
+    Assistant { content: Option&lt;String&gt;, tool_calls: Vec&lt;ToolCall&gt;, reasoning: Option&lt;String&gt; },
+    Tool { tool_call_id: String, content: String },
+}
+
+pub enum UserContent {
+    Text(String),
+    Multimodal(Vec&lt;ContentPart&gt;),  // text + images
+}
+
+pub enum ContentPart {
+    Text(String),
+    Image { media_type: String, data: String },  // base64
+}
+</code></pre>
+<p><strong>Key design:</strong> Metadata like <code>created_at</code>, <code>model</code>, <code>provider</code>, <code>inputTokens</code>, <code>outputTokens</code> does NOT exist here — so they can never leak into provider API requests. Metadata lives in the session store (JSONL).</p>
+<hr>
+<h2>Provider Chain Failover</h2>
+<p><strong>Source:</strong> <code>agents/src/provider_chain.rs</code></p>
+<p>When the primary provider fails, the chain tries fallbacks:</p>
+<pre><code class="language-">ProviderChain:
+  1. Anthropic (Claude 3.5 Sonnet)  ← primary
+  2. OpenAI (GPT-4o)                ← fallback 1
+  3. Ollama (local qwen3.6)         ← fallback 2
+</code></pre>
+<h3>Circuit Breaker</h3>
+<p>Each provider has a circuit breaker:</p>
+<ul><li><strong>Trips</strong> after 3 consecutive failures</li><li><strong>Resets</strong> after 60 seconds cooldown</li><li><strong>Skipped</strong> when tripped — next provider in chain is tried</li></ul>
+<h3>Error Classification</h3>
+<table><tr><th>Error Type</th><th>Failover?</th><th>Why</th></tr><tr><td>429 Rate Limit</td><td>Yes</td><td>Temporary, next provider may work</td></tr><tr><td>401 Auth Error</td><td>Yes</td><td>Bad key on this provider</td></tr><tr><td>5xx Server Error</td><td>Yes</td><td>Provider is down</td></tr><tr><td>Billing Exhausted</td><td>Yes</td><td>Quota exceeded</td></tr><tr><td>Context Window</td><td>No</td><td>Will fail everywhere</td></tr><tr><td>Invalid Request</td><td>No</td><td>Bad format, will fail everywhere</td></tr></table>
+<hr>
 <h2>Next</h2>
-<p>Continue to <a href="04-channels.md">04-channels</a> for the communication channel integrations.</p>
+<p>Continue to <a href="04-channels.md">04-channels</a> for how channel events flow into the agent loop.</p>
   </article>
   <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
 </body>
