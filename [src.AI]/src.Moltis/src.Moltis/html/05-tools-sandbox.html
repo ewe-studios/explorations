@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Tools and Sandboxing -- src.Moltis</title>
+  <title>Tools and Sandboxing: How Tool Execution Works -- src.Moltis</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
   <script>
@@ -124,7 +124,7 @@
   <nav class="nav">
     <span class="nav-brand">~/src.Moltis/docs</span>
     <div class="nav-actions">
-      <a href="03-gateway-deep.html" class="nav-breadcrumb">Moltis Deep Dive: Voice, Channels, Agents, Providers, Native Apps</a><a href="04-channels.html" class="nav-breadcrumb">Channels: Message Routing and Plugin System</a><a href="05-agents-deep.html" class="nav-breadcrumb">Voice Pipeline: STT → Agent → TTS</a>
+      <a href="03-gateway-deep.html" class="nav-breadcrumb">Moltis Deep Dive: Voice, Channels, Agents, Providers, Native Apps</a><a href="04-channels.html" class="nav-breadcrumb">Channels: How Messages Flow In and Out</a><a href="05-agents-deep.html" class="nav-breadcrumb">Voice Pipeline: STT → Agent → TTS</a>
       <a href="index.html" class="nav-btn" title="Back to index">index</a>
       <a href="05-agents-deep.html" class="nav-btn" title="Previous: Voice Pipeline: STT → Agent → TTS">← prev</a>
       <a href="06-memory.html" class="nav-btn nav-btn-next" title="Next: Memory: Markdown Files → Chunks → Embeddings → SQLite Search">next →</a>
@@ -132,41 +132,253 @@
     </div>
   </nav>
   <article class="prose">
-<h1>Tools and Sandboxing</h1>
-<p>Moltis runs tools in isolated sandboxes — Docker/Podman, Apple Container, or WASM — to ensure security and resource isolation.</p>
-<p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/crates/tools/</code></p>
-<h2>Tool Execution</h2>
-<p>The tools crate (~37.0K LoC) handles:</p>
-<ul><li>Tool definition and registration</li><li>Tool execution with sandboxing</li><li>WASM tool support</li><li>Skill execution</li></ul>
-<pre><code class="language-">crates/tools/           ← Tool execution framework (~37.0K LoC)
-crates/skills/          ← Skill definitions
-crates/browser/         ← Browser automation
+<h1>Tools and Sandboxing: How Tool Execution Works</h1>
+<p>This document explains how Moltis executes tools: the tool registry, individual tool implementations, sandbox routing, and WASM tools.</p>
+<p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/crates/tools/src/</code></p>
+<hr>
+<h2>Tool Execution Flow</h2>
+<pre><code class="language-">Agent loop calls tool.execute(args)
+    ↓
+ToolDispatcher.dispatch(tool_name, args)
+    ↓
+1. Schema validation (pre-dispatch)
+2. BeforeToolCall hook (can block/modify)
+3. tool.execute(args)
+    ↓
+SandboxRouter.route(session_key)
+    ↓
+Backend: Docker | Podman | Apple Container | WASM | Vercel | Daytona | Firecracker
+    ↓
+Command execution → stdout, stderr, exit_code
+    ↓
+AfterToolCall hook
+    ↓
+Result returned to agent loop
 </code></pre>
-<p><strong>Aha:</strong> The tools crate is nearly as large as the gateway crate (~37K vs ~37.4K LoC), making it one of the two largest components in Moltis. This reflects the importance of tool execution in an AI agent — the agent's capabilities come primarily from its tools.</p>
-<h2>Sandboxing</h2>
-<p>Moltis supports multiple sandbox backends:</p>
-<table><tr><th>Backend</th><th>Purpose</th><th>Platform</th></tr><tr><td>Docker/Podman</td><td>Container sandboxing</td><td>Linux, macOS</td></tr><tr><td>Apple Container</td><td>Native macOS sandboxing</td><td>macOS only</td></tr><tr><td>WASM</td><td>WebAssembly sandboxing</td><td>Cross-platform</td></tr></table>
+<hr>
+<h2>ToolRegistry</h2>
+<p><strong>Source:</strong> <code>tool_registry.rs</code></p>
+<pre><code class="language-rust">pub struct ToolRegistry {
+    tools: HashMap&lt;String, Box&lt;dyn AgentTool&gt;&gt;,
+}
+
+#[async_trait]
+pub trait AgentTool: Send + Sync {
+    fn name(&amp;self) -&gt; &amp;str;
+    fn description(&amp;self) -&gt; &amp;str;
+    fn parameters_schema(&amp;self) -&gt; serde_json::Value;
+    async fn execute(&amp;self, params: serde_json::Value) -&gt; anyhow::Result&lt;serde_json::Value&gt;;
+}
+</code></pre>
+<p>Registration:</p>
+<pre><code class="language-rust">registry.register(Box::new(ExecTool::default()
+    .with_sandbox(sandbox, id)
+    .with_approval(approval_mgr, broadcaster)
+    .with_sandbox_router(router)
+    .with_env_provider(env_provider)
+));
+</code></pre>
+<hr>
+<h2>Exec Tool: Shell Command Execution</h2>
+<p><strong>Source:</strong> <code>exec.rs</code></p>
+<h3>Core Function</h3>
+<pre><code class="language-rust">pub async fn exec_command(command: &amp;str, opts: &amp;ExecOpts) -&gt; Result&lt;ExecResult&gt; {
+    let mut cmd = Command::new(&quot;sh&quot;);
+    cmd.arg(&quot;-c&quot;).arg(command);
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    cmd.stdin(Stdio::null());  // Child cannot read stdin
+
+    if let Some(ref dir) = opts.working_dir { cmd.current_dir(dir); }
+    for (k, v) in &amp;opts.env { cmd.env(k, v); }
+
+    let child = cmd.spawn()?;
+    let result = tokio::time::timeout(opts.timeout, child.wait_with_output()).await;
+
+    match result {
+        Ok(Ok(output)) =&gt; {
+            let mut stdout = String::from_utf8_lossy(&amp;output.stdout).into_owned();
+            let mut stderr = String::from_utf8_lossy(&amp;output.stderr).into_owned();
+            truncate_output_for_display(&amp;mut stdout, opts.max_output_bytes);
+            truncate_output_for_display(&amp;mut stderr, opts.max_output_bytes);
+            Ok(ExecResult { stdout, stderr, exit_code: output.status.code().unwrap_or(-1) })
+        },
+        Ok(Err(e)) =&gt; Err(Error::message(format!(&quot;failed to run command: {e}&quot;))),
+        Err(_) =&gt; Err(Error::message(format!(&quot;command timed out after {}s&quot;, opts.timeout.as_secs()))),
+    }
+}
+</code></pre>
+<p><strong>Security measures:</strong></p>
+<ul><li><code>stdin = null</code> — child processes cannot read from stdin</li><li>Output truncated at 200KB with <code>... [output truncated]</code> appended</li><li>Timeout enforced via <code>tokio::time::timeout</code></li></ul>
+<h3>ExecTool Builder Pattern</h3>
+<pre><code class="language-rust">pub struct ExecTool {
+    pub default_timeout: Duration,          // Default: 30 seconds
+    pub max_output_bytes: usize,            // Default: 200KB
+    pub working_dir: Option&lt;PathBuf&gt;,
+    approval_manager: Option&lt;Arc&lt;ApprovalManager&gt;&gt;,
+    broadcaster: Option&lt;Arc&lt;dyn ApprovalBroadcaster&gt;&gt;,
+    sandbox: Arc&lt;dyn Sandbox&gt;,
+    sandbox_router: Option&lt;Arc&lt;SandboxRouter&gt;&gt;,
+    env_provider: Option&lt;Arc&lt;dyn EnvVarProvider&gt;&gt;,
+    node_provider: Option&lt;Arc&lt;dyn NodeExecProvider&gt;&gt;,
+    default_node: Option&lt;String&gt;,
+}
+</code></pre>
+<h3>Node Routing</h3>
+<p>When remote nodes are connected, commands can be forwarded:</p>
+<pre><code class="language-rust">// Determine effective node reference
+let node_ref = if let Some(provider) = &amp;self.node_provider {
+    if provider.has_connected_nodes() {
+        match model_node.or_else(|| self.default_node.clone()) {
+            Some(node_ref) =&gt; Some(node_ref),   // Model-supplied or configured default
+            None =&gt; provider.default_node_ref().await,  // Use provider&#x27;s default
+        }
+    } else if let Some(ref dn) = self.default_node {
+        return Err(Error::message(&quot;default node &#x27;{dn}&#x27; is configured but no nodes connected&quot;));
+    } else {
+        None  // Fall through to local execution
+    }
+} else { None };
+
+// Forward to remote node
+if let (Some(provider), Some(node_ref)) = (&amp;self.node_provider, &amp;node_ref) {
+    let node_id = provider.resolve_node_id(node_ref).await?;
+    let result = provider.exec_on_node(&amp;node_id, command, timeout_secs, cwd, None).await?;
+    return Ok(serde_json::to_value(&amp;result)?);
+}
+</code></pre>
+<p><strong>Key detail:</strong> Model-hallucinated node values are silently dropped when no nodes are connected. A configured <code>default_node</code> produces a clear error so the admin knows the intended remote host is unavailable.</p>
+<hr>
+<h2>Sandbox Routing</h2>
+<p><strong>Source:</strong> <code>sandbox.rs</code></p>
+<h3>SandboxRouter</h3>
+<pre><code class="language-rust">pub struct SandboxRouter {
+    config: SandboxConfig,
+    backends: Vec&lt;Box&lt;dyn Sandbox&gt;&gt;,
+    primary_index: usize,
+}
+
+impl SandboxRouter {
+    pub async fn route(&amp;self, session_key: &amp;str) -&gt; &amp;dyn Sandbox {
+        // Determine which backend to use for this session
+        // 1. Check agent-scoped override
+        // 2. Check session-scoped override
+        // 3. Fall back to primary backend
+    }
+
+    pub async fn is_sandboxed(&amp;self, session_key: &amp;str) -&gt; bool {
+        // Returns true if this session should run in sandbox
+    }
+
+    pub fn resolve_backend(&amp;self, session_key: &amp;str) -&gt; SandboxBackend {
+        // Returns the backend type (Docker, Podman, AppleContainer, etc.)
+    }
+}
+</code></pre>
+<h3>Sandbox Trait</h3>
+<pre><code class="language-rust">#[async_trait]
+pub trait Sandbox: Send + Sync {
+    async fn execute(&amp;self, command: &amp;str, opts: ExecOpts) -&gt; Result&lt;ExecResult&gt;;
+    fn provides_fs_isolation(&amp;self) -&gt; bool;
+    async fn cleanup(&amp;self, id: &amp;SandboxId) -&gt; Result&lt;()&gt;;
+}
+</code></pre>
+<h3>Backend Types</h3>
+<table><tr><th>Backend</th><th>Platform</th><th>FS Isolation</th><th>Config</th></tr><tr><td>Docker</td><td>Linux, macOS</td><td>Yes</td><td>`docker.enabled`</td></tr><tr><td>Podman</td><td>Linux, macOS</td><td>Yes</td><td>`podman.enabled`</td></tr><tr><td>Apple Container</td><td>macOS</td><td>Yes</td><td>macOS only</td></tr><tr><td>Firecracker</td><td>Linux</td><td>Yes</td><td>`firecracker_bin` available</td></tr><tr><td>Vercel</td><td>Cloud</td><td>Yes</td><td>`vercel_token` set</td></tr><tr><td>Daytona</td><td>Cloud</td><td>Yes</td><td>`daytona_api_key` set</td></tr><tr><td>WASM</td><td>Cross-platform</td><td>Yes</td><td>`wasm.enabled`</td></tr><tr><td>RestrictedHost</td><td>Any</td><td>No</td><td>Fallback</td></tr><tr><td>Cgroup</td><td>Linux</td><td>No</td><td>Fallback</td></tr><tr><td>None</td><td>Any</td><td>No</td><td>Fallback</td></tr></table>
+<h3>Filesystem Isolation Check</h3>
+<pre><code class="language-rust">let has_container_backend = if let Some(ref router) = self.sandbox_router {
+    router.resolve_backend(session_key).await.provides_fs_isolation()
+} else {
+    self.sandbox.provides_fs_isolation()
+};
+</code></pre>
+<p>When the backend doesn't provide filesystem isolation (<code>RestrictedHost</code>, <code>Cgroup</code>, <code>None</code>), commands run directly on the host even when the session mode says "sandboxed."</p>
+<hr>
 <h2>WASM Tools</h2>
-<p>Moltis includes precompiled WASM tools:</p>
-<table><tr><th>Tool</th><th>Crate</th><th>Purpose</th></tr><tr><td>Calculator</td><td>`moltis-wasm-tools/calc`</td><td>Math operations</td></tr><tr><td>Web Fetch</td><td>`moltis-wasm-tools/web-fetch`</td><td>Fetch web content</td></tr><tr><td>Web Search</td><td>`moltis-wasm-tools/web-search`</td><td>Search the web</td></tr></table>
-<p><strong>Source:</strong> <code>crates/wasm-tools/</code>, <code>crates/wasm-precompile/</code>.</p>
-<h2>Browser Automation</h2>
-<p>The browser crate provides browser automation capabilities:</p>
-<pre><code class="language-">crates/browser/         ← Browser automation
+<p><strong>Source:</strong> <code>crates/wasm-tools/</code></p>
+<h3>Calc Tool</h3>
+<p><strong>Source:</strong> <code>crates/wasm-tools/calc/</code></p>
+<pre><code class="language-rust">// Precompiled WASM calculator
+// Tool name: &quot;calc&quot;
+// Parameters: { &quot;expression&quot;: &quot;2 + 2&quot; }
+// Returns: { &quot;result&quot;: 4 }
 </code></pre>
-<p><strong>Source:</strong> <code>crates/browser/src/</code>.</p>
-<h2>Voice</h2>
-<p>The voice crate provides STT (speech-to-text) and TTS (text-to-speech):</p>
-<pre><code class="language-">crates/voice/           ← Voice I/O (STT + TTS)
+<h3>Web Fetch Tool</h3>
+<p><strong>Source:</strong> <code>crates/wasm-tools/web-fetch/</code></p>
+<pre><code class="language-rust">// Precompiled WASM web fetcher
+// Tool name: &quot;web_fetch&quot;
+// Parameters: { &quot;url&quot;: &quot;https://example.com&quot; }
+// Returns: { &quot;content&quot;: &quot;...&quot;, &quot;status&quot;: 200 }
 </code></pre>
-<p><strong>Source:</strong> <code>crates/voice/src/</code>.</p>
-<h2>Skills</h2>
-<p>The skills crate manages bundled and workspace skills:</p>
-<pre><code class="language-">crates/skills/          ← Skill definitions
+<h3>Web Search Tool</h3>
+<p><strong>Source:</strong> <code>crates/wasm-tools/web-search/</code></p>
+<pre><code class="language-rust">// Precompiled WASM web searcher
+// Tool name: &quot;web_search&quot;
+// Parameters: { &quot;query&quot;: &quot;Rust programming&quot; }
+// Returns: { &quot;results&quot;: [...] }
 </code></pre>
-<p>Skills are predefined tool sets that the agent can use to accomplish tasks.</p>
+<hr>
+<h2>Other Tools</h2>
+<h3>File Read Tool</h3>
+<p><strong>Source:</strong> <code>fs/read/tool.rs</code></p>
+<pre><code class="language-json">{
+  &quot;name&quot;: &quot;read&quot;,
+  &quot;parameters&quot;: {
+    &quot;path&quot;: { &quot;type&quot;: &quot;string&quot; },
+    &quot;offset&quot;: { &quot;type&quot;: &quot;integer&quot;, &quot;description&quot;: &quot;Start line (0-based)&quot; },
+    &quot;limit&quot;: { &quot;type&quot;: &quot;integer&quot;, &quot;description&quot;: &quot;Max lines&quot; }
+  }
+}
+</code></pre>
+<h3>File Write Tool</h3>
+<p><strong>Source:</strong> <code>fs/write.rs</code></p>
+<pre><code class="language-json">{
+  &quot;name&quot;: &quot;write&quot;,
+  &quot;parameters&quot;: {
+    &quot;path&quot;: { &quot;type&quot;: &quot;string&quot; },
+    &quot;content&quot;: { &quot;type&quot;: &quot;string&quot; },
+    &quot;append&quot;: { &quot;type&quot;: &quot;boolean&quot;, &quot;default&quot;: false }
+  }
+}
+</code></pre>
+<h3>Glob Tool</h3>
+<p><strong>Source:</strong> <code>fs/glob.rs</code></p>
+<pre><code class="language-json">{
+  &quot;name&quot;: &quot;glob&quot;,
+  &quot;parameters&quot;: {
+    &quot;pattern&quot;: { &quot;type&quot;: &quot;string&quot; },
+    &quot;path&quot;: { &quot;type&quot;: &quot;string&quot;, &quot;description&quot;: &quot;Search root&quot; }
+  }
+}
+</code></pre>
+<h3>Grep Tool</h3>
+<p><strong>Source:</strong> <code>fs/grep.rs</code></p>
+<pre><code class="language-json">{
+  &quot;name&quot;: &quot;grep&quot;,
+  &quot;parameters&quot;: {
+    &quot;pattern&quot;: { &quot;type&quot;: &quot;string&quot; },
+    &quot;path&quot;: { &quot;type&quot;: &quot;string&quot; },
+    &quot;case_sensitive&quot;: { &quot;type&quot;: &quot;boolean&quot; },
+    &quot;max_results&quot;: { &quot;type&quot;: &quot;integer&quot;, &quot;default&quot;: 100 }
+  }
+}
+</code></pre>
+<hr>
+<h2>Approval Gating</h2>
+<p><strong>Source:</strong> <code>approval.rs</code></p>
+<pre><code class="language-rust">pub struct ApprovalManager { ... }
+
+pub enum ApprovalDecision {
+    Approve,
+    Deny,
+    DenyAndBlock,  // Block future similar commands
+}
+</code></pre>
+<p>When a command requires approval:</p>
+<ol><li><code>create_request()</code> stores the pending approval</li><li><code>broadcast_request()</code> notifies connected clients</li><li>Client approves/denies via REST API</li><li><code>await_response()</code> waits for decision (with timeout)</li></ol>
+<hr>
 <h2>Next</h2>
-<p>Continue to <a href="06-memory.md">06-memory</a> for the SQLite + FTS + vector memory system.</p>
+<p>Continue to <a href="06-memory.md">06-memory</a> for the memory system.</p>
   </article>
   <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
 </body>

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Native Apps: iOS and macOS Swift Apps -- src.Moltis</title>
+  <title>Native Apps: iOS and macOS with Swift-Rust FFI Bridges -- src.Moltis</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
   <script>
@@ -124,22 +124,210 @@
   <nav class="nav">
     <span class="nav-brand">~/src.Moltis/docs</span>
     <div class="nav-actions">
-      <a href="05-tools-sandbox.html" class="nav-breadcrumb">Tools and Sandboxing</a><a href="06-memory.html" class="nav-breadcrumb">Memory: Markdown Files → Chunks → Embeddings → SQLite Search</a><a href="06-providers-deep.html" class="nav-breadcrumb">Providers Deep Dive: LLM Implementations and Registry</a>
+      <a href="05-tools-sandbox.html" class="nav-breadcrumb">Tools and Sandboxing: How Tool Execution Works</a><a href="06-memory.html" class="nav-breadcrumb">Memory: Markdown Files → Chunks → Embeddings → SQLite Search</a><a href="06-providers-deep.html" class="nav-breadcrumb">Providers Deep Dive: LLM Implementations and Registry</a>
       <a href="index.html" class="nav-btn" title="Back to index">index</a>
       <a href="06-providers-deep.html" class="nav-btn" title="Previous: Providers Deep Dive: LLM Implementations and Registry">← prev</a>
-      <a href="08-security.html" class="nav-btn nav-btn-next" title="Next: Security Model: Auth, Sandboxing, and Unsafe Code Isolation">next →</a>
+      <a href="08-security.html" class="nav-btn nav-btn-next" title="Next: Security Model: Auth, Sandboxing, Unsafe Code Isolation">next →</a>
       <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
     </div>
   </nav>
   <article class="prose">
-<h1>Native Apps: iOS and macOS Swift Apps</h1>
-<p>Moltis includes native Swift apps for iOS and macOS, connected to the Rust server via the <code>swift-bridge</code> crate. The apps use <code>@StateObject</code> for state management and communicate with the Rust backend through FFI bridges.</p>
-<p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/apps/</code></p>
-<h2>iOS App</h2>
+<h1>Native Apps: iOS and macOS with Swift-Rust FFI Bridges</h1>
+<p>This document explains how the iOS and macOS Swift apps connect to the Rust backend through FFI bridges, the app lifecycle, and the three callback systems (logs, session events, network audit).</p>
+<p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/apps/</code> and <code>crates/swift-bridge/</code></p>
+<hr>
+<h2>FFI Bridge Architecture</h2>
+<pre><code class="language-">macOS App (Swift)                    Rust Backend (swift-bridge crate)
+─────────────────                    ─────────────────────────────────
+MoltisApp.swift                      callbacks.rs
+├── installLogCallback()     ──────▶ LOG_CALLBACK: OnceLock&lt;LogCallback&gt;
+├── installSessionEventCallback() ──▶ SESSION_EVENT_CALLBACK: OnceLock
+└── installNetworkAuditCallback() ──▶ NETWORK_AUDIT_CALLBACK: OnceLock
+
+MoltisClient.swift                   ffi_core.rs, ffi_sessions.rs, ffi_config.rs
+├── getVersion()             ──────▶ fn get_version() -&gt; *const c_char
+├── getIdentity()            ──────▶ fn get_identity() -&gt; *const c_char
+├── chat()                   ──────▶ fn chat(session_key, message, ...) -&gt; *const c_char
+├── abort()                  ──────▶ fn abort(session_key) -&gt; *const c_char
+├── peek()                   ──────▶ fn peek(session_key) -&gt; *const c_char
+├── listSessions()           ──────▶ fn list_sessions() -&gt; *const c_char
+├── loadSessionHistory()     ──────▶ fn load_session_history(session_key) -&gt; *const c_char
+└── ... (60+ FFI functions)
+</code></pre>
+<hr>
+<h2>Three Callback Bridges</h2>
+<p><strong>Source:</strong> <code>crates/swift-bridge/src/callbacks.rs</code></p>
+<h3>Callback Types</h3>
+<pre><code class="language-rust">// Rust side
+pub(crate) type LogCallback = unsafe extern &quot;C&quot; fn(log_json: *const c_char);
+pub(crate) type SessionEventCallback = unsafe extern &quot;C&quot; fn(event_json: *const c_char);
+pub(crate) type NetworkAuditCallback = unsafe extern &quot;C&quot; fn(event_json: *const c_char);
+
+pub(crate) static LOG_CALLBACK: OnceLock&lt;LogCallback&gt; = OnceLock::new();
+pub(crate) static SESSION_EVENT_CALLBACK: OnceLock&lt;SessionEventCallback&gt; = OnceLock::new();
+pub(crate) static NETWORK_AUDIT_CALLBACK: OnceLock&lt;NetworkAuditCallback&gt; = OnceLock::new();
+</code></pre>
+<h3>Log Bridge</h3>
+<pre><code class="language-rust">// Rust: emit_log → Swift callback
+pub(crate) fn emit_log_with_fields(level: &amp;str, target: &amp;str, message: &amp;str, fields: Option&lt;&amp;HashMap&lt;&amp;str, String&gt;&gt;) {
+    if let Some(callback) = LOG_CALLBACK.get() {
+        let event = BridgeLogEvent { level, target, message, fields };
+        if let Ok(json) = serde_json::to_string(&amp;event)
+            &amp;&amp; let Ok(c_str) = CString::new(json)
+        {
+            unsafe { callback(c_str.as_ptr()); }  // Swift copies before returning
+        }
+    }
+}
+</code></pre>
+<p><strong>Swift side:</strong></p>
+<pre><code class="language-swift">// MoltisClient.swift:7-47
+private struct BridgeLogPayload: Decodable {
+    let level: String
+    let target: String
+    let message: String
+    let fields: [String: String]?
+}
+
+private func rustLogCallbackHandler(logJson: UnsafePointer&lt;CChar&gt;?) {
+    guard let logJson else { return }
+    let jsonString = String(cString: logJson)
+    let data = Data(jsonString.utf8)
+
+    guard let payload = try? logDecoder.decode(BridgeLogPayload.self, from: data)
+    else { return }
+
+    let level: LogLevel
+    switch payload.level {
+    case &quot;TRACE&quot;: level = .trace
+    case &quot;DEBUG&quot;: level = .debug
+    case &quot;INFO&quot;: level = .info
+    case &quot;WARN&quot;: level = .warn
+    case &quot;ERROR&quot;: level = .error
+    default: level = .debug
+    }
+
+    DispatchQueue.main.async {
+        globalLogStore?.log(level, target: payload.target, message: payload.message, fields: payload.fields ?? [:])
+    }
+}
+</code></pre>
+<h3>Session Event Bridge</h3>
+<p><strong>Rust side:</strong></p>
+<pre><code class="language-rust">pub(crate) fn emit_session_event(event: &amp;SessionEvent) {
+    if let Some(callback) = SESSION_EVENT_CALLBACK.get() {
+        let event = BridgeSessionEvent {
+            kind: event.kind.as_str(),
+            session_key: event.session_key.clone(),
+        };
+        if let Ok(json) = serde_json::to_string(&amp;event)
+            &amp;&amp; let Ok(c_str) = CString::new(json)
+        { unsafe { callback(c_str.as_ptr()); } }
+    }
+}
+</code></pre>
+<p><strong>Swift side:</strong></p>
+<pre><code class="language-swift">struct BridgeSessionEventPayload: Decodable {
+    let kind: String
+    let sessionKey: String
+}
+
+private func rustSessionEventCallbackHandler(eventJson: UnsafePointer&lt;CChar&gt;?) {
+    // Decode JSON → payload → DispatchQueue.main.async → globalChatStore?.handleSessionEvent(payload)
+}
+</code></pre>
+<h3>Network Audit Bridge</h3>
+<p><strong>Rust side:</strong></p>
+<pre><code class="language-rust">pub(crate) fn emit_network_audit(domain: &amp;str, port: u16, protocol: &amp;str, action: &amp;str, source: &amp;str) {
+    if let Some(callback) = NETWORK_AUDIT_CALLBACK.get() {
+        let event = BridgeNetworkAuditEvent { domain, port, protocol, action, source };
+        if let Ok(json) = serde_json::to_string(&amp;event)
+            &amp;&amp; let Ok(c_str) = CString::new(json)
+        { unsafe { callback(c_str.as_ptr()); } }
+    }
+}
+</code></pre>
+<p><strong>Swift side:</strong></p>
+<pre><code class="language-swift">private struct BridgeNetworkAuditPayload: Decodable {
+    let domain: String
+    let port: UInt16
+    let networkProtocol: String
+    let action: String
+    let source: String
+    let method: String?
+    let url: String?
+}
+
+private func rustNetworkAuditCallbackHandler(eventJson: UnsafePointer&lt;CChar&gt;?) {
+    // Decode JSON → NetworkAuditEntry → globalNetworkAuditStore?.push(entry)
+}
+</code></pre>
+<hr>
+<h2>macOS App Startup</h2>
+<p><strong>Source:</strong> <code>apps/macos/Sources/MoltisApp.swift</code></p>
+<h3>Installation Sequence</h3>
+<pre><code class="language-swift">init() {
+    let settings = AppSettings()
+    let onboardingState = OnboardingState()
+    let logStore = LogStore()
+    let networkAuditStore = NetworkAuditStore()
+
+    // 1. Install Rust→Swift log bridge BEFORE any FFI calls
+    MoltisClient.installLogCallback(logStore: logStore)
+
+    let providerStore = ProviderStore(logStore: logStore)
+    let chatStore = ChatStore(settings: settings, providerStore: providerStore, logStore: logStore)
+
+    // 2. Install Rust→Swift session event bridge (shares bus with gateway)
+    MoltisClient.installSessionEventCallback(chatStore: chatStore)
+
+    // 3. Install Rust→Swift network audit bridge
+    MoltisClient.installNetworkAuditCallback(store: networkAuditStore)
+
+    // 4. Set global StateObjects
+    _settings = StateObject(wrappedValue: settings)
+    _chatStore = StateObject(wrappedValue: chatStore)
+    _onboardingState = StateObject(wrappedValue: onboardingState)
+    _providerStore = StateObject(wrappedValue: providerStore)
+    _logStore = StateObject(wrappedValue: logStore)
+    _networkAuditStore = StateObject(wrappedValue: networkAuditStore)
+}
+</code></pre>
+<p><strong>Critical order:</strong> The log bridge must be installed before any FFI calls, so Rust logs from initialization are captured.</p>
+<h3>Body</h3>
+<pre><code class="language-swift">var body: some Scene {
+    WindowGroup(&quot;Moltis&quot;) {
+        Group {
+            if onboardingState.isCompleted {
+                ContentView(chatStore: chatStore, settings: settings, providerStore: providerStore)
+                    .onAppear {
+                        chatStore.loadVersion()
+                        chatStore.loadIdentity()
+                    }
+            } else {
+                OnboardingView(onboardingState: onboardingState)
+            }
+        }
+    }
+    .commands { SettingsMenuCommand() }  // ⌘, opens Settings window
+}
+</code></pre>
+<h3>Settings Menu Command</h3>
+<pre><code class="language-swift">private struct SettingsMenuCommand: Commands {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        CommandGroup(replacing: .appSettings) {
+            Button(&quot;Settings...&quot;) { openWindow(id: &quot;settings&quot;) }
+                .keyboardShortcut(&quot;,&quot;, modifiers: .command)
+        }
+    }
+}
+</code></pre>
+<hr>
+<h2>iOS App Startup</h2>
 <p><strong>Source:</strong> <code>apps/ios/Sources/MoltisApp.swift</code></p>
-<h3>Entry Point</h3>
-<pre><code class="language-swift">// MoltisApp.swift:3-42
-@main
+<pre><code class="language-swift">@main
 struct MoltisApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
@@ -157,10 +345,6 @@ struct MoltisApp: App {
                     ConnectView()
                 }
             }
-            .environmentObject(authManager)
-            .environmentObject(connectionStore)
-            .environmentObject(settingsStore)
-            .environmentObject(locationSharingStore)
             .task {
                 authManager.loadSavedServers()
                 locationSharingStore.configure(connectionStore: connectionStore)
@@ -173,127 +357,102 @@ struct MoltisApp: App {
             .onChange(of: scenePhase) { _, newPhase in
                 locationSharingStore.setAppIsActive(newPhase == .active)
             }
-            .onChange(of: connectionStore.state) { _, _ in
-                locationSharingStore.handleConnectionStateChange()
-            }
         }
     }
 }
 </code></pre>
-<h3>State Objects</h3>
-<table><tr><th>Object</th><th>Purpose</th></tr><tr><td>`AuthManager`</td><td>Server authentication, saved servers</td></tr><tr><td>`ConnectionStore`</td><td>Server connection state, GraphQL client</td></tr><tr><td>`SettingsStore`</td><td>User settings</td></tr><tr><td>`LocationSharingStore`</td><td>Location sharing configuration</td></tr></table>
 <h3>Lifecycle</h3>
-<ol><li>On launch: <code>authManager.loadSavedServers()</code></li><li>If active server exists → <code>ContentView()</code> (chat UI)</li><li>If no active server → <code>ConnectView()</code> (server connection UI)</li><li>On scene phase change: update location sharing active state</li><li>On connection state change: handle location sharing</li></ol>
+<ol><li>On launch: <code>authManager.loadSavedServers()</code></li><li>If active server → <code>ContentView()</code> (chat UI)</li><li>If no active server → <code>ConnectView()</code> (server connection UI)</li><li>On scene phase change: update location sharing active state</li></ol>
 <h3>Live Activity Widget</h3>
 <p><strong>Source:</strong> <code>apps/ios/Widget/MoltisLiveActivity.swift</code></p>
-<pre><code class="language-swift">// MoltisLiveActivity.swift
-struct MoltisLiveActivity: Widget {
+<pre><code class="language-swift">struct MoltisLiveActivity: Widget {
     // Lock Screen and Dynamic Island live activity
     // Shows real-time agent status updates
 }
 </code></pre>
-<h3>GraphQL Client</h3>
-<p><strong>Source:</strong> <code>apps/ios/GraphQL/</code></p>
-<p>GraphQL client for communicating with the Moltis server.</p>
-<h3>Widget Extension</h3>
-<p><strong>Source:</strong> <code>apps/ios/Widget/</code></p>
-<table><tr><th>File</th><th>Purpose</th></tr><tr><td>`MoltisLiveActivity.swift`</td><td>Live Activity widget</td></tr><tr><td>`MoltisWidgetBundle.swift`</td><td>Widget bundle entry</td></tr><tr><td>`IntentCardView.swift`</td><td>Intent card view</td></tr><tr><td>`Info.plist`</td><td>Widget configuration</td></tr></table>
-<h2>macOS App</h2>
-<p><strong>Source:</strong> <code>apps/macos/Sources/MoltisApp.swift</code></p>
-<h3>Entry Point</h3>
-<pre><code class="language-swift">// MoltisApp.swift:16-51
-@main
-struct MoltisApp: App {
-    @StateObject private var settings: AppSettings
-    @StateObject private var chatStore: ChatStore
-    @StateObject private var onboardingState: OnboardingState
-    @StateObject private var providerStore: ProviderStore
-    @StateObject private var logStore: LogStore
-    @StateObject private var networkAuditStore: NetworkAuditStore
-
-    init() {
-        let settings = AppSettings()
-        let onboardingState = OnboardingState()
-        let logStore = LogStore()
-        let networkAuditStore = NetworkAuditStore()
-
-        // Install Rust→Swift log bridge before any FFI calls
-        MoltisClient.installLogCallback(logStore: logStore)
-
-        let providerStore = ProviderStore(logStore: logStore)
-        let chatStore = ChatStore(
-            settings: settings, providerStore: providerStore, logStore: logStore
-        )
-
-        // Install Rust→Swift session event bridge (shares bus with gateway)
-        MoltisClient.installSessionEventCallback(chatStore: chatStore)
-
-        // Install Rust→Swift network audit bridge
-        MoltisClient.installNetworkAuditCallback(store: networkAuditStore)
-
-        _settings = StateObject(wrappedValue: settings)
-        _chatStore = StateObject(wrappedValue: chatStore)
-        _onboardingState = StateObject(wrappedValue: onboardingState)
-        _providerStore = StateObject(wrappedValue: providerStore)
-        _logStore = StateObject(wrappedValue: logStore)
-        _networkAuditStore = StateObject(wrappedValue: networkAuditStore)
-    }
+<hr>
+<h2>Swift-Bridge Crate</h2>
+<p><strong>Source:</strong> <code>crates/swift-bridge/src/</code></p>
+<h3>Module Structure</h3>
+<pre><code class="language-">swift-bridge/src/
+├── lib.rs              ← Module declarations
+├── types.rs            ← Request/response structs, error types
+├── state.rs            ← Global bridge state (tokio runtime, registry)
+├── callbacks.rs        ← Log, session event, network audit callbacks
+├── helpers.rs          ← Encoding, parsing, metrics/tracing
+├── chat.rs             ← Chat logic (provider resolution, streaming)
+├── ffi_core.rs         ← Core FFI exports (version, providers, httpd)
+├── ffi_sessions.rs     ← Session FFI exports
+├── ffi_config.rs       ← Config, identity, soul, memory, env var FFI
+├── ffi_auth.rs         ← Authentication FFI exports
+└── ffi_sandbox.rs      ← Sandbox FFI exports
 </code></pre>
-<h3>State Objects</h3>
-<table><tr><th>Object</th><th>Purpose</th></tr><tr><td>`AppSettings`</td><td>Application configuration</td></tr><tr><td>`ChatStore`</td><td>Chat state, version/identity loading</td></tr><tr><td>`OnboardingState`</td><td>Onboarding flow state</td></tr><tr><td>`ProviderStore`</td><td>LLM provider management</td></tr><tr><td>`LogStore`</td><td>Log viewing, Rust log callback bridge</td></tr><tr><td>`NetworkAuditStore`</td><td>Network audit viewing, Rust callback bridge</td></tr></table>
-<h3>FFI Bridges</h3>
-<p>Three bridges installed during <code>init()</code>:</p>
-<ol><li><strong>Log bridge</strong>: <code>MoltisClient.installLogCallback(logStore:)</code> — Rust logs flow to Swift LogStore</li><li><strong>Session event bridge</strong>: <code>MoltisClient.installSessionEventCallback(chatStore:)</code> — Gateway session events flow to Swift ChatStore</li><li><strong>Network audit bridge</strong>: <code>MoltisClient.installNetworkAuditCallback(store:)</code> — Network audit events flow to Swift NetworkAuditStore</li></ol>
-<h3>Lifecycle</h3>
-<ol><li>Initialize all state objects</li><li>Install FFI bridges</li><li>If onboarding completed → <code>ContentView()</code> (chat UI)</li><li>If onboarding not completed → onboarding flow</li><li>On appear: <code>chatStore.loadVersion()</code>, <code>chatStore.loadIdentity()</code></li></ol>
-<h3>Chat Models</h3>
-<p><strong>Source:</strong> <code>ChatModels.swift</code></p>
-<p>Chat message models used by the macOS app.</p>
-<h3>ChatStore</h3>
-<p><strong>Source:</strong> <code>ChatStore.swift</code></p>
-<p>Manages chat state, version loading, identity loading.</p>
-<h3>Configuration Pane</h3>
-<p><strong>Source:</strong> <code>ConfigurationPane.swift</code></p>
-<p>Settings → Configuration UI for server configuration.</p>
-<h3>HTTPD Pane</h3>
-<p><strong>Source:</strong> <code>HttpdPane.swift</code></p>
-<p>HTTP daemon status viewing.</p>
-<h3>Logs Pane</h3>
-<p><strong>Source:</strong> <code>LogsPane.swift</code></p>
-<p>Log viewing UI, receives logs via Rust→Swift bridge.</p>
-<h3>Network Audit</h3>
-<p><strong>Source:</strong> <code>NetworkAuditPane.swift</code>, <code>NetworkAuditStore.swift</code></p>
-<p>Network audit viewing, receives events via Rust→Swift bridge.</p>
-<h3>Onboarding</h3>
-<p><strong>Source:</strong> <code>OnboardingView.swift</code>, <code>OnboardingStep.swift</code>, <code>OnboardingState.swift</code></p>
-<p>First-time setup wizard with step-by-step flow.</p>
-<h3>Provider Management</h3>
-<p><strong>Source:</strong> <code>ProviderCardView.swift</code>, <code>ProviderConfigForm.swift</code>, <code>ProviderStore.swift</code></p>
-<p>LLM provider configuration and management.</p>
-<h3>Settings</h3>
-<p><strong>Source:</strong> <code>AppSettings.swift</code>, <code>SettingsView.swift</code>, <code>SettingsItemViews.swift</code>, <code>SettingsSectionContent.swift</code>, <code>SettingsSectionContent+Environment.swift</code>, <code>SettingsSectionContent+Sandboxes.swift</code></p>
-<p>Multi-pane settings UI with environment and sandbox configuration.</p>
-<h3>Settings Menu Command</h3>
-<pre><code class="language-swift">// MoltisApp.swift:3-14
-private struct SettingsMenuCommand: Commands {
-    @Environment(\.openWindow) private var openWindow
+<h3>FFI Function Pattern</h3>
+<pre><code class="language-rust">#[no_mangle]
+pub extern &quot;C&quot; fn chat(session_key: *const c_char, message: *const c_char, ...) -&gt; *const c_char {
+    // 1. Parse C strings
+    let session_key = unsafe { CStr::from_ptr(session_key) }.to_str().unwrap();
+    let message = unsafe { CStr::from_ptr(message) }.to_str().unwrap();
 
-    var body: some Commands {
-        CommandGroup(replacing: .appSettings) {
-            Button(&quot;Settings...&quot;) {
-                openWindow(id: &quot;settings&quot;)
-            }
-            .keyboardShortcut(&quot;,&quot;, modifiers: .command)
-        }
-    }
+    // 2. Get runtime from global state
+    let runtime = STATE.get().unwrap().runtime.clone();
+
+    // 3. Execute async operation
+    let result = runtime.block_on(async {
+        chat_impl(session_key, message, ...).await
+    });
+
+    // 4. Serialize to JSON and return C string (caller must free)
+    let json = serde_json::to_string(&amp;result).unwrap();
+    CString::new(json).unwrap().into_raw()
 }
 </code></pre>
-<p>Opens settings window with <code>⌘,</code> keyboard shortcut.</p>
-<h2>Swift Bridge</h2>
-<p><strong>Source:</strong> <code>crates/swift-bridge/src/</code></p>
-<p>The <code>swift-bridge</code> crate provides the FFI layer between Rust and Swift:</p>
-<ul><li>Log callback bridge</li><li>Session event callback bridge</li><li>Network audit callback bridge</li><li>MoltisClient for server communication</li></ul>
-<p>This enables the native apps to call Rust functions directly without going through the HTTP API.</p>
+<h3>Payload Types</h3>
+<p><strong>Source:</strong> <code>apps/macos/Sources/MoltisClient.swift:148-250</code></p>
+<pre><code class="language-swift">struct BridgeChatPayload: Decodable {
+    let reply: String
+    let model: String?
+    let provider: String?
+    let configDir: String
+    let defaultSoul: String
+    let inputTokens: UInt32?
+    let outputTokens: UInt32?
+    let durationMs: UInt64?
+}
+
+struct BridgePeekResult: Decodable {
+    let active: Bool
+    let sessionKey: String?
+    let thinkingText: String?
+    let toolCalls: [BridgePeekToolCall]?
+}
+
+struct BridgePeekToolCall: Decodable, Identifiable {
+    let id: String
+    let name: String
+    let startedAt: UInt64?
+}
+</code></pre>
+<hr>
+<h2>macOS App Panes</h2>
+<h3>Chat View</h3>
+<p><strong>Source:</strong> <code>apps/macos/Sources/ContentView.swift</code></p>
+<p>Main chat interface with:</p>
+<ul><li>Message list (bubbles)</li><li>Input field</li><li>Provider selector</li><li>Model selector</li><li>Thinking indicator</li></ul>
+<h3>Configuration Pane</h3>
+<p><strong>Source:</strong> <code>apps/macos/Sources/ConfigurationPane.swift</code></p>
+<p>Server configuration, provider setup, sandbox settings.</p>
+<h3>HTTPD Pane</h3>
+<p><strong>Source:</strong> <code>apps/macos/Sources/HttpdPane.swift</code></p>
+<p>HTTP daemon status — shows if the internal server is running and on what address.</p>
+<h3>Logs Pane</h3>
+<p><strong>Source:</strong> <code>apps/macos/Sources/LogsPane.swift</code></p>
+<p>Log viewer that receives logs via the Rust→Swift bridge.</p>
+<h3>Network Audit Pane</h3>
+<p><strong>Source:</strong> <code>apps/macos/Sources/NetworkAuditPane.swift</code></p>
+<p>Network audit viewer that receives events via the Rust→Swift bridge. Shows:</p>
+<ul><li>Domain, port, protocol</li><li>Action (connect, request, response)</li><li>Source (which component initiated)</li><li>Method, URL (for HTTP)</li></ul>
+<hr>
 <h2>Next</h2>
 <p>Continue to <a href="08-security.md">08-security</a> for the security model.</p>
   </article>
