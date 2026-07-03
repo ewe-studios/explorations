@@ -1,70 +1,152 @@
-# Channels: Communication Integrations
+# Channels: Message Routing and Plugin System
 
-Moltis connects to 9+ communication channels, allowing users to interact with their personal agent from wherever they prefer.
+Moltis connects to multiple communication channels through a plugin system. Each channel implements the `ChannelPlugin` trait with sub-traits for config, auth, inbound/outbound messaging, and gateway lifecycle.
 
-**Source:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/crates/`
+**Source:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/crates/channels/src/`
 
-## Channel Architecture
-
-```mermaid
-flowchart TD
-    GATEWAY["moltis-gateway
-    HTTP/WS server"] --> ROUTING["moltis-routing
-    Message routing"]
-    ROUTING --> TELEGRAM["moltis-telegram
-    Telegram bot"]
-    ROUTING --> SIGNAL["moltis-signal
-    Signal messaging"]
-    ROUTING --> DISCORD["moltis-discord
-    Discord bot"]
-    ROUTING --> SLACK["moltis-slack
-    Slack bot"]
-    ROUTING --> WHATSAPP["moltis-whatsapp
-    WhatsApp integration"]
-    ROUTING --> MATRIX["moltis-matrix
-    Matrix protocol"]
-    ROUTING --> MSTEAMS["moltis-msteams
-    MS Teams integration"]
-    ROUTING --> NOSTR["moltis-nostr
-    Nostr protocol"]
-    ROUTING --> CALDAV["moltis-caldav
-    CalDAV calendar"]
-    ROUTING --> WEBHOOKS["moltis-webhooks
-    Generic webhooks"]
-```
-
-## Channels
-
-| Channel | Crate | Protocol |
-|---------|-------|----------|
-| Telegram | `moltis-telegram` | Telegram Bot API |
-| Signal | `moltis-signal` | Signal protocol |
-| Discord | `moltis-discord` | Discord Bot API |
-| Slack | `moltis-slack` | Slack Bot API |
-| WhatsApp | `moltis-whatsapp` | WhatsApp Business API |
-| Matrix | `moltis-matrix` | Matrix protocol |
-| MS Teams | `moltis-msteams` | MS Teams API |
-| Nostr | `moltis-nostr` | Nostr protocol |
-| CalDAV | `moltis-caldav` | CalDAV protocol |
-| Webhooks | `moltis-webhooks` | HTTP webhooks |
-
-**Aha:** All channels use the same `moltis-channels` abstraction layer. This means message handling is uniform across all channels — the agent loop doesn't care whether a message came from Telegram or Signal. The routing crate (`moltis-routing`) dispatches incoming messages to the agent and routes agent responses back through the correct channel.
-
-## Channel Abstraction
-
-The `moltis-channels` crate defines the common interface that all channel implementations follow:
+## Module Structure
 
 ```
-crates/channels/     ← Channel abstractions
-crates/routing/      ← Message routing
+crates/channels/src/
+├── lib.rs              ← Re-exports all public API
+├── plugin.rs           ← ChannelPlugin trait + sub-traits
+├── registry.rs         ← ChannelRegistry, RegistryOutboundRouter
+├── store.rs            ← Channel storage
+├── config_view.rs      ← ChannelConfigView
+├── contract.rs         ← Channel contracts
+├── error.rs            ← Error types
+├── gating.rs           ← Message gating
+├── media_download.rs   ← InboundMediaDownloader, InboundMediaSource
+├── message_log.rs      ← Message logging
+├── otp.rs              ← OTP handling
+├── commands/           ← Channel commands
+└── channel_webhook_middleware.rs ← Webhook dedupe, rate limiting, verification
 ```
 
-## Telephony
+## ChannelPlugin Trait
 
-The `moltis-telephony` crate provides voice/telephony support beyond the text-based channels.
+**Source:** `plugin.rs`
 
-**Source:** `crates/telephony/src/`.
+The core trait that all channels must implement:
+
+```rust
+// Re-exports from plugin.rs:28-36
+pub use plugin::{
+    ButtonRow, ButtonStyle, ChannelAttachment, ChannelCapabilities, ChannelDescriptor,
+    ChannelDocumentFile, ChannelEvent, ChannelEventSink, ChannelHealthSnapshot,
+    ChannelMessageKind, ChannelMessageMeta, ChannelOtpProvider, ChannelOutbound, ChannelPlugin,
+    ChannelReplyTarget, ChannelStatus, ChannelStreamOutbound, ChannelThreadContext,
+    ChannelType, InboundMode, InteractiveButton, InteractiveMessage, SavedChannelFile,
+    StreamEvent, StreamReceiver, StreamSender, ThreadMessage, resolve_session_channel_binding,
+    web_session_channel_binding,
+};
+```
+
+### ChannelType
+
+```rust
+pub enum ChannelType {
+    Telegram,
+    Discord,
+    Slack,
+    WhatsApp,
+    Signal,
+    Matrix,
+    MSTeams,
+    Nostr,
+    CalDav,
+}
+```
+
+### ChannelMessageKind
+
+```rust
+pub enum ChannelMessageKind {
+    Text,
+    Image,
+    Document,
+    Voice,
+    Video,
+    Location,
+    Contact,
+    Sticker,
+}
+```
+
+## ChannelRegistry
+
+**Source:** `registry.rs`
+
+```rust
+pub struct ChannelRegistry {
+    // Registered channel plugins
+}
+
+pub struct RegistryOutboundRouter {
+    // Routes outbound messages to the correct channel
+}
+```
+
+## ChannelWebhookMiddleware
+
+**Source:** `channel_webhook_middleware.rs`
+
+```rust
+pub enum ChannelWebhookRatePolicy { ... }
+pub enum ChannelWebhookRejection { ... }
+pub struct ChannelWebhookDedupeResult { ... }
+pub struct TimestampGuard { ... }
+pub struct VerifiedChannelWebhook { ... }
+
+pub trait ChannelWebhookVerifier: Send + Sync {
+    async fn verify(&self, webhook: ...) -> Result<VerifiedChannelWebhook>;
+}
+```
+
+Handles:
+- **Deduplication** — Prevents duplicate webhook processing
+- **Rate limiting** — Enforces per-channel rate limits
+- **Verification** — Validates webhook signatures
+
+## Media Download
+
+**Source:** `media_download.rs`
+
+```rust
+pub trait InboundMediaSource: Send + Sync { ... }
+pub struct InboundMediaDownloader { ... }
+```
+
+Downloads media from inbound channel messages.
+
+## Message Logging
+
+**Source:** `message_log.rs`
+
+Logs all channel messages for audit and debugging.
+
+## OTP Handling
+
+**Source:** `otp.rs`
+
+```rust
+pub trait ChannelOtpProvider: Send + Sync { ... }
+```
+
+One-time password handling for channel authentication.
+
+## Gating
+
+**Source:** `gating.rs`
+
+Message gating controls which messages are processed.
+
+## Commands
+
+**Source:** `commands/`
+
+Channel-specific command handling.
 
 ## Next
 
-Continue to [05-tools-sandbox](05-tools-sandbox.md) for the tool execution system and sandboxing.
+Continue to [06-providers-deep](06-providers-deep.md) for LLM provider implementations.

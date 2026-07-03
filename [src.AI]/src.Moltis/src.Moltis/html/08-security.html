@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Security Model -- src.Moltis</title>
+  <title>Security Model: Auth, Sandboxing, and Unsafe Code Isolation -- src.Moltis</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
   <script>
@@ -124,98 +124,111 @@
   <nav class="nav">
     <span class="nav-brand">~/src.Moltis/docs</span>
     <div class="nav-actions">
-      <a href="06-memory.html" class="nav-breadcrumb">Memory: SQLite + FTS + Vector Search</a><a href="06-providers-deep.html" class="nav-breadcrumb">Providers Deep Dive: LLM Provider Implementations</a><a href="07-native-apps.html" class="nav-breadcrumb">Native Apps: iOS and macOS</a>
+      <a href="06-memory.html" class="nav-breadcrumb">Memory: Markdown Files → Chunks → Embeddings → SQLite Search</a><a href="06-providers-deep.html" class="nav-breadcrumb">Providers Deep Dive: LLM Implementations and Registry</a><a href="07-native-apps.html" class="nav-breadcrumb">Native Apps: iOS and macOS Swift Apps</a>
       <a href="index.html" class="nav-btn" title="Back to index">index</a>
-      <a href="07-native-apps.html" class="nav-btn" title="Previous: Native Apps: iOS and macOS">← prev</a>
+      <a href="07-native-apps.html" class="nav-btn" title="Previous: Native Apps: iOS and macOS Swift Apps">← prev</a>
       <a href="09-tools-deep.html" class="nav-btn nav-btn-next" title="Next: Tools Deep Dive: Exec, Sandboxing, and File Operations">next →</a>
       <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
     </div>
   </nav>
   <article class="prose">
-<h1>Security Model</h1>
-<p>Moltis is secure by design: keys never leave your machine, every command runs in a sandboxed container, and access is controlled through multiple authentication layers.</p>
+<h1>Security Model: Auth, Sandboxing, and Unsafe Code Isolation</h1>
+<p>Moltis is secure by design with multiple layers of authentication, sandboxed tool execution, and isolated unsafe code boundaries.</p>
 <p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/crates/</code></p>
-<h2>Security Principles</h2>
-<ol><li><strong>Keys never leave your machine</strong> — API keys, passkeys, and secrets stay local</li><li><strong>Sandboxed execution</strong> — Every tool runs in Docker, Apple Container, or WASM</li><li><strong>Multi-layer auth</strong> — Password + Passkey + API keys + Vault</li><li><strong>Auditable codebase</strong> — ~270K Rust lines, 470+ test files, unsafe code isolated to FFI/precompiled boundaries</li></ol>
 <h2>Authentication</h2>
-<pre><code class="language-">crates/auth/                  ← Authentication (password, passkey, API keys)
-crates/vault/                 ← Secret vault
-crates/secret-store/          ← Secret storage
-crates/oauth/                 ← OAuth flows
+<p><strong>Source:</strong> <code>crates/auth/src/</code></p>
+<h3>Module Structure</h3>
+<pre><code class="language-">crates/auth/src/
+├── lib.rs              ← Re-exports all public API
+├── credential_store.rs ← SQLite-backed credential storage
+├── webauthn.rs         ← WebAuthn (passkey) challenge management
+├── locality.rs         ← Connection locality detection
+└── error.rs            ← Error types
 </code></pre>
-<p><strong>Source:</strong> <code>crates/auth/src/</code>, <code>crates/vault/src/</code>, <code>crates/secret-store/src/</code>, <code>crates/oauth/src/</code>.</p>
+<h3>CredentialStore</h3>
+<p><strong>Source:</strong> <code>credential_store.rs</code></p>
+<p>SQLite-backed storage for:</p>
+<ul><li><strong>Passwords</strong> — User password hashes</li><li><strong>Passkeys</strong> — WebAuthn/FIDO2 credentials</li><li><strong>API keys</strong> — API key storage with scopes</li><li><strong>Sessions</strong> — Active session management</li></ul>
+<pre><code class="language-rust">pub struct CredentialStore {
+    pool: SqlitePool,
+}
+</code></pre>
+<h3>WebAuthn (Passkey) Authentication</h3>
+<p><strong>Source:</strong> <code>webauthn.rs</code></p>
+<pre><code class="language-rust">pub struct WebAuthnRegistry { ... }
+pub struct WebAuthnState { ... }
+pub fn load_passkeys() -&gt; Vec&lt;Passkey&gt;;
+</code></pre>
+<p>Handles WebAuthn challenge-response for passwordless authentication.</p>
+<h3>Connection Locality Detection</h3>
+<p><strong>Source:</strong> <code>locality.rs</code></p>
+<pre><code class="language-rust">pub fn has_proxy_headers(request: &amp;Request) -&gt; bool;
+pub fn is_local_connection(request: &amp;Request) -&gt; bool;
+</code></pre>
+<p>Detects whether connections are local or proxied for auth decisions.</p>
+<h2>Vault</h2>
+<p><strong>Source:</strong> <code>crates/vault/src/</code></p>
+<p>Secret vault for storing API keys and sensitive credentials. Feature-gated with <code>#[cfg(feature = "vault")]</code>.</p>
 <h2>Sandboxing</h2>
-<pre><code class="language-">crates/tools/                 ← Tool execution with sandboxing
+<p><strong>Source:</strong> <code>crates/tools/src/exec.rs</code></p>
+<p>The exec tool implements sandboxing through:</p>
+<pre><code class="language-rust">// exec.rs:206-207
+sandbox: Arc&lt;dyn Sandbox&gt;,
+sandbox_router: Option&lt;Arc&lt;SandboxRouter&gt;&gt;,
 </code></pre>
-<p>Sandbox backends:</p>
-<ul><li><strong>Docker/Podman</strong> — Container isolation (Linux, macOS)</li><li><strong>Apple Container</strong> — Native macOS sandboxing</li><li><strong>WASM</strong> — WebAssembly sandboxing (cross-platform)</li></ul>
+<h3>Sandbox Trait</h3>
+<pre><code class="language-rust">pub trait Sandbox: Send + Sync {
+    async fn execute(&amp;self, command: &amp;str, opts: ExecOpts) -&gt; Result&lt;ExecResult&gt;;
+    fn provides_fs_isolation(&amp;self) -&gt; bool;
+    async fn cleanup(&amp;self, id: &amp;SandboxId) -&gt; Result&lt;()&gt;;
+}
+</code></pre>
+<h3>SandboxRouter</h3>
+<p><strong>Source:</strong> <code>sandbox.rs</code></p>
+<p>Routes exec requests to the appropriate sandbox backend based on session configuration:</p>
+<pre><code class="language-rust">pub struct SandboxRouter { ... }
+
+impl SandboxRouter {
+    pub async fn is_sandboxed(&amp;self, session_key: &amp;str) -&gt; bool;
+    pub async fn resolve_backend(&amp;self, session_key: &amp;str) -&gt; SandboxBackend;
+}
+</code></pre>
+<h3>SandboxBackend</h3>
+<pre><code class="language-rust">pub enum SandboxBackend {
+    Docker,
+    Podman,
+    AppleContainer,
+    RestrictedHost,  // No filesystem isolation
+    Cgroup,          // No filesystem isolation
+    None,            // No sandboxing
+}
+</code></pre>
+<h3>Filesystem Isolation Check</h3>
+<pre><code class="language-rust">// exec.rs:459-464
+let has_container_backend = if let Some(ref router) = self.sandbox_router {
+    let sk = session_key.unwrap_or(&quot;main&quot;);
+    router.resolve_backend(sk).await.provides_fs_isolation()
+} else {
+    self.sandbox.provides_fs_isolation()
+};
+</code></pre>
+<p>When the backend doesn't provide filesystem isolation (<code>RestrictedHost</code>, <code>Cgroup</code>, <code>None</code>), commands run directly on the host even when the session mode says "sandboxed."</p>
 <h2>TLS</h2>
-<pre><code class="language-">crates/tls/                   ← TLS configuration
-</code></pre>
-<p>TLS handling for secure connections.</p>
-<p><strong>Source:</strong> <code>crates/tls/src/</code>.</p>
+<p><strong>Source:</strong> <code>crates/tls/src/</code></p>
+<p>TLS configuration for secure connections. Feature-gated with <code>#[cfg(feature = "tls")]</code>.</p>
 <h2>Network Filter</h2>
-<pre><code class="language-">crates/network-filter/        ← Network access control
-</code></pre>
-<p>Network filtering controls outbound access from tools and plugins.</p>
-<p><strong>Source:</strong> <code>crates/network-filter/src/</code>.</p>
-<h2>Node Host</h2>
-<pre><code class="language-">crates/node-host/             ← Node.js runtime hosting
-</code></pre>
-<p>Node.js hosting for tools that require it, with sandboxing.</p>
-<p><strong>Source:</strong> <code>crates/node-host/src/</code>.</p>
-<h2>Plugins</h2>
-<pre><code class="language-">crates/plugins/               ← Plugin system
-</code></pre>
-<p>Plugin system with sandboxed execution and permission controls.</p>
-<p><strong>Source:</strong> <code>crates/plugins/src/</code>.</p>
-<h2>External Agents</h2>
-<pre><code class="language-">crates/external-agents/       ← External agent connections
-</code></pre>
-<p>Connections to external agents with security controls.</p>
-<p><strong>Source:</strong> <code>crates/external-agents/src/</code>.</p>
-<h2>Portable</h2>
-<pre><code class="language-">crates/portable/              ← Portable deployment
-</code></pre>
-<p>Portable deployment for air-gapped or restricted environments.</p>
-<p><strong>Source:</strong> <code>crates/portable/src/</code>.</p>
-<h2>QMD</h2>
-<pre><code class="language-">crates/qmd/                   ← Query Markdown Documents
-</code></pre>
-<p>Query markdown documents tool.</p>
-<p><strong>Source:</strong> <code>crates/qmd/src/</code>.</p>
-<h2>Onboarding</h2>
-<pre><code class="language-">crates/onboarding/            ← Secure onboarding flow
-</code></pre>
-<p>Secure first-time setup with guided configuration.</p>
-<p><strong>Source:</strong> <code>crates/onboarding/src/</code>.</p>
-<h2>CLI</h2>
-<pre><code class="language-">crates/ctl/                   ← Control interface (CLI)
-crates/cli/                   ← Command-line interface
-</code></pre>
-<p>CLI tools for administration and control.</p>
-<p><strong>Source:</strong> <code>crates/ctl/src/</code>, <code>crates/cli/src/</code>.</p>
-<h2>Service Traits</h2>
-<pre><code class="language-">crates/service-traits/        ← Service interface definitions
-</code></pre>
-<p>Common service interface definitions.</p>
-<p><strong>Source:</strong> <code>crates/service-traits/src/</code>.</p>
-<h2>Common</h2>
-<pre><code class="language-">crates/common/                ← Shared types and utilities
-</code></pre>
-<p>Shared types used across the workspace.</p>
-<p><strong>Source:</strong> <code>crates/common/src/</code>.</p>
-<h2>Config</h2>
-<pre><code class="language-">crates/config/                ← Configuration management
-</code></pre>
-<p>Configuration loading, validation, and management.</p>
-<p><strong>Source:</strong> <code>crates/config/src/</code>.</p>
-<h2>Aha Moments</h2>
-<ol><li><strong>Unsafe code is isolated</strong> — Unsafe Rust code only exists at FFI and precompiled runtime boundaries, not in the core agent loop. This makes the agent loop itself safe to audit.</li></ol>
-<ol><li><strong>No plugin marketplace</strong> — Unlike other agent platforms, Moltis doesn't have a plugin marketplace that could be supply-chain attacked. Tools and skills are bundled or explicitly imported.</li></ol>
-<ol><li><strong>One binary, no runtime</strong> — The entire server is a single Rust binary with no external runtime dependencies. This eliminates a huge class of supply-chain and deployment security issues.</li></ol>
+<p><strong>Source:</strong> <code>crates/network-filter/src/</code></p>
+<p>Controls outbound network access from tools and plugins.</p>
+<h2>Plugin System</h2>
+<p><strong>Source:</strong> <code>crates/plugins/src/</code></p>
+<p>Plugins run in isolated QuickJS-WASM sandboxes with:</p>
+<ul><li>Capability-gated SDK access</li><li>Network access controlled via <code>network.outbound</code> permission</li><li>Crash isolation via separate Bun.Worker per plugin</li><li>Crash budget (limited restarts before disabling)</li></ul>
+<h2>Unsafe Code Isolation</h2>
+<p>Unsafe Rust code in Moltis is isolated to FFI boundaries:</p>
+<table><tr><th>Crate</th><th>Location</th><th>Purpose</th></tr><tr><td>`memory/embeddings_local.rs`</td><td>`#[allow(unsafe_code)]`</td><td>llama-cpp-2 FFI wrappers</td></tr><tr><td>`swift-bridge/`</td><td>FFI boundary</td><td>Rust-Swift interop</td></tr><tr><td>`wasm-precompile/`</td><td>WASM boundaries</td><td>WASM precompilation</td></tr></table>
+<p>The core agent loop, tool execution, and business logic contain <strong>no unsafe code</strong>.</p>
 <h2>Next</h2>
-<p>You've completed the src.Moltis documentation. Return to the <a href="README.md">README</a> for the full index.</p>
+<p>Return to the <a href="README.md">README</a> for the full index.</p>
   </article>
   <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
 </body>
