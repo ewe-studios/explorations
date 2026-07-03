@@ -27,11 +27,12 @@ Output location: `[src.AI]/<project>/` with `spec.md`, `markdown/`, `html/`, `bu
 | 10 | ponytail (PromptOptimizations) | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.PromptOptimizations/ponytail/` | TODO |
 | 11 | src.streamlit | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.streamlit/` | TODO |
 | 12 | src.strukto-ai | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.strukto-ai/` | TODO |
-| 13 | superdesign (src.superdesign) | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.superdesign/superdesign/` | DONE — 6 docs, HTML built, grandfather review passed |
+| 13 | superdesign (src.superdesign) | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.superdesign/superdesign/` | DONE — 7 docs (including superdesign-deep with every file/function source-level), HTML built, grandfather review passed |
 |14| src.opendesign | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Opendesign/` | TODO |
 |15| src.designskills | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.DesignSkills/` | TODO |
 |16| goose | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.block/goose/` | TODO |
-|17| wayfinder | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Wayfinder` | TODO |
+|17| src.jeremychone | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.jeremychone` | TODO | already exists in src.jeremychone, so do a review and update existing documentation.
+|18| wayfinder | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Wayfinder` | TODO |
 
 ## Notes
 
