@@ -333,6 +333,132 @@ Every section must pass this test. If a reader would need to open the source to 
 
 This requirement applies to both initial document generation and grandfather review. The grandfather reviewer must verify that no section requires source-code lookup for comprehension.
 
+### Depth Enforcement: The "No Source Lookup" Rule
+
+The following depth requirements are non-negotiable. Every document must pass ALL checks before being marked complete.
+
+#### 1. Every Public API Surface Documented
+
+For each crate/module/package, document:
+- Every public struct/type with all fields and their types
+- Every public function with full signature, parameter descriptions, return type, and error cases
+- Every public method with receiver type, parameters, return type, and error cases
+- Every public constant/enum variant with exact value and purpose
+- Every trait with all required and provided methods
+
+**Pass check:** A reader can understand what every public function does, what it takes, what it returns, and when it fails — without reading the source.
+
+#### 1a. Important Private Functions and Methods Documented
+
+Private functions and methods are where the actual behavior lives. Document every private function/method that:
+- Is called by a documented public function (explains HOW the public function works)
+- Contains non-obvious logic (algorithms, state machines, complex conditionals)
+- Handles errors, edge cases, or recovery paths
+- Manages resources (memory, file handles, network connections, VM contexts)
+- Implements invariants or protocol constraints
+- Contains workarounds, hacks, or performance optimizations (the WHY matters)
+
+For each private function, document:
+- Name, signature, and return type
+- What it does (not just a paraphrase of the name — explain the actual logic)
+- Why it exists (why it's private, why it's separate from its caller)
+- What calls it and in what order
+- What error cases it handles and how
+- Any state it reads or mutates
+
+Do NOT document trivial one-liners that are self-explanatory from their name (e.g. `fn name(&self) -> &str { &self.name }`). Use judgement — if removing the function from the docs would force a reader to open the source to understand the public API's behavior, it needs documenting.
+
+**Pass check:** A reader can trace the complete execution path from any public function through all its private helpers to the leaf operations, understanding every decision point and error path, without reading the source.
+
+#### 2. Code Snippets from Actual Source
+
+Every function/method description must include actual source code snippets:
+- Function signature (exact, matching source)
+- Key logic blocks (not summaries — actual code)
+- Error handling patterns
+- Important struct field initializations
+
+**Pass check:** At least one code snippet per significant function, minimum 10 code snippets per deep-dive document.
+
+#### 3. Flow Walkthroughs with Concrete Data
+
+Every non-trivial flow must include:
+- Step-by-step walkthrough with concrete data examples
+- State transitions (what data looks like at each step)
+- Decision points (what causes which branch)
+- Error paths (what happens when things go wrong)
+
+**Pass check:** A reader can trace a request through the entire system with specific values and predict the output.
+
+#### 4. File-by-File Coverage
+
+Every source file in the module must be covered:
+- File purpose (one sentence)
+- Every public type with description
+- Every public function with signature and purpose
+- **Every important private function** with signature, purpose, and explanation of its logic
+- Key relationships to other files
+- Any constants, defaults, or configuration values
+
+**Pass check:** The file map is complete — no source file is undocumented, and no important private function is skipped.
+
+#### 5. Data Structures Fully Explained
+
+Every struct/type that matters:
+- All fields listed with types and purpose
+- Construction patterns (how instances are created)
+- Lifetime/ownership semantics
+- Relationships to other types
+
+**Pass check:** A reader can write code that uses the struct correctly without reading the source.
+
+#### 6. Error Handling Exhaustive
+
+Every error variant must be documented:
+- Error enum with all variants
+- When each variant is returned
+- How errors propagate (Result vs panic)
+- Recovery strategies (if any)
+
+**Pass check:** A reader knows every way a function can fail and why.
+
+#### 7. Configuration Options Exhaustive
+
+Every configuration option, environment variable, and CLI flag:
+- Name, type, default value
+- What it controls
+- Valid values / constraints
+- Interactions with other options
+
+**Pass check:** A reader can configure the system from scratch using only the docs.
+
+#### 8. Inter-Crate Dependencies Mapped
+
+For multi-crate projects:
+- Which crates depend on which
+- Why the dependency exists
+- What types/traits cross crate boundaries
+- How breaking changes propagate
+
+**Pass check:** A reader understands why each crate exists and why dependencies point where they do.
+
+#### Depth Quantifier
+
+Use these rough minimums as baselines (exceed them when the project warrants):
+
+| Project Size | Rust Files | Min Document Count | Min Total Words |
+|-------------|------------|-------------------|----------------|
+| Small (< 50 files) | 10-50 | 6 | 5,000 |
+| Medium (50-200 files) | 50-200 | 10 | 10,000 |
+| Large (200-500 files) | 200-500 | 15 | 20,000 |
+| XLarge (500-1000 files) | 500-1000 | 20 | 30,000 |
+| Massive (> 1000 files) | 1000+ | 25 | 50,000 |
+
+src.Instatic has 1,750+ TypeScript files → should be 25+ docs, 50,000+ words.
+src.Moltis has 1,038+ Rust files → should be 20+ docs, 30,000+ words.
+
+If your documentation is below these minimums, it is incomplete by definition. Add more documents until the depth requirements are met.
+
 ## Checklist: Before Marking a Document Complete
 
 - [ ] Every function name matches the source code
