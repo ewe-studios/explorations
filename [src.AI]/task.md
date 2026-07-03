@@ -27,7 +27,7 @@ Output location: `[src.AI]/<project>/` with `spec.md`, `markdown/`, `html/`, `bu
 | 10 | ponytail (PromptOptimizations) | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.PromptOptimizations/ponytail/` | TODO |
 | 11 | src.streamlit | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.streamlit/` | TODO |
 | 12 | src.strukto-ai | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.strukto-ai/` | TODO |
-| 13 | superdesign (src.superdesign) | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.superdesign/superdesign/` | TODO |
+| 13 | superdesign (src.superdesign) | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.superdesign/superdesign/` | DONE — 6 docs, HTML built, grandfather review passed |
 
 ## Notes
 
