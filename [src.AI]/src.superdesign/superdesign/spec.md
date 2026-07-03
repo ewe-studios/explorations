@@ -43,7 +43,8 @@ src.superdesign/
 │   ├── 01-architecture.md         ← Extension architecture, webview, services
 │   ├── 02-ai-providers.md         ← Vercel AI SDK, 4 providers, model config
 │   ├── 03-tools.md                ← 9 coding tools (read, write, edit, bash, etc.)
-│   └── 04-webview-ui.md           ← Chat, canvas, theme previews
+│   ├── 04-webview-ui.md           ← Chat, canvas, theme previews
+│   └── 05-superdesign-deep.md     ← Source-level: every file, every function
 ├── html/
 │   ├── index.html
 │   └── *.html
@@ -60,8 +61,9 @@ src.superdesign/
 | 4 | 02-ai-providers.md | DONE |
 | 5 | 03-tools.md | DONE |
 | 6 | 04-webview-ui.md | DONE |
-| 7 | HTML generation | DONE |
-| 8 | Grandfather review | DONE |
+| 7 | 05-superdesign-deep.md | DONE |
+| 8 | HTML generation | DONE |
+| 9 | Grandfather review | DONE |
 
 ## Build System
 

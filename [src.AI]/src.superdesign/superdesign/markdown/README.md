@@ -26,3 +26,4 @@ A VS Code extension providing an AI design agent that generates UI mockups, comp
 - **[02-ai-providers](02-ai-providers.md)** — Vercel AI SDK, 4 providers, model config
 - **[03-tools](03-tools.md)** — 9 coding tools (read, write, edit, bash, etc.)
 - **[04-webview-ui](04-webview-ui.md)** — Chat interface, canvas, theme previews
+- **[05-superdesign-deep](05-superdesign-deep.md)** — Source-level: every file, every function

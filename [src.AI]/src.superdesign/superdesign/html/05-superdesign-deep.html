@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SuperDesign Deep Dive: Extension, Agent, Tools, Webview UI — Source-Level -- superdesign</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/superdesign/docs</span>
+    <div class="nav-actions">
+      <a href="02-ai-providers.html" class="nav-breadcrumb">AI Providers: Vercel AI SDK</a><a href="03-tools.html" class="nav-breadcrumb">Coding Tools</a><a href="04-webview-ui.html" class="nav-breadcrumb">Webview UI</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="04-webview-ui.html" class="nav-btn" title="Previous: Webview UI">← prev</a>
+      <a href="README.html" class="nav-btn nav-btn-next" title="Next: src.superdesign Documentation">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>SuperDesign Deep Dive: Extension, Agent, Tools, Webview UI — Source-Level</h1>
+<p>Comprehensive source-level documentation of every file in the SuperDesign VS Code extension.</p>
+<p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.superdesign/superdesign/src/</code></p>
+<h2>Source Map</h2>
+<table><tr><th>File</th><th>Lines</th><th>Purpose</th></tr><tr><td>`extension.ts`</td><td>1,888</td><td>VS Code extension entry point</td></tr><tr><td>`services/customAgentService.ts`</td><td>927</td><td>AI agent orchestration</td></tr><tr><td>`services/chatMessageService.ts`</td><td>456</td><td>Chat message management</td></tr><tr><td>`services/claudeCodeService.ts`</td><td>453</td><td>Claude Code integration</td></tr><tr><td>`services/logger.ts`</td><td>79</td><td>Logging service</td></tr><tr><td>`providers/chatSidebarProvider.ts`</td><td>339</td><td>Sidebar panel provider</td></tr><tr><td>`templates/webviewTemplate.ts`</td><td>80</td><td>Webview HTML template</td></tr><tr><td>`tools/bash-tool.ts`</td><td>262</td><td>Shell command execution</td></tr><tr><td>`tools/edit-tool.ts`</td><td>196</td><td>File editing</td></tr><tr><td>`tools/glob-tool.ts`</td><td>293</td><td>File pattern matching</td></tr><tr><td>`tools/grep-tool.ts`</td><td>314</td><td>Text search</td></tr><tr><td>`tools/ls-tool.ts`</td><td>226</td><td>Directory listing</td></tr><tr><td>`tools/multiedit-tool.ts`</td><td>182</td><td>Multi-file editing</td></tr><tr><td>`tools/read-tool.ts`</td><td>300</td><td>File reading</td></tr><tr><td>`tools/write-tool.ts`</td><td>100</td><td>File writing</td></tr><tr><td>`tools/theme-tool.ts`</td><td>89</td><td>Theme management</td></tr><tr><td>`tools/tool-utils.ts`</td><td>180</td><td>Shared tool utilities</td></tr><tr><td>`types/agent.ts`</td><td>21</td><td>Agent type definitions</td></tr><tr><td>`types/context.ts`</td><td>45</td><td>Context type definitions</td></tr><tr><td>`webview/App.tsx`</td><td>112</td><td>React root component</td></tr><tr><td>`webview/index.tsx`</td><td>42</td><td>Webview entry point</td></tr><tr><td>`webview/components/CanvasView.tsx`</td><td>859</td><td>Design canvas</td></tr><tr><td>`webview/components/DesignFrame.tsx`</td><td>837</td><td>Design frame</td></tr><tr><td>`webview/components/Chat/ChatInterface.tsx`</td><td>1,516</td><td>Main chat UI</td></tr><tr><td>`webview/components/Chat/ModelSelector.tsx`</td><td>436</td><td>Model selection</td></tr><tr><td>`webview/components/Chat/ThemePreview.tsx`</td><td>579</td><td>Theme preview</td></tr><tr><td>`webview/components/Chat/ThemePreviewCard.tsx`</td><td>418</td><td>Theme preview card</td></tr><tr><td>`webview/components/Chat/ThemeDetails.tsx`</td><td>164</td><td>Theme details</td></tr><tr><td>`webview/components/Chat/ColorPalette.tsx`</td><td>131</td><td>Color palette</td></tr><tr><td>`webview/components/Chat/ModeToggle.tsx`</td><td>56</td><td>Mode toggle</td></tr><tr><td>`webview/components/Welcome/Welcome.tsx`</td><td>110</td><td>Onboarding</td></tr><tr><td>`webview/hooks/useChat.ts`</td><td>377</td><td>Chat state management</td></tr><tr><td>`webview/hooks/useFirstTimeUser.ts`</td><td>54</td><td>First-time user detection</td></tr><tr><td>`webview/utils/gridLayout.ts`</td><td>465</td><td>Canvas grid calculations</td></tr><tr><td>`webview/utils/themeParser.ts`</td><td>355</td><td>Theme parsing</td></tr><tr><td>`webview/types/canvas.types.ts`</td><td>178</td><td>Canvas type definitions</td></tr></table>
+<hr>
+<h2>extension.ts: VS Code Extension Entry Point</h2>
+<p><strong>Source:</strong> <code>src/extension.ts</code> (1,888 lines)</p>
+<h3>Activation</h3>
+<p>The extension activates when:</p>
+<ul><li>The <code>SuperDesign</code> command is executed</li><li>The sidebar panel is opened</li></ul>
+<h3>Key Services Initialized</h3>
+<ol><li><strong>Logger</strong> — Output channel for extension logs</li><li><strong>ChatSidebarProvider</strong> — Sidebar panel handler</li><li><strong>CustomAgentService</strong> — AI agent orchestration</li><li><strong>ClaudeCodeService</strong> — Claude Code integration</li><li><strong>ChatMessageService</strong> — Message history management</li></ol>
+<h3>Registered Commands</h3>
+<table><tr><th>Command</th><th>Purpose</th></tr><tr><td>`superdesign.open`</td><td>Open the sidebar panel</td></tr><tr><td>`superdesign.configureAnthropicKey`</td><td>Configure Anthropic API key</td></tr><tr><td>`superdesign.configureOpenAIKey`</td><td>Configure OpenAI API key</td></tr><tr><td>`superdesign.configureOpenRouterKey`</td><td>Configure OpenRouter API key</td></tr><tr><td>`superdesign.configureGoogleKey`</td><td>Configure Google AI API key</td></tr><tr><td>`superdesign.clearConversation`</td><td>Clear chat history</td></tr><tr><td>`superdesign.exportDesign`</td><td>Export current design</td></tr></table>
+<h3>Webview Communication</h3>
+<p>The extension handles <code>postMessage</code> events from the webview:</p>
+<ul><li><code>sendMessage</code> — User sends a chat message</li><li><code>clearChat</code> — Clear conversation</li><li><code>uploadImage</code> — Upload image to moodboard</li><li><code>saveImageToMoodboard</code> — Save image to <code>.superdesign/moodboard/</code></li><li><code>getBase64Image</code> — Convert image to base64 for AI SDK</li></ul>
+<h3>Moodboard</h3>
+<p>Images uploaded by the AI are saved to <code>.superdesign/moodboard/</code> in the workspace root:</p>
+<pre><code class="language-typescript">async function saveImageToMoodboard(data: {
+  fileName: string;
+  originalName: string;
+  base64Data: string;
+  mimeType: string;
+  size: number;
+}, sidebarProvider: ChatSidebarProvider) {
+  const moodboardDir = vscode.Uri.joinPath(workspaceFolder.uri, &#x27;.superdesign&#x27;, &#x27;moodboard&#x27;);
+  // Create directory if needed
+  // Write base64 content to file
+  // Notify webview of saved image
+}
+</code></pre>
+<hr>
+<h2>customAgentService.ts: AI Agent Orchestration</h2>
+<p><strong>Source:</strong> <code>src/services/customAgentService.ts</code> (927 lines)</p>
+<h3>AgentService Interface</h3>
+<pre><code class="language-typescript">// src/types/agent.ts
+export interface AgentService {
+    query(
+        prompt?: string,
+        messages?: CoreMessage[],
+        options?: any,
+        abortController?: AbortController,
+        onMessage?: (message: any) =&gt; void
+    ): Promise&lt;any[]&gt;;
+    hasApiKey(): boolean;
+    isApiKeyAuthError(errorMessage: string): boolean;
+}
+</code></pre>
+<h3>Provider Configuration</h3>
+<pre><code class="language-typescript">// src/services/customAgentService.ts:80-163
+private getModel() {
+    const config = vscode.workspace.getConfiguration(&#x27;superdesign&#x27;);
+    const provider = config.get&lt;string&gt;(&#x27;aiModelProvider&#x27;, &#x27;anthropic&#x27;);
+    
+    switch (effectiveProvider) {
+        case &#x27;openrouter&#x27;:
+            const openrouter = createOpenRouter({ apiKey: openrouterKey });
+            return openrouter.chat(openrouterModel);
+        case &#x27;anthropic&#x27;:
+            const anthropic = createAnthropic({
+                apiKey: anthropicKey,
+                baseURL: &quot;https://anthropic.helicone.ai/v1&quot;,
+                headers: { &quot;Helicone-Auth&quot;: &quot;Bearer sk-helicone-...&quot; },
+            });
+            return anthropic(anthropicModel);
+        case &#x27;openai&#x27;:
+            const openai = createOpenAI({
+                apiKey: openaiKey,
+                baseURL: &quot;https://oai.helicone.ai/v1&quot;,
+                headers: { &quot;Helicone-Auth&quot;: &quot;Bearer sk-helicone-...&quot; },
+            });
+            return openai(openaiModel);
+    }
+}
+</code></pre>
+<p><strong>Aha:</strong> Anthropic and OpenAI providers use Helicone as a proxy for observability. OpenRouter connects directly.</p>
+<h3>Tool Registration</h3>
+<p>The service creates all 9 tools and registers them with the Vercel AI SDK:</p>
+<pre><code class="language-typescript">private getTools() {
+    return {
+        read_file: createReadTool(this.executionContext),
+        write_file: createWriteTool(this.executionContext),
+        edit_file: createEditTool(this.executionContext),
+        bash: createBashTool(this.executionContext),
+        glob: createGlobTool(this.executionContext),
+        grep: createGrepTool(this.executionContext),
+        ls: createLsTool(this.executionContext),
+        multiedit: createMultieditTool(this.executionContext),
+        theme: createThemeTool(this.executionContext),
+    };
+}
+</code></pre>
+<h3>Query Method</h3>
+<p>The <code>query()</code> method:</p>
+<ol><li>Builds the system prompt based on mode (mock, component, wireframe)</li><li>Combines with conversation history</li><li>Calls <code>streamText()</code> from Vercel AI SDK with tools</li><li>Streams response chunks to the webview via <code>onMessage</code> callback</li><li>Handles tool execution automatically (AI SDK does this)</li><li>Returns accumulated tool results</li></ol>
+<hr>
+<h2>Tools</h2>
+<p>All tools use Zod schemas for validation and share utilities from <code>tool-utils.ts</code>.</p>
+<h3>tool-utils.ts: Shared Utilities</h3>
+<p><strong>Source:</strong> <code>src/tools/tool-utils.ts</code> (180 lines)</p>
+<h4>Path Validation</h4>
+<pre><code class="language-typescript">function validateWorkspacePath(path: string, context: ExecutionContext): string;
+function resolveWorkspacePath(path: string, context: ExecutionContext): string;
+</code></pre>
+<p>Ensures paths don't escape the workspace directory (prevents directory traversal attacks).</p>
+<h4>Response Format</h4>
+<pre><code class="language-typescript">interface ToolResponse {
+  success: boolean;
+  content: string;
+  metadata?: Record&lt;string, unknown&gt;;
+  error?: string;
+}
+
+function createSuccessResponse(content: string, metadata?: Record&lt;string, unknown&gt;): ToolResponse;
+function createErrorResponse(error: string): ToolResponse;
+</code></pre>
+<h3>read-tool.ts: File Reading</h3>
+<p><strong>Source:</strong> <code>src/tools/read-tool.ts</code> (300 lines)</p>
+<pre><code class="language-typescript">export function createReadTool(context: ExecutionContext) {
+    return tool({
+        description: &#x27;Read file contents&#x27;,
+        parameters: z.object({
+            path: z.string().describe(&#x27;File path relative to workspace&#x27;),
+            maxLines: z.number().optional().describe(&#x27;Maximum lines to read&#x27;),
+            startLine: z.number().optional().describe(&#x27;Starting line number&#x27;),
+        }),
+        execute: async ({ path, maxLines, startLine }) =&gt; {
+            // Validate path against workspace
+            // Check file size (max 10MB)
+            // Detect file type (text/image/pdf/binary)
+            // For text: read with line limits
+            // For images: return base64
+            // For binary: return metadata only
+        },
+    });
+}
+</code></pre>
+<h4>File Type Detection</h4>
+<pre><code class="language-typescript">function detectFileType(filePath: string): &#x27;text&#x27; | &#x27;image&#x27; | &#x27;pdf&#x27; | &#x27;binary&#x27; {
+    const ext = path.extname(filePath).toLowerCase();
+    const mimeType = mime.lookup(filePath);
+    if (mimeType?.startsWith(&#x27;image/&#x27;)) return &#x27;image&#x27;;
+    if (mimeType === &#x27;application/pdf&#x27;) return &#x27;pdf&#x27;;
+    // Check for null bytes and non-printable characters
+    if (isBinaryFile(filePath)) return &#x27;binary&#x27;;
+    return &#x27;text&#x27;;
+}
+</code></pre>
+<h4>Binary Detection</h4>
+<pre><code class="language-typescript">function isBinaryFile(filePath: string): boolean {
+    // Sample first 4KB
+    // If null bytes found → binary
+    // If &gt;30% non-printable chars → binary
+}
+</code></pre>
+<p><strong>Constants:</strong></p>
+<ul><li><code>DEFAULT_MAX_LINES = 1000</code></li><li><code>MAX_LINE_LENGTH = 2000</code></li><li><code>MAX_FILE_SIZE_BYTES = 10 <em> 1024 </em> 1024</code> (10MB)</li></ul>
+<h3>write-tool.ts: File Writing</h3>
+<p><strong>Source:</strong> <code>src/tools/write-tool.ts</code> (100 lines)</p>
+<pre><code class="language-typescript">export function createWriteTool(context: ExecutionContext) {
+    return tool({
+        description: &#x27;Write content to a file&#x27;,
+        parameters: z.object({
+            path: z.string().describe(&#x27;File path relative to workspace&#x27;),
+            content: z.string().describe(&#x27;File content&#x27;),
+            overwrite: z.boolean().optional().describe(&#x27;Overwrite existing file&#x27;),
+        }),
+        execute: async ({ path, content, overwrite }) =&gt; {
+            // Validate path
+            // Check if file exists (require overwrite flag)
+            // Create parent directories if needed
+            // Write content
+        },
+    });
+}
+</code></pre>
+<h3>edit-tool.ts: File Editing</h3>
+<p><strong>Source:</strong> <code>src/tools/edit-tool.ts</code> (196 lines)</p>
+<p>Search-and-replace editing:</p>
+<pre><code class="language-typescript">parameters: z.object({
+    path: z.string(),
+    oldText: z.string().describe(&#x27;Text to find&#x27;),
+    newText: z.string().describe(&#x27;Replacement text&#x27;),
+    replaceAll: z.boolean().optional().describe(&#x27;Replace all occurrences&#x27;),
+})
+</code></pre>
+<h3>multiedit-tool.ts: Multi-File Editing</h3>
+<p><strong>Source:</strong> <code>src/tools/multiedit-tool.ts</code> (182 lines)</p>
+<p>Edit multiple files in a single operation:</p>
+<pre><code class="language-typescript">parameters: z.object({
+    edits: z.array(z.object({
+        path: z.string(),
+        oldText: z.string(),
+        newText: z.string(),
+    })),
+})
+</code></pre>
+<h3>bash-tool.ts: Shell Commands</h3>
+<p><strong>Source:</strong> <code>src/tools/bash-tool.ts</code> (262 lines)</p>
+<p>Executes shell commands via <code>execa</code>:</p>
+<pre><code class="language-typescript">parameters: z.object({
+    command: z.string().describe(&#x27;Shell command to execute&#x27;),
+    workingDirectory: z.string().optional().describe(&#x27;Override working directory&#x27;),
+    timeout: z.number().optional().describe(&#x27;Timeout in milliseconds&#x27;),
+})
+</code></pre>
+<p><strong>Safety measures:</strong></p>
+<ul><li>Path validation</li><li>Timeout limits</li><li>Output size limits</li><li>Blocked commands list</li></ul>
+<h3>glob-tool.ts: File Pattern Matching</h3>
+<p><strong>Source:</strong> <code>src/tools/glob-tool.ts</code> (293 lines)</p>
+<p>Finds files matching a glob pattern using the <code>glob</code> package:</p>
+<pre><code class="language-typescript">parameters: z.object({
+    pattern: z.string().describe(&#x27;Glob pattern (e.g., &quot;**/*.ts&quot;)&#x27;),
+    exclude: z.array(z.string()).optional().describe(&#x27;Patterns to exclude&#x27;),
+})
+</code></pre>
+<h3>grep-tool.ts: Text Search</h3>
+<p><strong>Source:</strong> <code>src/tools/grep-tool.ts</code> (314 lines)</p>
+<p>Searches for text patterns in files:</p>
+<pre><code class="language-typescript">parameters: z.object({
+    pattern: z.string().describe(&#x27;Search pattern (regex)&#x27;),
+    path: z.string().optional().describe(&#x27;Directory to search in&#x27;),
+    include: z.string().optional().describe(&#x27;File pattern to include&#x27;),
+    exclude: z.string().optional().describe(&#x27;File pattern to exclude&#x27;),
+    caseSensitive: z.boolean().optional().describe(&#x27;Case sensitive search&#x27;),
+    maxResults: z.number().optional().describe(&#x27;Maximum results to return&#x27;),
+})
+</code></pre>
+<h3>ls-tool.ts: Directory Listing</h3>
+<p><strong>Source:</strong> <code>src/tools/ls-tool.ts</code> (226 lines)</p>
+<p>Lists directory contents:</p>
+<pre><code class="language-typescript">parameters: z.object({
+    path: z.string().optional().describe(&#x27;Directory to list&#x27;),
+    recursive: z.boolean().optional().describe(&#x27;List recursively&#x27;),
+    maxDepth: z.number().optional().describe(&#x27;Maximum recursion depth&#x27;),
+})
+</code></pre>
+<h3>theme-tool.ts: Theme Management</h3>
+<p><strong>Source:</strong> <code>src/tools/theme-tool.ts</code> (89 lines)</p>
+<p>Manages design themes:</p>
+<pre><code class="language-typescript">parameters: z.object({
+    action: z.enum([&#x27;list&#x27;, &#x27;create&#x27;, &#x27;update&#x27;, &#x27;delete&#x27;]),
+    name: z.string().optional(),
+    theme: z.object({...}).optional(),
+})
+</code></pre>
+<hr>
+<h2>Webview UI</h2>
+<h3>ChatInterface.tsx: Main Chat UI</h3>
+<p><strong>Source:</strong> <code>src/webview/components/Chat/ChatInterface.tsx</code> (1,516 lines)</p>
+<p>The main chat component handling:</p>
+<ul><li>Message display (user/assistant)</li><li>Input field with send button</li><li>Model selector</li><li>Mode toggle (Mock/Component/Wireframe)</li><li>Theme preview integration</li><li>Color palette</li><li>Markdown rendering for assistant responses</li><li>Tool execution visualization</li><li>Loading states and error handling</li></ul>
+<h3>ModelSelector.tsx</h3>
+<p><strong>Source:</strong> <code>src/webview/components/Chat/ModelSelector.tsx</code> (436 lines)</p>
+<p>Model selection UI supporting:</p>
+<ul><li>Anthropic (Claude 3.5 Sonnet, Claude 3.7 Sonnet)</li><li>OpenAI (GPT-4o, GPT-4o mini)</li><li>OpenRouter (multi-model routing)</li><li>Google (Gemini models)</li></ul>
+<h3>CanvasView.tsx</h3>
+<p><strong>Source:</strong> <code>src/webview/components/CanvasView.tsx</code> (859 lines)</p>
+<p>Design canvas with:</p>
+<ul><li>Pan and zoom via <code>react-zoom-pan-pinch</code></li><li>Grid background</li><li>Design frame rendering</li><li>Connection lines between elements</li><li>Responsive layout</li></ul>
+<h3>DesignFrame.tsx</h3>
+<p><strong>Source:</strong> <code>src/webview/components/DesignFrame.tsx</code> (837 lines)</p>
+<p>Individual design frame showing:</p>
+<ul><li>Generated HTML/CSS preview</li><li>Device frame (desktop/tablet/mobile)</li><li>Interaction controls</li><li>Export options</li></ul>
+<h3>ThemePreview.tsx / ThemePreviewCard.tsx</h3>
+<p><strong>Source:</strong> <code>src/webview/components/Chat/ThemePreview.tsx</code> (579 lines) <strong>Source:</strong> <code>src/webview/components/Chat/ThemePreviewCard.tsx</code> (418 lines)</p>
+<p>Theme preview components showing:</p>
+<ul><li>Color scheme preview</li><li>Typography preview</li><li>Component previews</li><li>Theme comparison</li></ul>
+<h3>useChat Hook</h3>
+<p><strong>Source:</strong> <code>src/webview/hooks/useChat.ts</code> (377 lines)</p>
+<p>Manages chat state:</p>
+<ul><li>Message history</li><li>Streaming responses</li><li>Tool call visualization</li><li>Loading states</li><li>Error handling</li><li>Conversation clearing</li></ul>
+<h3>gridLayout.ts</h3>
+<p><strong>Source:</strong> <code>src/webview/utils/gridLayout.ts</code> (465 lines)</p>
+<p>Calculates canvas grid layout:</p>
+<ul><li>Frame positioning</li><li>Responsive sizing</li><li>Collision detection</li><li>Optimal arrangement</li></ul>
+<h3>themeParser.ts</h3>
+<p><strong>Source:</strong> <code>src/webview/utils/themeParser.ts</code> (355 lines)</p>
+<p>Parses theme definitions:</p>
+<ul><li>Color extraction</li><li>Typography parsing</li><li>Component style extraction</li><li>Theme validation</li></ul>
+<hr>
+<h2>Next</h2>
+<p>Return to the <a href="README.md">README</a> for the full index.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
