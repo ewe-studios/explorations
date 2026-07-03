@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Gateway Deep Dive: HTTP/WS Server, RPC, MCP, GraphQL -- src.Moltis</title>
+  <title>Gateway Deep Dive: HTTP/WS Server, RPC, MCP, Auth, Channels -- src.Moltis</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
   <script>
@@ -132,96 +132,142 @@
     </div>
   </nav>
   <article class="prose">
-<h1>Gateway Deep Dive: HTTP/WS Server, RPC, MCP, GraphQL</h1>
-<p>The gateway crate (<code>moltis-gateway</code>) is the largest in the workspace at 129 files and 55,619 lines of Rust. It handles HTTP/WebSocket serving, RPC dispatch, authentication, MCP protocol support, and GraphQL API.</p>
-<p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/crates/gateway/</code></p>
-<h2>Crate Statistics</h2>
-<table><tr><th>Metric</th><th>Value</th></tr><tr><td>Files</td><td>129</td></tr><tr><td>Lines of Rust</td><td>55,619</td></tr><tr><td>Migrations</td><td>Yes (SQL migrations in `migrations/`)</td></tr><tr><td>Tests</td><td>Yes (in `tests/`)</td></tr></table>
-<h2>Architecture</h2>
-<div class="mermaid">
-flowchart TD
-    subgraph &quot;Gateway Surface&quot;
-        HTTP[&quot;HTTP Server
-        HTTP request handling&quot;]
-        WS[&quot;WebSocket Server
-        WS connection management&quot;]
-        RPC[&quot;RPC Dispatcher
-        Remote procedure calls&quot;]
-    end
-
-    subgraph &quot;Authentication&quot;
-        AUTH[&quot;Auth Middleware
-        Session validation&quot;]
-        PASSKEY[&quot;Passkey Auth
-        WebAuthn/FIDO2&quot;]
-        APIKEY[&quot;API Key Auth
-        Token validation&quot;]
-    end
-
-    subgraph &quot;Protocol Support&quot;
-        MCP[&quot;MCP Server
-        stdio + HTTP/SSE&quot;]
-        GRAPHQL[&quot;GraphQL API
-        GraphQL schema + resolvers&quot;]
-    end
-
-    subgraph &quot;Startup&quot;
-        BOOT[&quot;Startup Wiring
-        Subsystem bootstrapping&quot;]
-        CONFIG[&quot;Configuration
-        Config loading and validation&quot;]
-    end
-
-    HTTP --&gt; AUTH
-    WS --&gt; AUTH
-    AUTH --&gt; RPC
-    RPC --&gt; AGENT[&quot;Agent Handler&quot;]
-    RPC --&gt; CHAT[&quot;Chat Handler&quot;]
-    RPC --&gt; CHANNELS[&quot;Channel Handlers&quot;]
-    AUTH --&gt; PASSKEY
-    AUTH --&gt; APIKEY
-    HTTP --&gt; MCP
-    HTTP --&gt; GRAPHQL
-    BOOT --&gt; CONFIG
-    CONFIG --&gt; HTTP
-    CONFIG --&gt; WS
-
-</div>
-<h2>HTTP Server</h2>
-<p>The HTTP server handles:</p>
-<ul><li>REST API endpoints</li><li>Static file serving</li><li>WebSocket upgrade</li><li>Health checks</li><li>Startup readiness</li></ul>
-<h2>WebSocket Server</h2>
-<p>The WebSocket server handles:</p>
-<ul><li>Real-time message streaming</li><li>Agent status updates</li><li>Tool execution progress</li><li>Channel message delivery</li></ul>
-<h2>RPC Dispatcher</h2>
-<p>The RPC dispatcher routes remote procedure calls to:</p>
-<ul><li>Agent handlers (start/stop/continue agent loops)</li><li>Chat handlers (send/receive messages)</li><li>Channel handlers (send messages to specific channels)</li><li>Tool handlers (execute tools)</li><li>Config handlers (read/update configuration)</li></ul>
-<h2>Authentication</h2>
-<h3>Session Auth</h3>
-<p>Session-based authentication using cookies, scoped to <code>/admin</code> path to keep tokens off public routes.</p>
-<h3>Passkey Auth</h3>
-<p>WebAuthn/FIDO2 passkey authentication for passwordless login:</p>
-<ul><li>Registration of passkeys</li><li>Authentication via passkeys</li><li>Passkey management (add/remove)</li></ul>
-<h3>API Key Auth</h3>
-<p>API key authentication for programmatic access:</p>
-<ul><li>Key generation</li><li>Key revocation</li><li>Key scoping (permissions)</li></ul>
-<h2>MCP Server</h2>
-<p>The MCP (Model Context Protocol) server supports both transport modes:</p>
-<ul><li><strong>stdio</strong> — for local agent connections</li><li><strong>HTTP/SSE</strong> — for remote agent connections</li></ul>
-<h2>GraphQL API</h2>
-<p>The GraphQL crate (<code>moltis-graphql</code>) provides:</p>
-<ul><li>Schema definitions</li><li>Resolvers for all data types</li><li>Mutations for data changes</li><li>Subscriptions for real-time updates</li></ul>
-<p><strong>Source:</strong> <code>crates/graphql/</code> (separate crate, used by gateway).</p>
-<h2>Startup Wiring</h2>
-<p>The gateway bootstraps all subsystems:</p>
-<ol><li>Load configuration</li><li>Initialize database connections</li><li>Start HTTP server</li><li>Start WebSocket server</li><li>Register channel handlers</li><li>Start agent loops</li><li>Initialize MCP server</li><li>Initialize GraphQL API</li></ol>
-<h2>Migrations</h2>
-<pre><code class="language-">crates/gateway/migrations/
+<h1>Gateway Deep Dive: HTTP/WS Server, RPC, MCP, Auth, Channels</h1>
+<p>The gateway crate (<code>moltis-gateway</code>) is the largest in the workspace at 129 files and ~55,619 lines of Rust. It handles HTTP/WebSocket serving, RPC dispatch, authentication, MCP protocol support, channel management, and startup wiring.</p>
+<p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/crates/gateway/src/</code></p>
+<h2>Crate Structure (68 modules)</h2>
+<h3>Core Modules</h3>
+<table><tr><th>Module</th><th>Files</th><th>Purpose</th></tr><tr><td>`lib.rs`</td><td>1</td><td>Crate entry point, module declarations, `run_migrations()`</td></tr><tr><td>`server/`</td><td>10</td><td>Startup, initialization, seeding, workspace management</td></tr><tr><td>`state.rs`</td><td>1</td><td>`GatewayState` — the core application state object</td></tr><tr><td>`methods.rs`</td><td>1</td><td>RPC method handler registration</td></tr><tr><td>`services/`</td><td>—</td><td>Service implementations (domain logic)</td></tr></table>
+<h3>Authentication</h3>
+<table><tr><th>Module</th><th>Purpose</th></tr><tr><td>`auth.rs`</td><td>Password authentication, session management</td></tr><tr><td>`auth_webauthn.rs`</td><td>WebAuthn/FIDO2 passkey authentication</td></tr><tr><td>`api_keys.rs`</td><td>API key management (if exists)</td></tr><tr><td>`pairing.rs`</td><td>Device pairing protocol</td></tr></table>
+<h3>Channels</h3>
+<table><tr><th>Module</th><th>Purpose</th></tr><tr><td>`channel.rs`</td><td>Channel abstraction trait</td></tr><tr><td>`channel_store.rs`</td><td>Channel storage and lookup</td></tr><tr><td>`channel_events/`</td><td>Event dispatch, command handling, formatting</td></tr><tr><td>`channel_events/commands/`</td><td>Attachments, control handlers, dispatch, formatting, location, media, quick actions, session handlers</td></tr><tr><td>`channel_webhook_dedup.rs`</td><td>Webhook deduplication</td></tr><tr><td>`channel_webhook_middleware.rs`</td><td>Webhook middleware chain</td></tr><tr><td>`channel_webhook_rate_limit.rs`</td><td>Webhook rate limiting</td></tr><tr><td>`channel_agent_tools.rs`</td><td>Agent tools for channels</td></tr></table>
+<h3>Chat & Agent</h3>
+<table><tr><th>Module</th><th>Purpose</th></tr><tr><td>`chat.rs`</td><td>Chat session management</td></tr><tr><td>`chat_error.rs`</td><td>Chat error types</td></tr><tr><td>`agent_persona.rs`</td><td>Agent persona configuration</td></tr><tr><td>`mcp_agent_tools.rs`</td><td>MCP agent tool definitions</td></tr><tr><td>`project_aware_tools.rs`</td><td>Project-aware tool execution</td></tr></table>
+<h3>MCP (Model Context Protocol)</h3>
+<table><tr><th>Module</th><th>Purpose</th></tr><tr><td>`mcp_service.rs`</td><td>MCP server implementation</td></tr><tr><td>`mcp_health.rs`</td><td>MCP health checking</td></tr></table>
+<h3>Infrastructure</h3>
+<table><tr><th>Module</th><th>Purpose</th></tr><tr><td>`broadcast.rs`</td><td>Event broadcasting to connected clients</td></tr><tr><td>`cron.rs`</td><td>Cron/scheduled task management</td></tr><tr><td>`logs.rs`</td><td>Logging infrastructure</td></tr><tr><td>`network_audit.rs`</td><td>Network audit logging</td></tr><tr><td>`update_check.rs`</td><td>Update checking</td></tr><tr><td>`updater.rs`</td><td>Self-update mechanism</td></tr></table>
+<h3>Voice</h3>
+<table><tr><th>Module</th><th>Purpose</th></tr><tr><td>`voice.rs`</td><td>Voice I/O management</td></tr><tr><td>`voice_agent_tools.rs`</td><td>Voice-specific agent tools</td></tr><tr><td>`voice_persona.rs`</td><td>Voice persona configuration</td></tr><tr><td>`tts_phrases.rs`</td><td>Text-to-speech phrase management</td></tr></table>
+<h3>Features (optional, feature-gated)</h3>
+<table><tr><th>Module</th><th>Feature</th><th>Purpose</th></tr><tr><td>`local_llm_setup/`</td><td>`local-llm`</td><td>Local LLM management</td></tr><tr><td>`netbird/`</td><td>`netbird`</td><td>Netbird VPN integration</td></tr><tr><td>`mdns/`</td><td>`mdns`</td><td>mDNS discovery</td></tr><tr><td>`push/`</td><td>`push-notifications`</td><td>Push notifications</td></tr><tr><td>`tailscale/`</td><td>`tailscale`</td><td>Tailscale integration</td></tr><tr><td>`teams_agent_tools/`</td><td>`msteams`</td><td>MS Teams tools</td></tr><tr><td>`vault_lifecycle/`</td><td>`vault`</td><td>Secret vault lifecycle</td></tr></table>
+<h2>lib.rs: Entry Point</h2>
+<p><strong>Source:</strong> <code>crates/gateway/src/lib.rs</code> (91 lines)</p>
+<h3>Module Declarations</h3>
+<p>The gateway declares 68 public modules covering all aspects of the server. Optional modules are feature-gated (<code>#[cfg(feature = "...")]</code>):</p>
+<pre><code class="language-rust">// crates/gateway/src/lib.rs
+pub mod agent_persona;
+pub mod auth;
+pub mod auth_webauthn;
+pub mod channel;
+pub mod channel_events;
+pub mod chat;
+pub mod cron;
+pub mod mcp_service;
+pub mod session;
+pub mod server;
+// ... and 50+ more
 </code></pre>
-<p>SQL migrations for the gateway's database schema.</p>
-<p><strong>Source:</strong> <code>crates/gateway/migrations/</code>.</p>
+<h3>run_migrations()</h3>
+<pre><code class="language-rust">// crates/gateway/src/lib.rs:84-90
+pub async fn run_migrations(pool: &amp;sqlx::SqlitePool) -&gt; anyhow::Result&lt;()&gt; {
+    sqlx::migrate!(&quot;./migrations&quot;)
+        .set_ignore_missing(true)
+        .run(pool)
+        .await?;
+    Ok(())
+}
+</code></pre>
+<p>Runs database migrations for:</p>
+<ul><li>Auth tables (<code>auth_password</code>, <code>passkeys</code>, <code>api_keys</code>, <code>auth_sessions</code>)</li><li><code>env_variables</code></li><li><code>message_log</code></li><li><code>channels</code></li></ul>
+<p>Should be called at application startup after other crate migrations (projects, sessions, cron).</p>
+<h3>config_override_test_lock()</h3>
+<pre><code class="language-rust">// crates/gateway/src/lib.rs:72-77
+pub(crate) fn config_override_test_lock() -&gt; std::sync::MutexGuard&lt;&#x27;static, ()&gt; {
+    static LOCK: std::sync::OnceLock&lt;std::sync::Mutex&lt;()&gt;&gt; = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
+</code></pre>
+<p>Test-only lock for config override isolation. Prevents test interference when multiple tests modify config concurrently.</p>
+<h2>server/ Module: Startup and Initialization</h2>
+<h3>server/startup.rs</h3>
+<p><strong>Source:</strong> <code>crates/gateway/src/server/startup.rs</code> (~300 lines)</p>
+<p>Handles application startup sequence:</p>
+<ol><li><strong>OpenClaw detection</strong> — Detects existing OpenClaw installations and spawns background import workers</li><li><strong>Channel initialization</strong> — Sets up configured channels (Telegram, Signal, Discord, etc.)</li><li><strong>Memory initialization</strong> — Initializes the memory/RAG system</li><li><strong>Code index initialization</strong> — Sets up code indexing</li><li><strong>Content seeding</strong> — Seeds default content (skills, templates, etc.)</li><li><strong>Workspace setup</strong> — Configures the workspace directory</li></ol>
+<h4>OpenClaw Background Import</h4>
+<pre><code class="language-rust">// crates/gateway/src/server/startup.rs:52-120
+fn spawn_openclaw_background_init(data_dir: PathBuf) {
+    tokio::spawn(async move {
+        let detection = tokio::task::spawn_blocking(detect_openclaw_with_startup_logs).await;
+        // If detected, spawn file watcher for incremental session imports
+        // Runs every 60 seconds to check for new OpenClaw sessions
+    });
+}
+</code></pre>
+<p>Spawns a background task that:</p>
+<ol><li>Detects OpenClaw installation at startup</li><li>If found, runs initial import of sessions, agents, config</li><li>Spawns file watcher for incremental imports every 60 seconds</li></ol>
+<h3>server/prepare_core.rs</h3>
+<p><strong>Source:</strong> <code>crates/gateway/src/server/prepare_core.rs</code> (~1400 lines)</p>
+<p>The core startup preparation logic. Handles:</p>
+<ul><li>Config loading and validation</li><li>Auth system initialization (password, passkeys, API keys)</li><li>Database connection setup</li><li>Service registration</li><li>Background task spawning</li></ul>
+<p>This is the largest single file in the gateway crate and the heart of the startup sequence.</p>
+<h3>server/init_channels.rs</h3>
+<p><strong>Source:</strong> <code>crates/gateway/src/server/init_channels.rs</code> (~330 lines)</p>
+<p>Initializes all configured channels:</p>
+<pre><code class="language-rust">// For each configured channel:
+// 1. Create channel instance
+// 2. Register with channel store
+// 3. Start channel event listener
+// 4. Register webhook endpoints (if applicable)
+</code></pre>
+<h3>server/init_memory.rs</h3>
+<p><strong>Source:</strong> <code>crates/gateway/src/server/init_memory.rs</code> (~500 lines)</p>
+<p>Initializes the memory/RAG system:</p>
+<ul><li>Creates or connects to SQLite memory database</li><li>Sets up FTS (Full-Text Search) indices</li><li>Initializes vector embedding store</li><li>Loads existing memory entries</li></ul>
+<h3>server/init_code_index.rs</h3>
+<p><strong>Source:</strong> <code>crates/gateway/src/server/init_code_index.rs</code> (~120 lines)</p>
+<p>Initializes the code indexing system:</p>
+<ul><li>Scans workspace directories</li><li>Builds code index</li><li>Sets up file watchers for incremental updates</li></ul>
+<h3>server/seed_content.rs</h3>
+<p><strong>Source:</strong> <code>crates/gateway/src/server/seed_content.rs</code> (~300 lines)</p>
+<p>Seeds default content:</p>
+<ul><li>Default skills</li><li>Default templates</li><li>Default agent personas</li><li>Default voice phrases</li></ul>
+<h2>auth.rs: Authentication</h2>
+<p><strong>Source:</strong> <code>crates/gateway/src/auth.rs</code></p>
+<h3>Password Authentication</h3>
+<ul><li>Password hashing (bcrypt/argon2)</li><li>Session creation and validation</li><li>Password reset flow</li></ul>
+<h3>Session Management</h3>
+<ul><li>Session tokens with expiry</li><li>Session invalidation</li><li>Concurrent session limits</li></ul>
+<h2>auth_webauthn.rs: Passkey Authentication</h2>
+<p><strong>Source:</strong> <code>crates/gateway/src/auth_webauthn.rs</code></p>
+<h3>WebAuthn Registration</h3>
+<ol><li>Client requests registration options</li><li>Server generates challenge</li><li>Client creates passkey</li><li>Server verifies and stores credential</li></ol>
+<h3>WebAuthn Authentication</h3>
+<ol><li>Client requests authentication options</li><li>Server generates challenge</li><li>Client signs challenge with passkey</li><li>Server verifies signature</li></ol>
+<h2>channel_events/ Module: Event Dispatch</h2>
+<h3>channel_events/dispatch.rs</h3>
+<p>Dispatches incoming channel events to the appropriate handler:</p>
+<pre><code class="language-rust">// For each incoming event:
+// 1. Parse event into canonical format
+// 2. Route to appropriate command handler
+// 3. Execute command
+// 4. Format response
+// 5. Send back through channel
+</code></pre>
+<h3>channel_events/commands/</h3>
+<table><tr><th>File</th><th>Purpose</th></tr><tr><td>`attachments.rs`</td><td>Handle message attachments</td></tr><tr><td>`control_handlers.rs`</td><td>Handle control commands (start, stop, pause)</td></tr><tr><td>`dispatch.rs`</td><td>Command dispatch logic</td></tr><tr><td>`formatting.rs`</td><td>Message formatting</td></tr><tr><td>`location.rs`</td><td>Location data handling</td></tr><tr><td>`media.rs`</td><td>Media message handling</td></tr><tr><td>`quick_actions.rs`</td><td>Quick action commands</td></tr><tr><td>`session_handlers.rs`</td><td>Session management commands</td></tr></table>
+<h2>mcp_service.rs: MCP Server</h2>
+<p><strong>Source:</strong> <code>crates/gateway/src/mcp_service.rs</code></p>
+<p>Implements the Model Context Protocol:</p>
+<ul><li><strong>stdio transport</strong> — for local agent connections</li><li><strong>HTTP/SSE transport</strong> — for remote agent connections</li><li>Tool listing and execution</li><li>Resource access</li></ul>
+<h2>broadcast.rs: Event Broadcasting</h2>
+<p>Broadcasts events to connected WebSocket clients:</p>
+<ul><li>Chat messages</li><li>Agent status updates</li><li>Tool execution progress</li><li>Channel events</li></ul>
 <h2>Next</h2>
-<p>Continue to <a href="05-agents-deep.md">05-agents-deep</a> for the agent internals deep dive.</p>
+<p>Continue to <a href="05-agents-deep.md">05-agents-deep</a> for the agent loop internals.</p>
   </article>
   <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
 </body>
