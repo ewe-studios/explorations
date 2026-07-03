@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Tools Deep Dive: Tool Execution, Sandboxing, WASM -- src.Moltis</title>
+  <title>Tools Deep Dive: Exec, Sandboxing, and File Operations -- src.Moltis</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
   <script>
@@ -132,82 +132,335 @@
     </div>
   </nav>
   <article class="prose">
-<h1>Tools Deep Dive: Tool Execution, Sandboxing, WASM</h1>
-<p>The tools crate (<code>moltis-tools</code>) manages tool execution and sandboxing. At 90 files and 52,957 lines of Rust, it's nearly as large as the gateway and the execution engine of the agent.</p>
-<p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/crates/tools/</code></p>
-<h2>Crate Statistics</h2>
-<table><tr><th>Metric</th><th>Value</th></tr><tr><td>Files</td><td>90</td></tr><tr><td>Lines of Rust</td><td>52,957</td></tr></table>
-<h2>Tool Execution Architecture</h2>
-<div class="mermaid">
-flowchart TD
-    AGENT[&quot;Agent Loop&quot;] --&gt; DISPATCH[&quot;Tool Dispatcher
-    Route to appropriate executor&quot;]
-    DISPATCH --&gt; LOCAL[&quot;Local Tools
-    Rust-native tools&quot;]
-    DISPATCH --&gt; DOCKER[&quot;Docker/Podman Sandbox
-    Container execution&quot;]
-    DISPATCH --&gt; WASM[&quot;WASM Sandbox
-    WebAssembly execution&quot;]
-    DISPATCH --&gt; APPLE[&quot;Apple Container
-    macOS native sandbox&quot;]
-
-    LOCAL --&gt; BASH[&quot;Bash Execution
-    Shell commands&quot;]
-    LOCAL --&gt; EDIT[&quot;File Editing
-    Read/write files&quot;]
-
-    DOCKER --&gt; ISOLATE[&quot;Process Isolation
-    Network control
-    Filesystem limits&quot;]
-
-    WASM --&gt; PRECOMPILE[&quot;WASM Precompilation
-    wasm-precompile crate&quot;]
-    PRECOMPILE --&gt; CALC[&quot;calc tool&quot;]
-    PRECOMPILE --&gt; FETCH[&quot;web-fetch tool&quot;]
-    PRECOMPILE --&gt; SEARCH[&quot;web-search tool&quot;]
-
-    APPLE --&gt; SANDBOX[&quot;Apple Container API
-    Native macOS isolation&quot;]
-
-</div>
-<h2>Tool Types</h2>
-<table><tr><th>Type</th><th>Execution</th><th>Security</th></tr><tr><td>Local</td><td>Direct Rust execution</td><td>Limited (agent trust)</td></tr><tr><td>Docker</td><td>Container sandbox</td><td>Full isolation</td></tr><tr><td>Podman</td><td>Rootless container sandbox</td><td>Full isolation</td></tr><tr><td>WASM</td><td>WebAssembly VM</td><td>Memory/CPU limits</td></tr><tr><td>Apple Container</td><td>Native macOS sandbox</td><td>OS-level isolation</td></tr></table>
-<h2>WASM Tools</h2>
-<h3>WASM Precompilation</h3>
-<pre><code class="language-">crates/wasm-precompile/
+<h1>Tools Deep Dive: Exec, Sandboxing, and File Operations</h1>
+<p>The tools crate implements all agent tools — exec, file read/write/edit, glob, grep, directory listing, and more. This document covers the actual implementation.</p>
+<p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/crates/tools/src/</code></p>
+<h2>Exec Tool: Shell Command Execution</h2>
+<p><strong>Source:</strong> <code>exec.rs</code> (~600 lines)</p>
+<h3>Core Function: <code>exec_command</code></h3>
+<pre><code class="language-rust">// exec.rs:125-196
+pub async fn exec_command(command: &amp;str, opts: &amp;ExecOpts) -&gt; Result&lt;ExecResult&gt;
 </code></pre>
-<p>Precompiles WASM modules for faster execution.</p>
-<h3>Calc Tool</h3>
-<pre><code class="language-">crates/wasm-tools/calc/
+<p>The implementation:</p>
+<pre><code class="language-rust">let mut cmd = Command::new(&quot;sh&quot;);
+cmd.arg(&quot;-c&quot;).arg(command);
+
+if let Some(ref dir) = opts.working_dir {
+    cmd.current_dir(dir);
+}
+for (k, v) in &amp;opts.env {
+    cmd.env(k, v);
+}
+
+cmd.stdout(std::process::Stdio::piped());
+cmd.stderr(std::process::Stdio::piped());
+cmd.stdin(std::process::Stdio::null());  // Child doesn&#x27;t inherit stdin
+
+let child = cmd.spawn().map_err(|e| { ... })?;
+let result = tokio::time::timeout(opts.timeout, child.wait_with_output()).await;
 </code></pre>
-<p>Mathematical operations in WASM.</p>
-<h3>Web Fetch Tool</h3>
-<pre><code class="language-">crates/wasm-tools/web-fetch/
+<p><strong>Key behavior:</strong></p>
+<ul><li>Runs via <code>sh -c</code> — the shell interprets the command</li><li><strong>stdin is null</strong> — child processes cannot read from stdin (security measure)</li><li><strong>Timeout</strong> via <code>tokio::time::timeout</code> — default 30 seconds, max 1800 seconds (30 minutes)</li><li><strong>Output truncated</strong> at <code>max_output_bytes</code> (default 200KB) with <code>... [output truncated]</code> appended</li></ul>
+<h3>ExecResult</h3>
+<pre><code class="language-rust">// exec.rs:88-93
+pub struct ExecResult {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: i32,  // -1 if signal terminated
+}
 </code></pre>
-<p>Fetches web content in WASM.</p>
-<h3>Web Search Tool</h3>
-<pre><code class="language-">crates/wasm-tools/web-search/
+<h3>ExecOpts Defaults</h3>
+<pre><code class="language-rust">// exec.rs:104-113
+impl Default for ExecOpts {
+    fn default() -&gt; Self {
+        Self {
+            timeout: Duration::from_secs(30),
+            max_output_bytes: 200 * 1024,  // 200KB
+            working_dir: None,
+            env: Vec::new(),
+        }
+    }
+}
 </code></pre>
-<p>Searches the web in WASM.</p>
-<h2>Sandboxing</h2>
-<h3>Docker/Podman Sandbox</h3>
-<ul><li>Full process isolation</li><li>Network access control (allowlist hosts)</li><li>Filesystem limits (read-only except designated dirs)</li><li>Resource limits (CPU, memory, time)</li></ul>
-<h3>Apple Container Sandbox</h3>
-<ul><li>Native macOS sandboxing</li><li>Uses Apple's Container framework</li><li>Available only on macOS</li><li>Tighter integration than Docker</li></ul>
-<h3>WASM Sandbox</h3>
-<ul><li>Memory-safe execution</li><li>CPU time limits</li><li>No filesystem access</li><li>Network access controlled</li></ul>
-<h2>Tool Registry</h2>
-<p>The tool registry:</p>
-<ul><li>Registers available tools</li><li>Validates tool definitions</li><li>Maps tool names to executors</li><li>Tracks tool capabilities</li></ul>
-<h2>Skills</h2>
-<p>The skills crate (<code>moltis-skills</code>) manages predefined skill sets:</p>
-<ul><li>Bundled skills (predefined tool combinations)</li><li>Workspace skills (user-defined)</li><li>Skill import/export</li><li>Autonomous skill improvement</li></ul>
-<h2>Browser Automation</h2>
-<p>The browser crate (<code>moltis-browser</code>) provides:</p>
-<ul><li>Browser control for web automation</li><li>Screenshot capture</li><li>DOM manipulation</li><li>JavaScript execution</li></ul>
-<p><strong>Source:</strong> <code>crates/browser/</code>.</p>
+<h3>ExecTool: Agent Tool Implementation</h3>
+<pre><code class="language-rust">// exec.rs:199-214
+pub struct ExecTool {
+    pub default_timeout: Duration,
+    pub max_output_bytes: usize,
+    pub working_dir: Option&lt;PathBuf&gt;,
+    approval_manager: Option&lt;Arc&lt;ApprovalManager&gt;&gt;,
+    broadcaster: Option&lt;Arc&lt;dyn ApprovalBroadcaster&gt;&gt;,
+    sandbox: Arc&lt;dyn Sandbox&gt;,
+    sandbox_id: Option&lt;SandboxId&gt;,
+    sandbox_router: Option&lt;Arc&lt;SandboxRouter&gt;&gt;,
+    env_provider: Option&lt;Arc&lt;dyn EnvVarProvider&gt;&gt;,
+    completion_callback: Option&lt;ExecCompletionFn&gt;,
+    node_provider: Option&lt;Arc&lt;dyn NodeExecProvider&gt;&gt;,
+    default_node: Option&lt;String&gt;,
+}
+</code></pre>
+<p>The builder pattern:</p>
+<pre><code class="language-rust">ExecTool::default()
+    .with_approval(manager, broadcaster)
+    .with_sandbox(sandbox, id)
+    .with_sandbox_router(router)
+    .with_env_provider(provider)
+    .with_completion_callback(cb)
+    .with_default_timeout(timeout)
+    .with_max_output_bytes(bytes)
+    .with_node_provider(provider, default_node)
+</code></pre>
+<h3>Tool Schema</h3>
+<pre><code class="language-rust">// exec.rs:325-359
+fn parameters_schema(&amp;self) -&gt; serde_json::Value {
+    serde_json::json!({
+        &quot;type&quot;: &quot;object&quot;,
+        &quot;properties&quot;: {
+            &quot;command&quot;: { &quot;type&quot;: &quot;string&quot;, &quot;description&quot;: &quot;The shell command to execute&quot; },
+            &quot;timeout&quot;: { &quot;type&quot;: &quot;integer&quot;, &quot;description&quot;: &quot;Timeout in seconds (default 30, max 1800)&quot; },
+            &quot;working_dir&quot;: { &quot;type&quot;: &quot;string&quot;, &quot;description&quot;: &quot;Working directory&quot; },
+            &quot;node&quot;: { &quot;type&quot;: &quot;string&quot;, &quot;description&quot;: &quot;Node name or ID (if remote nodes connected)&quot; }
+        },
+        &quot;required&quot;: [&quot;command&quot;]
+    })
+}
+</code></pre>
+<p>The <code>node</code> parameter is <strong>conditionally added</strong> only when remote nodes are connected.</p>
+<h3>Execute Method Logic</h3>
+<p>The execute flow:</p>
+<ol><li><strong>Parse command</strong> — required, errors if missing</li><li><strong>Parse timeout</strong> — capped at 1800 seconds (30 minutes)</li><li><strong>Node routing</strong> — if <code>node_provider</code> is set and nodes connected:</li></ol>
+<ul><li>Model-supplied node values are resolved via <code>provider.resolve_node_id()</code></li><li>If no nodes connected but <code>default_node</code> is configured → clear error</li><li>If model hallucinates a node value with no nodes connected → silently drops it</li></ul>
+<ol><li><strong>Sandbox check</strong> — <code>router.is_sandboxed(session_key)</code> or <code>sandbox_id.is_some()</code></li><li><strong>Backend isolation check</strong> — <code>provides_fs_isolation()</code> determines if working in container or host</li><li><strong>Working directory resolution</strong>:</li></ol>
+<ul><li>Sandbox with container backend → default <code>/home/sandbox</code></li><li>Host execution → default <code>$HOME</code> (via <code>moltis_config::home_dir()</code>)</li><li>Explicit <code>working_dir</code> validated — if it doesn't exist on host, falls back to default</li><li>Relative paths resolved under <code>/home/sandbox</code></li></ul>
+<ol><li><strong>Approval gating</strong> — if <code>approval_manager</code> is set, broadcasts request and waits for approval</li><li><strong>Environment injection</strong> — from <code>env_provider</code> (API keys, etc.)</li><li><strong>Execute</strong> — either <code>exec_command()</code> locally or <code>provider.exec_on_node()</code> remotely</li><li><strong>Completion callback</strong> — fires <code>ExecCompletionEvent</code> with command, exit code, previews</li></ol>
+<h3>Approval Gating</h3>
+<pre><code class="language-rust">// exec.rs:565-592
+if let Some(ref mgr) = self.approval_manager {
+    let request_id = format!(&quot;exec-{}&quot;, uuid::Uuid::new_v4());
+    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+    
+    mgr.create_request(&amp;request_id, command, session_key, response_tx).await?;
+    self.broadcaster.as_ref().unwrap()
+        .broadcast_request(&amp;request_id, command, session_key).await?;
+    
+    let response = response_rx.await?;
+    match response.decision {
+        ApprovalDecision::Approve =&gt; { /* continue */ },
+        ApprovalDecision::Deny =&gt; {
+            return Ok(serde_json::json!({
+                &quot;error&quot;: &quot;command denied by user&quot;,
+                &quot;command&quot;: command
+            }));
+        },
+        ApprovalDecision::DenyAndBlock =&gt; { /* block future similar commands */ },
+    }
+}
+</code></pre>
+<h3>Sandbox Recovery</h3>
+<pre><code class="language-rust">// exec.rs:600-630
+if let Some(ref router) = self.sandbox_router {
+    let session_key = session_key.unwrap_or(&quot;main&quot;);
+    match router.resolve_backend(session_key).await {
+        SandboxBackend::Docker | SandboxBackend::Podman | SandboxBackend::AppleContainer =&gt; {
+            // Execute in container
+        },
+        SandboxBackend::RestrictedHost | SandboxBackend::Cgroup | SandboxBackend::None =&gt; {
+            // Execute directly on host
+        },
+    }
+}
+</code></pre>
+<p><strong>Aha:</strong> When the sandbox backend doesn't provide filesystem isolation (RestrictedHost, Cgroup, None), commands run directly on the host even when the session mode says "sandboxed." Using <code>/home/sandbox</code> as the working directory would fail with ENOENT on the host, so the code falls back to the host data directory.</p>
+<h3>Node Execution</h3>
+<p>When remote nodes are connected:</p>
+<pre><code class="language-rust">let result = provider
+    .exec_on_node(&amp;node_id, command, timeout_secs, cwd, None)
+    .await
+    .map_err(|e| Error::message(format!(&quot;node exec failed: {e}&quot;)))?;
+</code></pre>
+<p>The <code>NodeExecProvider</code> trait (defined in <code>exec.rs:60-85</code>) bridges the tools crate with the gateway crate's <code>node_exec</code> module without a direct dependency.</p>
+<hr>
+<h2>File Read Tool</h2>
+<p><strong>Source:</strong> <code>fs/read/tool.rs</code></p>
+<h3>Schema</h3>
+<pre><code class="language-json">{
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;properties&quot;: {
+    &quot;path&quot;: { &quot;type&quot;: &quot;string&quot;, &quot;description&quot;: &quot;File path&quot; },
+    &quot;offset&quot;: { &quot;type&quot;: &quot;integer&quot;, &quot;description&quot;: &quot;Start line (0-based)&quot; },
+    &quot;limit&quot;: { &quot;type&quot;: &quot;integer&quot;, &quot;description&quot;: &quot;Max lines to read&quot; }
+  },
+  &quot;required&quot;: [&quot;path&quot;]
+}
+</code></pre>
+<h3>Implementation</h3>
+<pre><code class="language-rust">// fs/read/tool.rs
+async fn execute(&amp;self, params: Value) -&gt; Result&lt;Value&gt; {
+    let path = params[&quot;path&quot;].as_str().unwrap();
+    let offset = params[&quot;offset&quot;].as_u64().unwrap_or(0);
+    let limit = params[&quot;limit&quot;].as_u64().unwrap_or(1000);
+    
+    // Path validation
+    // Read file
+    // Return JSON: { path, content, total_lines, lines_read, offset }
+}
+</code></pre>
+<hr>
+<h2>File Write Tool</h2>
+<p><strong>Source:</strong> <code>file_write.rs</code></p>
+<h3>Schema</h3>
+<pre><code class="language-json">{
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;properties&quot;: {
+    &quot;path&quot;: { &quot;type&quot;: &quot;string&quot; },
+    &quot;content&quot;: { &quot;type&quot;: &quot;string&quot; },
+    &quot;append&quot;: { &quot;type&quot;: &quot;boolean&quot;, &quot;default&quot;: false }
+  },
+  &quot;required&quot;: [&quot;path&quot;, &quot;content&quot;]
+}
+</code></pre>
+<h3>Implementation</h3>
+<pre><code class="language-rust">// file_write.rs
+async fn execute(&amp;self, params: Value) -&gt; Result&lt;Value&gt; {
+    let path = params[&quot;path&quot;].as_str().unwrap();
+    let content = params[&quot;content&quot;].as_str().unwrap();
+    let append = params[&quot;append&quot;].as_bool().unwrap_or(false);
+    
+    // Path validation (no escaping workspace)
+    // Create parent directories if needed
+    // Write (or append)
+    // Return: { path, bytes_written }
+}
+</code></pre>
+<hr>
+<h2>File Edit Tool</h2>
+<p><strong>Source:</strong> <code>file_edit.rs</code></p>
+<h3>Schema</h3>
+<pre><code class="language-json">{
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;properties&quot;: {
+    &quot;path&quot;: { &quot;type&quot;: &quot;string&quot; },
+    &quot;old_text&quot;: { &quot;type&quot;: &quot;string&quot;, &quot;description&quot;: &quot;Text to find&quot; },
+    &quot;new_text&quot;: { &quot;type&quot;: &quot;string&quot;, &quot;description&quot;: &quot;Replacement text&quot; },
+    &quot;replace_all&quot;: { &quot;type&quot;: &quot;boolean&quot;, &quot;default&quot;: false }
+  },
+  &quot;required&quot;: [&quot;path&quot;, &quot;old_text&quot;, &quot;new_text&quot;]
+}
+</code></pre>
+<h3>Implementation</h3>
+<pre><code class="language-rust">// file_edit.rs
+async fn execute(&amp;self, params: Value) -&gt; Result&lt;Value&gt; {
+    let path = params[&quot;path&quot;].as_str().unwrap();
+    let old_text = params[&quot;old_text&quot;].as_str().unwrap();
+    let new_text = params[&quot;new_text&quot;].as_str().unwrap();
+    let replace_all = params[&quot;replace_all&quot;].as_bool().unwrap_or(false);
+    
+    // Read file
+    // Find old_text
+    // If not found → error with &quot;text not found&quot;
+    // If found multiple times and !replace_all → error &quot;multiple matches&quot;
+    // Replace and write
+    // Return: { path, replacements }
+}
+</code></pre>
+<hr>
+<h2>Glob Tool</h2>
+<p><strong>Source:</strong> <code>glob.rs</code></p>
+<h3>Schema</h3>
+<pre><code class="language-json">{
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;properties&quot;: {
+    &quot;pattern&quot;: { &quot;type&quot;: &quot;string&quot;, &quot;description&quot;: &quot;Glob pattern (*.rs, src/**/*.rs)&quot; },
+    &quot;path&quot;: { &quot;type&quot;: &quot;string&quot;, &quot;description&quot;: &quot;Search root (default: workspace)&quot; }
+  },
+  &quot;required&quot;: [&quot;pattern&quot;]
+}
+</code></pre>
+<hr>
+<h2>Grep Tool</h2>
+<p><strong>Source:</strong> <code>grep.rs</code></p>
+<h3>Schema</h3>
+<pre><code class="language-json">{
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;properties&quot;: {
+    &quot;pattern&quot;: { &quot;type&quot;: &quot;string&quot;, &quot;description&quot;: &quot;Regex pattern&quot; },
+    &quot;path&quot;: { &quot;type&quot;: &quot;string&quot;, &quot;description&quot;: &quot;File or directory&quot; },
+    &quot;case_sensitive&quot;: { &quot;type&quot;: &quot;boolean&quot; },
+    &quot;max_results&quot;: { &quot;type&quot;: &quot;integer&quot;, &quot;default&quot;: 100 }
+  },
+  &quot;required&quot;: [&quot;pattern&quot;]
+}
+</code></pre>
+<hr>
+<h2>List Directory Tool</h2>
+<p><strong>Source:</strong> <code>list_directory.rs</code></p>
+<h3>Schema</h3>
+<pre><code class="language-json">{
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;properties&quot;: {
+    &quot;path&quot;: { &quot;type&quot;: &quot;string&quot;, &quot;description&quot;: &quot;Directory path (default: workspace root)&quot; }
+  }
+}
+</code></pre>
+<h3>Return Format</h3>
+<pre><code class="language-json">{
+  &quot;path&quot;: &quot;/workspace/src&quot;,
+  &quot;entries&quot;: [
+    { &quot;name&quot;: &quot;main.rs&quot;, &quot;type&quot;: &quot;file&quot;, &quot;size&quot;: 1234 },
+    { &quot;name&quot;: &quot;utils&quot;, &quot;type&quot;: &quot;directory&quot; }
+  ]
+}
+</code></pre>
+<hr>
+<h2>ToolBase and ToolDispatcher</h2>
+<p><strong>Source:</strong> <code>tool_base.rs</code>, <code>tool_dispatcher.rs</code></p>
+<h3>ToolBase</h3>
+<p>Abstract base for all tools:</p>
+<pre><code class="language-rust">#[async_trait]
+pub trait AgentTool: Send + Sync {
+    fn name(&amp;self) -&gt; &amp;str;
+    fn description(&amp;self) -&gt; &amp;str;
+    fn parameters_schema(&amp;self) -&gt; serde_json::Value;
+    async fn execute(&amp;self, params: serde_json::Value) -&gt; Result&lt;serde_json::Value&gt;;
+}
+</code></pre>
+<h3>ToolDispatcher</h3>
+<p>Routes tool calls to the correct tool:</p>
+<pre><code class="language-rust">// tool_dispatcher.rs
+pub async fn dispatch(&amp;self, tool_name: &amp;str, params: Value) -&gt; Result&lt;ToolResult&gt; {
+    let tool = self.registry.get(tool_name)
+        .ok_or_else(|| Error::message(format!(&quot;unknown tool: {tool_name}&quot;)))?;
+    
+    // Validate params against schema
+    let schema = tool.parameters_schema();
+    validate_tool_args(&amp;schema, &amp;params)?;
+    
+    // Execute
+    let result = tool.execute(params).await?;
+    
+    // Truncate output if too large
+    truncate_if_needed(&amp;result, self.max_output_bytes);
+    
+    Ok(result)
+}
+</code></pre>
+<hr>
+<h2>ToolResult</h2>
+<p><strong>Source:</strong> <code>tool_result.rs</code></p>
+<pre><code class="language-rust">pub struct ToolResult {
+    pub success: bool,
+    pub content: String,
+    pub metadata: Option&lt;serde_json::Value&gt;,
+}
+</code></pre>
+<hr>
+<h2>Sanity Checks</h2>
+<p><strong>Source:</strong> <code>sanity_check.rs</code></p>
+<p>Pre-execution checks:</p>
+<ul><li>Path validation (no escaping workspace)</li><li>Command safety (no destructive commands without approval)</li><li>Resource limits</li></ul>
+<hr>
 <h2>Next</h2>
-<p>Continue to <a href="11-native-apps.md">11-native-apps</a> for the native apps documentation.</p>
+<p>Return to <a href="03-gateway-deep.md">03-gateway-deep</a> for the gateway internals.</p>
   </article>
   <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
 </body>
