@@ -29,7 +29,7 @@ Output location: `[src.AI]/<project>/` with `spec.md`, `markdown/`, `html/`, `bu
 | 12 | src.strukto-ai | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.strukto-ai/` | TODO |
 | 13 | superdesign (src.superdesign) | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.superdesign/superdesign/` | DONE — 6 docs, HTML built, grandfather review passed |
 |14| src.opendesign | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Opendesign/` | TODO |
-|15| src.opendesign | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.DesignSkills/` | TODO |
+|15| src.designskills | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.DesignSkills/` | TODO |
 |16| goose | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.block/goose/` | TODO |
 |17| wayfinder | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Wayfinder` | TODO |
 
