@@ -1,32 +1,30 @@
-# What Is steal-a-gif?
+# steal-a-gif: Screen Recording to GIF
 
 Recover a clean, downloadable GIF from a screen recording of a hard-to-download animation.
 
 **Source:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.UIComponents/steal-a-gif/`
 
-## Architecture
+## Pipeline (6 stages)
 
 ```
-Video → Decode → Auto-Crop → BG Remove/Key → Loop Detect → Encode GIF
+Video Upload → Decode → Auto-Crop → BG Remove/Key → Loop Detect → Encode GIF
 ```
-
-## Pipeline Stages
 
 | Stage | File | Purpose |
 |-------|------|---------|
-| Decode | `pipeline/decode.ts` | Decode video frames |
-| Auto-Crop | `pipeline/autoCrop.ts` | Detect and crop to content area |
+| Decode | `pipeline/decode.ts` | Decode video frames via browser Video API |
+| Auto-Crop | `pipeline/autoCrop.ts` | Detect content area, crop margins |
 | BG Remove | `pipeline/removeBackground.ts` | Remove background |
 | BG Key | `pipeline/bgKey.ts` | Chroma key background |
 | Loop Detect | `pipeline/loopDetect.ts` | Find optimal loop points |
-| Encode | `pipeline/encodeGif.ts` | Encode to GIF with gifenc |
+| Encode | `pipeline/encodeGif.ts` | Encode to GIF via gifenc |
 
 ## UI Components
 
 | Component | File | Purpose |
 |-----------|------|---------|
-| CropCanvas | `src/ui/CropCanvas.tsx` | Interactive crop selection |
-| LoopSelector | `src/ui/LoopSelector.tsx` | Loop point selection |
+| `CropCanvas` | `src/ui/CropCanvas.tsx` | Interactive crop selection |
+| `LoopSelector` | `src/ui/LoopSelector.tsx` | Loop point selection |
 
 ## Scripts
 
@@ -35,3 +33,4 @@ Video → Decode → Auto-Crop → BG Remove/Key → Loop Detect → Encode GIF
 | `e2e.cjs` | End-to-end test |
 | `extract-thumbnails.cjs` | Extract video thumbnails |
 | `og-card.cjs` | Generate OG card images |
+| `scroll-test.cjs` | Scroll performance test |

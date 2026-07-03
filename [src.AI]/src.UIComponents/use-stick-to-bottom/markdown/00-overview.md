@@ -1,31 +1,25 @@
-# What Is use-stick-to-bottom?
+# use-stick-to-bottom: Chat Auto-Scroll Hook
 
-A lightweight React Hook for smoothly sticking to the bottom of scrollable containers — ideal for AI chat applications.
+Lightweight React Hook for smoothly sticking to the bottom of scrollable containers — ideal for AI chat applications.
 
 **Source:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.UIComponents/use-stick-to-bottom/`
 
-## Installation
+## API
 
-```bash
-npm install use-stick-to-bottom
-```
-
-## Usage
-
-```tsx
-import { useStickToBottom } from 'use-stick-to-bottom';
+```typescript
+import { useStickToBottom } from 'use-stick-to-bottom'
 
 function Chat() {
-  const { containerRef, contentRef, isSticky } = useStickToBottom();
+  const { containerRef, contentRef, isSticky } = useStickToBottom()
   return (
     <div ref={containerRef} style={{ overflow: 'auto' }}>
       <div ref={contentRef}>{/* messages */}</div>
     </div>
-  );
+  )
 }
 ```
 
-## API
+## Exports
 
 | Export | Type |
 |--------|------|
@@ -36,6 +30,21 @@ function Chat() {
 
 | File | Purpose |
 |------|---------|
-| `src/useStickToBottom.ts` | Main hook |
+| `src/useStickToBottom.ts` | Main hook implementation |
 | `src/StickToBottom.tsx` | Component wrapper |
 | `src/index.ts` | Barrel export |
+
+## Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `smooth` | `boolean` | `true` | Use smooth scrolling |
+| `threshold` | `number` | `50` | Pixel threshold for sticky detection |
+
+## Returns
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `containerRef` | `RefObject` | Ref for scroll container |
+| `contentRef` | `RefObject` | Ref for scroll content |
+| `isSticky` | `boolean` | Whether currently at bottom |

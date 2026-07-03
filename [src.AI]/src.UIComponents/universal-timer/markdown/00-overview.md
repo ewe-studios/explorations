@@ -1,27 +1,35 @@
-# What Is universal-timer?
+# universal-timer: macOS Menu Bar Time Tracker
 
-A lightweight menu bar time tracker for macOS built with Electron.
+Lightweight menu bar time tracker for macOS built with Electron.
 
 **Source:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.UIComponents/universal-timer/`
 
 ## Architecture
 
 ```
-Main Process (Node.js)          Renderer (Browser)
-├── index.ts (entry)            ├── index.html
-├── app-state.ts                └── IPC → Main
-├── timer-state.ts
-├── timer-actions.ts
-├── ipc-handlers.ts
-├── storage.ts (SQLite)
-├── event-cache.ts
-├── event-processing.ts
-└── window-actions.ts
+src/
+├── main/                    ← Electron main process
+│   ├── index.ts             ← Entry point, window creation
+│   ├── app-state.ts         ← Application state
+│   ├── timer-state.ts       ← Timer state (idle/running/paused/stopped)
+│   ├── timer-actions.ts     ← Start/stop/pause/resume
+│   ├── ipc-handlers.ts      ← IPC handler registration
+│   ├── storage.ts           ← SQLite storage
+│   ├── event-cache.ts       ← Event caching
+│   ├── event-processing.ts  ← Event aggregation
+│   └── window-actions.ts    ← Window management
+├── preload/
+│   └── index.ts             ← Context bridge
+└── shared/
+    └── types.ts             ← Shared TypeScript types
 ```
 
 ## Timer State Machine
 
-`idle` → `running` → `paused` → `stopped`
+```
+idle → running → paused → stopped
+  ↑_______________|
+```
 
 ## Storage
 

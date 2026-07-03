@@ -11,34 +11,17 @@ license: MIT
 
 - **Location:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.UIComponents/universal-timer/`
 - **Language:** TypeScript/Electron
+- **Files:** 42
 - **License:** MIT
-- **Files:** 78
 
 ## What universal-timer Is
 
-A lightweight menu bar time tracker for macOS built with Electron.
-
-## Documentation Structure
-
-```
-universal-timer/
-├── spec.md
-├── markdown/
-│   ├── README.md
-│   ├── 00-overview.md
-│   ├── 01-main-process.md
-│   └── 02-preload.md
-├── html/
-└── build.py
-```
+macOS menu bar time tracker built with Electron.
 
 ## Tasks
 
 | # | Document | Status |
 |---|----------|--------|
-| 1 | README.md | TODO |
-| 2 | 00-overview.md | TODO |
-| 3 | 01-main-process.md | TODO |
-| 4 | 02-preload.md | TODO |
-| 5 | HTML | TODO |
-| 6 | Review | TODO |
+| 1 | README + 00-overview | TODO |
+| 2 | HTML | TODO |
+| 3 | Review | TODO |

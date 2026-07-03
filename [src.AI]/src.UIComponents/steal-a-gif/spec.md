@@ -11,34 +11,17 @@ license: MIT
 
 - **Location:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.UIComponents/steal-a-gif/`
 - **Language:** TypeScript/React
+- **Files:** 35
 - **License:** MIT
-- **Files:** 43
 
 ## What steal-a-gif Is
 
-Recover a clean, downloadable GIF from a screen recording of a hard-to-download animation.
-
-## Documentation Structure
-
-```
-steal-a-gif/
-├── spec.md
-├── markdown/
-│   ├── README.md
-│   ├── 00-overview.md
-│   ├── 01-pipeline.md
-│   └── 02-ui.md
-├── html/
-└── build.py
-```
+Recover clean GIFs from screen recordings via browser-based pipeline.
 
 ## Tasks
 
 | # | Document | Status |
 |---|----------|--------|
-| 1 | README.md | TODO |
-| 2 | 00-overview.md | TODO |
-| 3 | 01-pipeline.md | TODO |
-| 4 | 02-ui.md | TODO |
-| 5 | HTML | TODO |
-| 6 | Review | TODO |
+| 1 | README + 00-overview | TODO |
+| 2 | HTML | TODO |
+| 3 | Review | TODO |

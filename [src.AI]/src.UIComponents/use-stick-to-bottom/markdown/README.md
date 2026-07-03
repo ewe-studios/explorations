@@ -9,5 +9,4 @@ React hook for chat auto-scroll.
 
 ## Navigation
 
-- **[00-overview](00-overview.md)** — What use-stick-to-bottom is
-- **[01-api](01-api.md)** — Hook API, component wrapper, demo
+- **[00-overview](00-overview.md)** — Hook API, usage

@@ -1,25 +1,10 @@
-# What Is performativeUI?
+# performativeUI: AI-Native Landing Page Components
 
-AI-native React components that signal how oversubscribed your funding round is. Tongue firmly in cheek.
+27 React components for startup landing pages. Tongue firmly in cheek.
 
 **Source:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.UIComponents/performativeUI/`
 
-## Installation
-
-```bash
-npm install performative-ui
-# or
-pnpm add performative-ui
-```
-
-## Usage
-
-```tsx
-import { Button, GradientText, ChatBubble, TokenStream } from 'performative-ui';
-import 'performative-ui/styles.css';
-```
-
-## Component Categories
+## Components (27 exports)
 
 | Category | Components |
 |----------|-----------|
@@ -29,11 +14,35 @@ import 'performative-ui/styles.css';
 | Backgrounds | Aurora, NodeGraphBackground, FloatingSparkles |
 | Surfaces | GlassCard, MockIDE |
 | Conversation | ChatBubble, TokenStream, WibblingSpinner, ChatFAB |
-| Social proof | LogoMarquee, LogoRow, SlippyWords, StatCounter, CommunityBadge |
+| Social Proof | LogoMarquee, LogoRow, SlippyWords, StatCounter, CommunityBadge |
 | Menus | Temperature |
 | Pricing | PricingCard, BeforeAfter, WaitlistForm, Popover |
 | Footers | BigBack |
-| Hooks | useTypewriter, useCounter, useTokenStream, useAsciiField |
-| Utilities | cn (class merging) |
 
-**Source:** `src/index.ts` (35 exports).
+## Hooks (4 exports)
+
+| Hook | Purpose |
+|------|---------|
+| `useTypewriter` | Typewriter effect animation |
+| `useCounter` | Animated counter animation |
+| `useTokenStream` | Token streaming animation |
+| `useAsciiField` | ASCII art field animation |
+
+## Utility
+
+```typescript
+export { cn, type ClassValue } from "./utils/cn"  // clsx + tailwind-merge
+```
+
+## Installation
+
+```bash
+npm install performative-ui
+import 'performative-ui/styles.css'  // Auto-includes all component styles
+```
+
+## Usage
+
+```tsx
+import { Button, GradientText, ChatBubble, TokenStream, useTypewriter } from 'performative-ui'
+```
