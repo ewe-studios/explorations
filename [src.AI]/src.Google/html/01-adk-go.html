@@ -133,9 +133,9 @@
   </nav>
   <article class="prose">
 <h1>adk-go — Google's Agent Development Kit for Go</h1>
-<p><strong>adk-go is Google's official Go SDK for building, evaluating, and deploying AI agents.</strong> It's a code-first, modular, multi-agent framework optimized for Gemini but model-agnostic. The architecture separates agents (the <code>Agent</code> interface), models (the <code>model.LLM</code> interface), sessions (persistent conversation storage), memory (cross-session knowledge), and artifacts (versioned file storage). The runner ties everything together: it finds the correct agent in the tree via <code>findAgentToRun()</code>, manages session persistence, streams events, and handles agent-to-agent transfers.</p>
-<p>Source: <code>adk-go/</code> — <code>agent/agent.go</code> (core interface), <code>agent/llmagent/llmagent.go</code> (primary agent type), <code>runner/runner.go</code> (orchestration)</p>
-<h2>The Agent Interface — Universal Contract</h2>
+<p><strong>adk-go is Google's official Go SDK for building AI agents — a code-first, multi-agent framework where the Agent tree acts as a routing topology, not just a containment hierarchy.</strong> The architecture has three layers that must be understood to use ADK correctly: the public interfaces (agent, model, tool, session), the internal <code>Flow</code> (a pipeline of 12 ordered request processors + 2 response processors that transform a raw invocation into an LLM call), and the <code>Runner</code> (which finds the correct agent in the tree, builds the <code>InvocationContext</code>, and persists events to SQLite or Vertex AI). Every layer leaks its design decisions upward — if you don't understand the Flow, you can't debug why your tool isn't being called.</p>
+<p>Source: <code>adk-go/</code> — <code>agent/agent.go</code>, <code>internal/llminternal/base_flow.go</code>, <code>runner/runner.go</code>, <code>session/session.go</code>, <code>tool/tool.go</code></p>
+<h2>1. The Agent Interface</h2>
 <pre><code class="language-go">// agent/agent.go:43-52
 type Agent interface {
     Name() string
@@ -147,24 +147,15 @@ type Agent interface {
     internal() *agent
 }
 </code></pre>
-<p><strong>Every agent in the ADK ecosystem implements these 6 methods.</strong> <code>Run()</code> returns an <code>iter.Seq2</code> — a Go 1.23 rangefunc-style iterator that yields <code>*session.Event</code> values with potential errors. This is the streaming primitive: instead of returning a single result, the agent produces a sequence of events (tool calls, text chunks, state changes) that the runner can stream to the UI or persist to storage.</p>
-<div class="mermaid">
-flowchart TD
-    Runner[&quot;Runner.Run()&quot;] --&gt; Find[&quot;findAgentToRun()&lt;br/&gt;Scan session history backward&lt;br/&gt;Find last non-user event agent&quot;]
-    Find --&gt; Agent[&quot;agent.Run(ctx)&quot;]
-    Agent --&gt; Seq[&quot;iter.Seq2[*Event, error]&lt;br/&gt;Streaming event sequence&quot;]
-    Seq --&gt; Events[&quot;Event types:&lt;br/&gt;• Text chunks&lt;br/&gt;• Tool calls + responses&lt;br/&gt;• State deltas&lt;br/&gt;• Transfer events&lt;br/&gt;• Errors&quot;]
-    Events --&gt; Persist[&quot;SessionService.AppendEvent()&lt;br/&gt;Persist non-partial events&quot;]
-    Events --&gt; Stream[&quot;Stream to UI&lt;br/&gt;Partial events visible in UI&lt;br/&gt;Not persisted&quot;]
-
-</div>
-<h3>Agent::New — the Custom Agent Constructor</h3>
+<h3>How Create-Time Validation Works</h3>
 <pre><code class="language-go">// agent/agent.go:55-74
 func New(cfg Config) (Agent, error) {
     subAgentSet := make(map[Agent]bool)
     for _, subAgent := range cfg.SubAgents {
         if _, ok := subAgentSet[subAgent]; ok {
-            return nil, fmt.Errorf(&quot;subagent %q appears multiple times&quot;, subAgent.Name())
+            return nil, fmt.Errorf(
+                &quot;error creating agent: subagent %q appears multiple times in subAgents&quot;,
+                subAgent.Name())
         }
         subAgentSet[subAgent] = true
     }
@@ -174,277 +165,448 @@ func New(cfg Config) (Agent, error) {
         beforeAgentCallbacks: cfg.BeforeAgentCallbacks,
         run: cfg.Run,
         afterAgentCallbacks: cfg.AfterAgentCallbacks,
+        State: agentinternal.State{
+            AgentType: agentinternal.TypeCustomAgent,
+        },
     }, nil
 }
 </code></pre>
-<p><strong>Aha:</strong> Duplicate sub-agents are detected at construction time, not at runtime. The check <code>subAgentSet[subAgent]</code> uses a set to catch the most common configuration error — registering the same agent twice — before any LLM calls are made.</p>
-<h3>Config — What Defines an Agent</h3>
+<h3>Config — Every Field Used by the Runner</h3>
 <pre><code class="language-go">// agent/agent.go:77-107
 type Config struct {
-    Name        string           // Must be non-empty, unique in tree. Cannot be &quot;user&quot;
-    Description string           // One-liner. LLM uses this to decide delegation
-    SubAgents   []Agent          // Child agents. ADK auto-sets parent relationship
-    
-    BeforeAgentCallbacks []BeforeAgentCallback  // Can short-circuit: return non-nil → skip agent run
+    Name        string
+    Description string    // MUST be one line. The LLM reads this to decide delegation.
+    SubAgents   []Agent   // ADK auto-sets parent on each sub-agent for tree traversal.
+
+    BeforeAgentCallbacks []BeforeAgentCallback  // Return non-nil → skip agent Run entirely
     Run func(InvocationContext) iter.Seq2[*session.Event, error]
-    AfterAgentCallbacks  []AfterAgentCallback   // Post-run: logging, metrics, cleanup
+    AfterAgentCallbacks  []AfterAgentCallback
 }
 </code></pre>
-<p><strong>Aha:</strong> Agent names cannot be <code>"user"</code> — it's reserved. The LLM uses the <code>Description</code> field (one line) to determine whether to transfer control to a sub-agent. This is the delegation mechanism: the LLM sees sub-agent descriptions and decides which one should handle the current task.</p>
-<h2>LLMAgent — The Primary Agent Type</h2>
-<p><code>LLMAgent</code> is the agent type that wraps an LLM model. It's created via <code>llmagent.New(cfg Config)</code>:</p>
-<pre><code class="language-go">// agent/llmagent/llmagent.go:34-127
-func New(cfg Config) (agent.Agent, error) {
-    // Convert public callbacks → internal callbacks
-    beforeModelCallbacks := make([]llminternal.BeforeModelCallback, 0, len(cfg.BeforeModelCallbacks))
-    // ... same for afterModel, onModelError, beforeTool, afterTool, onToolError
-    
-    a := &amp;llmAgent{
-        model: cfg.Model,
-        beforeModelCallbacks:  beforeModelCallbacks,
-        afterModelCallbacks:   afterModelCallbacks,
-        onModelErrorCallbacks: onModelErrorCallbacks,
-        beforeToolCallbacks:   beforeToolCallbacks,
-        afterToolCallbacks:    afterToolCallbacks,
-        onToolErrorCallbacks:  onToolErrorCallback,
-        instruction:           cfg.Instruction,
-        inputSchema:           cfg.InputSchema,
-        outputSchema:          cfg.OutputSchema,
-        State: llminternal.State{
-            Model: cfg.Model,
-            GenerateContentConfig: cfg.GenerateContentConfig,
-            Tools: cfg.Tools, Toolsets: cfg.Toolsets,
-            DisallowTransferToParent: cfg.DisallowTransferToParent,
-            DisallowTransferToPeers:  cfg.DisallowTransferToPeers,
-            IncludeContents:      string(cfg.IncludeContents),
-            Instruction:          cfg.Instruction,
-            GlobalInstruction:    cfg.GlobalInstruction,
-            OutputKey:            cfg.OutputKey,
+<p><code>AfterAgentCallbacks</code> closes over the <code>Config</code> pointer via <code>defer pluginManager.RunAfterRunCallback(ctx)</code> — plugins can read the final event sequence to compute quality metrics or log token usage.</p>
+<h3>InvocationContext</h3>
+<pre><code class="language-go">// agent/context.go (interface, generated from internal)
+type InvocationContext interface {
+    context.Context              // Deadlines, cancellation, values
+    Agent() Agent               // The agent currently running (may differ from root)
+    Artifacts() Artifacts       // Versioned file store
+    Memory() Memory             // Cross-session memory scoped to user+app
+    Session() Session           // The session this invocation belongs to
+    InvocationID() string       // UUID for tracing
+    Branch() string             // Dotted agent path: &quot;root_agent.coding_agent&quot;
+    UserContent() *genai.Content // The user&#x27;s message
+    RunConfig() *RunConfig       // Streaming mode, save artifacts, etc.
+    EndInvocation()              // Signal runner to stop early
+    State() map[string]any      // Shared mutable KV across the agent tree
+}
+</code></pre>
+<p><strong>Aha: <code>Branch()</code> encodes the agent delegation path as a dotted string.</strong> When the root agent transfers to <code>coding_agent</code>, the branch becomes <code>"root.coding_agent"</code>. All events are stamped with this branch. In <code>buildContentsDefault()</code>, the branch filter prunes events that don't belong to the current agent's branch — this is how peer agents are isolated from each other's conversation history.</p>
+<h2>2. LLMAgent — 40+ Configuration Fields</h2>
+<p><code>llmagent.Config</code> wraps the base <code>agent.Config</code> with every LLM-specific option:</p>
+<pre><code class="language-go">// agent/llmagent/llmagent.go:130+
+type Config struct {
+    // --- Base agent fields ---
+    Name, Description string; SubAgents []agent.Agent
+    Before/AfterAgentCallbacks
+
+    // --- Model ---
+    Model  model.LLM                     // e.g., gemini.NewModel()
+    Tools  []tool.Tool                   // Function tools registered inline
+    Toolsets []tool.Toolset             // Dynamic tool sets — this is how MCP tools arrive
+
+    // --- Instructions ---
+    Instruction string    // System prompt. Template-safe: {{.State.key}} works.
+    InstructionProvider func(ctx) string  // Called per-turn for dynamic instructions
+    GlobalInstruction string              // Only on root agent. Applies to entire tree.
+    GlobalInstructionProvider func(ctx) string
+
+    // --- Schema constraints ---
+    InputSchema  *genai.Schema   // Pydantic-style: validate user input against this
+    OutputSchema *genai.Schema   // Structured output enforcement (response_mime_type=json)
+    OutputKey    string          // Auto-save final text output to session.State under this key
+
+    // --- Content control ---
+    IncludeContents IncludeContents  // &quot;default&quot; | &quot;all&quot; | &quot;none&quot;
+    // &quot;default&quot; — full conversation history
+    // &quot;all&quot;     — includes peer agent events
+    // &quot;none&quot;    — only the current turn (fresh context, no history)
+
+    // --- Transfer control ---
+    DisallowTransferToParent bool  // Prevent this agent from transferring to parent
+    DisallowTransferToPeers  bool  // Prevent this agent from transferring to siblings
+
+    // --- Callback chains: 6 distinct interception points ---
+    BeforeModelCallbacks  []BeforeModelCallback   // Return non-nil → cached response, skip LLM
+    AfterModelCallbacks   []AfterModelCallback    // Log tokens, validate, transform
+    OnModelErrorCallbacks []OnModelErrorCallback  // Retry logic, fallback models
+    BeforeToolCallbacks   []BeforeToolCallback    // Intercept args, add auth headers, skip
+    AfterToolCallbacks    []AfterToolCallback     // Validate result, log, transform
+    OnToolErrorCallbacks  []OnToolErrorCallback   // Fallback, retry, report
+
+    // --- Generation config ---
+    GenerateContentConfig *genai.GenerateContentConfig  // Temperature, topP, topK, maxOutputTokens, etc.
+}
+</code></pre>
+<h3>How the 6 Callback Chains Compose</h3>
+<pre><code class="language-">BeforeModelCallbacks[i] → AfterModelCallbacks[i] ≠ BeforeToolCallbacks[j] → AfterToolCallbacks[j]
+</code></pre>
+<p>Model and tool callbacks are separate chains. A <code>BeforeModelCallback</code> returning <code>(cachedResponse, nil)</code> skips the LLM call entirely — the cached response is yielded as if the model produced it. This is the caching primitive: intercept the request, check a cache key (e.g., hash of messages), return the cached <code>LLMResponse</code>.</p>
+<pre><code class="language-go">// internal/llminternal/base_flow.go:50-60
+type BeforeModelCallback func(
+    ctx agent.CallbackContext, llmRequest *model.LLMRequest,
+) (*model.LLMResponse, error)
+
+type AfterModelCallback func(
+    ctx agent.CallbackContext, llmResponse *model.LLMResponse,
+    llmResponseError error,
+) (*model.LLMResponse, error)
+
+type OnModelErrorCallback func(
+    ctx agent.CallbackContext, llmRequest *model.LLMRequest,
+    llmResponseError error,
+) (*model.LLMResponse, error)
+</code></pre>
+<p><strong>Aha: Error callbacks can recover.</strong> <code>OnModelErrorCallback</code> returns <code>*model.LLMResponse</code> — if it returns a non-nil response, the error is suppressed and the agent continues with that response. This is how fallback model routing works: on 429, the callback can call a different model and return its response.</p>
+<h2>3. The Flow — 12 Request Processors in Strict Order</h2>
+<p>This is the internal pipeline that transforms an <code>InvocationContext</code> into an LLM call. Every LLMAgent runs through these processors. The order is fixed and load-bearing.</p>
+<pre><code class="language-go">// internal/llminternal/base_flow.go:62-98
+type Flow struct {
+    Model model.LLM
+    Tools []tool.Tool
+    RequestProcessors  []func(ctx, req, f) iter.Seq2[*session.Event, error]  // 12 stages
+    ResponseProcessors []func(ctx, req, resp) error                          // 2 stages
+    Before/AfterModelCallbacks, OnModelErrorCallbacks
+    Before/AfterToolCallbacks, OnToolErrorCallbacks
+}
+
+var DefaultRequestProcessors = []func(...){
+    basicRequestProcessor,              // 1.  Set model, config, system instruction
+    toolProcessor,                      // 2.  Resolve Tools/Toolsets → f.Tools
+    authPreprocessor,                   // 3.  Inject auth tokens into tool schemas
+    RequestConfirmationRequestProcessor,// 4.  Add tool confirmation prompts
+    instructionsRequestProcessor,       // 5.  Inject Instruction + InstructionProvider
+    identityRequestProcessor,           // 6.  Inject agent identity (name, description)
+    ContentsRequestProcessor,           // 7.  Build Contents from session.Events
+    nlPlanningRequestProcessor,         // 8.  NL Planning: multi-step decomposition
+    codeExecutionRequestProcessor,      // 9.  Code execution data file optimization
+    outputSchemaRequestProcessor,       // 10. Enforce OutputSchema on the request
+    AgentTransferRequestProcessor,      // 11. Add transfer_to_agent tool if sub-agents exist
+    removeDisplayNameIfExists,          // 12. Strip display_name from tools (API compat)
+}
+
+var DefaultResponseProcessors = []func(...){
+    nlPlanningResponseProcessor,        // Unmark planning thought contents
+    codeExecutionResponseProcessor,     // Post-process code execution results
+}
+</code></pre>
+<h3>Processor 7: ContentsRequestProcessor — The Conversation Builder</h3>
+<pre><code class="language-go">// internal/llminternal/contents_processor.go:36-63
+func ContentsRequestProcessor(ctx agent.InvocationContext, req *model.LLMRequest, f *Flow) iter.Seq2[*session.Event, error] {
+    return func(yield func(*session.Event, error) bool) {
+        llmAgent := asLLMAgent(ctx.Agent())
+        if llmAgent == nil { return }
+        fn := buildContentsDefault
+        if llmAgent.internal().IncludeContents == &quot;none&quot; {
+            fn = buildContentsCurrentTurnContextOnly
+        }
+        var events []*session.Event
+        if ctx.Session() != nil {
+            for e := range ctx.Session().Events().All() {
+                events = append(events, e)
+            }
+        }
+        contents, err := fn(ctx.Agent().Name(), ctx.Branch(), events)
+        // ...
+        req.Contents = append(req.Contents, contents...)
+    }
+}
+</code></pre>
+<p><code>buildContentsDefault</code> does six things to every event before it reaches the LLM:</p>
+<pre><code class="language-go">// internal/llminternal/contents_processor.go:67-94
+func buildContentsDefault(agentName, invocationBranch string, events []*session.Event) ([]*genai.Content, error) {
+    var filtered []*session.Event
+    for _, ev := range events {
+        content := utils.Content(ev)
+        // 1. SKIP events with no content AND no transcription
+        if (content == nil || content.Role == &quot;&quot; || len(content.Parts) == 0) &amp;&amp;
+            ev.LLMResponse.InputTranscription == nil &amp;&amp;
+            ev.LLMResponse.OutputTranscription == nil { continue }
+        // 2. SKIP events not on this agent&#x27;s branch
+        if !eventBelongsToBranch(invocationBranch, ev) { continue }
+        // 3. SKIP excluded events (tool confirmations, etc.)
+        if shouldExcludeEvent(ev) { continue }
+        // 4. CONVERT foreign agent replies into user messages
+        if isOtherAgentReply(agentName, ev) {
+            filtered = append(filtered, ConvertForeignEvent(ev))
+        } else {
+            filtered = append(filtered, ev)
+        }
+    }
+    // 5. AGGREGATE transcription events into text Content
+    // 6. POST-PROCESS function calls/responses
+}
+</code></pre>
+<p><strong>Aha: Foreign agent replies become user messages.</strong> When agent A transfers to agent B, agent B sees A's response as if it were a user message — <code>ConvertForeignEvent(ev)</code> changes the role from <code>assistant</code> to <code>user</code>. This is the abstraction that makes the transfer seamless: agent B doesn't know it's receiving a delegated task; it thinks the user asked directly.</p>
+<h3>Processor 11: AgentTransferRequestProcessor — The Delegation Mechanism</h3>
+<pre><code class="language-go">// internal/llminternal/agent_transfer.go:69-97
+func AgentTransferRequestProcessor(ctx agent.InvocationContext, req *model.LLMRequest, f *Flow) iter.Seq2[*session.Event, error] {
+    return func(yield func(*session.Event, error) bool) {
+        agent := ctx.Agent()
+        if !shouldUseAutoFlow(agent) { return }
+        parents := parentmap.FromContext(ctx)
+        targets := transferTargets(agent, parents[agent.Name()])
+        if len(targets) == 0 { return }
+        transferToAgentTool, err := NewTransferToAgentTool(agent, parents[agent.Name()], targets)
+        // ...
+        utils.AppendInstructions(req, transferToAgentTool.instructions)
+        appendTools(req, transferToAgentTool)
+    }
+}
+</code></pre>
+<p>This processor dynamically injects a <code>transfer_to_agent</code> tool into every LLM call — but only if the agent has sub-agents or an accessible parent/peers. The tool's <code>Declaration()</code> method generates a Gemini function declaration whose <code>agent_name</code> enum is the list of valid transfer targets:</p>
+<pre><code class="language-go">// internal/llminternal/agent_transfer.go:135-151
+func (t *TransferToAgentTool) Declaration() *genai.FunctionDeclaration {
+    return &amp;genai.FunctionDeclaration{
+        Name:        t.Name(),                           // &quot;transfer_to_agent&quot;
+        Description: t.Description(),
+        Parameters: &amp;genai.Schema{
+            Type: genai.TypeObject,
+            Properties: map[string]*genai.Schema{
+                &quot;agent_name&quot;: {
+                    Type: genai.TypeString,
+                    Description: &quot;the agent name to transfer to&quot;,
+                    Enum: t.enums(),                     // [&quot;coder&quot;, &quot;reviewer&quot;, &quot;parent&quot;]
+                },
+            },
+            Required: []string{&quot;agent_name&quot;},
         },
     }
-    // ... wraps in base agent.New
 }
 </code></pre>
-<h3>LLMAgent Config — Every Option</h3>
-<pre><code class="language-go">// agent/llmagent/llmagent.go:130-200+
-type Config struct {
-    Name, Description string
-    Model  model.LLM                     // The LLM to use
-    Tools  []tool.Tool                   // Inline tool definitions
-    Toolsets []tool.Toolset              // Tool sets (can include MCP toolsets)
-    SubAgents []agent.Agent
-    
-    Instruction              string       // System instruction
-    InstructionProvider      func(ctx) string  // Dynamic instruction
-    GlobalInstruction        string       // Root-only, applies to entire agent tree
-    GlobalInstructionProvider func(ctx) string
-    
-    GenerateContentConfig *genai.GenerateContentConfig  // Temperature, topP, etc.
-    
-    InputSchema  *genai.Schema  // Structured input validation
-    OutputSchema *genai.Schema  // Structured output enforcement
-    OutputKey    string          // Auto-save final output to session state
-    
-    IncludeContents IncludeContents  // &quot;default&quot;, &quot;all&quot;, &quot;none&quot;
-    
-    DisallowTransferToParent bool  // Prevent transfer up the tree
-    DisallowTransferToPeers  bool  // Prevent transfer to sibling agents
-    
-    // Callback chains — each can return non-nil to short-circuit
-    BeforeModelCallbacks  []BeforeModelCallback   // Cache, transform, or skip LLM call
-    AfterModelCallbacks   []AfterModelCallback    // Log, validate, post-process
-    OnModelErrorCallbacks []OnModelErrorCallback  // Retry, fallback, report
-    BeforeToolCallbacks   []BeforeToolCallback    // Intercept or transform tool calls
-    AfterToolCallbacks    []AfterToolCallback     // Log, validate tool results
-    OnToolErrorCallbacks  []OnToolErrorCallback   // Handle tool failures
-    BeforeAgentCallbacks  []agent.BeforeAgentCallback
-    AfterAgentCallbacks   []agent.AfterAgentCallback
+<p>When the LLM calls <code>transfer_to_agent(agent_name="coder")</code>, the tool's <code>Run()</code> method sets <code>ctx.Actions().TransferToAgent = "coder"</code>. The runner then routes the next turn to that agent via <code>findAgentToRun()</code>.</p>
+<p><strong>Aha: Peer transfers require a specific parent type.</strong> <code>transferTargets()</code> checks that the parent is ALSO an <code>LLMAgent</code> before allowing peer transfers — if the parent is a custom agent, peers can't see each other.</p>
+<pre><code class="language-go">// internal/llminternal/agent_transfer.go:185-200
+func transferTargets(agent, parent agent.Agent) []agent.Agent {
+    targets := slices.Clone(agent.SubAgents())
+    llmAgent := asLLMAgent(agent)
+    llmParent := asLLMAgent(parent)
+    if llmParent == nil { return targets }         // No parent → no peer/parent transfers
+    if !llmAgent.internal().DisallowTransferToParent {
+        targets = append(targets, parent)           // Can transfer up
+    }
+    // Peer transfers only when parent is LLMAgent AND DisallowTransferToPeers is false
+    if llmParent != nil &amp;&amp; !llmAgent.internal().DisallowTransferToPeers {
+        for _, sib := range parent.SubAgents() {
+            if sib.Name() != agent.Name() { targets = append(targets, sib) }
+        }
+    }
+    return targets
 }
 </code></pre>
-<p><strong>Aha: OutputKey.</strong> When <code>OutputKey</code> is set, the agent's final text output is automatically saved to session state under that key. Downstream agents and tools can read it. This is the composition primitive — agent A produces <code>OutputKey: "analysis"</code>, agent B reads <code>state["analysis"]</code> from session state.</p>
-<p><strong>Aha: DisallowTransferToParent/Peers.</strong> These two booleans define the security boundary of agent delegation. <code>DisallowTransferToParent: true</code> means a sub-agent can't escalate to the parent. <code>DisallowTransferToPeers: true</code> means sibling agents can't call each other. Together they create strict hierarchical routing.</p>
-<h3>Callback Lifecycle</h3>
-<div class="mermaid">
-flowchart TD
-    Start[&quot;Agent.Run(ctx)&quot;] --&gt; BeforeAgent[&quot;BeforeAgentCallbacks&lt;br/&gt;Can short-circuit entire run&quot;]
-    BeforeAgent --&gt;|&quot;non-nil&quot;| Skip[&quot;Skip agent run&lt;br/&gt;Create event from callback result&quot;]
-    BeforeAgent --&gt;|&quot;nil&quot;| Run[&quot;Execute agent logic&quot;]
+<h2>4. The Streaming Response Aggregator</h2>
+<p>The <code>streamingResponseAggregator</code> is the bridge between Gemini's streaming chunks and ADK's discrete events. Gemini streams partial <code>GenerateContentResponse</code> chunks — text arrives character by character, function call arguments arrive as JSONPath-patched partial objects. The aggregator accumulates these into complete <code>LLMResponse</code> values.</p>
+<pre><code class="language-go">// internal/llminternal/stream_aggregator.go:33-50
+type streamingResponseAggregator struct {
+    usageMetadata     *genai.GenerateContentResponseUsageMetadata
+    groundingMetadata *genai.GroundingMetadata
+    citationMetadata  *genai.CitationMetadata
+    response          *model.LLMResponse
 
-    Run --&gt; BeforeModel[&quot;BeforeModelCallbacks&lt;br/&gt;Can return cached response&lt;br/&gt;→ skip LLM call&quot;]
-    BeforeModel --&gt;|&quot;non-nil&quot;| SkipModel[&quot;Skip LLM, use cached&quot;]
-    BeforeModel --&gt;|&quot;nil&quot;| LLM[&quot;model.LLM.GenerateContent()&quot;]
+    currentThoughtSignature []byte           // Thought signature from Gemini 3 thinking
+    sequence               []*genai.Part     // Accumulated complete parts
+    currentTextBuffer      string            // Text being streamed in
+    currentTextIsThought   bool              // Whether current text is a &quot;thought&quot; block
+    finishReason           genai.FinishReason
 
-    LLM --&gt; AfterModel[&quot;AfterModelCallbacks&lt;br/&gt;Log tokens, validate, post-process&quot;]
-    LLM --&gt;|&quot;error&quot;| OnModelError[&quot;OnModelErrorCallbacks&lt;br/&gt;Retry? Fallback?&quot;]
+    currentFunctionName             string             // Function being streamed
+    currentFunctionID               string             // Call ID for the function
+    currentFunctionArgs             map[string]any     // Partial args being built via JSONPath
+    currentFunctionThoughtSignature []byte
+}
+</code></pre>
+<h3>How Partial Function Call Args Accumulate</h3>
+<p>When Gemini streams a function call, arguments arrive as <code>PartialArg</code> chunks — each chunk says "set <code>$.args.name</code> to <code>"Jo"</code>". The aggregator walks JSONPath into <code>currentFunctionArgs</code>:</p>
+<pre><code class="language-go">// internal/llminternal/stream_aggregator.go:149-172
+func (s *streamingResponseAggregator) processStreamingFunctionCallPart(part *genai.Part) {
+    if part.FunctionCall.Name != &quot;&quot; { s.currentFunctionName = part.FunctionCall.Name }
+    if part.FunctionCall.ID != &quot;&quot; { s.currentFunctionID = part.FunctionCall.ID }
+    for _, arg := range part.FunctionCall.PartialArgs {
+        jsonPath := arg.JsonPath        // e.g., &quot;$.args.recipient.name&quot;
+        if jsonPath == &quot;&quot; { continue }
+        value, ok := s.getValueFromPartialArg(arg, jsonPath)
+        if !ok { continue }
+        s.setValueByJSONPath(jsonPath, value)  // Walk/recurse into map[string]any
+    }
+    if part.FunctionCall.WillContinue != nil &amp;&amp; *part.FunctionCall.WillContinue {
+        return  // More chunks coming — keep accumulating
+    }
+    s.flushTextBufferToSequence()
+    s.flushFunctionCallToSequence()  // Emit complete FunctionCall part
+}
+</code></pre>
+<p><strong>Aha: Text and function call parts are interleaved during streaming.</strong> Gemini can alternate: text chunk → function call chunk → text chunk. The aggregator handles this by flushing buffered text before and after each function call emission. The <code>sequence</code> slice preserves the order in which complete parts arrived.</p>
+<h3>The Aggregate-and-Yield Pattern</h3>
+<pre><code class="language-go">// internal/llminternal/stream_aggregator.go:59-77
+func (s *streamingResponseAggregator) ProcessResponse(ctx context.Context,
+    genResp *genai.GenerateContentResponse) iter.Seq2[*model.LLMResponse, error] {
+    return func(yield func(*model.LLMResponse, error) bool) {
+        resp := converters.Genai2LLMResponse(genResp)
+        if len(genResp.Candidates) &gt; 0 {
+            candidate := genResp.Candidates[0]
+            resp.TurnComplete = candidate.FinishReason != &quot;&quot;
+        }
+        // MAY yield an intermediate aggregated response (partial function call ready)
+        if aggrResp := s.aggregateResponse(resp); aggrResp != nil {
+            if !yield(aggrResp, nil) { return }
+        }
+        // ALWAYS yield the raw GenAI→LLMResponse conversion
+        if !yield(resp, nil) { return }
+    }
+}
+</code></pre>
+<p>Each streaming chunk can produce 0–2 yield events: an intermediate aggregated event (when a complete part is ready) plus the raw response. The runner ignores intermediate partials for persistence — only <code>!event.LLMResponse.Partial</code> events are committed to session storage.</p>
+<h2>5. The Runner — From User Message to Agent Tree</h2>
+<pre><code class="language-go">// runner/runner.go:131-267
+func (r *Runner) Run(ctx context.Context, userID, sessionID string, msg *genai.Content,
+    cfg agent.RunConfig, opts ...RunOption) iter.Seq2[*session.Event, error] {
+    return func(yield func(*session.Event, error) bool) {
+        // 1. Get or create session
+        getResp, err := r.sessionService.Get(ctx, &amp;session.GetRequest{...})
+        if err != nil {
+            if !r.autoCreateSession { yield(nil, err); return }
+            createResp, err := r.sessionService.Create(ctx, &amp;session.CreateRequest{...})
+            storedSession = createResp.Session
+        } else { storedSession = getResp.Session }
 
-    AfterModel --&gt; ToolLoop{&quot;Has tool calls?&quot;}
-    ToolLoop --&gt;|&quot;yes&quot;| BeforeTool[&quot;BeforeToolCallbacks&lt;br/&gt;Intercept, transform, or skip&quot;]
-    BeforeTool --&gt; Execute[&quot;Execute tool&quot;]
-    Execute --&gt; AfterTool[&quot;AfterToolCallbacks&lt;br/&gt;Validate, log result&quot;]
-    Execute --&gt;|&quot;error&quot;| OnToolError[&quot;OnToolErrorCallbacks&quot;]
-    AfterTool --&gt; ToolLoop
-    ToolLoop --&gt;|&quot;no&quot;| AfterAgent[&quot;AfterAgentCallbacks&lt;br/&gt;Final logging, cleanup, metrics&quot;]
+        // 2. Find which agent should run — NOT always the root
+        agentToRun, err := r.findAgentToRun(storedSession, msg)
 
-</div>
-<h2>Runner — The Orchestration Layer</h2>
-<pre><code class="language-go">// runner/runner.go:79-111
-func New(cfg Config) (*Runner, error) {
-    if cfg.Agent == nil { return nil, fmt.Errorf(&quot;root agent is required&quot;) }
-    if cfg.SessionService == nil { return nil, fmt.Errorf(&quot;session service is required&quot;) }
-    
-    parents, err := parentmap.New(cfg.Agent)  // Build agent tree
-    // ... create plugin manager
-    
-    return &amp;Runner{
-        appName: cfg.AppName, rootAgent: cfg.Agent,
-        sessionService: cfg.SessionService,
-        artifactService: cfg.ArtifactService,
-        memoryService: cfg.MemoryService,
-        parents: parents, pluginManager: pluginManager,
-        autoCreateSession: cfg.AutoCreateSession,
-    }, nil
-}
-</code></pre>
-<h3>Config — What the Runner Needs</h3>
-<pre><code class="language-go">type Config struct {
-    AppName            string            // Application identifier
-    Agent              agent.Agent       // Root agent (required)
-    SessionService     session.Service   // Persistence (required)
-    ArtifactService    artifact.Service  // Optional: file storage
-    MemoryService      memory.Service    // Optional: cross-session memory
-    PluginConfig       PluginConfig      // Optional: plugins
-    AutoCreateSession  bool              // Auto-create session on first message
-}
-</code></pre>
-<h3>findAgentToRun() — The Agent Router</h3>
-<p>The runner doesn't always call the root agent. It scans session history backward to find the agent that produced the last non-user event, then routes to that agent. This is how agent-to-agent transfer works:</p>
-<pre><code class="language-">Session History:
-  [user]: &quot;build a React app&quot;
-  [root_agent]: &quot;I&#x27;ll delegate to the coding agent&quot;  ← transfer event
-  [coding_agent]: &quot;Running npm create vite...&quot;        ← LAST non-user event
-  
-findAgentToRun() → returns coding_agent, not root_agent
-</code></pre>
-<p>The runner checks <code>DisallowTransferToParent</code> on each LLMAgent in the chain. If transfer to parent is blocked, the runner stays at the current agent level.</p>
-<h2>InvocationContext — What Agents Receive</h2>
-<pre><code class="language-go">// agent/context.go
-type InvocationContext interface {
-    context.Context  // Standard Go context
-    
-    Agent() Agent                           // Current agent
-    Artifacts() Artifacts                   // Versioned file storage
-    Memory() Memory                         // Cross-session memory
-    Session() Session                       // Current session
-    InvocationID() string                   // Unique invocation ID
-    Branch() string                         // Agent branch path
-    UserContent() *genai.Content            // The user&#x27;s message
-    RunConfig() *RunConfig                  // Runtime configuration
-    EndInvocation()                         // Signal completion
-    State() map[string]any                  // Session state (shared across agents)
-}
-</code></pre>
-<p><strong>Aha:</strong> <code>State()</code> is a shared <code>map[string]any</code> across all agents in the tree. When agent A sets <code>state["analysis"] = result</code>, agent B can read it. This plus <code>OutputKey</code> form the composition mechanism — agents communicate through session state, not through function returns or message passing.</p>
-<h2>Session — Persistence</h2>
-<pre><code class="language-go">// session/service.go (interface)
-type Service interface {
-    Create(ctx context.Context, req *CreateRequest) (*CreateResponse, error)
-    Get(ctx context.Context, req *GetRequest) (*GetResponse, error)
-    List(ctx context.Context, req *ListRequest) (*ListResponse, error)
-    Delete(ctx context.Context, req *DeleteRequest) error
-    AppendEvent(ctx context.Context, session *Session, event *Event) error
-}
+        // 3. Build InvocationContext with ALL services
+        ctx := icontext.NewInvocationContext(ctx, icontext.InvocationContextParams{
+            Artifacts: artifacts, Memory: memoryImpl,
+            Session: storedSession, Agent: agentToRun,
+            UserContent: msg, RunConfig: &amp;cfg,
+        })
 
-type Session struct {
-    ID        string
-    AppName   string
-    UserID    string
-    State     map[string]any
-    Events    []*Event
-    CreatedAt time.Time
-    UpdatedAt time.Time
+        // 4. Append user message to session
+        ctx, err = r.appendMessageToSession(ctx, storedSession, msg, ...)
+
+        // 5. Run BEFORE callbacks (plugins) — can short-circuit
+        earlyExitResult, err := pluginManager.RunBeforeRunCallback(ctx)
+        if earlyExitResult != nil { ... }
+
+        // 6. Execute agent → stream events
+        for event, err := range agentToRun.Run(ctx) {
+            // 6a. Run ON_EVENT plugin callbacks (can transform events)
+            if pluginManager != nil {
+                modifiedEvent, _ := pluginManager.RunOnEventCallback(ctx, event)
+                if modifiedEvent != nil { event = modifiedEvent }
+            }
+            // 6b. Persist non-partial events to session storage
+            if !event.LLMResponse.Partial {
+                r.sessionService.AppendEvent(ctx, storedSession, event)
+            }
+            // 6c. Yield to caller (streaming UI)
+            if !yield(event, nil) { return }  // Consumer stopped early
+        }
+    }
 }
 </code></pre>
-<h3>Event Types</h3>
-<pre><code class="language-go">type Event struct {
-    ID           string
-    Author       string    // &quot;user&quot; or agent name
-    Content      *genai.Content
-    Partial      bool      // Streaming partial: stream to UI, don&#x27;t persist
-    TurnComplete bool      // LLM finished this turn
-    Error        error
-    Actions      EventActions
+<h3>Partial Events: Streamed, Not Stored</h3>
+<pre><code class="language-go">// runner/runner.go:255-261
+if !event.LLMResponse.Partial {
+    if err := r.sessionService.AppendEvent(ctx, storedSession, event); err != nil {
+        yield(nil, fmt.Errorf(&quot;failed to add event to session: %w&quot;, err))
+        return
+    }
 }
 </code></pre>
-<p><strong>Aha:</strong> <code>Partial</code> events are streamed to the UI but NOT persisted to session storage. This means the user sees streaming text, but only complete turns are stored. The runner handles this automatically — partial events pass through, complete events are appended.</p>
-<h2>Memory — Cross-Session Knowledge</h2>
-<pre><code class="language-go">// memory/service.go
-type Service interface {
-    AddSessionToMemory(ctx context.Context, req *AddRequest) error
-    SearchMemory(ctx context.Context, req *SearchRequest) (*SearchResponse, error)
-    // ...
-}
-</code></pre>
-<p>Memory is scoped to <code>user_id + app_name</code>. An agent can add the current session summary to memory and search past memories. This enables long-term context across sessions.</p>
-<h2>Artifacts — Versioned File Storage</h2>
-<pre><code class="language-go">// artifact/service.go
-type Service interface {
-    Save(ctx context.Context, name string, data *genai.Part) (*SaveResponse, error)
-    Load(ctx context.Context, name string) (*LoadResponse, error)
-    LoadVersion(ctx context.Context, name string, version int) (*LoadResponse, error)
-    List(context.Context) (*ListResponse, error)
-    Delete(ctx context.Context, name string) error
-}
-</code></pre>
-<p>Files are versioned. <code>Save</code> creates a new version; <code>LoadVersion</code> retrieves a specific version. Agents can use artifacts to store generated files (code, images, reports) with full version history.</p>
-<h2>Model — The LLM Abstraction</h2>
-<pre><code class="language-go">// model/llm.go
-type LLM interface {
-    GenerateContent(ctx context.Context, req *LLMRequest) iter.Seq2[*LLMResponse, error]
+<p><strong>Aha: <code>Partial</code> is a tri-state pattern, not a boolean.</strong> The flag is set by the aggregator for every streaming chunk. Only the final chunk of a turn has <code>Partial: false</code>. This is the breakpoint between "show the user streaming text" and "save this to the conversation history for the next LLM call." If a chunk is partial, the runner skips <code>AppendEvent</code> — it's ephemeral UI content.</p>
+<h2>6. Session — Four Interfaces, One Contract</h2>
+<pre><code class="language-go">// session/session.go:32-46
+type Session interface {
+    ID() string; AppName() string; UserID() string
+    State() State
+    Events() Events
+    LastUpdateTime() time.Time
 }
 
-type LLMRequest struct {
-    Contents []*genai.Content
-    Config   *genai.GenerateContentConfig
-    Tools    []*genai.Tool
+// session/session.go:51-62
+type State interface {
+    Get(string) (any, error)           // Returns ErrStateKeyNotExist if missing
+    Set(string, any) error             // Overwrites existing
+    All() iter.Seq2[string, any]       // Iterate all key-value pairs
 }
 
-type LLMResponse struct {
-    Content           *genai.Content
-    UsageMetadata     *genai.UsageMetadata
-    FinishReason      genai.FinishReason
-    GroundingMetadata *genai.GroundingMetadata
-    CitationMetadata  *genai.CitationMetadata
+// session/session.go:79-87
+type Events interface {
+    All() iter.Seq[*Event]             // Sequential iterator
+    Len() int
+    At(i int) *Event                   // Random access by index
 }
 </code></pre>
-<p><strong>Aha:</strong> The <code>LLM</code> interface has ONE method: <code>GenerateContent</code>. It returns an <code>iter.Seq2</code> for streaming. This is deliberately minimal — any LLM provider that can produce <code>genai.Content</code> from <code>genai.Content</code> with <code>genai.Config</code> can implement this interface. There's no OpenAI vs Anthropic vs Gemini branching in agent code.</p>
-<h2>Built-in Agent Types</h2>
-<table><tr><th>Agent</th><th>Package</th><th>Purpose</th></tr><tr><td>**LLMAgent**</td><td>`llmagent`</td><td>Primary: LLM + tools + callbacks</td></tr><tr><td>**Custom Agent**</td><td>`agent.New(cfg)`</td><td>Any logic via `Run` function</td></tr><tr><td>**LoopAgent**</td><td>`workflowagents/loopagent`</td><td>Loop until condition met</td></tr><tr><td>**ParallelAgent**</td><td>`workflowagents/parallelagent`</td><td>Run sub-agents concurrently</td></tr><tr><td>**ChainAgent**</td><td>`workflowagents/chainagent`</td><td>Sequential sub-agent execution</td></tr><tr><td>**RemoteAgent (A2A)**</td><td>`remoteagent/v2`</td><td>Agent-to-Agent protocol agent</td></tr></table>
-<h3>ParallelAgent</h3>
-<pre><code class="language-go">// agent/workflowagents/parallelagent/agent.go
-// Sub-agents run concurrently via goroutines
-// Events from all sub-agents are merged into a single stream
-// Used when multiple independent tasks can run at once
+<h3>The Event — Embeds LLMResponse</h3>
+<pre><code class="language-go">// session/session.go:92-118
+type Event struct {
+    model.LLMResponse                  // Embedded: Content, FinishReason, Partial, etc.
+    ID, InvocationID string            // Set by storage + context
+    Timestamp    time.Time
+    Branch       string                // &quot;root_agent.coding_agent.linter&quot;
+    Author       string                // &quot;user&quot; or agent name
+    Actions      EventActions          // TransferToAgent, StateDelta, etc.
+    LongRunningToolIDs []string        // For polling async tool results
+}
 </code></pre>
-<h3>A2A Remote Agent</h3>
-<pre><code class="language-go">// agent/remoteagent/v2/a2a_agent.go
-// Implements Agent-to-Agent protocol
-// ADK agent can delegate to a remote agent over HTTP
-// Remote agent can be in any language (Python, JS, etc.)
+<p><strong>Aha: <code>Branch</code> is how peer isolation works.</strong> When the root agent spawns two sub-agents (<code>coder</code> and <code>reviewer</code>), each sees only events on its branch. The <code>buildContentsDefault</code> function calls <code>eventBelongsToBranch(invocationBranch, ev)</code> — a prefix match against the dotted branch string. <code>coder</code> events are on branch <code>"root.coder"</code>; <code>reviewer</code> events are on <code>"root.reviewer"</code>. Neither sees the other's conversation.</p>
+<h3>EventActions — What Agents Can Do Beyond Text</h3>
+<pre><code class="language-go">type EventActions struct {
+    TransferToAgent string           // Set by transfer_to_agent tool → triggers findAgentToRun
+    StateDelta      map[string]any   // Merged into session.State
+    ArtifactDelta  map[string]string // Files to save
+    SkipSummarization bool           // Don&#x27;t include this event in conversation summaries
+    EndInvocation   bool             // Signal runner to stop after this event
+}
 </code></pre>
-<h2>MCP Integration</h2>
-<p>The <code>tool</code> package supports MCP toolsets:</p>
-<pre><code class="language-go">// Toolset wraps MCP server connections as ADK tools
-// MCP tools appear alongside inline tools
-// Agent doesn&#x27;t know which tools are local vs MCP
+<h2>7. Tool System — Tool, Toolset, and MCP</h2>
+<pre><code class="language-go">// tool/tool.go:38-46
+type Tool interface {
+    Name() string
+    Description() string
+    IsLongRunning() bool  // Returns resource ID first, finishes later
+}
+
+// tool/tool.go:57-64
 type Toolset interface {
-    Tools(ctx context.Context) ([]Tool, error)
-    Close() error
+    Name() string
+    Tools(ctx agent.ReadonlyContext) ([]Tool, error)  // Dynamic — re-evaluated per-turn
 }
 </code></pre>
+<p><strong>Aha: <code>Toolset.Tools()</code> receives a <code>ReadonlyContext</code> and can return different tools per invocation.</strong> This is the MCP integration point — <code>mcptoolset.Set</code> implements <code>Toolset</code> and calls <code>list_tools</code> on the MCP server each turn. If the MCP server adds or removes tools dynamically, the agent picks up the changes without restarting.</p>
+<pre><code class="language-go">// tool/tool.go:112-121
+func (f *filteredToolset) Tools(ctx agent.ReadonlyContext) ([]Tool, error) {
+    tools, _ := f.toolset.Tools(ctx)
+    var filtered []Tool
+    for _, tool := range tools {
+        if f.predicate(ctx, tool) { filtered = append(filtered, tool) }
+    }
+    return filtered, nil
+}
+</code></pre>
+<p>Tool filtering is composable — <code>FilterToolset</code> wraps any <code>Toolset</code> with a predicate. This enables per-agent tool restrictions: the parent agent sees all tools; sub-agent sees only <code>[read_file, grep_files]</code>.</p>
+<h2>8. The Agent Tree — findAgentToRun()</h2>
+<p>The runner's most critical method determines which agent handles the next message:</p>
+<pre><code class="language-">Scan session.Events backward from most recent:
+1. Find the last non-user event
+2. Extract its Author → that&#x27;s the agent that produced it
+3. Find that agent in the tree
+4. Check Actions.TransferToAgent on any event → if set, find THAT agent instead
+5. Return the resolved agent
+</code></pre>
+<p>This is NOT the root agent (except on the first message). It's the agent that last responded, creating conversational continuity across transfers.</p>
 <h2>Cross-References</h2>
-<ul><li><a href="02-stitch-sdk.md">stitch-sdk</a> — Google's AI UI generation SDK</li><li><a href="03-centravity.md">Centravity</a> — Open-source agentic IDE with similar multi-agent patterns</li><li><a href="../src.block/markdown/00-overview.md">Goose</a> — Block's agent (compares with ADK's agent architecture)</li></ul>
+<ul><li><a href="02-stitch-sdk.md">stitch-sdk</a> — Google's AI UI SDK (parallel ADK adapter)</li><li><a href="../src.block/markdown/01-architecture.md">Goose</a> — Block's agent (compares Agent loop vs Flow pipeline)</li></ul>
 <h2>Next</h2>
-<p>→ <a href="02-stitch-sdk.md">stitch-sdk</a> — Google's TypeScript SDK for AI-powered UI design generation.</p>
+<p>→ <a href="02-stitch-sdk.md">stitch-sdk</a> — Google's TypeScript SDK for AI-powered UI generation.</p>
   </article>
   <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
 </body>
