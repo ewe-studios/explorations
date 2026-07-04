@@ -1,21 +1,38 @@
-# What Is claudette?
+---
+title: claudette — Anthropic SDK Wrapper
+---
 
-Package
+# claudette — Anthropic SDK Wrapper
 
-**Source:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.jeremychone/claudette/`
+**Wrapper for Anthropic's Python SDK with stateful Chat class, prefill, images, and tool use.**
 
-## Overview
+Source: 5 Python files
 
-Package with 5 source files.
+## Features
 
-## Structure
+- Chat class for stateful dialogs
+- Prefill support (first words of response)
+- Image support
+- Tool Use API convenience
 
+## Architecture
+
+```mermaid
+flowchart LR
+    User[User] --> Chat
+    Chat --> AnthropicSDK
+    AnthropicSDK --> ClaudeAPI
 ```
-00_core_files
-00_core_files/figure-html
-claudette
-.github
-.github/workflows
-/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.jeremychone/claudette
-samples
+
+## Usage
+
+```python
+from claudette import Chat
+
+chat = Chat(model="claude-3-5-sonnet-20241022")
+chat("What is Python?")
 ```
+
+## Docs
+
+https://claudette.answer.ai

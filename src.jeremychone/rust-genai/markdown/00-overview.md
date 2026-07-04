@@ -1,214 +1,270 @@
-# rust-genai — Overview
+---
+title: rust-genai — Multi-Provider AI Client Library
+---
 
-**Source:** `src/` — ~50 Rust files across 8 modules. Multi-provider AI client library implementing unified chat interface across 7 adapters (OpenAI, Anthropic, Gemini, Cohere, Groq, xAI, Ollama).
+# rust-genai — Multi-Provider AI Client Library
 
-`rust-genai` (published as `genai` on crates.io) is a typed, multi-provider AI client library that provides a unified `Client::exec_chat` / `Client::exec_chat_stream` API across different AI providers. It builds on an **Adapter pattern** with static dispatch, a **resolution pipeline** (auth → model mapper → service target), and a **two-tier streaming architecture** (provider SSE → InterStreamEvent → ChatStreamEvent).
+**Rust client library for 19+ AI providers with unified API for chat, embeddings, and streaming.**
+
+Source: `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.jeremychone/rust-genai/src/` — 65 Rust files
 
 ## Architecture
 
 ```mermaid
-flowchart TD
-    subgraph "Application"
-        APP["genai::Client\n.exec_chat() / .exec_chat_stream()\nAll model names: gpt-4o, claude-*, gemini-*"]
+flowchart TB
+    subgraph Client["Client Layer"]
+        B[ClientBuilder]
+        C[Client: Arc<ClientInner>]
+        CFG[ClientConfig]
     end
-
-    subgraph "Client Layer (client/)"
-        CLIENT["Client\nArc<ClientInner>\nweb_client + config"]
-        BUILDER["ClientBuilder\n.with_auth_resolver_fn()\n.with_model_mapper_fn()\n.with_chat_options()\n.build() → Client"]
+    
+    subgraph Chat["Chat Types"]
+        REQ[ChatRequest]
+        MSG[ChatMessage]
+        RESP[ChatResponse]
+        STREAM[ChatStream]
     end
-
-    subgraph "Resolution Pipeline (resolver/)"
-        MODEL_MAPPER["ModelMapper\nfn(ModelIden) → ModelIden"]
-        AUTH_RESOLVER["AuthResolver\nfn(ModelIden) → AuthData"]
-        TARGET_RESOLVER["ServiceTargetResolver\nfn(ServiceTarget) → ServiceTarget"]
-        SERVICE_TARGET["ServiceTarget\n{ endpoint, auth, model }"]
+    
+    subgraph Adapter["Adapter Layer"]
+        KIND[AdapterKind: 19 providers]
+        DISP[AdapterDispatcher]
+        ADPTR[Provider Adapters]
     end
-
-    subgraph "Adapter System (adapter/)"
-        DISPATCHER["AdapterDispatcher\nstatic dispatch to concrete adapter"]
-        ADAPTER["Adapter trait (crate-private)\ndefault_auth, default_endpoint\nall_model_names, get_service_url\nto_web_request_data, to_chat_response\nto_chat_stream"]
-        OPENAI["OpenAIAdapter\n/api/v1/chat/completions"]
-        ANTHROPIC["AnthropicAdapter\n/v1/messages"]
-        GEMINI["GeminiAdapter\n/v1beta/models/:generateContent"]
-        COHERE["CohereAdapter"]
-        GROQ["GroqAdapter\n(OpenAI logic + Groq usage)"]
-        XAI["XaiAdapter\n(OpenAI logic + xAI usage)"]
-        OLLAMA["OllamaAdapter\n(OpenAI logic, localhost)"]
+    
+    subgraph Providers["Providers"]
+        OAI[OpenAI/OpenAIResp]
+        GEM[Gemini]
+        ANT[Anthropic]
+        GRQ[Groq]
+        DS[DeepSeek]
+        OLL[Ollama/OllamaCloud]
+        VTX[Vertex]
+        GH[GithubCopilot]
+        XAI[xAI]
+        COH[Cohere]
     end
-
-    subgraph "Chat Types (chat/)"
-        CHAT_REQ["ChatRequest\nsystem, messages, tools"]
-        CHAT_RESP["ChatResponse\ncontent, model_iden, usage"]
-        CHAT_STREAM["ChatStream\nfutures::Stream<ChatStreamEvent>"]
-        OPTIONS["ChatOptions\ntemperature, max_tokens\ncapture_usage, capture_content\nresponse_format, stop_sequences"]
-    end
-
-    subgraph "Web Layer (webc/)"
-        WEB_CLIENT["WebClient\nreqwest wrapper\ndo_post, do_get"]
-        WEB_RESP["WebResponse\n{ status, body: Value }"]
-        WEB_STREAM["WebStream\ndelimiter / pretty_json_array modes"]
-    end
-
-    APP --> BUILDER
-    BUILDER --> CLIENT
-    CLIENT --> MODEL_MAPPER
-    MODEL_MAPPER --> AUTH_RESOLVER
-    AUTH_RESOLVER --> TARGET_RESOLVER
-    TARGET_RESOLVER --> SERVICE_TARGET
-    SERVICE_TARGET --> DISPATCHER
-    DISPATCHER --> ADAPTER
-    ADAPTER --> OPENAI
-    ADAPTER --> ANTHROPIC
-    ADAPTER --> GEMINI
-    ADAPTER --> COHERE
-    ADAPTER --> GROQ
-    ADAPTER --> XAI
-    ADAPTER --> OLLAMA
-    DISPATCHER --> WEB_CLIENT
-    WEB_CLIENT --> WEB_RESP
-    WEB_RESP --> CHAT_RESP
-    WEB_CLIENT --> WEB_STREAM
-    WEB_STREAM --> CHAT_STREAM
-    CHAT_REQ --> DISPATCHER
-    OPTIONS --> DISPATCHER
+    
+    B --> C --> CFG
+    REQ --> DISP --> KIND --> ADPTR --> Providers
 ```
 
-## Public API Surface
+## Provider Support (19 Adapters)
+
+Source: `src/adapter/adapter_kind.rs:28-70`
 
 ```rust
-// lib.rs — public re-exports
-pub use client::*;          // Client, ClientBuilder, ClientConfig
-pub use common::*;          // ModelIden, ModelName
-pub use error::{Error, Result};
-
-pub mod adapter;            // AdapterKind (public), rest is crate-private
-pub mod chat;               // ChatRequest, ChatResponse, ChatStream, ChatMessage, etc.
-pub mod resolver;           // AuthResolver, ModelMapper, ServiceTargetResolver
-pub mod webc;               // webc::Error (public), rest is crate-private
+pub enum AdapterKind {
+    OpenAI,      // Chat Completions API
+    OpenAIResp,  // Responses API (stateful)
+    Gemini,      // Google Gemini (native protocol)
+    Anthropic,   // Claude (native protocol)
+    Fireworks,   // fireworks.ai
+    Together,    // Together AI
+    Groq,        // Groq (OpenAI-compatible)
+    Mimo,        // Mimo
+    Nebius,      // Nebius
+    Xai,         // xAI (Grok)
+    DeepSeek,    // DeepSeek
+    Zai,         // ZAI
+    BigModel,    // Zhipu AI
+    Aliyun,      // Alibaba Aliyun
+    Cohere,      // Cohere (native protocol)
+    Ollama,      // Local Ollama
+    OllamaCloud, // ollama.com cloud
+    Vertex,      // Google Vertex AI
+    GithubCopilot, // GitHub Models inference
+}
 ```
 
-**Aha:** The `Adapter` trait is **crate-private** — only `AdapterKind` is publicly exported. This means users cannot create custom adapters without modifying the library. The design enforces that all adapters are first-class, maintained within the library.
+**Aha:** AdapterKind uses static dispatch with `AdapterDispatcher` - each adapter implements the same `Adapter` trait but with provider-specific request/response translation. This avoids runtime overhead and allows provider-specific optimizations (e.g., Gemini native protocol supports thinking budget).
 
-## Adapter Kind Auto-Detection
+## Client Structure
+
+Source: `src/client/client_types.rs:12-14`
 
 ```rust
-// adapter/adapter_kind.rs:79-108
+#[derive(Debug, Clone)]
+pub struct Client {
+    pub(super) inner: Arc<ClientInner>,
+}
+
+pub(super) struct ClientInner {
+    pub(super) web_client: WebClient,
+    pub(super) config: ClientConfig,
+}
+```
+
+**Aha:** Client is Arc-wrapped for cheap cloning. The WebClient is shared across all requests, enabling connection pooling and reuse without explicit management.
+
+### ClientBuilder
+
+Source: `src/client/builder.rs:16-19`
+
+```rust
+#[derive(Debug, Default)]
+pub struct ClientBuilder {
+    web_client: Option<WebClient>,
+    config: Option<ClientConfig>,
+}
+```
+
+Builder pattern with passthrough setters:
+
+```rust
+impl ClientBuilder {
+    pub fn with_reqwest(mut self, reqwest_client: reqwest::Client) -> Self
+    pub fn with_config(mut self, config: ClientConfig) -> Self
+    pub fn with_chat_options(mut self, options: ChatOptions) -> Self
+    pub fn with_auth_resolver(mut self, auth_resolver: AuthResolver) -> Self
+    pub fn with_service_target_resolver(mut self, target_resolver: ServiceTargetResolver) -> Self
+    pub fn with_model_mapper(mut self, model_mapper: ModelMapper) -> Self
+}
+```
+
+## ChatRequest
+
+Source: `src/chat/chat_request.rs:10-33`
+
+```rust
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ChatRequest {
+    pub system: Option<String>,
+    #[serde(default)]
+    pub messages: Vec<ChatMessage>,
+    pub tools: Option<Vec<Tool>>,
+    
+    // OpenAI Responses API (stateful sessions)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_response_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store: Option<bool>,
+}
+```
+
+**Aha:** `previous_response_id` and `store` enable OpenAI's stateful Responses API. The server caches conversation state, so only new messages need to be sent - reducing token costs for multi-turn conversations.
+
+### ChatRequest Constructors
+
+Source: `src/chat/chat_request.rs:36-80`
+
+```rust
+impl ChatRequest {
+    pub fn new(messages: Vec<ChatMessage>) -> Self
+    pub fn from_system(content: impl Into<String>) -> Self
+    pub fn from_user(content: impl Into<String>) -> Self
+    pub fn from_messages(messages: Vec<ChatMessage>) -> Self
+}
+
+// Chainable setters
+impl ChatRequest {
+    pub fn with_system(mut self, system: impl Into<String>) -> Self
+    pub fn append_message(mut self, msg: impl Into<ChatMessage>) -> Self
+    pub fn append_messages<I>(mut self, messages: I) -> Self
+    pub fn with_tools<I>(mut self, tools: I) -> Self
+    pub fn append_tool_use_from_stream_end(mut self, end: &StreamEnd, tool_response: ToolResponse) -> Self
+}
+```
+
+## ChatResponse
+
+Source: `src/chat/chat_response.rs:102-134`
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatResponse {
+    pub content: MessageContent,
+    pub reasoning_content: Option<String>,
+    pub model_iden: ModelIden,
+    pub provider_model_iden: ModelIden,
+    pub stop_reason: Option<StopReason>,
+    pub usage: Usage,
+    pub captured_raw_body: Option<serde_json::Value>,
+    pub response_id: Option<String>, // OpenAI Responses API
+}
+```
+
+### StopReason
+
+Source: `src/chat/chat_response.rs:23-36`
+
+```rust
+pub enum StopReason {
+    Completed(String),
+    MaxTokens(String),
+    ToolCall(String),
+    ContentFilter(String),
+    StopSequence(String),
+    Other(String),
+}
+```
+
+Maps all provider-specific stop reasons to unified enum:
+
+| StopReason | Provider Strings |
+|------------|------------------|
+| Completed | `stop`, `end_turn`, `STOP`, `COMPLETE` |
+| MaxTokens | `length`, `max_tokens`, `MAX_TOKENS` |
+| ToolCall | `tool_calls`, `tool_use`, `function_call` |
+| ContentFilter | `content_filter`, `SAFETY`, `RECITATION` |
+
+## Model Resolution
+
+Source: `src/adapter/adapter_kind.rs:208-252`
+
+Automatic provider detection from model name:
+
+```rust
 pub fn from_model(model: &str) -> Result<Self> {
-    if model.starts_with("gpt") || model.starts_with("chatgpt") || model.starts_with("o1-") {
+    // Namespaced: "vertex::gemini-2.5-flash", "groq::llama-3"
+    if let Some(adapter) = Self::from_model_namespace(model) {
+        return Ok(adapter);
+    };
+    
+    // Prefix-based:
+    if model.starts_with("gpt") || model.starts_with("o3") || model.starts_with("o1") {
         Ok(Self::OpenAI)
-    } else if model.starts_with("claude") {
-        Ok(Self::Anthropic)
-    } else if model.starts_with("command") {
-        Ok(Self::Cohere)
     } else if model.starts_with("gemini") {
         Ok(Self::Gemini)
-    } else if model.starts_with("grok") {
-        Ok(Self::Xai)
-    } else if GROQ_MODELS.contains(&model) {
-        Ok(Self::Groq)
+    } else if model.starts_with("claude") {
+        Ok(Self::Anthropic)
     } else {
-        Ok(Self::Ollama)  // fallback for anything else
+        Ok(Self::Ollama) // Fallback
     }
 }
 ```
 
-**Aha:** The fallback to `Ollama` for unknown model names is intentional — it means any arbitrary model string like `"llama3"` will be routed to the Ollama adapter (localhost only). This makes the library forgiving for local development.
+**Aha:** Namespaced model names (e.g., `vertex::gemini-2.5-flash`) allow explicit provider selection. Without namespace, automatic detection uses model prefixes - gpt→OpenAI, gemini→Gemini, claude→Anthropic, everything else→Ollama.
 
-## Quick Usage Example
+## Module Structure
 
-```rust
-use genai::{Client, chat::{ChatRequest, ChatMessage}};
+Source: `src/lib.rs:4-24`
 
-// Zero-config: reads OPENAI_API_KEY from env
-let client = Client::default();
-
-let chat_req = ChatRequest::new(vec![
-    ChatMessage::system("Answer in one sentence"),
-    ChatMessage::user("Why is the sky red?"),
-]);
-
-// Non-streaming
-let chat_res = client.exec_chat("gpt-4o-mini", chat_req.clone(), None).await?;
-println!("{}", chat_res.content_text_as_str().unwrap());
-
-// Streaming
-let chat_res = client.exec_chat_stream("gpt-4o-mini", chat_req, None).await?;
-while let Some(Ok(event)) = chat_res.stream.next().await {
-    // process ChatStreamEvent
-}
+```
+genai/src/
+├── client/          # Client, ClientBuilder, ClientConfig
+│   ├── builder.rs      # Builder pattern
+│   ├── client_types.rs  # Client, ClientInner (Arc-wrapped)
+│   ├── client_impl.rs   # Client methods
+│   ├── config.rs        # ClientConfig
+│   └── model_spec.rs    # Model specifications
+├── chat/            # Chat types
+│   ├── chat_request.rs  # ChatRequest
+│   ├── chat_response.rs # ChatResponse, StopReason
+│   ├── chat_message.rs  # ChatMessage, ChatRole
+│   ├── message_content.rs # MessageContent types
+│   ├── chat_stream.rs   # Streaming support
+│   └── tool/           # Tool definitions
+├── adapter/         # Provider adapters
+│   ├── adapter_kind.rs  # AdapterKind enum (19 providers)
+│   ├── dispatcher.rs    # AdapterDispatcher
+│   └── adapters/        # Per-provider implementations
+├── resolver/        # Model/auth resolution
+├── embed/           # Embedding support
+└── webc/            # HTTP client (reqwest wrapper)
 ```
 
-## Adapter-to-Model Mapping
+## Next
 
-| Model Prefix | Adapter | Default Env Var | Default Endpoint |
-|-------------|---------|----------------|-----------------|
-| `gpt-*`, `chatgpt-*`, `o1-*` | OpenAI | `OPENAI_API_KEY` | `https://api.openai.com/v1/` |
-| `claude-*` | Anthropic | `ANTHROPIC_API_KEY` | `https://api.anthropic.com/v1/` |
-| `command-*` | Cohere | `COHERE_API_KEY` | (Cohere endpoint) |
-| `gemini-*` | Gemini | `GEMINI_API_KEY` | `https://generativelanguage.googleapis.com/v1beta/` |
-| `grok-*` | xAI | `XAI_API_KEY` | (xAI endpoint) |
-| Groq hardcoded models | Groq | `GROQ_API_KEY` | (Groq endpoint) |
-| Anything else | Ollama | (none, localhost) | `http://localhost:11434/v1/` |
-
-## Request → Response Flow
-
-```mermaid
-sequenceDiagram
-    participant App
-    participant Client
-    participant Config
-    participant ModelMapper
-    participant AuthResolver
-    participant TargetResolver
-    participant Dispatcher
-    participant Adapter
-    participant WebClient
-    participant Provider
-
-    App->>Client: exec_chat(model, chat_req, options)
-    Client->>Config: resolve_service_target(model)
-    Config->>ModelMapper: map_model(ModelIden)
-    ModelMapper-->>Config: ModelIden (possibly remapped)
-    Config->>AuthResolver: resolve(ModelIden)
-    AuthResolver-->>Config: AuthData
-    Config->>TargetResolver: resolve(ServiceTarget)
-    TargetResolver-->>Config: ServiceTarget { endpoint, auth, model }
-    Config-->>Client: ServiceTarget
-
-    Client->>Dispatcher: to_web_request_data(target, Chat, chat_req, options)
-    Dispatcher->>Adapter: to_web_request_data(...)
-    Adapter-->>Dispatcher: WebRequestData { url, headers, payload }
-    Dispatcher-->>Client: WebRequestData
-
-    Client->>WebClient: do_post(url, headers, payload)
-    WebClient->>Provider: POST request
-    Provider-->>WebClient: HTTP response
-    WebClient-->>Client: WebResponse { body: Value }
-
-    Client->>Dispatcher: to_chat_response(model_iden, web_response)
-    Dispatcher->>Adapter: to_chat_response(...)
-    Adapter-->>Dispatcher: ChatResponse { content, usage }
-    Dispatcher-->>Client: ChatResponse
-    Client-->>App: ChatResponse
-```
-
-## Key Design Principles
-
-1. **Stateless Adapter trait** — all methods take kind/auth/endpoint as arguments rather than storing state, simplifying adapter implementations
-2. **Static dispatch** — `AdapterDispatcher` uses explicit match arms to route to concrete adapter structs, avoiding trait object overhead
-3. **Arc-based Client** — `Client` wraps `Arc<ClientInner>` for cheap cloning and thread-safe sharing
-4. **Cascading options** — `ChatOptionsSet` resolves per-call options first, then client defaults
-5. **Two-tier streaming** — adapters produce `InterStreamEvent` (internal), which `ChatStream` translates to public `ChatStreamEvent`
-6. **Builder pattern** — `ClientBuilder` provides fluent API for all configuration, producing an immutable `Client`
-
-## Dependencies
-
-| Dependency | Purpose |
-|------------|---------|
-| `reqwest` | HTTP client for all provider communication |
-| `reqwest-eventsource` | SSE event parsing (OpenAI, Anthropic) |
-| `serde` / `serde_json` | JSON serialization/deserialization |
-| `value_ext` | JSON value manipulation (`x_take`, `x_insert`, `x_walk`) |
-| `derive_more` | `Display`, `From` error conversions |
-| `futures` | Stream trait and utilities |
-| `tokio` | Async runtime |
+→ [01-client.md](01-client.md) — ClientBuilder, ClientConfig, WebClient details
+→ [02-chat-types.md](02-chat-types.md) — ChatMessage, MessageContent, Tool system
+→ [03-adapters.md](03-adapters.md) — Per-provider adapter implementations

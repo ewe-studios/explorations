@@ -1,11 +1,17 @@
 # claudette Documentation
 
-Package
+Anthropic SDK wrapper.
 
-| Attribute | Value |
-|-----------|-------|
-| Source Files | 5 Python, 0 Rust |
+## Documents
 
-## Navigation
+| # | Document | Description |
+|---|----------|-------------|
+| 0 | [Overview](00-overview.md) | Features, usage |
 
-- **[00-overview](00-overview.md)** — What claudette is, overview
+## Source
+
+5 Python files
+
+## Docs
+
+https://claudette.answer.ai
