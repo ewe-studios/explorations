@@ -1,12 +1,21 @@
 # universal-timer Documentation
 
-macOS menu bar time tracker.
+A lightweight macOS menu bar time tracker built with Electron. Multiple named timers, event-sourced logging, weekly/monthly metrics, global hotkeys, and configurable settings.
 
 | Attribute | Value |
 |-----------|-------|
-| Files | 42 |
-| Runtime | Electron |
+| Source files | ~16 (src/) |
+| Framework | Electron + electron-vite |
+| Target | macOS (menu bar app) |
+| Build | electron-builder → .dmg |
 
 ## Navigation
 
-- **[00-overview](00-overview.md)** — Architecture, main process, timer state machine
+| # | Document | Purpose |
+|---|----------|---------|
+| 00 | [Overview](00-overview.md) | Architecture, quick start, types |
+| 01 | [Main Process](01-main-process.md) | Window, tray, IPC handlers, initialization |
+| 02 | [Renderer Process](02-renderer-process.md) — Timers UI, metrics, settings, formatting |
+| 03 | [Timer Engine](03-timer-engine.md) — Event sourcing, state computation, interval math |
+| 04 | [Features](04-features.md) — Hotkeys, pin, sounds, data export/import |
+| 05 | [Build & Config](05-build-config.md) — electron-vite, electron-builder, resources |

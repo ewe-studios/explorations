@@ -1,15 +1,18 @@
 # mapcn Documentation
 
-shadcn-style MapLibre GL map registry.
+MapLibre-based map component showcase with custom blocks, command search, theme support, and LLM integration.
 
 | Attribute | Value |
 |-----------|-------|
-| Files | 88 |
-| Map Engine | MapLibre GL |
-| Blocks | 8 (1 core + 7 pre-built) |
-| Type | shadcn registry (not npm) |
+| Source files | ~181 |
+| Framework | Next.js + MapLibre |
+| Blocks | Multiple map block types |
+| UI | shadcn/ui primitives |
 
 ## Navigation
 
-- **[00-overview](00-overview.md)** — What mapcn is, Map component API, 8 registry items
-- **[01-blocks](01-blocks.md)** — 7 pre-built block templates with source structure
+| # | Document | Purpose |
+|---|----------|---------|
+| 00 | [Overview](00-overview.md) | Architecture, MapLibre integration, quick start |
+| 01 | [Blocks](01-blocks.md) — Map block components and registry |
+| 02 | [UI Components](02-components.md) — Layout, theme, search, shadcn/ui |

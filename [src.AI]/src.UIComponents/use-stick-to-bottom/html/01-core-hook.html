@@ -1,0 +1,786 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>useStickToBottom: Core Hook Deep Dive -- use-stick-to-bottom</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/use-stick-to-bottom/docs</span>
+    <div class="nav-actions">
+      <a href="00-overview.html" class="nav-breadcrumb">use-stick-to-bottom: Overview</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="00-overview.html" class="nav-btn" title="Previous: use-stick-to-bottom: Overview">← prev</a>
+      <a href="02-component.html" class="nav-btn nav-btn-next" title="Next: Component API">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>useStickToBottom: Core Hook Deep Dive</h1>
+<p>The <code>useStickToBottom</code> hook is the engine of the package. It manages scroll state, runs a spring physics animation loop, observes content resizes, detects user escape attempts, and coordinates all of these concerns into a coherent API surface. This document traces every function, type, and state transition.</p>
+<p>Source: <code>src/useStickToBottom.ts</code> — 666 lines, TypeScript, MIT licensed (StackBlitz copyright).</p>
+<h2>The Hook Signature</h2>
+<pre><code class="language-typescript">// src/useStickToBottom.ts:149-151
+export const useStickToBottom = (
+  options: StickToBottomOptions = {},
+): StickToBottomInstance =&gt; {
+</code></pre>
+<p>The hook takes an optional <code>StickToBottomOptions</code> object and returns a <code>StickToBottomInstance</code>. Both types are fully documented below.</p>
+<h2>State Management</h2>
+<h3>React State Variables</h3>
+<p>Three <code>useState</code> calls track the boolean flags that drive the lock/escape model:</p>
+<pre><code class="language-typescript">// src/useStickToBottom.ts:152-154
+const [escapedFromLock, updateEscapedFromLock] = useState(false);
+const [isAtBottom, updateIsAtBottom] = useState(options.initial !== false);
+const [isNearBottom, setIsNearBottom] = useState(false);
+</code></pre>
+<p>The <code>isAtBottom</code> initializer is the key: it starts as <code>true</code> unless <code>options.initial</code> is explicitly set to <code>false</code>. This means the hook assumes you want auto-scroll enabled from mount.</p>
+<h3>Callback Wrappers</h3>
+<p>Direct state setters are wrapped in <code>useCallback</code> to keep state in sync with the mutable <code>state</code> object:</p>
+<pre><code class="language-typescript">// src/useStickToBottom.ts:176-179
+const setIsAtBottom = useCallback((isAtBottom: boolean) =&gt; {
+  state.isAtBottom = isAtBottom;
+  updateIsAtBottom(isAtBottom);
+}, []);
+
+// src/useStickToBottom.ts:181-184
+const setEscapedFromLock = useCallback((escapedFromLock: boolean) =&gt; {
+  state.escapedFromLock = escapedFromLock;
+  updateEscapedFromLock(escapedFromLock);
+}, []);
+</code></pre>
+<p><strong>Aha:</strong> These callbacks mutate the <code>state</code> object directly AND trigger React re-renders. The <code>state</code> object is a <code>useMemo</code>-created mutable bag that the animation loop reads synchronously (avoiding React state staleness), while <code>useState</code> keeps React in sync for rendering. This dual-write pattern is the secret to having both instant physics-loop reads and reactive UI updates from the same source of truth.</p>
+<h2>StickToBottomState: The Mutable State Bag</h2>
+<p>The <code>state</code> object is created via <code>useMemo</code> and serves as the single source of truth for all scroll-related values. The animation loop reads from it directly, bypassing React state to avoid stale closures.</p>
+<pre><code class="language-typescript">// src/useStickToBottom.ts:16-39
+export interface StickToBottomState {
+  scrollTop: number;
+  lastScrollTop?: number;
+  ignoreScrollToTop?: number;
+  targetScrollTop: number;
+  calculatedTargetScrollTop: number;
+  scrollDifference: number;
+  resizeDifference: number;
+
+  animation?: {
+    behavior: &quot;instant&quot; | Required&lt;SpringAnimation&gt;;
+    ignoreEscapes: boolean;
+    promise: Promise&lt;boolean&gt;;
+  };
+  lastTick?: number;
+  velocity: number;
+  accumulated: number;
+
+  escapedFromLock: boolean;
+  isAtBottom: boolean;
+  isNearBottom: boolean;
+
+  resizeObserver?: ResizeObserver;
+}
+</code></pre>
+<h3>State Fields Explained</h3>
+<table><tr><th>Field</th><th>Type</th><th>Source</th><th>Description</th></tr><tr><td>`scrollTop`</td><td>`number`</td><td>Getter/setter at `src/useStickToBottom.ts:200-221`</td><td>Current scroll position; setter overrides CSS `scroll-behavior` to `auto`</td></tr><tr><td>`lastScrollTop`</td><td>`number?`</td><td>Set in `handleScroll` at line 421</td><td>Previous scroll position for direction detection</td></tr><tr><td>`ignoreScrollToTop`</td><td>`number?`</td><td>Set in `scrollTop` setter at line 215</td><td>Suppresses false scroll-up detection during programmatic scrolls</td></tr><tr><td>`targetScrollTop`</td><td>`number`</td><td>Getter at `src/useStickToBottom.ts:223-231`</td><td>Max scroll position: `scrollHeight - 1 - clientHeight`</td></tr><tr><td>`calculatedTargetScrollTop`</td><td>`number`</td><td>Getter at `src/useStickToBottom.ts:232-265`</td><td>Target after applying custom `targetScrollTop` function (clamped 0 to max)</td></tr><tr><td>`scrollDifference`</td><td>`number`</td><td>Getter at `src/useStickToBottom.ts:267-269`</td><td>`calculatedTargetScrollTop - scrollTop`</td></tr><tr><td>`resizeDifference`</td><td>`number`</td><td>Set in ResizeObserver at line 532</td><td>Height change since last resize event; reset after scroll fires</td></tr><tr><td>`animation`</td><td>`object?`</td><td>Set in `scrollToBottom` at line 317</td><td>Current animation state: behavior, ignoreEscapes flag, promise</td></tr><tr><td>`lastTick`</td><td>`number?`</td><td>Set in `scrollToBottom` at line 320</td><td>Timestamp of last animation frame (for tick delta calculation)</td></tr><tr><td>`velocity`</td><td>`number`</td><td>Computed at line 340-343</td><td>Spring physics velocity</td></tr><tr><td>`accumulated`</td><td>`number`</td><td>Computed at line 344</td><td>Spring physics accumulated distance</td></tr><tr><td>`escapedFromLock`</td><td>`boolean`</td><td>React state at line 152</td><td>Whether user escaped the bottom lock</td></tr><tr><td>`isAtBottom`</td><td>`boolean`</td><td>React state at line 153</td><td>Whether scroll is locked to bottom</td></tr><tr><td>`isNearBottom`</td><td>`boolean`</td><td>Getter at line 271-273</td><td>Whether within 70px of bottom</td></tr><tr><td>`resizeObserver`</td><td>`ResizeObserver?`</td><td>Created in `contentRef` at line 528</td><td>Observes content element size changes</td></tr></table>
+<h3>The scrollTop Getter/Setter</h3>
+<p>The <code>scrollTop</code> property is a JavaScript accessor that reads from and writes to the DOM element:</p>
+<pre><code class="language-typescript">// src/useStickToBottom.ts:200-221
+get scrollTop() {
+  return scrollRef.current?.scrollTop ?? 0;
+},
+set scrollTop(scrollTop: number) {
+  if (scrollRef.current) {
+    // Override CSS scroll-behavior so programmatic scrollTop
+    // assignments take effect immediately and aren&#x27;t intercepted
+    // by the browser&#x27;s smooth scrolling.
+    const { scrollBehavior } = getComputedStyle(scrollRef.current);
+
+    if (scrollBehavior !== &quot;auto&quot;) {
+      scrollRef.current.style.scrollBehavior = &quot;auto&quot;;
+    }
+
+    scrollRef.current.scrollTop = scrollTop;
+    state.ignoreScrollToTop = scrollRef.current.scrollTop;
+
+    if (scrollBehavior !== &quot;auto&quot;) {
+      scrollRef.current.style.scrollBehavior = scrollBehavior;
+    }
+  }
+},
+</code></pre>
+<p>The setter temporarily sets <code>scroll-behavior: auto</code> to prevent the browser's native smooth scrolling from fighting the custom spring animation. After assigning <code>scrollTop</code>, it records the actual value in <code>ignoreScrollToTop</code> to suppress false scroll-up detection.</p>
+<h3>The targetScrollTop Getter</h3>
+<pre><code class="language-typescript">// src/useStickToBottom.ts:223-231
+get targetScrollTop() {
+  if (!scrollRef.current || !contentRef.current) {
+    return 0;
+  }
+
+  return (
+    scrollRef.current.scrollHeight - 1 - scrollRef.current.clientHeight
+  );
+},
+</code></pre>
+<p>This computes the maximum scroll position. The <code>-1</code> accounts for sub-pixel rounding that can cause the browser to report <code>scrollTop</code> as slightly less than <code>scrollHeight - clientHeight</code> even when fully scrolled to the bottom.</p>
+<h3>The calculatedTargetScrollTop Getter</h3>
+<pre><code class="language-typescript">// src/useStickToBottom.ts:232-265
+get calculatedTargetScrollTop() {
+  if (!scrollRef.current || !contentRef.current) {
+    return 0;
+  }
+
+  const { targetScrollTop } = this;
+
+  if (!options.targetScrollTop) {
+    return targetScrollTop;
+  }
+
+  if (lastCalculation?.targetScrollTop === targetScrollTop) {
+    return lastCalculation.calculatedScrollTop;
+  }
+
+  const calculatedScrollTop = Math.max(
+    Math.min(
+      options.targetScrollTop(targetScrollTop, {
+        scrollElement: scrollRef.current,
+        contentElement: contentRef.current,
+      }),
+      targetScrollTop,
+    ),
+    0,
+  );
+
+  lastCalculation = { targetScrollTop, calculatedScrollTop };
+
+  requestAnimationFrame(() =&gt; {
+    lastCalculation = undefined;
+  });
+
+  return calculatedScrollTop;
+},
+</code></pre>
+<p>This applies the custom <code>targetScrollTop</code> function (if provided), clamps the result between 0 and <code>targetScrollTop</code>, and caches the result for one animation frame to avoid redundant computation during the tight animation loop.</p>
+<p><strong>Aha:</strong> The calculation cache is cleared via <code>requestAnimationFrame</code> — not <code>setTimeout</code> or a synchronous reset. This means the cache lives for exactly one frame, which is precisely the duration of one animation step. Any subsequent call within the same rAF cycle gets the cached value; the next frame recomputes. This is a clever micro-optimization that keeps the animation loop hot-path fast without risking stale values across frames.</p>
+<h2>Spring Animation System</h2>
+<h3>DEFAULT_SPRING_ANIMATION</h3>
+<pre><code class="language-typescript">// src/useStickToBottom.ts:41-64
+const DEFAULT_SPRING_ANIMATION = {
+  damping: 0.7,
+  stiffness: 0.05,
+  mass: 1.25,
+};
+</code></pre>
+<h3>SpringAnimation Type</h3>
+<pre><code class="language-typescript">// src/useStickToBottom.ts:66-67
+export interface SpringAnimation
+  extends Partial&lt;typeof DEFAULT_SPRING_ANIMATION&gt; {}
+</code></pre>
+<p>This is <code>Partial</code> of the defaults, so you can override any subset: <code>{ damping: 0.5 }</code>, <code>{ stiffness: 0.1, mass: 2 }</code>, etc.</p>
+<h3>Animation Type</h3>
+<pre><code class="language-typescript">// src/useStickToBottom.ts:69
+export type Animation = ScrollBehavior | SpringAnimation;
+</code></pre>
+<p><code>Animation</code> is either a native <code>ScrollBehavior</code> string (<code>"auto"</code>, <code>"smooth"</code>, <code>"instant"</code>) or a custom <code>SpringAnimation</code> object. The string <code>"instant"</code> is treated as a special case that bypasses the spring loop entirely.</p>
+<h3>mergeAnimations</h3>
+<pre><code class="language-typescript">// src/useStickToBottom.ts:637-665
+function mergeAnimations(...animations: (Animation | boolean | undefined)[]) {
+  const result = { ...DEFAULT_SPRING_ANIMATION };
+  let instant = false;
+
+  for (const animation of animations) {
+    if (animation === &quot;instant&quot;) {
+      instant = true;
+      continue;
+    }
+
+    if (typeof animation !== &quot;object&quot;) {
+      continue;
+    }
+
+    instant = false;
+
+    result.damping = animation.damping ?? result.damping;
+    result.stiffness = animation.stiffness ?? result.stiffness;
+    result.mass = animation.mass ?? result.mass;
+  }
+
+  const key = JSON.stringify(result);
+
+  if (!animationCache.has(key)) {
+    animationCache.set(key, Object.freeze(result));
+  }
+
+  return instant ? &quot;instant&quot; : animationCache.get(key)!;
+}
+</code></pre>
+<p>This function merges multiple animation specs (from options, resize, initial) into a single resolved animation. Key behaviors:</p>
+<ol><li><strong>Instant overrides everything.</strong> If any animation in the chain is <code>"instant"</code>, the result is <code>"instant"</code> — unless a later animation is a SpringAnimation object, which resets <code>instant = false</code>.</li><li><strong>Caching.</strong> Results are cached by JSON stringification of the merged parameters. The cached value is <code>Object.freeze</code>-d to prevent mutation.</li><li><strong>Boolean/undefined skip.</strong> Non-object values other than <code>"instant"</code> are silently skipped.</li></ol>
+<p>The cache is a module-level <code>Map</code>:</p>
+<pre><code class="language-typescript">// src/useStickToBottom.ts:635
+const animationCache = new Map&lt;string, Readonly&lt;Required&lt;SpringAnimation&gt;&gt;&gt;();
+</code></pre>
+<h2>scrollToBottom: The Animation Loop</h2>
+<p>The <code>scrollToBottom</code> function is the heart of the package. It initiates a <code>requestAnimationFrame</code> loop that drives the spring animation until the scroll reaches the target.</p>
+<pre><code class="language-typescript">// src/useStickToBottom.ts:277-405
+const scrollToBottom = useCallback&lt;ScrollToBottom&gt;(
+  (scrollOptions = {}) =&gt; {
+</code></pre>
+<h3>ScrollToBottomOptions</h3>
+<pre><code class="language-typescript">// src/useStickToBottom.ts:87-124
+export type ScrollToBottomOptions =
+  | ScrollBehavior
+  | {
+      animation?: Animation;
+      wait?: boolean | number;
+      ignoreEscapes?: boolean;
+      preserveScrollPosition?: boolean;
+      duration?: number | Promise&lt;void&gt;;
+    };
+</code></pre>
+<table><tr><th>Option</th><th>Type</th><th>Default</th><th>Description</th></tr><tr><td>`animation`</td><td>`Animation`</td><td>Merged from `StickToBottomOptions`</td><td>`"instant"`, `"smooth"`, `"auto"`, or `{ damping, stiffness, mass }`</td></tr><tr><td>`wait`</td><td>`boolean \</td><td>number`</td><td>`false`</td><td>Wait for existing scrolls to finish, or wait N milliseconds before starting</td></tr><tr><td>`ignoreEscapes`</td><td>`boolean`</td><td>`false`</td><td>Prevent user from escaping the scroll by scrolling up</td></tr><tr><td>`preserveScrollPosition`</td><td>`boolean`</td><td>`false`</td><td>Only scroll if already at the bottom</td></tr><tr><td>`duration`</td><td>`number \</td><td>Promise<void>`</td><td>`0`</td><td>Extra milliseconds the scroll should persist, or a Promise to wait for</td></tr></table>
+<h3>ScrollToBottom Type</h3>
+<pre><code class="language-typescript">// src/useStickToBottom.ts:126-128
+export type ScrollToBottom = (
+  scrollOptions?: ScrollToBottomOptions,
+) =&gt; Promise&lt;boolean&gt; | boolean;
+</code></pre>
+<p>Returns a <code>Promise<boolean></code> (whether still at bottom after scroll completes) or <code>boolean</code> synchronously if an existing animation promise is reused.</p>
+<h3>The Animation Loop (next function)</h3>
+<p>Inside <code>scrollToBottom</code>, the <code>next</code> async function forms the animation loop:</p>
+<pre><code class="language-typescript">// src/useStickToBottom.ts:305-392
+const next = async (): Promise&lt;boolean&gt; =&gt; {
+  const promise = new Promise(requestAnimationFrame).then(() =&gt; {
+    // Guard: if user escaped, stop
+    if (!state.isAtBottom) {
+      state.animation = undefined;
+      return false;
+    }
+
+    const { scrollTop } = state;
+    const tick = performance.now();
+    const tickDelta =
+      (tick - (state.lastTick ?? tick)) / SIXTY_FPS_INTERVAL_MS;
+    state.animation ||= { behavior, promise, ignoreEscapes };
+
+    if (state.animation.behavior === behavior) {
+      state.lastTick = tick;
+    }
+
+    // Text selection pauses animation
+    if (isSelecting()) {
+      return next();
+    }
+
+    // Wait timer
+    if (waitElapsed &gt; Date.now()) {
+      return next();
+    }
+
+    // Still below target — keep scrolling
+    if (scrollTop &lt; Math.min(startTarget, state.calculatedTargetScrollTop)) {
+      if (state.animation?.behavior === behavior) {
+        if (behavior === &quot;instant&quot;) {
+          state.scrollTop = state.calculatedTargetScrollTop;
+          return next();
+        }
+
+        // Spring physics update
+        state.velocity =
+          (behavior.damping * state.velocity +
+            behavior.stiffness * state.scrollDifference) /
+          behavior.mass;
+        state.accumulated += state.velocity * tickDelta;
+        state.scrollTop += state.accumulated;
+
+        if (state.scrollTop !== scrollTop) {
+          state.accumulated = 0;
+        }
+      }
+
+      return next();
+    }
+
+    // Duration timer check
+    if (durationElapsed &gt; Date.now()) {
+      startTarget = state.calculatedTargetScrollTop;
+      return next();
+    }
+
+    // Animation complete
+    state.animation = undefined;
+
+    // If still below target, re-queue with resize animation
+    if (state.scrollTop &lt; state.calculatedTargetScrollTop) {
+      return scrollToBottom({
+        animation: mergeAnimations(
+          optionsRef.current,
+          optionsRef.current.resize,
+        ),
+        ignoreEscapes,
+        duration: Math.max(0, durationElapsed - Date.now()) || undefined,
+      });
+    }
+
+    return state.isAtBottom;
+  });
+
+  return promise.then((isAtBottom) =&gt; {
+    requestAnimationFrame(() =&gt; {
+      if (!state.animation) {
+        state.lastTick = undefined;
+        state.velocity = 0;
+      }
+    });
+
+    return isAtBottom;
+  });
+};
+</code></pre>
+<h3>Animation Loop Flow</h3>
+<div class="mermaid">
+flowchart TD
+    A[scrollToBottom called] --&gt; B{isAtBottom?}
+    B --&gt;|No| C[Clear animation, return false]
+    B --&gt;|Yes| D[rAF tick]
+
+    D --&gt; E{isSelecting?}
+    E --&gt;|Yes| F[Skip frame, recurse next]
+    E --&gt;|No| G{wait elapsed?}
+
+    G --&gt;|No| F
+    G --&gt;|Yes| H{scrollTop &lt; target?}
+
+    H --&gt;|Yes, instant| I[Set scrollTop = target]
+    H --&gt;|Yes, spring| J[Compute velocity, accumulated, scrollTop]
+    H --&gt;|No| K{duration elapsed?}
+
+    I --&gt; F
+    J --&gt; F
+    K --&gt;|No| L[Update startTarget, recurse]
+    K --&gt;|Yes| M[Clear animation]
+
+    M --&gt; N{still below target?}
+    N --&gt;|Yes| O[Re-queue scrollToBottom with resize animation]
+    N --&gt;|No| P[Return isAtBottom]
+
+    style A fill:#e1f5fe
+    style P fill:#c8e6c9
+    style C fill:#ffcdd2
+
+</div>
+<h3>Loop Termination Conditions</h3>
+<p>The animation loop terminates when:</p>
+<ol><li><strong>User escaped:</strong> <code>state.isAtBottom</code> becomes <code>false</code> (user scrolled up).</li><li><strong>Target reached AND duration elapsed:</strong> <code>scrollTop >= target</code> AND <code>durationElapsed <= Date.now()</code>.</li><li><strong>Animation type changed:</strong> A new <code>scrollToBottom</code> call with a different behavior clears the current animation.</li></ol>
+<h3>Spring Physics Detail</h3>
+<p>The spring update step (source: <code>src/useStickToBottom.ts:340-349</code>):</p>
+<pre><code class="language-typescript">state.velocity =
+  (behavior.damping * state.velocity +
+    behavior.stiffness * state.scrollDifference) /
+  behavior.mass;
+state.accumulated += state.velocity * tickDelta;
+state.scrollTop += state.accumulated;
+
+if (state.scrollTop !== scrollTop) {
+  state.accumulated = 0;
+}
+</code></pre>
+<p>The physics: velocity is computed as a damped spring force toward the target. The accumulated distance is the integral of velocity over normalized frame time. After applying the accumulated distance to <code>scrollTop</code>, if the scroll position actually changed (meaning the browser accepted the assignment), <code>accumulated</code> is reset to zero. This prevents the accumulator from growing unbounded when the browser rejects scroll assignments (e.g., at the scroll boundary).</p>
+<h2>Event Handlers</h2>
+<h3>handleScroll</h3>
+<p>The scroll event handler (source: <code>src/useStickToBottom.ts:412-479</code>) processes scroll events and manages the lock/escape state:</p>
+<pre><code class="language-typescript">// src/useStickToBottom.ts:412-479
+const handleScroll = useCallback(
+  ({ target }: Event) =&gt; {
+    if (target !== scrollRef.current) {
+      return;
+    }
+
+    const { scrollTop, ignoreScrollToTop } = state;
+    let { lastScrollTop = scrollTop } = state;
+
+    state.lastScrollTop = scrollTop;
+    state.ignoreScrollToTop = undefined;
+
+    if (ignoreScrollToTop &amp;&amp; ignoreScrollToTop &gt; scrollTop) {
+      lastScrollTop = ignoreScrollToTop;
+    }
+
+    setIsNearBottom(state.isNearBottom);
+
+    setTimeout(() =&gt; {
+      if (state.resizeDifference || scrollTop === ignoreScrollToTop) {
+        return;
+      }
+
+      if (isSelecting()) {
+        setEscapedFromLock(true);
+        setIsAtBottom(false);
+        return;
+      }
+
+      const isScrollingDown = scrollTop &gt; lastScrollTop;
+      const isScrollingUp = scrollTop &lt; lastScrollTop;
+
+      if (state.animation?.ignoreEscapes) {
+        state.scrollTop = lastScrollTop;
+        return;
+      }
+
+      if (isScrollingUp) {
+        setEscapedFromLock(true);
+        setIsAtBottom(false);
+      }
+
+      if (isScrollingDown) {
+        setEscapedFromLock(false);
+      }
+
+      if (!state.escapedFromLock &amp;&amp; state.isNearBottom) {
+        setIsAtBottom(true);
+      }
+    }, 1);
+  },
+  [setEscapedFromLock, setIsAtBottom, isSelecting, state],
+);
+</code></pre>
+<p>Key behaviors:</p>
+<ol><li><strong>Event target guard:</strong> Only processes events from <code>scrollRef.current</code>.</li><li><strong>ignoreScrollToTop correction:</strong> If a programmatic scroll set <code>ignoreScrollToTop</code> and the current <code>scrollTop</code> is less than that value, <code>lastScrollTop</code> is corrected to avoid false scroll-up detection.</li><li><strong>Resize event suppression (setTimeout):</strong> Uses a 1ms <code>setTimeout</code> to defer the escape logic, allowing <code>ResizeObserver</code> events (which may fire before scroll events) to set <code>resizeDifference</code> first. If <code>resizeDifference</code> is set, the scroll event is ignored.</li><li><strong>Text selection escape:</strong> If <code>isSelecting()</code> returns true during scroll, the lock is escaped.</li><li><strong>Scroll direction:</strong> Scrolling up escapes; scrolling down re-locks. If already locked and near bottom, <code>isAtBottom</code> stays <code>true</code>.</li></ol>
+<h3>handleWheel</h3>
+<p>The wheel event handler (source: `src/useStickToBottom.ts:481-509):</p>
+<pre><code class="language-typescript">// src/useStickToBottom.ts:481-509
+const handleWheel = useCallback(
+  ({ target, deltaY }: WheelEvent) =&gt; {
+    let element = target as HTMLElement;
+
+    while (![&quot;scroll&quot;, &quot;auto&quot;].includes(getComputedStyle(element).overflow)) {
+      if (!element.parentElement) {
+        return;
+      }
+      element = element.parentElement;
+    }
+
+    if (
+      element === scrollRef.current &amp;&amp;
+      deltaY &lt; 0 &amp;&amp;
+      scrollRef.current.scrollHeight &gt; scrollRef.current.clientHeight &amp;&amp;
+      !state.animation?.ignoreEscapes
+    ) {
+      setEscapedFromLock(true);
+      setIsAtBottom(false);
+    }
+  },
+  [setEscapedFromLock, setIsAtBottom, state],
+);
+</code></pre>
+<p>Key behaviors:</p>
+<ol><li><strong>Ancestor traversal:</strong> Walks up the DOM tree from the wheel target to find the nearest scrollable ancestor (one with <code>overflow: scroll</code> or <code>overflow: auto</code>). This ensures wheel events on child elements are correctly attributed to the scroll container.</li><li><strong>Scroll-up detection:</strong> <code>deltaY < 0</code> means scrolling up. Only escapes if the scroll container has scrollable content (<code>scrollHeight > clientHeight</code>) and escapes are not ignored.</li></ol>
+<h3>isSelecting</h3>
+<pre><code class="language-typescript">// src/useStickToBottom.ts:159-174
+const isSelecting = useCallback(() =&gt; {
+  if (!mouseDown) {
+    return false;
+  }
+
+  const selection = window.getSelection();
+  if (!selection || !selection.rangeCount) {
+    return false;
+  }
+
+  const range = selection.getRangeAt(0);
+  return (
+    range.commonAncestorContainer.contains(scrollRef.current) ||
+    scrollRef.current?.contains(range.commonAncestorContainer)
+  );
+}, []);
+</code></pre>
+<p>Checks if the user has an active text selection that intersects the scroll element. Returns <code>false</code> immediately if no mouse button is held.</p>
+<h2>useRefCallback: Dual Ref Pattern</h2>
+<pre><code class="language-typescript">// src/useStickToBottom.ts:621-633
+function useRefCallback&lt;T extends (ref: HTMLElement | null) =&gt; any&gt;(
+  callback: T,
+  deps: DependencyList,
+) {
+  const result = useCallback((ref: HTMLElement | null) =&gt; {
+    result.current = ref;
+    return callback(ref);
+  }, deps) as any as MutableRefObject&lt;HTMLElement | null&gt; &amp;
+    RefCallback&lt;HTMLElement&gt;;
+
+  return result;
+}
+</code></pre>
+<p><strong>Aha:</strong> <code>useRefCallback</code> creates a ref that is simultaneously a <code>MutableRefObject</code> (with <code>.current</code>) AND a <code>RefCallback</code> (callable as <code>ref={...}</code>). This dual nature is what allows <code>scrollRef</code> and <code>contentRef</code> to be used as both <code>ref={scrollRef}</code> on JSX elements AND accessed as <code>scrollRef.current</code> in imperative code. The trick: the <code>useCallback</code> function assigns to <code>result.current</code> before invoking the user callback, keeping the <code>.current</code> property synchronized.</p>
+<h3>scrollRef</h3>
+<pre><code class="language-typescript">// src/useStickToBottom.ts:511-516
+const scrollRef = useRefCallback((scroll) =&gt; {
+  scrollRef.current?.removeEventListener(&quot;scroll&quot;, handleScroll);
+  scrollRef.current?.removeEventListener(&quot;wheel&quot;, handleWheel);
+  scroll?.addEventListener(&quot;scroll&quot;, handleScroll, { passive: true });
+  scroll?.addEventListener(&quot;wheel&quot;, handleWheel, { passive: true });
+}, []);
+</code></pre>
+<p>Attaches/detaches <code>scroll</code> and <code>wheel</code> event listeners with <code>{ passive: true }</code> for performance.</p>
+<h3>contentRef</h3>
+<pre><code class="language-typescript">// src/useStickToBottom.ts:518-594
+const contentRef = useRefCallback((content) =&gt; {
+  state.resizeObserver?.disconnect();
+  state.resizeObserver = undefined;
+
+  if (!content) {
+    return;
+  }
+
+  let previousHeight: number | undefined;
+
+  state.resizeObserver = new ResizeObserver(([entry]) =&gt; {
+    const { height } = entry.contentRect;
+    const difference = height - (previousHeight ?? height);
+
+    state.resizeDifference = difference;
+
+    if (state.scrollTop &gt; state.targetScrollTop) {
+      state.scrollTop = state.targetScrollTop;
+    }
+
+    setIsNearBottom(state.isNearBottom);
+
+    if (difference &gt;= 0) {
+      // Positive resize: content grew
+      const animation = mergeAnimations(
+        optionsRef.current,
+        previousHeight
+          ? optionsRef.current.resize
+          : optionsRef.current.initial,
+      );
+
+      scrollToBottom({
+        animation,
+        wait: true,
+        preserveScrollPosition: true,
+        duration:
+          animation === &quot;instant&quot; ? undefined : RETAIN_ANIMATION_DURATION_MS,
+      });
+    } else {
+      // Negative resize: content shrank
+      if (state.isNearBottom) {
+        setEscapedFromLock(false);
+        setIsAtBottom(true);
+      }
+    }
+
+    previousHeight = height;
+
+    requestAnimationFrame(() =&gt; {
+      setTimeout(() =&gt; {
+        if (state.resizeDifference === difference) {
+          state.resizeDifference = 0;
+        }
+      }, 1);
+    });
+  });
+
+  state.resizeObserver?.observe(content);
+}, []);
+</code></pre>
+<p>The ResizeObserver callback:</p>
+<ol><li><strong>Computes height difference</strong> from <code>previousHeight</code>.</li><li><strong>Overscroll correction:</strong> If <code>scrollTop > targetScrollTop</code>, clamps it back.</li><li><strong>Positive resize (content grew):</strong> Triggers <code>scrollToBottom</code> with <code>wait: true</code> and <code>preserveScrollPosition: true</code>, plus 350ms extra duration (unless animation is <code>"instant"</code>). Uses <code>resize</code> animation for subsequent resizes, <code>initial</code> for the first resize.</li><li><strong>Negative resize (content shrank):</strong> If near bottom, re-locks (clears escape, sets <code>isAtBottom(true)</code>).</li><li><strong>Resets <code>resizeDifference</code>:</strong> After one rAF + one 1ms setTimeout, clears the difference if it hasn't been updated again. This timing aligns with the <code>setTimeout</code> in <code>handleScroll</code> to ensure the scroll event sees the <code>resizeDifference</code> flag.</li></ol>
+<h2>stopScroll</h2>
+<pre><code class="language-typescript">// src/useStickToBottom.ts:407-410
+const stopScroll = useCallback((): void =&gt; {
+  setEscapedFromLock(true);
+  setIsAtBottom(false);
+}, [setEscapedFromLock, setIsAtBottom]);
+</code></pre>
+<p>Manually escapes the lock and clears <code>isAtBottom</code>. Useful for "stop scrolling" buttons in the UI.</p>
+<h2>Global Mouse State</h2>
+<pre><code class="language-typescript">// src/useStickToBottom.ts:135-147
+let mouseDown = false;
+
+globalThis.document?.addEventListener(&quot;mousedown&quot;, () =&gt; {
+  mouseDown = true;
+});
+
+globalThis.document?.addEventListener(&quot;mouseup&quot;, () =&gt; {
+  mouseDown = false;
+});
+
+globalThis.document?.addEventListener(&quot;click&quot;, () =&gt; {
+  mouseDown = false;
+});
+</code></pre>
+<p>A module-level flag tracks mouse button state for the <code>isSelecting()</code> check. The optional chaining on <code>globalThis.document</code> ensures this doesn't crash during SSR (when <code>document</code> is undefined).</p>
+<h2>StickToBottomInstance: Return Type</h2>
+<pre><code class="language-typescript">// src/useStickToBottom.ts:608-619
+export interface StickToBottomInstance {
+  contentRef: React.MutableRefObject&lt;HTMLElement | null&gt; &amp;
+    React.RefCallback&lt;HTMLElement&gt;;
+  scrollRef: React.MutableRefObject&lt;HTMLElement | null&gt; &amp;
+    React.RefCallback&lt;HTMLElement&gt;;
+  scrollToBottom: ScrollToBottom;
+  stopScroll: StopScroll;
+  isAtBottom: boolean;
+  isNearBottom: boolean;
+  escapedFromLock: boolean;
+  state: StickToBottomState;
+}
+</code></pre>
+<p>The return value (source: `src/useStickToBottom.ts:596-605):</p>
+<pre><code class="language-typescript">return {
+  contentRef,
+  scrollRef,
+  scrollToBottom,
+  stopScroll,
+  isAtBottom: isAtBottom || isNearBottom,
+  isNearBottom,
+  escapedFromLock,
+  state,
+};
+</code></pre>
+<p><strong>Note:</strong> <code>isAtBottom</code> in the return is <code>isAtBottom || isNearBottom</code> — if either is true, the consumer sees <code>true</code>. This means the returned <code>isAtBottom</code> is true when either locked at bottom OR within 70px of bottom.</p>
+<h2>Options Type</h2>
+<pre><code class="language-typescript">// src/useStickToBottom.ts:81-85
+export interface StickToBottomOptions extends SpringAnimation {
+  resize?: Animation;
+  initial?: Animation | boolean;
+  targetScrollTop?: GetTargetScrollTop;
+}
+</code></pre>
+<p>Extends <code>SpringAnimation</code>, so <code>damping</code>, <code>stiffness</code>, and <code>mass</code> are all valid options.</p>
+<table><tr><th>Option</th><th>Type</th><th>Default</th><th>Description</th></tr><tr><td>`damping`</td><td>`number`</td><td>0.7</td><td>Spring damping (0-1)</td></tr><tr><td>`stiffness`</td><td>`number`</td><td>0.05</td><td>Spring stiffness</td></tr><tr><td>`mass`</td><td>`number`</td><td>1.25</td><td>Spring mass</td></tr><tr><td>`resize`</td><td>`Animation`</td><td>Inherits spring params</td><td>Animation for resize-triggered scrolls</td></tr><tr><td>`initial`</td><td>`Animation \</td><td>boolean`</td><td>`true`</td><td>Initial scroll behavior on mount; `false` disables initial scroll</td></tr><tr><td>`targetScrollTop`</td><td>`GetTargetScrollTop`</td><td>None</td><td>Custom target scroll calculator</td></tr></table>
+<h3>GetTargetScrollTop</h3>
+<pre><code class="language-typescript">// src/useStickToBottom.ts:76-79
+export type GetTargetScrollTop = (
+  targetScrollTop: number,
+  context: ScrollElements,
+) =&gt; number;
+</code></pre>
+<p>A function that receives the default target and can return a modified value. The result is clamped between 0 and the default <code>targetScrollTop</code>.</p>
+<h3>ScrollElements</h3>
+<pre><code class="language-typescript">// src/useStickToBottom.ts:71-74
+export interface ScrollElements {
+  scrollElement: HTMLElement;
+  contentElement: HTMLElement;
+}
+</code></pre>
+<h2>Error Cases</h2>
+<table><tr><th>Scenario</th><th>Behavior</th><th>Source</th></tr><tr><td>No `document` (SSR)</td><td>Global mouse listeners silently skipped via `?.`</td><td>`src/useStickToBottom.ts:137-147`</td></tr><tr><td>No `scrollRef.current`</td><td>`scrollTop` getter returns 0; `targetScrollTop` returns 0</td><td>`src/useStickToBottom.ts:200-201, 224-226`</td></tr><tr><td>No `contentRef.current`</td><td>ResizeObserver not created; `targetScrollTop` returns 0</td><td>`src/useStickToBottom.ts:232-234, 522-524`</td></tr></table>
+<h2>Cross-References</h2>
+<ul><li><a href="02-component.md">Component wrapper that uses this hook</a> — <code>StickToBottom</code> component, context, Content sub-component</li><li><a href="03-demo.md">Demo app that exercises scroll scenarios</a> — <code>useFakeMessages</code>, side-by-side panels, test patterns</li><li><a href="04-configuration.md">Configuration options and build setup</a> — TypeScript, Vite, Tailwind, Biome</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

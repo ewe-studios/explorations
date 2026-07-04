@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pipeline Deep Dive -- steal-a-gif</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/steal-a-gif/docs</span>
+    <div class="nav-actions">
+      <a href="00-overview.html" class="nav-breadcrumb">steal-a-gif: Overview</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="00-overview.html" class="nav-btn" title="Previous: steal-a-gif: Overview">← prev</a>
+      <a href="02-ui.html" class="nav-btn nav-btn-next" title="Next: UI Components">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Pipeline Deep Dive</h1>
+<p>The core pipeline is a 6-stage pipeline: decode → deduplicate → loop-detect → auto-crop → background key → encode. The orchestrator (<code>pipeline/index.ts</code>) exposes two functions: <code>prepareFrames()</code> (stages 1-3 for the UI) and <code>renderGifs()</code> (stages 1, 4, 5, 6 for the final output).</p>
+<p>Source: <code>pipeline/index.ts</code> — orchestrator, ~200 lines.</p>
+<h2>prepareFrames: Fast Setup for the UI</h2>
+<pre><code class="language-ts">// pipeline/index.ts:40-70
+export async function prepareFrames(file: File): Promise&lt;Prepared&gt; {
+  const compat = await probeDecodability(file);
+  const raw = await decodeForPreview(file);
+  if (raw.length === 0) throw new Error(&quot;No frames decoded from this file&quot;);
+
+  const width = raw[0].bitmap.width;
+  const height = raw[0].bitmap.height;
+  const full: Rect = { x: 0, y: 0, width, height };
+
+  const prints = await fingerprintFrames(raw, full);
+  const { frames, prints: dprints } = dedupeFrames(raw, prints);
+  const loop = detectLoop(frames, dprints);
+
+  return { frames, fps: loop.fps, width, height,
+    suggested: { start: loop.startIndex, end: loop.endIndex },
+    file, compat };
+}
+</code></pre>
+<p>This runs once when the user uploads a file. It:</p>
+<ol><li>Probes how the browser can decode the file (WebCodecs, fallback, or incompatible)</li><li>Decodes up to 900 preview frames (fast, lossy)</li><li>Fingerprints each frame to a 32×32 grayscale grid</li><li>Deduplicates consecutive identical frames</li><li>Detects the loop cycle</li><li>Returns a <code>Prepared</code> object</li></ol>
+<h2>renderGifs: Final Output Generation</h2>
+<pre><code class="language-ts">// pipeline/index.ts:72-160
+export async function renderGifs(
+  prepared: Prepared,
+  range: { start: number; end: number },
+  crop: Rect,
+  opts: { removeBackground: boolean; autoTighten: boolean; sizes: SizeSpec[] },
+  onStage?: (stage: Stage, detail?: string) =&gt; void,
+): Promise&lt;ExtractResult&gt; {
+</code></pre>
+<p>This runs when the user clicks "Make GIF". It:</p>
+<ol><li>Computes the time window from the chosen frame range</li><li>Re-decodes accurately (WebCodecs or video seek)</li><li>Collapses held duplicates in the accurate frames</li><li>Auto-tightens the crop (optional)</li><li>Removes/keys the background (optional)</li><li>Encodes to one or more GIF sizes</li></ol>
+<div class="mermaid">
+sequenceDiagram
+    participant UI as App UI
+    participant Pipe as renderGifs
+    participant Dec as decode.ts
+    participant Crop as autoCrop.ts
+    participant BG as bgKey.ts
+    participant Enc as encodeGif.ts
+
+    UI-&gt;&gt;Pipe: renderGifs(prepared, range, crop, opts)
+    Pipe-&gt;&gt;Pipe: compute t0Us, t1Us from frame timestamps
+
+    alt compat != incompatible
+        Pipe-&gt;&gt;Dec: extractAccurateRange(file, t0Us, t1Us, crop)
+        Dec--&gt;&gt;Pipe: accurate Frame[]
+        Pipe-&gt;&gt;Pipe: collapseHeldDuplicates(accurate)
+    else incompatible
+        Pipe-&gt;&gt;Pipe: use preview frames (lossy)
+    end
+
+    opts.autoTighten-&gt;&gt;Pipe: tighten?
+    Pipe-&gt;&gt;Crop: autoCrop(looped, cropForRender)
+    Crop--&gt;&gt;Pipe: tight Rect
+
+    opts.removeBackground-&gt;&gt;Pipe: remove bg?
+    Pipe-&gt;&gt;BG: estimateBackgroundColor(first frame)
+    BG--&gt;&gt;Pipe: BgColor
+    Pipe-&gt;&gt;BG: keyFlatBackground(each frame, bg)
+
+    Pipe-&gt;&gt;Enc: encodeGif(frames, opts, delaysMs)
+    Enc--&gt;&gt;Pipe: Blob (GIF)
+    Pipe--&gt;&gt;UI: ExtractResult { outputs[], finalCrop, frameCount, fps }
+
+</div>
+<h2>Stage 1: Decode</h2>
+<p>Source: <code>pipeline/decode.ts</code> — ~350 lines.</p>
+<h3>Two Decode Modes</h3>
+<p><strong>Preview decode</strong> (<code>decodeForPreview</code>):</p>
+<pre><code class="language-ts">// pipeline/decode.ts:83-95
+export async function decodeForPreview(
+  file: File, opts: { maxFrames?: number } = {},
+): Promise&lt;Frame[]&gt; {
+  const maxFrames = opts.maxFrames ?? 900;
+  const url = URL.createObjectURL(file);
+  try {
+    return await captureByPlayback(url, maxFrames);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+</code></pre>
+<p>Plays the video at 0.5× speed, capturing frames via <code>requestVideoFrameCallback</code>. Fast but may drop frames under load. Only drives the UI.</p>
+<p><strong>Accurate decode</strong> (<code>extractAccurateRange</code>):</p>
+<pre><code class="language-ts">// pipeline/decode.ts:140-220
+export async function extractAccurateRange(
+  file: File, t0Us: number, t1Us: number,
+  crop: Rect,
+  onProgress?: (done: number, total: number) =&gt; void,
+): Promise&lt;Frame[]&gt; {
+</code></pre>
+<p>For the final render. Two sub-modes:</p>
+<ul><li><strong>WebCodecs</strong>: demux with mp4box, feed to VideoDecoder. Every frame, exact timing.</li><li><strong>Fallback</strong>: demux timestamps with mp4box, then <code><video>.currentTime = timestamp</code> for each frame. Slower but works for HEVC and other non-WebCodecs codecs.</li></ul>
+<h3>Memory-Bounded Crop at Decode Time</h3>
+<p>Aha: The <code>cropSpec</code> function bounds total memory across all decoded frames. It reads <code>navigator.deviceMemory</code> (Chrome/Android only) and caps the budget at 120MB-300MB. Each frame's longest edge is scaled down so that <code>nFrames × width × height × 4 bytes</code> stays within budget. Safari doesn't report <code>deviceMemory</code>, so it assumes a conservative 150MB budget.</p>
+<pre><code class="language-ts">// pipeline/decode.ts:24-45
+const dm = (navigator as Navigator &amp; { deviceMemory?: number }).deviceMemory;
+const MEM_BUDGET = dm ? Math.max(120e6, Math.min(300e6, dm * 36e6)) : 150e6;
+const cap = Math.max(256, Math.min(1280,
+  Math.floor(Math.sqrt(MEM_BUDGET / (4 * Math.max(1, nFrames))))));
+</code></pre>
+<h3>Safari Workaround</h3>
+<p>Aha: Safari ignores the source rectangle when creating <code>ImageBitmap</code> from a <code>VideoFrame</code> — it returns the whole frame squished, causing the "still-OOM bug." The workaround: draw the full frame onto a canvas (which Safari honors), then crop FROM that canvas. One full canvas is the only full-resolution buffer ever held.</p>
+<pre><code class="language-ts">// pipeline/decode.ts:61-77
+function cropFromFull(full, source, srcW, srcH, cs) {
+  full.ctx.drawImage(source, 0, 0, srcW, srcH);
+  const small = makeCanvas(cs.resizeW, cs.resizeH);
+  const sctx = small.getContext(&quot;2d&quot;);
+  sctx.drawImage(full.canvas, cs.x, cs.y, cs.w, cs.h, 0, 0, cs.resizeW, cs.resizeH);
+  return createImageBitmap(small);
+}
+</code></pre>
+<h3>Decodability Probe</h3>
+<pre><code class="language-ts">// pipeline/decode.ts (probeDecodability)
+export async function probeDecodability(file: File): Promise&lt;&quot;webcodecs&quot; | &quot;fallback&quot; | &quot;incompatible&quot;&gt; {
+</code></pre>
+<p>Tests whether WebCodecs can decode the file. If not, tests if <code><video></code> can. Returns:</p>
+<ul><li><code>"webcodecs"</code> — exact decode possible</li><li><code>"fallback"</code> — video seek decode works</li><li><code>"incompatible"</code> — nothing works (e.g., HEVC in Firefox)</li></ul>
+<p>The probe runs BEFORE the user crops/trims, so the app can warn early.</p>
+<h2>Stage 2: Deduplication</h2>
+<p>Source: <code>pipeline/loopDetect.ts</code> — ~196 lines.</p>
+<p>Screen recordings capture at 60fps but the animation runs at ~10fps. Each animation frame is captured 6× in a row. These duplicates must be removed.</p>
+<pre><code class="language-ts">// pipeline/loopDetect.ts:28-60
+export function dedupeFrames(frames, prints, opts: { epsilon?: number } = {}) {
+  const eps = opts.epsilon ?? 0.004; // mean per-pixel delta
+  const keptIdx = [0];
+  for (let i = 1; i &lt; frames.length; i++) {
+    if (l1(prints[i], prints[keptIdx[keptIdx.length - 1]]) &gt; eps) {
+      keptIdx.push(i);
+    }
+  }
+  // ...assign durations from next kept frame&#x27;s timestamp
+}
+</code></pre>
+<p>The <code>epsilon</code> threshold (0.004) is the mean per-pixel grayscale difference. Below this, frames are considered identical. The kept frame's <code>durationUs</code> spans from its timestamp to the next kept frame's timestamp — so merged duplicates preserve the real on-screen time.</p>
+<h2>Stage 3: Loop Detection</h2>
+<pre><code class="language-ts">// pipeline/loopDetect.ts:70-140
+export function detectLoop(frames: Frame[], prints: Float32Array[]): LoopRange {
+</code></pre>
+<p>For each candidate period <code>p</code>, measures how well <code>frame[i]</code> matches <code>frame[i+p]</code> across the clip. The best period is where the error is minimized.</p>
+<div class="mermaid">
+flowchart TD
+    A[deduped frames] --&gt; B[try all periods p=1..N/2]
+    B --&gt; C[E_p = mean L1 distance frame[i] vs frame[i+p]]
+    C --&gt; D[find p with lowest E_p]
+    D --&gt; E[scan for best start offset within period]
+    E --&gt; F[return startIndex, endIndex, fps, seamError]
+
+</div>
+<p>Aha: Loop detection only seeds a suggested range — the user owns the final start/end. Auto-detection can't tell the animation from accidental content (like swiping Control Center open at the end of the clip). The loop detector finds the mathematically best period; the user refines it visually.</p>
+<h2>Stage 4: Auto-Crop</h2>
+<p>Source: <code>pipeline/autoCrop.ts</code> — ~103 lines.</p>
+<pre><code class="language-ts">// pipeline/autoCrop.ts:14-40
+export async function autoCrop(frames: Frame[], roughCrop: Rect, opts?) {
+</code></pre>
+<p>Builds a per-pixel motion map using Welford's online variance algorithm across sampled frames. The bounding box of everything that moves becomes the tight crop.</p>
+<pre><code class="language-ts">// Welford online variance
+for (let f = 0; f &lt; frames.length; f += stride) {
+  // ...draw frame, get grayscale per pixel
+  for (let i = 0; i &lt; w * h; i++) {
+    const delta = gray - mean[i];
+    mean[i] += delta / count;
+    m2[i] += delta * (gray - mean[i]);
+  }
+}
+// variance = m2 / (count - 1)
+</code></pre>
+<p>Aha: The insight is that inside the user's rough crop rectangle, the app's static chrome (rounded corners, padding, caption bar) doesn't change between frames, while the animation does. By computing variance per pixel across the loop, we get a motion map. The bounding box of moving pixels is the animation's true extent. This removes dead app background AND finds the real GIF size.</p>
+<p>The algorithm is conservative: if the moving region collapses below 15% of the user's box area, it keeps the user's box rather than cropping to a misleading fragment (e.g., just a bobbing character's head).</p>
+<h2>Stage 5: Background Key</h2>
+<p>Source: <code>pipeline/bgKey.ts</code> — ~125 lines.</p>
+<p>For sticker-picker captures (WeChat, XHS) that have a SOLID background color.</p>
+<pre><code class="language-ts">// pipeline/bgKey.ts:25-50
+export function estimateBackgroundColor(img: ImageData): BgColor {
+  // Sample border pixels, take median
+}
+
+export function keyFlatBackground(img: ImageData, bg: BgColor, opts?) {
+  // Flood-fill from border, feather ramp
+}
+</code></pre>
+<p>Aha: Two properties make flood-fill robust over AI matting for solid backgrounds:</p>
+<ol><li>It only removes pixels CONNECTED to the edge — an interior shape whose outline is close in color to the background is never eaten, because the subject blocks the fill.</li><li>The seed color is constant across frames, so there's no per-frame flicker the way independent AI mattes produce.</li></ol>
+<h3>Flood Fill Algorithm</h3>
+<pre><code class="language-ts">// pipeline/bgKey.ts:60-120
+// Scanline flood fill from every border pixel matching background
+// Two thresholds: tol (hard cut) and tolNear (feather ramp)
+// Soft alpha ramp avoids jaggies on edges
+</code></pre>
+<p>Defaults: <code>tolerance = 42</code> (Euclidean distance²), <code>feather = 18</code>. Pixels within <code>tol - feather</code> to <code>tol</code> get a soft alpha ramp.</p>
+<h3>AI Background Removal</h3>
+<p>Source: <code>pipeline/removeBackground.ts</code> — ~54 lines.</p>
+<p>For non-solid backgrounds, uses <code>@imgly/background-removal</code> (ISNet model with WebGPU):</p>
+<pre><code class="language-ts">// pipeline/removeBackground.ts:12-18
+export async function removeFrameBackground(source) {
+  const blob = await canvasToBlob(source);
+  return removeBackground(blob, {
+    device: &quot;gpu&quot;, model: &quot;isnet_fp16&quot;,
+    output: { format: &quot;image/png&quot; },
+  });
+}
+</code></pre>
+<p>Aha: Background removal must run per-frame (a first-frame matte isn't valid for later frames). @imgly holds a single global onnxruntime session, so calls MUST be serialized — running two concurrently throws "Session already started." The batch function processes strictly one at a time.</p>
+<h2>Stage 6: GIF Encoding</h2>
+<p>Source: <code>pipeline/encodeGif.ts</code> — ~129 lines.</p>
+<pre><code class="language-ts">// pipeline/encodeGif.ts:12-60
+export async function encodeGif(frames, opts, delaysMs?) {
+  // Iterative shrink loop to fit maxBytes
+  for (let attempt = 0; attempt &lt; 12; attempt++) {
+    const bytes = encodeOnce(working, delays, paletteColors, transparent);
+    if (!opts.maxBytes || bytes.length &lt;= opts.maxBytes) return blob;
+    // Shrink resolution first, then drop colors
+  }
+}
+</code></pre>
+<h3>Shared Palette</h3>
+<p>Aha: One palette for the whole animation. Quantizing each frame independently gives slightly different palettes per frame, causing shimmer/flashing. A single shared palette keeps colors stable across the loop. Built from an evenly-spaced sample of frames.</p>
+<h3>Size Iteration</h3>
+<p>When <code>maxBytes</code> is set (e.g., Slack's 128KB):</p>
+<ol><li>Encode with full resolution and 256 colors</li><li>If over budget, shrink resolution by 0.85×</li><li>At size floor (72px), drop colors to 128, then 64, then 32</li><li>Max 12 attempts</li><li>Return smallest attempt even if still over budget</li></ol>
+<h3>Per-Frame Delays</h3>
+<pre><code class="language-ts">// pipeline/encodeGif.ts:27-30
+const delays = frames.map((_, i) =&gt;
+  Math.max(20, Math.round(delaysMs?.[i] ?? 1000 / opts.fps)));
+</code></pre>
+<p>GIF delays are centiseconds. Anything under ~2cs (20ms) gets clamped to a slow default by renderers, so the code floors at 20ms.</p>
+<h3>Transparency Guard</h3>
+<pre><code class="language-ts">// pipeline/encodeGif.ts:22
+const transparent = opts.removeBackground;
+</code></pre>
+<p>Only key transparency when background was actually removed. Otherwise, reserving a transparent palette index makes opaque pixels that quantize onto it disappear.</p>
+<h2>Cross-References</h2>
+<ul><li><a href="00-overview.md">Overview</a> — Package summary, quick start</li><li><a href="02-ui.md">UI Components</a> — CropCanvas, LoopSelector, App wizard</li><li><a href="03-types.md">Types & Data Flow</a> — Frame, Rect, Prepared, ExtractResult</li><li><a href="04-scripts.md">Scripts</a> — E2E tests, thumbnails, OG card</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
