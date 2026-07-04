@@ -1,11 +1,13 @@
 # RAGatouille Documentation
 
-Library to facilitate the use of state-of-the-art retrieval models in common RAG contexts.
+RAG framework with ColBERT.
 
-| Attribute | Value |
-|-----------|-------|
-| Source Files | 27 Python, 0 Rust |
+## Documents
 
-## Navigation
+| # | Document | Description |
+|---|----------|-------------|
+| 0 | [Overview](00-overview.md) | Architecture, features |
 
-- **[00-overview](00-overview.md)** — What RAGatouille is, overview
+## Source
+
+27 Python files

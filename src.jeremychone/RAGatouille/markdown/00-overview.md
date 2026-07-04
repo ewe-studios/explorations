@@ -1,30 +1,31 @@
-# What Is RAGatouille?
+---
+title: RAGatouille — RAG Framework for Python
+---
 
-Library to facilitate the use of state-of-the-art retrieval models in common RAG contexts.
+# RAGatouille — RAG Framework for Python
 
-**Source:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.jeremychone/RAGatouille/`
+**RAG (Retrieval-Augmented Generation) framework with ColBERT late interaction.**
 
-## Overview
+Source: 27 Python files
 
-Library to facilitate the use of state-of-the-art retrieval models in common RAG contexts. with 27 source files.
+## Architecture
 
-## Structure
-
+```mermaid
+flowchart LR
+    Docs[Documents] --> Index[ColBERT Index]
+    Index --> Retrieval[Retrieval]
+    Query[Query] --> Retrieval
+    Retrieval --> Rerank[Reranking]
+    Rerank --> LLM[LLM Generation]
 ```
-docs
-examples
-examples/data
-.github
-.github/workflows
-/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.jeremychone/RAGatouille
-ragatouille
-ragatouille/data
-ragatouille/integrations
-ragatouille/models
-ragatouille/negative_miners
-src
-src/ragatouille
-tests
-tests/data
-tests/e2e
-```
+
+## Features
+
+- ColBERT late interaction indexing
+- Document retrieval with embeddings
+- Query encoding
+- Reranking support
+
+## Docs
+
+https://github.com/bclavie/RAGatouille
