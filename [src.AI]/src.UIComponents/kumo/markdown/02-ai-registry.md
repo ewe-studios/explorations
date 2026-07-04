@@ -1,57 +1,80 @@
-# kumo AI Registry: Component Metadata for AI Tools
+# Kumo AI Registry: Component Metadata for AI Tools
 
-Machine-readable component metadata generated from TypeScript types, consumed by the CLI and AI tools.
+Kumo's component registry provides structured metadata for AI-assisted component generation. The registry discovers components, extracts props, generates schemas, and produces markdown documentation.
 
-**Source:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.UIComponents/kumo/packages/kumo/`
+Source: `packages/kumo/scripts/component-registry/` — 10 files.
 
-## Registry Location
+## Component Registry Architecture
 
 ```
-ai/
-├── component-registry.json     ← Full component metadata
-└── schemas/                    ← Zod schemas for AI validation
+scripts/component-registry/
+├── index.ts              # Main entry: discovery → metadata → markdown
+├── discovery.ts          # Find components in packages/kumo/src/
+├── metadata.ts           # Extract props, variants, examples
+├── schema-generator.ts   # Generate JSON Schema for AI tools
+├── props-filter.ts       # Filter props to public API
+├── sub-components.ts     # Handle sub-component patterns
+├── markdown-generator.ts # Generate markdown docs from metadata
+├── cache.ts              # Cache component data between runs
+├── example-cleanup.ts    # Clean up example code
+└── index.test.ts         # Tests
 ```
 
-## CLI Commands
+## Discovery
 
-```bash
-npx @cloudflare/kumo ls          # List all components
-npx @cloudflare/kumo doc Button  # Get component documentation
-npx @cloudflare/kumo docs        # Get all component documentation
-```
+Source: `discovery.ts`
 
-**Source:** `src/command-line/`
+Scans `packages/kumo/src/components/` for component files, finding all `.tsx` files that export React components. Sub-directories map to component groups.
 
-## Registry Structure
+## Metadata Extraction
 
-```json
-{
-  "components": [
-    {
-      "name": "Button",
-      "description": "Interactive button component",
-      "props": [...],
-      "variants": {
-        "shape": ["base", "square", "circle"],
-        "size": ["xs", "sm", "base", "lg"],
-        "variant": ["primary", "secondary", "ghost", "destructive", "outline"]
-      },
-      "examples": [...]
-    }
-  ]
+Source: `metadata.ts`
+
+For each discovered component:
+
+```typescript
+interface ComponentMetadata {
+  name: string
+  path: string
+  props: PropDefinition[]
+  variants: VariantDefinition[]
+  examples: string[]
+  description: string
+  subComponents: string[]
 }
 ```
 
-## Generation
+## Props Filter
 
-**Source:** `scripts/component-registry/index.ts`
+Source: `props-filter.ts`
 
-Generated from TypeScript types + demo examples. Always stays in sync with actual component API.
+Filters extracted props to only include the public API — excludes internal props (prefixed `_`), inherited HTML element props (unless explicitly defined), generic type parameters, and `React.Ref` attributes.
 
-```bash
-pnpm run codegen:registry
-```
+Aha: The props filter ensures AI tools only see the intentional public API, not implementation details or inherited props that users shouldn't use.
 
-## Next
+## Schema Generator
 
-Continue to [03-tooling](03-tooling.md) for CI/CD and build tooling.
+Source: `schema-generator.ts`
+
+Generates JSON Schema for each component, mapping each prop to a schema property with type, description, enum (for variants), and required status. Used by AI tools to validate component usage and suggest props.
+
+## Markdown Generator
+
+Source: `markdown-generator.ts`
+
+Generates markdown documentation with props table (name, type, default, description), variants, and examples for each component.
+
+## Cache
+
+Source: `cache.ts`
+
+Caches component metadata between registry runs using source file hashes to detect changes. Speeds up subsequent runs by skipping unchanged components.
+
+## Cross-References
+
+- [Overview](00-overview.md) — What Kumo is
+- [Theming](01-theming.md) — Theme system, tokens, lint rules
+- [Tooling](03-tooling.md) — CI/CD, changesets, visual regression
+- [Packages](04-packages.md) — Sub-packages, CI structure
+
+[Next → Tooling](03-tooling.md)

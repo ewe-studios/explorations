@@ -11,13 +11,13 @@
 - **hotwire-rails**: v0.1.3 -- https://github.com/hotwired/hotwire-rails
 - **bridge-components**: v0.8.3 (`@joemasilotti/bridge-components`) -- npm, peer deps on Stimulus >= 3.2 + hotwire-native-bridge >= 1.2
 - **Source locations**:
-  - `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/Basecamp Apps/stimulus/`
-  - `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/Basecamp Apps/turbo/`
-  - `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/Basecamp Apps/hotwire-native-ios/`
-  - `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/Basecamp Apps/hotwire-native-android/`
-  - `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/Basecamp Apps/stimulus-rails/`
-  - `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/Basecamp Apps/turbo-rails/`
-  - `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/Basecamp Apps/bridge-components/`
+  - `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/BasecampApps/stimulus/`
+  - `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/BasecampApps/turbo/`
+  - `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/BasecampApps/hotwire-native-ios/`
+  - `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/BasecampApps/hotwire-native-android/`
+  - `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/BasecampApps/stimulus-rails/`
+  - `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/BasecampApps/turbo-rails/`
+  - `/home/darkvoid/Boxxed/@formulas/src.UIFrameworks/src.basecamp/BasecampApps/bridge-components/`
 
 ## What This Ecosystem Is
 

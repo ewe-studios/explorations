@@ -1,120 +1,139 @@
-# mapcn Blocks: 7 Pre-Built Map Templates
+# mapcn Blocks: Registry-Based Map Templates
 
-7 pre-built map blocks installable via shadcn registry. Each is a complete page with data, components, and layout.
+7 pre-built map blocks installable via shadcn-style registry. Each block is a complete page with data, components, and layout, defined in `registry.json`.
 
-**Source:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.UIComponents/mapcn/src/registry/blocks/`
+Source: `src/lib/blocks.ts`, `src/lib/get-block-file-source.ts`, `registry.json`.
 
-## Block Catalog
+## Registry Schema
 
-| Block | Files | iframe Height | Description |
-|-------|-------|--------------|-------------|
-| `analytics-map` | 4 | 940px | Real-time analytics: world map + overview cards + device stats |
-| `choropleth` | 3 | 720px | World choropleth: country shading by metric with hover tooltip |
-| `uptime-monitor` | 4 | 720px | Status-page: edge network health with live latency and uptime |
-| `logistics-network` | 4 | 800px | Domestic logistics: map with sidebar stats and filters |
-| `store-locator` | 4 | 800px | Searchable store list synced with map markers |
-| `heatmap` | 1 | 800px | Globe-projected earthquake density heatmap |
-| `delivery-tracker` | 2 | 720px | Live order tracking: route progress + courier position |
+Source: `src/lib/blocks.ts`
 
-## analytics-map
+```typescript
+interface RegistrySchema {
+  items: RegistryBlockItem[];
+}
 
-**Source:** `src/registry/blocks/analytics-map/`
-
-```
-analytics-map/
-├── page.tsx              ← Analytics dashboard page
-├── data.ts               ← Sample analytics data
-└── components/
-    ├── overview-card.tsx ← Overview stats card
-    └── breakdown-card.tsx← Device breakdown card
+interface RegistryBlockItem {
+  name: string
+  type: string                    // "registry:block"
+  title?: string
+  description?: string
+  files?: Array<{ path: string; target?: string }>
+  registryDependencies?: string[]
+  categories?: string[]
+  meta?: { iframeHeight?: string }
+}
 ```
 
-Uses Recharts for charts and mapcn Map for world visualization.
+Each block item declares:
+- **`name`**: Unique identifier
+- **`files`**: Source files with optional target path
+- **`registryDependencies`**: Other registry items this block depends on
+- **`categories`**: Grouping for the docs UI
 
-## choropleth
+## getAllBlocks()
 
-**Source:** `src/registry/blocks/choropleth/`
-
-```
-choropleth/
-├── page.tsx              ← Choropleth map page
-└── data.ts               ← Country metric data
-```
-
-Uses `blank` prop on Map for transparent basemap, draws GeoJSON country polygons.
-
-## uptime-monitor
-
-**Source:** `src/registry/blocks/uptime-monitor/`
-
-```
-uptime-monitor/
-├── page.tsx                          ← Status page
-├── data.ts                           ← Edge node data
-└── components/
-    ├── edge-node-marker.tsx          ← Custom marker for nodes
-    └── status-sidebar.tsx            ← Status sidebar
-```
-
-Color-coded markers show node health.
-
-## logistics-network
-
-**Source:** `src/registry/blocks/logistics-network/`
-
-```
-logistics-network/
-├── page.tsx                              ← Logistics dashboard
-├── data.ts                               ← Logistics data
-└── components/
-    ├── filter-sidebar.tsx                ← Filter controls
-    └── network-map.tsx                   ← Network map
+```typescript
+export function getAllBlocks(): RegistryBlockItem[] {
+  return typedRegistry.items
+    .filter((item) => item.type === "registry:block")
+    .map((item) => ({
+      name: item.name,
+      type: item.type,
+      title: item.title ?? item.name,
+      description: item.description,
+      files: (item.files ?? []).map((file) => ({
+        ...file,
+        target: displayTarget(file.target),
+      })),
+      registryDependencies: item.registryDependencies ?? [],
+      categories: item.categories ?? [],
+      meta: item.meta,
+    }))
+}
 ```
 
-Uses MapRoute for shipping routes and MapMarker for warehouse locations.
+Filters to `type === "registry:block"` and normalizes target paths.
 
-## store-locator
+## Target Path Resolution
 
-**Source:** `src/registry/blocks/store-locator/`
+```typescript
+const TARGET_PLACEHOLDERS: Record<string, string> = {
+  "@components/": "components/",
+  "@ui/": "components/ui/",
+  "@lib/": "lib/",
+  "@hooks/": "hooks/",
+}
 
-```
-store-locator/
-├── page.tsx                          ← Store locator page
-├── data.ts                           ← Store data
-└── components/
-    ├── store-list.tsx                ← Searchable store list
-    └── locator-map.tsx               ← Map with markers
-```
-
-Store list and map markers are synced — selecting a store highlights its marker.
-
-## heatmap
-
-**Source:** `src/registry/blocks/heatmap/`
-
-```
-heatmap/
-└── page.tsx              ← Single-file heatmap
+function displayTarget(target?: string): string | undefined {
+  if (!target) return target
+  for (const [prefix, replacement] of Object.entries(TARGET_PLACEHOLDERS)) {
+    if (target.startsWith(prefix)) {
+      return replacement + target.slice(prefix.length)
+    }
+  }
+  return target
+}
 ```
 
-Uses `{ type: "globe" }` projection and MapLibre's heatmap layer.
+Aha: The shadcn target placeholders (`@lib/`, `@components/`, etc.) are resolved to friendly folder names for the docs file tree display. At install time, the actual path alias resolution happens in the consumer's project.
 
-## delivery-tracker
+## File Tree Builder
 
-**Source:** `src/registry/blocks/delivery-tracker/`
+```typescript
+export function createFileTreeForRegistryItemFiles(
+  files: Array<{ path: string; target?: string }>,
+): FileTree[] {
+  const root: FileTree[] = []
 
+  for (const file of files) {
+    const filePath = file.target ?? file.path
+    const parts = filePath.split("/")
+    let currentLevel = root
+
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i]
+      const isFile = i === parts.length - 1
+      const existingNode = currentLevel.find((node) => node.name === part)
+
+      if (existingNode) {
+        if (isFile) existingNode.path = filePath
+        else currentLevel = existingNode.children!
+      } else {
+        const newNode: FileTree = { name: part, path: isFile ? filePath : undefined }
+        if (!isFile) newNode.children = []
+        currentLevel.push(newNode)
+        currentLevel = newNode.children ?? []
+      }
+    }
+  }
+
+  return root
+}
 ```
-delivery-tracker/
-├── page.tsx              ← Delivery tracking page
-└── data.ts               ← Delivery route data
+
+Builds a hierarchical file tree from flat file paths. Shared parent directories become tree nodes with children.
+
+## Block File Source
+
+Source: `src/lib/get-block-file-source.ts`
+
+```typescript
+const SRC_DIR = process.cwd()
+
+export function getBlockFileSource(registryPath: string): string {
+  const filePath = path.join(SRC_DIR, registryPath)
+  const source = fs.readFileSync(filePath, "utf-8")
+  return source.replace(/@\/registry\/map/g, "@/components/ui/map")
+}
 ```
 
-Uses MapRoute for delivery path with moving courier marker.
+Reads the raw source file from disk and replaces `@/registry/map` imports with `@/components/ui/map` — the path where installed components live in the consumer's project.
 
-## Installation
+## Cross-References
 
-```bash
-npx shadcn@latest add "https://mapcn.dev/r/choropleth.json"
-```
+- [Overview](00-overview.md) — Architecture summary
+- [Components](02-components.md) — UI components, layout, search
+- [App Structure](03-app-structure.md) — Next.js layout, CSS
 
-Each block copies source files into your project — you own the code.
+[Next → Components](02-components.md)
