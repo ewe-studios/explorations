@@ -33,4 +33,3 @@ Video Upload → Decode → Auto-Crop → BG Remove/Key → Loop Detect → Enco
 | `e2e.cjs` | End-to-end test |
 | `extract-thumbnails.cjs` | Extract video thumbnails |
 | `og-card.cjs` | Generate OG card images |
-| `scroll-test.cjs` | Scroll performance test |

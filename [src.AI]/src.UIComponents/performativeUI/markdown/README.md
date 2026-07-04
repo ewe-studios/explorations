@@ -11,4 +11,4 @@ AI-native React components for landing pages.
 
 ## Navigation
 
-- **[00-overview](00-overview.md)** — All 27 components and 4 hooks
+- **[00-overview](00-overview.md)** — All 27 components, 4 hooks, usage

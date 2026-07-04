@@ -6,8 +6,8 @@ Mapbox GL JS showcase for Next.js.
 |-----------|-------|
 | Files | 36 |
 | Map Engine | Mapbox GL JS |
-| Stack | Next.js 15, shadcn/ui |
+| Type | Standalone app |
 
 ## Navigation
 
-- **[00-overview](00-overview.md)** — What next-maps is, architecture
+- **[00-overview](00-overview.md)** — Architecture, Mapbox provider, search integration

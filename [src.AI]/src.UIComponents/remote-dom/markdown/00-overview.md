@@ -1,6 +1,6 @@
 # remote-dom: DOM Rendering from Sandboxed Environments
 
-Take a tree of DOM elements created in a sandboxed JavaScript environment (iframe, web worker) and render them to the DOM in a different environment.
+Take a tree of DOM elements created in a sandboxed environment (iframe, web worker) and render them to the DOM in a different environment.
 
 **Source:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.UIComponents/remote-dom/`
 
@@ -13,18 +13,18 @@ Remote DOM Tree                       postMessage/       DOMRemoteReceiver
 RemoteConnection ───────────────────▶ MessagePort ────▶ Creates real DOM elements
 ```
 
-**Aha:** Remote DOM doesn't serialize the entire DOM tree on each update. It serializes individual DOM *operations* (createElement, appendChild, setAttribute) and replays them on the host side. This makes updates incremental and efficient.
+**Aha:** Remote DOM serializes individual DOM *operations* (createElement, appendChild, setAttribute) rather than the entire DOM tree. Updates are incremental and efficient.
 
 ## 6 Packages
 
-| Package | Purpose | Files |
-|---------|---------|-------|
-| `@remote-dom/core` | Core connection and receiver types | 7 |
-| `@remote-dom/react` | React bindings for remote rendering | 6 |
-| `@remote-dom/preact` | Preact bindings (lightweight) | 5 |
-| `@remote-dom/signals` | Signal-based reactive receiver | 2 |
-| `@remote-dom/compat` | Compatibility layer | 1 |
-| `@remote-dom/polyfill` | Minimal DOM API polyfill for workers | 30+ |
+| Package | Files | Purpose |
+|---------|-------|---------|
+| `@remote-dom/core` | 7 | Core connection and receiver types |
+| `@remote-dom/react` | 6 | React bindings for remote rendering |
+| `@remote-dom/preact` | 5 | Preact bindings (lightweight) |
+| `@remote-dom/signals` | 2 | Signal-based reactive receiver |
+| `@remote-dom/compat` | 1 | Compatibility layer |
+| `@remote-dom/polyfill` | 30+ | Minimal DOM API polyfill for workers |
 
 ## Core API
 
@@ -41,15 +41,19 @@ connection.appendChild(parent, child)
 
 ## Polyfill
 
-The polyfill provides minimal DOM APIs so libraries like Preact and Svelte can run inside a web worker:
+Provides minimal DOM APIs so Preact/Svelte can run in a web worker:
 
 | API | File |
 |-----|------|
 | `Attr` | `Attr.ts` |
-| `CharacterData` | `CharacterData.ts` |
-| `Comment` | `Comment.ts` |
-| `CustomElementRegistry` | `CustomElementRegistry.ts` |
 | `Document` | `Document.ts` |
 | `Element` | `Element.ts` |
 | `Text` | `Text.ts` |
 | `MutationObserver` | `MutationObserver.ts` |
+| `CustomElementRegistry` | `CustomElementRegistry.ts` |
+
+## Use Cases
+
+1. **Plugin UI isolation** — Run plugin UI in iframe, render to main page
+2. **Web worker UI** — Run UI libraries in worker, render to main thread
+3. **Sandboxed content** — Render untrusted content safely

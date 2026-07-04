@@ -1,6 +1,6 @@
 # remix Documentation
 
-Full-stack web framework.
+Full-stack web framework (reference).
 
 | Attribute | Value |
 |-----------|-------|

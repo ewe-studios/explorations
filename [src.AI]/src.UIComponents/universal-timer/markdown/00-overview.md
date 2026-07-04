@@ -15,9 +15,7 @@ src/
 │   ├── timer-actions.ts     ← Start/stop/pause/resume
 │   ├── ipc-handlers.ts      ← IPC handler registration
 │   ├── storage.ts           ← SQLite storage
-│   ├── event-cache.ts       ← Event caching
-│   ├── event-processing.ts  ← Event aggregation
-│   └── window-actions.ts    ← Window management
+│   └── event-processing.ts  ← Event aggregation
 ├── preload/
 │   └── index.ts             ← Context bridge
 └── shared/

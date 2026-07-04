@@ -4,7 +4,7 @@
 
 **Source:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.UIComponents/performativeUI/`
 
-## Components (27 exports)
+## Components (27)
 
 | Category | Components |
 |----------|-----------|
@@ -19,7 +19,7 @@
 | Pricing | PricingCard, BeforeAfter, WaitlistForm, Popover |
 | Footers | BigBack |
 
-## Hooks (4 exports)
+## Hooks (4)
 
 | Hook | Purpose |
 |------|---------|
@@ -38,7 +38,7 @@ export { cn, type ClassValue } from "./utils/cn"  // clsx + tailwind-merge
 
 ```bash
 npm install performative-ui
-import 'performative-ui/styles.css'  // Auto-includes all component styles
+import 'performative-ui/styles.css'
 ```
 
 ## Usage

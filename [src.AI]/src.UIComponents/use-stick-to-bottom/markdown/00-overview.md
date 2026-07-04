@@ -40,11 +40,3 @@ function Chat() {
 |--------|------|---------|-------------|
 | `smooth` | `boolean` | `true` | Use smooth scrolling |
 | `threshold` | `number` | `50` | Pixel threshold for sticky detection |
-
-## Returns
-
-| Property | Type | Description |
-|----------|------|-------------|
-| `containerRef` | `RefObject` | Ref for scroll container |
-| `contentRef` | `RefObject` | Ref for scroll content |
-| `isSticky` | `boolean` | Whether currently at bottom |

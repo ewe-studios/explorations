@@ -1,6 +1,6 @@
 # remix: Full-Stack Web Framework
 
-Remix is a full-stack web framework included in the UIComponents directory for reference.
+Remix is a full-stack web framework included for reference.
 
 **Source:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.UIComponents/remix/`
 

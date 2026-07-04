@@ -9,4 +9,4 @@ macOS menu bar time tracker.
 
 ## Navigation
 
-- **[00-overview](00-overview.md)** — Architecture, main process, preload
+- **[00-overview](00-overview.md)** — Architecture, main process, timer state machine

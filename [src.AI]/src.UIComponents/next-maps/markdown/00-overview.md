@@ -1,6 +1,6 @@
 # next-maps: Mapbox Showcase for Next.js
 
-Mapbox GL JS integration with shadcn/ui components. Unlike mapcn (shadcn registry), this is a standalone application to fork and customize.
+Mapbox GL JS integration with shadcn/ui. Standalone app (fork and customize), not a registry.
 
 **Source:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.UIComponents/next-maps/`
 
@@ -8,7 +8,7 @@ Mapbox GL JS integration with shadcn/ui components. Unlike mapcn (shadcn registr
 
 ```
 src/
-├── context/map-context.ts     ← React context for map instance
+├── context/map-context.ts     ← React context: { map: mapboxgl.Map }
 ├── lib/mapbox/
 │   ├── provider.tsx           ← Mapbox lifecycle wrapper
 │   ├── constants.ts           ← FLY_TO: zoom 14, speed 4, 1000ms
@@ -27,6 +27,7 @@ src/
 ## Map Context
 
 ```typescript
+// src/context/map-context.ts
 interface MapContextType { map: mapboxgl.Map }
 const MapContext = createContext<MapContextType | null>(null)
 function useMap() {
@@ -47,16 +48,15 @@ const mapInstance = new mapboxgl.Map({
   style: "mapbox://styles/mapbox/standard",  // 3D Standard style
   center: [longitude, latitude],
   zoom: initialZoom,
-  attributionControl: false,
-  logoPosition: "bottom-right",
 })
 ```
 
-Uses `mapbox://styles/mapbox/standard` — the newer 3D Standard style (v2), not the flat 2D streets-v12.
+Uses `mapbox://styles/mapbox/standard` — the newer 3D Standard style (v2).
 
 ## Constants
 
 ```typescript
+// src/lib/mapbox/constants.ts
 export const MAP_CONSTANTS = {
   FLY_TO: { ZOOM: 14, SPEED: 4, DURATION: 1000 },
   SEARCH: {
@@ -68,16 +68,6 @@ export const MAP_CONSTANTS = {
 }
 ```
 
-## Search Integration
+## Search Flow
 
-Search input → `useDebounce` (400ms) → Mapbox Searchbox API → results in command palette → user selects → `map.flyTo()` with constants.
-
-## Dependencies
-
-| Dependency | Purpose |
-|-----------|---------|
-| `mapbox-gl` | Map rendering (requires API key) |
-| `@radix-ui/react-*` | Accessible primitives (dialog, popover, etc.) |
-| `lucide-react` | Icons |
-| `cmdk` | Command palette for search |
-| `class-variance-authority` | Component variants |
+Search input → `useDebounce` (400ms) → Mapbox Searchbox API → results in command palette → `map.flyTo()`.

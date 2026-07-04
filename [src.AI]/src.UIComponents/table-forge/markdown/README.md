@@ -10,4 +10,4 @@ MDX-driven table component showcase.
 
 ## Navigation
 
-- **[00-overview](00-overview.md)** — What table-forge is, all 10 tables
+- **[00-overview](00-overview.md)** — All 10 tables, MDX pattern, zero-dependency approach

@@ -9,4 +9,4 @@ React hook for chat auto-scroll.
 
 ## Navigation
 
-- **[00-overview](00-overview.md)** — Hook API, usage
+- **[00-overview](00-overview.md)** — Hook API, usage, options
