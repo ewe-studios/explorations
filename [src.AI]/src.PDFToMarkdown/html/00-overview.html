@@ -127,41 +127,60 @@
       
       <a href="index.html" class="nav-btn" title="Back to index">index</a>
       
-      <a href="README.html" class="nav-btn nav-btn-next" title="Next: Marker Documentation">next →</a>
+      <a href="01-architecture.html" class="nav-btn nav-btn-next" title="Next: Marker Architecture — Document Model, Block Types, and Dependency Injection">next →</a>
       <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
     </div>
   </nav>
   <article class="prose">
 <h1>Marker — Document to Markdown/JSON Converter</h1>
-<p><strong>Marker converts PDF, image, PPTX, DOCX, XLSX, HTML, and EPUB files to markdown, JSON, HTML, and structured chunks.</strong></p>
-<p>Source: 209 Python files, 13,599 LOC</p>
-<h2>Pipeline</h2>
+<p><strong>Marker converts PDFs, images, PPTX, DOCX, XLSX, HTML, and EPUB files into structured markdown, JSON, HTML, and chunked text.</strong> It combines five Surya OCR models with an optional LLM layer (Gemini, Claude, OpenAI, Ollama, Vertex AI) to achieve 95%+ accuracy on document conversion while handling complex regions, equations, tables, handwriting, and forms.</p>
+<p>Source: <code>marker/</code> — 209 Python files, 17,862 LOC</p>
+<h2>Philosophy</h2>
+<p>Marker's design centers on a <strong>document-as-object-graph</strong> model. Rather than treating conversion as a linear string transformation, Marker constructs a full typed <code>Document</code> object containing pages, blocks, lines, spans, and characters. This means every element has a known position (<code>PolygonBox</code>), a known type (<code>BlockTypes</code> enum with 30+ variants), and known relationships (parent/child <code>structure</code> chains). Processors and renderers traverse this graph — they don't parse flat text.</p>
+<p><strong>Aha:</strong> The separation between <code>Block</code> (the abstract node) and <code>ProviderOutput</code> (the raw input data) is the key architectural decision. The provider extracts raw text lines with polygon positions — the builders then construct typed blocks from those positions. This means the same pipeline works for PDFs (where text positions come from pdfium/pdftext), images (where everything comes from Surya OCR), and office documents (where positions come from python-docx/python-pptx). The provider normalizes the input; everything downstream only sees <code>PageGroup</code> → <code>Block</code> → <code>Line</code> → <code>Span</code>.</p>
+<h2>The Pipeline</h2>
 <div class="mermaid">
-flowchart LR
-    Input[PDF/DOCX/Image] --&gt; Provider
-    Provider --&gt; Builders
-    Builders --&gt; Processors
-    Processors --&gt; Renderer
-    Renderer --&gt; Output[MD/JSON/HTML]
+flowchart TD
+    Input[&quot;Input File&lt;br/&gt;(PDF, DOCX, Image, …)&quot;] --&gt; Provider[&quot;Provider&lt;br/&gt;Extracts raw text + positions&quot;]
+    Provider --&gt; DocBuilder[&quot;DocumentBuilder&lt;br/&gt;Creates Document with pages&quot;]
+    DocBuilder --&gt; Layout[&quot;LayoutBuilder&lt;br/&gt;Surya layout detection&quot;]
+    Layout --&gt; Line[&quot;LineBuilder&lt;br/&gt;Assign text lines to layout blocks&quot;]
+    Line --&gt; OCR[&quot;OcrBuilder&lt;br/&gt;Surya OCR on blocks that need it&quot;]
+    OCR --&gt; Structure[&quot;StructureBuilder&lt;br/&gt;Group captions, lists&quot;]
+    Structure --&gt; Processors[&quot;28 Processors&lt;br/&gt;Tables, equations, headers, …&quot;]
+    Processors --&gt; Renderer[&quot;Renderer&lt;br/&gt;Markdown, JSON, HTML, Chunks&quot;]
+    Renderer --&gt; Output[&quot;Output&lt;br/&gt;.md, .json, .html&quot;]
 
 </div>
-<h2>Features</h2>
-<ul><li>Multi-format input/output</li><li>Table formatting</li><li>Equation extraction (LaTeX)</li><li>Image extraction</li><li>Artifact removal</li><li>LLM boost option</li><li>All languages</li><li>GPU/CPU/MPS</li></ul>
+<h2>The Five Surya Models</h2>
+<p>Marker depends on five specialized Surya OCR models, created via <code>create_model_dict()</code> in <code>marker/models.py:17-25</code>:</p>
+<pre><code class="language-python"># marker/models.py:17-25
+def create_model_dict(device=None, dtype=None, attention_implementation=None) -&gt; dict:
+    return {
+        &quot;layout_model&quot;: LayoutPredictor(FoundationPredictor(...)),
+        &quot;recognition_model&quot;: RecognitionPredictor(FoundationPredictor(...)),
+        &quot;table_rec_model&quot;: TableRecPredictor(device=device, dtype=dtype),
+        &quot;detection_model&quot;: DetectionPredictor(device=device, dtype=dtype),
+        &quot;ocr_error_model&quot;: OCRErrorPredictor(device=device, dtype=dtype),
+    }
+</code></pre>
+<table><tr><th>Model</th><th>Class</th><th>Purpose</th><th>Used By</th></tr><tr><td>`layout_model`</td><td>`LayoutPredictor`</td><td>Detects block regions (text, table, figure, equation, etc.) on each page</td><td>`LayoutBuilder`</td></tr><tr><td>`recognition_model`</td><td>`RecognitionPredictor`</td><td>OCR: converts image regions to text with formatting tags</td><td>`OcrBuilder`, `TableProcessor`</td></tr><tr><td>`table_rec_model`</td><td>`TableRecPredictor`</td><td>Detects table structure: rows, columns, cell boundaries</td><td>`TableProcessor`</td></tr><tr><td>`detection_model`</td><td>`DetectionPredictor`</td><td>Detects text line bounding boxes for OCR</td><td>`LineBuilder`, `TableProcessor`</td></tr><tr><td>`ocr_error_model`</td><td>`OCRErrorPredictor`</td><td>Classifies whether extracted PDF text is garbled/broken</td><td>`LineBuilder`</td></tr></table>
+<p><strong>Aha:</strong> The models are passed as a flat <code>artifact_dict</code> dictionary, NOT injected individually. <code>BaseConverter.resolve_dependencies()</code> (<code>converters/__init__.py:24-41</code>) inspects each class's <code>__init__</code> signature and pulls matching keys from <code>artifact_dict</code>. If a builder needs <code>recognition_model</code>, it declares it as a parameter — the DI system matches the key <code>"recognition_model"</code> in the dict. This means adding a new model requires no wiring changes — just add the key to <code>create_model_dict()</code> and declare the parameter in the consuming class.</p>
+<h2>Feature Map</h2>
+<h3>Input Formats</h3>
+<table><tr><th>Format</th><th>Provider</th><th>Extraction Method</th></tr><tr><td>PDF</td><td>`PdfProvider`</td><td>pdfium + pdftext (text positions) or Surya OCR</td></tr><tr><td>Image (PNG/JPG/TIFF/…)</td><td>`ImageProvider`</td><td>Surya OCR only</td></tr><tr><td>DOCX</td><td>`DocumentProvider`</td><td>python-docx</td></tr><tr><td>XLSX</td><td>`SpreadSheetProvider`</td><td>openpyxl</td></tr><tr><td>PPTX</td><td>`PowerPointProvider`</td><td>python-pptx</td></tr><tr><td>EPUB</td><td>`EpubProvider`</td><td>ebooklib</td></tr><tr><td>HTML</td><td>`HTMLProvider`</td><td>BeautifulSoup</td></tr><tr><td>Fallback</td><td>`PdfProvider`</td><td>Default for unknown types</td></tr></table>
+<h3>Output Formats</h3>
+<table><tr><th>Format</th><th>Renderer</th><th>Output</th></tr><tr><td>Markdown</td><td>`MarkdownRenderer`</td><td>`.md` with GFM tables, LaTeX math (`$`/`$$`), image references</td></tr><tr><td>HTML</td><td>`HTMLRenderer`</td><td>Self-contained `.html` with embedded images</td></tr><tr><td>JSON</td><td>`JSONRenderer`</td><td>Structured `.json` with all block types, positions, content</td></tr><tr><td>Chunks</td><td>`ChunkRenderer`</td><td>Chunked `.json` for RAG pipelines</td></tr><tr><td>OCR JSON</td><td>`OCRJSONRenderer`</td><td>Raw OCR output with character-level data</td></tr><tr><td>Extraction</td><td>`ExtractionRenderer`</td><td>Structured document JSON for programmatic use</td></tr></table>
+<h3>LLM-Enhanced Features</h3>
+<p>When <code>use_llm=True</code> is set (requires a configured LLM service):</p>
+<ul><li><strong>Complex Region Processing</strong> — handles multi-column, mixed-content areas</li><li><strong>Equation Recognition</strong> — LaTeX conversion for math</li><li><strong>Table Enhancement</strong> — merges split tables, fixes cell alignment</li><li><strong>Handwriting Recognition</strong> — OCR for handwritten text</li><li><strong>Form Recognition</strong> — identifies form fields and their values</li><li><strong>Section Header Detection</strong> — improves heading level classification</li><li><strong>Page Correction</strong> — fixes OCR errors using page-level context</li><li><strong>Image Description</strong> — generates alt text for images</li><li><strong>Math Block Detection</strong> — identifies display math vs inline math</li></ul>
 <h2>Performance</h2>
-<p>2-5 pages/sec (95%+ accuracy). 25 pages/sec on H100 batch mode.</p>
-<h2>CLI</h2>
-<pre><code class="language-bash">marker_single input.pdf output_dir --output_format markdown
-</code></pre>
-<h2>Python API</h2>
-<pre><code class="language-python">from marker.converters.pdf import PdfConverter
-converter = PdfConverter(artifact_dict=models)
-document = converter(&quot;input.pdf&quot;)
-rendered = converter.render(document)
-</code></pre>
-<h2>Models</h2>
-<p>5 Surya OCR models: layout, recognition, table_rec, detection, ocr_error</p>
+<table><tr><th>Mode</th><th>Speed</th><th>Accuracy</th></tr><tr><td>CPU (default)</td><td>2-5 pages/sec</td><td>95%+</td></tr><tr><td>GPU (CUDA)</td><td>~25 pages/sec (batch)</td><td>95%+</td></tr><tr><td>GPU + LLM</td><td>5-10 pages/sec</td><td>98%+</td></tr></table>
+<p>Batch sizes auto-scale by device: CUDA gets larger batches (12 for layout, 48 for recognition, 14 for table rec), MPS gets medium (6, 16, 6), CPU gets smallest (6, 32, 6).</p>
+<h2>Key Design Decisions</h2>
+<ol><li><strong>Document as object graph, not flat text.</strong> Every element has type, position, and parent/child relationships. Processors traverse and mutate the graph; renderers serialize it.</li><li><strong>Dual text extraction.</strong> PDFs use pdftext first (extracting text directly from the PDF). If that fails (detected by <code>OCRErrorPredictor</code> + layout coverage checks), Surya OCR kicks in on a per-page basis.</li><li><strong>Block-level vs line-level OCR.</strong> The <code>OcrBuilder</code> has two modes: block mode (OCR the entire block at once, used for headers, list items, footnotes, short text) and line mode (OCR individual lines, used for longer text blocks). The fallback logic in <code>select_ocr_blocks_by_mode()</code> prevents block mode on blocks that are too tall (<code>>50%</code> of page height) or have too many lines (<code>>15</code>).</li><li><strong>Processors are order-dependent and pluggable.</strong> The default processor tuple in <code>PdfConverter</code> has 28 entries in a specific order — e.g., <code>OrderProcessor</code> must run first (assigns reading order), <code>DebugProcessor</code> last (saves debug data). Users can specify a custom processor list via <code>--processors</code>.</li><li><strong>LLM is optional but integrated throughout.</strong> When <code>use_llm=True</code>, an <code>LLMSimpleBlockMetaProcessor</code> coordinates concurrent LLM calls across all <code>BaseLLMSimpleBlockProcessor</code> instances, batching prompt construction and response handling.</li></ol>
 <h2>Next</h2>
-<p>→ <a href="01-architecture.md">Architecture</a></p>
+<p>→ <a href="01-architecture.md">Architecture</a> — Deep dive into the Document model, block types, dependency injection, and the converter lifecycle.</p>
   </article>
   <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
 </body>

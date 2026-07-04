@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Agent Deep Dive: Site Agent, Executor, Tools, Streaming -- src.Instatic</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.Instatic/docs</span>
+    <div class="nav-actions">
+      <a href="08-canvas.html" class="nav-breadcrumb">Canvas Deep Dive: Rendering, DnD, Composition, Breakpoint Frames</a><a href="08-deployment.html" class="nav-breadcrumb">Deployment: Docker, Database, TLS, and HA</a><a href="09-cross-cutting.html" class="nav-breadcrumb">Cross-Cutting Patterns</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="09-cross-cutting.html" class="nav-btn" title="Previous: Cross-Cutting Patterns">← prev</a>
+      <a href="12-loops-forms.html" class="nav-btn nav-btn-next" title="Next: Loops, Forms, Media, Templates, and Site Import">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>AI Agent Deep Dive: Site Agent, Executor, Tools, Streaming</h1>
+<p>Instatic includes a built-in AI agent that can edit pages, manage content, and interact with the CMS from within the visual editor. The agent uses HTTP-only communication with AI providers (no SDKs) and has a rich tool set.</p>
+<p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Instatic/Instatic/src/admin/pages/site/agent/</code></p>
+<h2>File Map</h2>
+<table><tr><th>File</th><th>Purpose</th></tr><tr><td>`agentApi.ts`</td><td>AI API communication layer</td></tr><tr><td>`agentConfig.ts`</td><td>Agent configuration</td></tr><tr><td>`agentSlice.ts`</td><td>Redux Toolkit slice for agent state</td></tr><tr><td>`agentSliceTypes.ts`</td><td>Agent state type definitions</td></tr><tr><td>`agentSliceConfig.site.ts`</td><td>Site-specific agent config</td></tr><tr><td>`executor.ts`</td><td>Tool execution orchestrator</td></tr><tr><td>`types.ts`</td><td>Agent type definitions</td></tr><tr><td>`streamEvents.ts`</td><td>Streaming event handling</td></tr><tr><td>`ndjsonStream.ts`</td><td>NDJSON stream parsing</td></tr><tr><td>`tokenRunners.ts`</td><td>Token counting and management</td></tr><tr><td>`pageContext.ts`</td><td>Page context for agent</td></tr><tr><td>`siteAgentSnapshot.ts`</td><td>Site snapshot for agent context</td></tr><tr><td>`renderEvidence.ts`</td><td>Evidence rendering</td></tr><tr><td>`renderSnapshotTool.ts`</td><td>Snapshot rendering tool</td></tr><tr><td>`storeRef.ts`</td><td>Store reference for agent</td></tr><tr><td>`markdown.ts`</td><td>Markdown utilities</td></tr><tr><td>`index.ts`</td><td>Agent barrel export</td></tr></table>
+<h2>Agent Architecture</h2>
+<div class="mermaid">
+flowchart TD
+    UI[&quot;Editor UI
+    User sends message&quot;] --&gt; SLICE[&quot;agentSlice
+    Redux state management&quot;]
+    SLICE --&gt; EXECUTOR[&quot;executor.ts
+    Tool execution orchestrator&quot;]
+    EXECUTOR --&gt; API[&quot;agentApi.ts
+    HTTP communication&quot;]
+    API --&gt; PROVIDER[&quot;AI Provider
+    HTTP/SSE stream&quot;]
+    PROVIDER --&gt; STREAM[&quot;ndjsonStream.ts
+    Parse NDJSON stream&quot;]
+    STREAM --&gt; EVENTS[&quot;streamEvents.ts
+    Process stream events&quot;]
+    EVENTS --&gt; TOOLS[&quot;Available Tools&quot;]
+    TOOLS --&gt; CODE[&quot;codeAssetTools.ts
+    Code asset manipulation&quot;]
+    TOOLS --&gt; DOC[&quot;documentTools.ts
+    Document manipulation&quot;]
+    TOOLS --&gt; SNAPSHOT[&quot;renderSnapshotTool.ts
+    Page snapshot rendering&quot;]
+    TOOLS --&gt; EVIDENCE[&quot;renderEvidence.ts
+    Change evidence rendering&quot;]
+
+</div>
+<h2>Agent State</h2>
+<p>The <code>agentSlice</code> manages the agent's state via Redux Toolkit:</p>
+<ul><li>Conversation history</li><li>Current agent status (idle, thinking, executing tool)</li><li>Token usage tracking</li><li>Configuration</li></ul>
+<h2>Agent API</h2>
+<p>The <code>agentApi</code> communicates with the server's AI endpoint:</p>
+<pre><code class="language-">POST /admin/api/ai/chat/site
+</code></pre>
+<p>This uses the same HTTP-only approach as the server-side AI handlers — no provider SDKs on the client either.</p>
+<h2>NDJSON Streaming</h2>
+<p>The <code>ndjsonStream</code> module parses Newline-Delimited JSON streams from the server:</p>
+<ul><li>Handles partial chunks</li><li>Parses complete JSON objects</li><li>Handles stream errors</li><li>Supports cancellation</li></ul>
+<h2>Executor</h2>
+<p>The <code>executor</code> orchestrates tool execution:</p>
+<ol><li>Agent requests tool execution</li><li>Executor validates the tool call</li><li>Executor executes the tool</li><li>Executor returns result to agent</li><li>Agent continues with result</li></ol>
+<h2>Available Tools</h2>
+<h3>Code Asset Tools</h3>
+<pre><code class="language-">codeAssetTools.ts
+</code></pre>
+<p>Manipulates code assets:</p>
+<ul><li>Read/write code files</li><li>Create new code assets</li><li>Delete code assets</li></ul>
+<h3>Document Tools</h3>
+<pre><code class="language-">documentTools.ts
+</code></pre>
+<p>Manipulates CMS documents:</p>
+<ul><li>Read documents</li><li>Update documents</li><li>Create documents</li><li>Delete documents</li></ul>
+<h3>Render Snapshot Tool</h3>
+<pre><code class="language-">renderSnapshotTool.ts
+</code></pre>
+<p>Captures page snapshots for the agent to reference:</p>
+<ul><li>Renders current page state</li><li>Captures visual evidence</li><li>Provides context for agent decisions</li></ul>
+<h3>Render Evidence</h3>
+<pre><code class="language-">renderEvidence.ts
+</code></pre>
+<p>Renders evidence of agent actions:</p>
+<ul><li>Shows what changed</li><li>Provides visual diffs</li><li>Supports undo visualization</li></ul>
+<h2>Token Management</h2>
+<p>The <code>tokenRunners</code> module tracks token usage:</p>
+<ul><li>Counts input tokens</li><li>Counts output tokens</li><li>Tracks token budget</li><li>Provides cost estimates</li></ul>
+<h2>Page Context</h2>
+<p>The <code>pageContext</code> module provides the agent with page context:</p>
+<ul><li>Current page tree</li><li>Module registry</li><li>Available templates</li><li>Site configuration</li></ul>
+<h2>Site Agent Snapshot</h2>
+<p>The <code>siteAgentSnapshot</code> module creates a snapshot of the site for agent context:</p>
+<ul><li>Page structure</li><li>Content data</li><li>Module definitions</li><li>Settings</li></ul>
+<h2>Streaming Events</h2>
+<p>The <code>streamEvents</code> module processes streaming events from the agent:</p>
+<ul><li>Text chunks</li><li>Tool calls</li><li>Tool results</li><li>Completion signals</li><li>Error signals</li></ul>
+<h2>Store Reference</h2>
+<p>The <code>storeRef</code> module provides the agent with access to the editor store:</p>
+<ul><li>Read current state</li><li>Dispatch actions</li><li>Subscribe to changes</li></ul>
+<h2>Markdown Utilities</h2>
+<p>The <code>markdown</code> module provides markdown parsing and rendering utilities for the agent:</p>
+<ul><li>Parse markdown to structured data</li><li>Render structured data to markdown</li><li>Handle code blocks, lists, tables</li></ul>
+<h2>Next</h2>
+<p>Continue to <a href="12-loops-forms.md">12-loops-forms</a> for loops, forms, media, templates, and site import.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

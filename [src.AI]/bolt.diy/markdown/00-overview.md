@@ -1,45 +1,95 @@
 ---
-title: bolt.diy — AI Web Development in Browser
+title: bolt.diy — AI-Powered Full-Stack Web Development Platform
 ---
 
-# bolt.diy — AI Web Development in Browser
+# bolt.diy — AI-Powered Full-Stack Web Development Platform
 
-**Open-source AI-powered full-stack web development, choose your LLM.**
+**bolt.diy lets you generate complete web applications from natural language prompts, running entirely in the browser.** Built on Remix and React, it leverages StackBlitz WebContainers to execute Node.js in the browser, supports 19+ LLM providers, and deploys to Netlify, Cloudflare, or as an Electron desktop app.
 
-Source: 396 TypeScript files
+Source: `app/` — 396 TypeScript/TSX files, MIT license
 
-## Architecture
+## Platform Architecture
 
 ```mermaid
-flowchart TB
-    User[User Prompt] --> AI
-    AI --> LLM[19+ Providers]
-    LLM --> Code[Code Generation]
-    Code --> Preview[Browser Preview]
-    Preview --> Deploy[Netlify/Vercel]
+flowchart TD
+    User["User Prompt"] --> Chat["Chat Interface<br/>React components/chat/"]
+    Chat --> LLMRouter["LLM Provider Router<br/>lib/modules/llm/"]
+    LLMRouter --> Provider["Provider Selection<br/>19+ LLMs"]
+    Provider --> Stream["Streaming Response<br/>Server-Sent Events"]
+
+    Stream --> CodeGen["Code Generation<br/>AI produces files + diffs"]
+    CodeGen --> Editor["Monaco Editor<br/>components/editor/"]
+    CodeGen --> WebContainer["WebContainer<br/>In-browser Node.js runtime"]
+
+    WebContainer --> Preview["Live Preview<br/>iframe rendering"]
+    WebContainer --> Terminal["In-browser Terminal<br/>npm install, build, etc."]
+
+    Editor --> Git["Git Integration<br/>components/git/"]
+    Preview --> Deploy["Deployment<br/>components/deploy/"]
+    Deploy --> Netlify["Netlify / Cloudflare"]
 ```
 
-## Features
+## Key Features
 
-| Feature | Description |
-|---------|-------------|
-| 19+ LLMs | OpenAI, Anthropic, Gemini, Groq, etc. |
-| In-browser | No setup needed |
-| Electron app | Desktop version |
-| Git | Clone/import/deploy |
-| MCP | Enhanced AI integration |
-| Supabase | Database support |
+| Feature | Implementation | Key Files |
+|---------|---------------|-----------|
+| AI Chat | Streaming chat with file previews | `app/components/chat/` |
+| Code Editor | Monaco editor with file tree | `app/components/editor/` |
+| WebContainer | StackBlitz in-browser Node.js | `app/lib/webcontainer/` |
+| LLM Providers | 19+ providers behind common interface | `app/lib/modules/llm/` |
+| Git Sync | Clone, commit, push, import | `app/components/git/` |
+| Deployment | Netlify, Cloudflare, Vercel | `app/components/deploy/` |
+| Supabase | Database connection wizard | `app/lib/modules/supabase/` |
+| Electron | Desktop app wrapper | `electron/` |
+| MCP | Model Context Protocol tools | `app/lib/modules/mcp/` |
+| Settings | Provider keys, model selection | `app/components/@settings/` |
 
-## Providers
+## 19+ LLM Providers
 
-OpenAI, Anthropic, Ollama, OpenRouter, Gemini, LMStudio, Mistral, xAI, HuggingFace, DeepSeek, Groq, Cohere, Together, Perplexity, Moonshot, Hyperbolic, GitHub Models, Amazon Bedrock.
+```
+OpenAI, Anthropic, Ollama, OpenRouter, Gemini, LMStudio,
+Mistral, xAI, HuggingFace, DeepSeek, Groq, Cohere,
+Together, Perplexity, Moonshot, Hyperbolic, GitHub Models,
+Amazon Bedrock, Azure OpenAI
+```
 
-## Setup
+Each provider is configured through the Settings panel with API keys, base URLs, and model selection.
+
+**Aha:** bolt.diy uses a "provider as plugin" pattern where each LLM provider is a self-contained module implementing a common interface. Adding a new provider requires only creating a new file in `app/lib/modules/llm/providers/` that implements the `StreamingProvider` interface — no changes to the chat component, the streaming pipeline, or the UI.
+
+## Quick Start
 
 ```bash
+# Docker (recommended)
 docker compose up
+
+# Manual
+pnpm install
+pnpm run dev
+
+# Electron desktop
+pnpm run electron:dev
 ```
 
-## Docs
+## The WebContainer Revolution
 
-https://stackblitz-labs.github.io/bolt.diy/
+```mermaid
+sequenceDiagram
+    participant AI as AI (LLM)
+    participant Bolt as bolt.diy
+    participant WC as WebContainer
+    participant Browser as Browser DOM
+
+    AI->>Bolt: Generated code (React app)
+    Bolt->>WC: Write files to virtual FS
+    WC->>WC: npm install (in browser!)
+    WC->>WC: npm run dev
+    WC->>Browser: Render preview in iframe
+    Browser-->>User: Live app preview
+```
+
+**Aha:** The WebContainer runs a real Node.js process inside the browser using Service Workers and WebAssembly. This means `npm install`, `vite dev`, and even database operations run entirely client-side — no remote server needed for preview. The generated app is rendered in an iframe that connects to a local dev server running inside the WebContainer.
+
+## Next
+
+→ [Architecture](01-architecture.md) — Remix framework, component tree, data flow.

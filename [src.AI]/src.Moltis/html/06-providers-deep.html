@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Providers Deep Dive: LLM Implementations and Registry -- src.Moltis</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.Moltis/docs</span>
+    <div class="nav-actions">
+      <a href="05-agents-deep.html" class="nav-breadcrumb">Voice Pipeline: STT → Agent → TTS</a><a href="05-tools-sandbox.html" class="nav-breadcrumb">Tools and Sandboxing: How Tool Execution Works</a><a href="06-memory.html" class="nav-breadcrumb">Memory: Markdown Files → Chunks → Embeddings → SQLite Search</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="06-memory.html" class="nav-btn" title="Previous: Memory: Markdown Files → Chunks → Embeddings → SQLite Search">← prev</a>
+      <a href="07-native-apps.html" class="nav-btn nav-btn-next" title="Next: Native Apps: iOS and macOS with Swift-Rust FFI Bridges">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Providers Deep Dive: LLM Implementations and Registry</h1>
+<p>The providers crate implements connections to 10+ LLM providers and manages model discovery, capabilities, and the provider registry.</p>
+<p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/crates/providers/src/</code></p>
+<h2>Module Structure</h2>
+<pre><code class="language-">crates/providers/src/
+├── lib.rs              ← Re-exports all public API
+├── anthropic.rs        ← Anthropic Claude provider
+├── openai.rs           ← OpenAI provider
+├── openai_compat.rs    ← OpenAI-compatible provider
+├── ollama.rs           ← Ollama provider
+├── genai_provider.rs   ← Google GenAI (feature-gated)
+├── github_copilot/     ← GitHub Copilot (feature-gated)
+├── kimi_code.rs        ← Kimi Code (feature-gated)
+├── local_gguf/         ← Local GGUF models (feature-gated)
+├── local_llm/          ← Local LLM server (feature-gated)
+├── nearai.rs           ← NearAI provider
+├── openai_codex/       ← OpenAI Codex (feature-gated)
+├── opencode_zen.rs     ← OpenCode Zen provider
+├── registry.rs         ← ProviderRegistry
+├── ws_pool.rs          ← WebSocket connection pool
+├── client.rs           ← Shared HTTP client
+├── http.rs             ← HTTP utilities, retry logic
+├── config_helpers.rs   ← Config resolution helpers
+├── discovered_model.rs ← Model discovery
+├── model_capabilities.rs ← Model capability detection
+├── model_catalogs.rs   ← Model catalogs
+├── model_id.rs         ← Model ID parsing
+└── error.rs            ← Error types
+</code></pre>
+<h2>Provider Registry</h2>
+<p><strong>Source:</strong> <code>registry.rs</code></p>
+<pre><code class="language-rust">pub struct ProviderRegistry {
+    providers: HashMap&lt;String, Box&lt;dyn LlmProvider&gt;&gt;,
+}
+
+impl ProviderRegistry {
+    pub fn register(&amp;mut self, name: String, provider: Box&lt;dyn LlmProvider&gt;);
+    pub fn get(&amp;self, name: &amp;str) -&gt; Option&lt;&amp;dyn LlmProvider&gt;;
+    pub fn list(&amp;self) -&gt; Vec&lt;&amp;str&gt;;
+}
+</code></pre>
+<h2>Anthropic Provider</h2>
+<p><strong>Source:</strong> <code>anthropic.rs</code></p>
+<p>Implements the Anthropic Messages API:</p>
+<pre><code class="language-rust">pub struct AnthropicProvider {
+    client: HttpClient,
+    api_key: Secret&lt;String&gt;,
+    model: String,
+    base_url: Option&lt;String&gt;,
+}
+</code></pre>
+<p>Uses SSE streaming for responses. Supports tool calling via the native <code>tools</code> parameter.</p>
+<h2>OpenAI Provider</h2>
+<p><strong>Source:</strong> <code>openai.rs</code></p>
+<pre><code class="language-rust">pub struct OpenAIProvider {
+    client: HttpClient,
+    api_key: Secret&lt;String&gt;,
+    model: String,
+}
+</code></pre>
+<p>Implements the OpenAI Chat Completions API.</p>
+<h2>OpenAI-Compatible Provider</h2>
+<p><strong>Source:</strong> <code>openai_compat.rs</code></p>
+<p>Generic provider for any OpenAI-compatible API (LiteLLM, vLLM, etc.):</p>
+<pre><code class="language-rust">pub struct OpenAICompatProvider {
+    client: HttpClient,
+    api_key: Secret&lt;String&gt;,
+    model: String,
+    base_url: String,
+}
+</code></pre>
+<h2>Ollama Provider</h2>
+<p><strong>Source:</strong> <code>ollama.rs</code></p>
+<pre><code class="language-rust">pub struct OllamaProvider {
+    client: HttpClient,
+    model: String,
+    base_url: String,  // Default: http://localhost:11434
+}
+</code></pre>
+<p>Calls Ollama's <code>/api/chat</code> endpoint.</p>
+<h2>Google GenAI Provider</h2>
+<p><strong>Source:</strong> <code>genai_provider.rs</code> (feature-gated: <code>provider-genai</code>)</p>
+<pre><code class="language-rust">#[cfg(feature = &quot;provider-genai&quot;)]
+pub struct GenAIProvider { ... }
+</code></pre>
+<h2>GitHub Copilot Provider</h2>
+<p><strong>Source:</strong> <code>github_copilot/provider.rs</code> (feature-gated: <code>provider-github-copilot</code>)</p>
+<pre><code class="language-rust">#[cfg(feature = &quot;provider-github-copilot&quot;)]
+pub struct GitHubCopilotProvider { ... }
+</code></pre>
+<h2>Local GGUF Models</h2>
+<p><strong>Source:</strong> <code>local_gguf/</code> (feature-gated: <code>local-llm</code>)</p>
+<pre><code class="language-rust">#[cfg(feature = &quot;local-llm&quot;)]
+pub mod local_gguf;
+</code></pre>
+<p>Runs GGUF models locally via <code>llama-cpp-2</code>. Submodules:</p>
+<ul><li><code>backend.rs</code> — llama.cpp backend</li><li><code>models.rs</code> — Model management</li><li><code>provider.rs</code> — Provider implementation</li><li><code>runtime_devices.rs</code> — Device detection (CPU, GPU)</li><li><code>system_info.rs</code> — System capabilities</li><li><code>tool_grammar.rs</code> — Tool calling via grammar constraints</li></ul>
+<h2>Local LLM Server</h2>
+<p><strong>Source:</strong> <code>local_llm/</code> (feature-gated: <code>local-llm</code>)</p>
+<p>Connects to a local llama.cpp server:</p>
+<ul><li><code>backend.rs</code> — Server backend</li><li><code>models.rs</code> — Model management</li><li><code>provider.rs</code> — Provider implementation</li><li><code>response_parser.rs</code> — Response parsing</li><li><code>system_info.rs</code> — Server info</li></ul>
+<h2>HTTP Client and Retry Logic</h2>
+<p><strong>Source:</strong> <code>client.rs</code>, <code>http.rs</code></p>
+<pre><code class="language-rust">// client.rs
+pub fn init_shared_http_client();
+pub fn shared_http_client() -&gt; HttpClient;
+
+// http.rs
+pub fn retry_after_ms_from_headers(response: &amp;Response) -&gt; Option&lt;u64&gt;;
+pub fn with_retry_after_marker&lt;T&gt;(...) -&gt; T;
+</code></pre>
+<h2>Model Discovery</h2>
+<p><strong>Source:</strong> <code>discovered_model.rs</code></p>
+<pre><code class="language-rust">pub struct DiscoveredModel {
+    pub id: String,
+    pub name: String,
+    pub provider: String,
+    pub capabilities: ModelCapabilities,
+}
+
+pub fn catalog_to_discovered(catalog: &amp;[ModelCatalogEntry]) -&gt; Vec&lt;DiscoveredModel&gt;;
+pub fn merge_discovered_with_fallback_catalog(...) -&gt; Vec&lt;DiscoveredModel&gt;;
+</code></pre>
+<h2>Model Capabilities</h2>
+<p><strong>Source:</strong> <code>model_capabilities.rs</code></p>
+<pre><code class="language-rust">pub struct ModelCapabilities {
+    pub supports_tools: bool,
+    pub supports_vision: bool,
+    pub supports_reasoning: bool,
+    pub context_window: usize,
+    pub max_output_tokens: usize,
+}
+</code></pre>
+<h2>Model ID Parsing</h2>
+<p><strong>Source:</strong> <code>model_id.rs</code></p>
+<pre><code class="language-rust">pub const MODEL_ID_NAMESPACE_SEP: &amp;str = &quot;/&quot;;
+pub const REASONING_SUFFIX_SEP: &amp;str = &quot;-&quot;;
+pub const REASONING_SUFFIXES: &amp;[&amp;str] = &amp;[&quot;reasoning&quot;, &quot;think&quot;, ...];
+
+pub fn namespaced_model_id(provider: &amp;str, model: &amp;str) -&gt; String;
+pub fn split_reasoning_suffix(id: &amp;str) -&gt; (String, Option&lt;String&gt;);
+</code></pre>
+<h2>WebSocket Pool</h2>
+<p><strong>Source:</strong> <code>ws_pool.rs</code></p>
+<p>Manages WebSocket connections for streaming providers.</p>
+<h2>Config Helpers</h2>
+<p><strong>Source:</strong> <code>config_helpers.rs</code></p>
+<pre><code class="language-rust">pub fn configured_models_for_provider(...) -&gt; Vec&lt;String&gt;;
+pub fn resolve_api_key(provider: &amp;str) -&gt; Option&lt;Secret&lt;String&gt;&gt;;
+pub fn normalize_unique_models(models: Vec&lt;String&gt;) -&gt; Vec&lt;String&gt;;
+</code></pre>
+<h2>Next</h2>
+<p>Continue to <a href="07-native-apps.md">07-native-apps</a> for iOS and macOS Swift apps.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
