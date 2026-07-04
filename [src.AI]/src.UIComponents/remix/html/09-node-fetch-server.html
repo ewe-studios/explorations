@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fetch Router: Router, Middleware, Route Maps, and Resources -- remix</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/remix/docs</span>
+    <div class="nav-actions">
+      <a href="06-headers.html" class="nav-breadcrumb">HTTP Headers: SuperHeaders and 14 Header Parsers</a><a href="07-response.html" class="nav-breadcrumb">Response Helpers: HTML, Redirect, File, and Compression</a><a href="08-component.html" class="nav-breadcrumb">Web Components Deep Dive</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="08-component.html" class="nav-btn" title="Previous: Web Components Deep Dive">← prev</a>
+      <a href="10-middleware.html" class="nav-btn nav-btn-next" title="Next: Middleware: Async Context, Compression, Method Override, Static Files, Session, Form Data, Logger">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Fetch Router: Router, Middleware, Route Maps, and Resources</h1>
+<p><code>@remix-run/fetch-router</code> is the routing engine: a <code>fetch()</code>-based router with middleware chains, typed route maps, CRUD resources, and form actions.</p>
+<p>Source: <code>packages/fetch-router/src/</code> — 12 source files.</p>
+<h2>createRouter — Full Implementation</h2>
+<p>Source: <code>lib/router.ts</code></p>
+<pre><code class="language-typescript">export function createRouter(options?: RouterOptions): Router {
+  let defaultHandler = options?.defaultHandler ?? noMatchHandler
+  let matcher = options?.matcher ?? new RegExpMatcher&lt;MatchData&gt;()
+  let middleware = options?.middleware
+</code></pre>
+<h3>Default 404 Handler</h3>
+<pre><code class="language-typescript">function noMatchHandler({ url }: RequestContext): Response {
+  return new Response(`Not Found: ${url.pathname}`, { status: 404 })
+}
+</code></pre>
+<p>Returns <code>Not Found: /path</code> with 404 status.</p>
+<h3>dispatch() — Route Resolution</h3>
+<pre><code class="language-typescript">async function dispatch(context: RequestContext): Promise&lt;Response&gt; {
+  for (let match of matcher.matchAll(context.url)) {
+    let { handler, method, middleware } = match.data
+
+    if (method !== context.method &amp;&amp; method !== &#x27;ANY&#x27;) {
+      continue  // Method doesn&#x27;t match, try next
+    }
+
+    context.params = match.params
+    context.url = match.url
+
+    if (middleware) {
+      return runMiddleware(middleware, context, handler)
+    }
+
+    return raceRequestAbort(Promise.resolve(handler(context)), context.request)
+  }
+
+  return raceRequestAbort(Promise.resolve(defaultHandler(context)), context.request)
+}
+</code></pre>
+<p><strong>Key behaviors:</strong></p>
+<ol><li><strong>Iterates ALL matches</strong> — not just the first. A POST to <code>/users/42</code> will iterate through GET <code>/users/:id</code>, POST <code>/users/:id</code>, etc. until the method matches.</li><li><strong>Mutates context</strong> — <code>context.params</code> and <code>context.url</code> are set from the matched route.</li><li><strong>Per-route middleware</strong> — Each route can have its own middleware chain, separate from global middleware.</li><li><strong>Abort-wrapped</strong> — Every handler execution is wrapped with <code>raceRequestAbort</code>.</li></ol>
+<h3>fetch() — Entry Point</h3>
+<pre><code class="language-typescript">async fetch(input: string | URL | Request, init?: RequestInit): Promise&lt;Response&gt; {
+  let request = new Request(input, init)
+
+  if (request.signal.aborted) {
+    throw request.signal.reason
+  }
+
+  let context = new RequestContext(request)
+  let response = middleware
+    ? await runMiddleware(middleware, context, dispatch)
+    : await dispatch(context)
+
+  return response
+}
+</code></pre>
+<p>If global middleware exists, <code>dispatch</code> is passed as the final handler to <code>runMiddleware</code>.</p>
+<h3>mapRoute() — Complex Route Mapping</h3>
+<pre><code class="language-typescript">function mapRoute(routeArg: any, handlerArg: any): void {
+  if (typeof routeArg === &#x27;string&#x27; || routeArg instanceof RoutePattern) {
+    // map(pattern, handler) → register as ANY method
+    addRoute(&#x27;ANY&#x27;, routeArg, handlerArg)
+  } else if (routeArg instanceof Route) {
+    // map(route, handler) → use route&#x27;s method and pattern
+    addRoute(routeArg.method, routeArg.pattern, handlerArg)
+  } else if (!hasHandlers(handlerArg)) {
+    // map(routes, handlers) → recurse through route map
+    let handlers = handlerArg
+    for (let key in routeArg) {
+      let route = routeArg[key]
+      let handler = handlers[key]
+
+      if (route instanceof Route) {
+        addRoute(route.method, route.pattern, handler)
+      } else {
+        mapRoute(route, handler)  // Nested route map
+      }
+    }
+  } else {
+    // map(routes, { middleware?, handlers }) → with per-route middleware
+    let mapMiddleware = handlerArg.middleware
+    let handlers = handlerArg.handlers
+    for (let key in routeArg) {
+      let route = routeArg[key]
+      let handler = (handlers as any)[key]
+
+      if (route instanceof Route) {
+        let routeMiddleware =
+          mapMiddleware &amp;&amp; handler.middleware
+            ? mapMiddleware.concat(handler.middleware)
+            : mapMiddleware || handler.middleware
+
+        if (hasHandler(handler)) {
+          addRoute(route.method, route.pattern, {
+            middleware: routeMiddleware,
+            handler: handler.handler,
+          })
+        } else {
+          addRoute(route.method, route.pattern, { middleware: routeMiddleware, handler })
+        }
+      } else if (hasHandlers(handler)) {
+        // Nested: { middleware?, handlers: { sub: { middleware?, handlers } } }
+        let routeMiddleware =
+          mapMiddleware &amp;&amp; handler.middleware
+            ? mapMiddleware.concat(handler.middleware)
+            : mapMiddleware || handler.middleware
+
+        mapRoute(route, { middleware: routeMiddleware, handlers: handler.handlers })
+      } else {
+        mapRoute(route, { middleware: mapMiddleware, handlers: handler })
+      }
+    }
+  }
+}
+</code></pre>
+<p><strong>Four calling patterns:</strong></p>
+<ol><li><code>map('/pattern', handler)</code> — Simple pattern + handler</li><li><code>map(route, handler)</code> — Route object with method + pattern</li><li><code>map(routes, handlers)</code> — Route map + handler map (recursive)</li><li><code>map(routes, { middleware?, handlers })</code> — With per-route and per-map middleware</li></ol>
+<p>Aha: When both map-level and route-level middleware exist, they're <strong>concatenated</strong> (map middleware runs first, then route middleware). This means you can set auth at the map level and per-route validation at the route level.</p>
+<h2>Route Class</h2>
+<p>Source: <code>lib/route-map.ts</code></p>
+<pre><code class="language-typescript">export class Route&lt;method extends RequestMethod | &#x27;ANY&#x27; = RequestMethod | &#x27;ANY&#x27;, pattern extends string = string&gt; {
+  readonly method: method | &#x27;ANY&#x27;
+  readonly pattern: RoutePattern&lt;pattern&gt;
+
+  constructor(method: method | &#x27;ANY&#x27;, pattern: pattern | RoutePattern&lt;pattern&gt;) {
+    this.method = method
+    this.pattern = typeof pattern === &#x27;string&#x27; ? new RoutePattern(pattern) : pattern
+  }
+
+  href(...args: HrefBuilderArgs&lt;pattern&gt;): string {
+    return this.pattern.href(...args)
+  }
+
+  match(url: string | URL): RouteMatch&lt;pattern&gt; | null {
+    return this.pattern.match(url)
+  }
+}
+</code></pre>
+<p>A thin wrapper around <code>RoutePattern</code> that adds the HTTP method.</p>
+<h2>createRoutes — Type-Safe Route Maps</h2>
+<pre><code class="language-typescript">export function createRoutes&lt;const defs extends RouteDefs&gt;(defs: defs): BuildRouteMap&lt;&#x27;/&#x27;, defs&gt;
+export function createRoutes&lt;base extends string, const defs extends RouteDefs&gt;(
+  base: base | RoutePattern&lt;base&gt;,
+  defs: defs,
+): BuildRouteMap&lt;base, defs&gt;
+export function createRoutes(baseOrDefs: any, defs?: RouteDefs): RouteMap {
+  return typeof baseOrDefs === &#x27;string&#x27; || baseOrDefs instanceof RoutePattern
+    ? buildRouteMap(
+        typeof baseOrDefs === &#x27;string&#x27; ? new RoutePattern(baseOrDefs) : baseOrDefs,
+        defs!,
+      )
+    : buildRouteMap(new RoutePattern(&#x27;/&#x27;), baseOrDefs)
+}
+</code></pre>
+<h3>buildRouteMap() — Runtime Construction</h3>
+<pre><code class="language-typescript">function buildRouteMap&lt;base extends string, defs extends RouteDefs&gt;(
+  base: RoutePattern&lt;base&gt;,
+  defs: defs,
+): BuildRouteMap&lt;base, defs&gt; {
+  let routes: any = {}
+
+  for (let key in defs) {
+    let def = defs[key]
+
+    if (def instanceof Route) {
+      routes[key] = new Route(def.method, base.join(def.pattern))
+    } else if (typeof def === &#x27;string&#x27; || def instanceof RoutePattern) {
+      routes[key] = new Route(&#x27;ANY&#x27;, base.join(def))
+    } else if (typeof def === &#x27;object&#x27; &amp;&amp; def != null &amp;&amp; &#x27;pattern&#x27; in def) {
+      routes[key] = new Route((def as any).method ?? &#x27;ANY&#x27;, base.join((def as any).pattern))
+    } else {
+      routes[key] = buildRouteMap(base, def as any)  // Nested route map
+    }
+  }
+
+  return routes
+}
+</code></pre>
+<p>Each definition becomes a <code>Route</code> with the base pattern joined. Nested objects become nested route maps.</p>
+<h3>Example</h3>
+<pre><code class="language-typescript">const routes = createRoutes(&#x27;/api&#x27;, {
+  users: {
+    index: { method: &#x27;GET&#x27;, pattern: &#x27;/&#x27; },
+    show: { method: &#x27;GET&#x27;, pattern: &#x27;/:id&#x27; },
+    create: { method: &#x27;POST&#x27;, pattern: &#x27;/&#x27; },
+  },
+  health: &#x27;/health&#x27;,
+})
+
+// Produces:
+// {
+//   users: {
+//     index: Route&lt;&#x27;GET&#x27;, &#x27;/api&#x27;&gt;,
+//     show: Route&lt;&#x27;GET&#x27;, &#x27;/api/:id&#x27;&gt;,
+//     create: Route&lt;&#x27;POST&#x27;, &#x27;/api&#x27;&gt;,
+//   },
+//   health: Route&lt;&#x27;ANY&#x27;, &#x27;/api/health&#x27;&gt;,
+// }
+</code></pre>
+<h2>Middleware System</h2>
+<p>Source: <code>lib/middleware.ts</code></p>
+<h3>Middleware Interface</h3>
+<pre><code class="language-typescript">export interface Middleware&lt;method extends RequestMethod | &#x27;ANY&#x27;, params&gt; {
+  (
+    context: RequestContext&lt;method, params&gt;,
+    next: NextFunction,
+  ): Response | undefined | void | Promise&lt;Response | undefined | void&gt;
+}
+
+export type NextFunction = () =&gt; Promise&lt;Response&gt;
+</code></pre>
+<h3>runMiddleware() — The Middleware Chain</h3>
+<pre><code class="language-typescript">export function runMiddleware(middleware, context, handler): Promise&lt;Response&gt; {
+  let index = -1
+
+  let dispatch = async (i: number): Promise&lt;Response&gt; =&gt; {
+    if (i &lt;= index) throw new Error(&#x27;next() called multiple times&#x27;)
+    index = i
+
+    if (context.request.signal.aborted) {
+      throw context.request.signal.reason
+    }
+
+    let fn = middleware[i]
+    if (!fn) {
+      return await raceRequestAbort(Promise.resolve(handler(context)), context.request)
+    }
+
+    let nextPromise: Promise&lt;Response&gt; | undefined
+    let next: NextFunction = () =&gt; {
+      nextPromise = dispatch(i + 1)
+      return nextPromise
+    }
+
+    let response = await raceRequestAbort(Promise.resolve(fn(context, next)), context.request)
+
+    // Short-circuit: middleware returned a Response
+    if (response instanceof Response) {
+      return response
+    }
+
+    // Middleware called next() — use downstream response
+    if (nextPromise != null) {
+      return nextPromise
+    }
+
+    // Middleware didn&#x27;t call next() — auto-dispatch downstream
+    return next()
+  }
+
+  return dispatch(0)
+}
+</code></pre>
+<p><strong>Three control flows:</strong></p>
+<table><tr><th>Behavior</th><th>Code</th><th>Result</th></tr><tr><td>Short-circuit</td><td>`return new Response('blocked')`</td><td>Returns immediately, skips remaining middleware</td></tr><tr><td>Pass through</td><td>`return next()`</td><td>Waits for downstream, returns its response</td></tr><tr><td>Auto-dispatch</td><td>`// no return, no next()`</td><td>Downstream runs automatically after middleware returns</td></tr></table>
+<p>Aha: If a middleware returns <code>undefined</code> without calling <code>next()</code>, the chain auto-dispatches to the next middleware or handler. This means you don't need to call <code>next()</code> explicitly — just don't return a <code>Response</code>. This is unlike Express where forgetting <code>next()</code> hangs the request.</p>
+<h3>Double-Next Guard</h3>
+<pre><code class="language-typescript">if (i &lt;= index) throw new Error(&#x27;next() called multiple times&#x27;)
+index = i
+</code></pre>
+<p>The <code>index</code> counter tracks which middleware dispatched. If <code>dispatch(i)</code> is called with <code>i <= index</code>, it means <code>next()</code> was called more than once.</p>
+<h2>RequestContext</h2>
+<p>Source: <code>lib/request-context.ts</code></p>
+<pre><code class="language-typescript">export class RequestContext&lt;method extends RequestMethod | &#x27;ANY&#x27;, params extends Record&lt;string, any&gt;&gt; {
+  headers: SuperHeaders
+  method: RequestMethod
+  params: params
+  request: Request
+  storage: AppStorage
+  url: URL
+  #formData?: FormData
+  #session?: Session
+
+  constructor(request: Request) {
+    this.headers = new SuperHeaders(request.headers)
+    this.method = request.method.toUpperCase() as RequestMethod
+    this.params = {} as params
+    this.request = request
+    this.storage = new AppStorage()
+    this.url = new URL(request.url)
+  }
+</code></pre>
+<h3>formData Getter</h3>
+<pre><code class="language-typescript">get formData(): method extends RequestBodyMethod ? FormData : FormData | undefined {
+  if (this.#formData == null &amp;&amp; RequestBodyMethods.includes(this.method as RequestBodyMethod)) {
+    this.#formData = new FormData()
+  }
+  return this.#formData as any
+}
+</code></pre>
+<p>Lazy initialization: <code>FormData</code> is only created for methods that can have bodies (POST, PUT, PATCH).</p>
+<h3>files Getter</h3>
+<pre><code class="language-typescript">get files(): Map&lt;string, File&gt; {
+  let files: Map&lt;string, File&gt; = new Map()
+  if (this.#formData != null) {
+    for (let [key, value] of this.#formData.entries()) {
+      if (value instanceof File) files.set(key, value)
+    }
+  }
+  return files
+}
+</code></pre>
+<p>Extracts uploaded files from <code>FormData</code>.</p>
+<h3>session Getter</h3>
+<pre><code class="language-typescript">get session(): Session {
+  if (this.#session == null) {
+    console.warn(&quot;Session isn&#x27;t started yet...&quot;)
+    this.#session = createSession()
+  }
+  return this.#session
+}
+</code></pre>
+<p>Auto-creates a session with a warning. The <code>session()</code> middleware should be used instead for proper session management.</p>
+<h2>Resources — CRUD Route Generation</h2>
+<p>Source: <code>lib/resource.ts</code></p>
+<pre><code class="language-typescript">export const ResourceMethods = [&#x27;new&#x27;, &#x27;show&#x27;, &#x27;create&#x27;, &#x27;edit&#x27;, &#x27;update&#x27;, &#x27;destroy&#x27;] as const
+
+export function createResource&lt;base extends string, const options extends ResourceOptions&gt;(
+  base: base | RoutePattern&lt;base&gt;,
+  options?: options,
+): BuildResourceMap&lt;base, options&gt; {
+  if (options?.only &amp;&amp; options?.exclude) {
+    throw new Error(&#x27;Cannot specify both &quot;only&quot; and &quot;exclude&quot; options&#x27;)
+  }
+
+  let only: readonly ResourceMethod[]
+  if (options?.only) {
+    only = options.only
+  } else if (options?.exclude) {
+    only = ResourceMethods.filter((m) =&gt; !options.exclude!.includes(m))
+  } else {
+    only = ResourceMethods
+  }
+
+  let routes: any = {}
+  if (only.includes(&#x27;new&#x27;)) routes[options?.names?.new ?? &#x27;new&#x27;] = { method: &#x27;GET&#x27;, pattern: &#x27;/new&#x27; }
+  if (only.includes(&#x27;show&#x27;)) routes[options?.names?.show ?? &#x27;show&#x27;] = { method: &#x27;GET&#x27;, pattern: &#x27;/&#x27; }
+  if (only.includes(&#x27;create&#x27;)) routes[options?.names?.create ?? &#x27;create&#x27;] = { method: &#x27;POST&#x27;, pattern: &#x27;/&#x27; }
+  if (only.includes(&#x27;edit&#x27;)) routes[options?.names?.edit ?? &#x27;edit&#x27;] = { method: &#x27;GET&#x27;, pattern: &#x27;/edit&#x27; }
+  if (only.includes(&#x27;update&#x27;)) routes[options?.names?.update ?? &#x27;update&#x27;] = { method: &#x27;PUT&#x27;, pattern: &#x27;/&#x27; }
+  if (only.includes(&#x27;destroy&#x27;)) routes[options?.names?.destroy ?? &#x27;destroy&#x27;] = { method: &#x27;DELETE&#x27;, pattern: &#x27;/&#x27; }
+
+  return createRoutes(base, routes) as BuildResourceMap&lt;base, options&gt;
+}
+</code></pre>
+<h3>CRUD Mapping</h3>
+<table><tr><th>Method</th><th>HTTP</th><th>Pattern</th><th>REST Action</th></tr><tr><td>`show`</td><td>GET</td><td>`/`</td><td>Read resource</td></tr><tr><td>`new`</td><td>GET</td><td>`/new`</td><td>Show creation form</td></tr><tr><td>`create`</td><td>POST</td><td>`/`</td><td>Create resource</td></tr><tr><td>`edit`</td><td>GET</td><td>`/edit`</td><td>Show edit form</td></tr><tr><td>`update`</td><td>PUT</td><td>`/`</td><td>Update resource</td></tr><tr><td>`destroy`</td><td>DELETE</td><td>`/`</td><td>Delete resource</td></tr></table>
+<h3>Filtering</h3>
+<pre><code class="language-typescript">// Only show and create (no edit/destroy)
+createResource(&#x27;/posts&#x27;, { only: [&#x27;show&#x27;, &#x27;create&#x27;] })
+
+// All except destroy
+createResource(&#x27;/posts&#x27;, { exclude: [&#x27;destroy&#x27;] })
+
+// Custom names
+createResource(&#x27;/posts&#x27;, { names: { show: &#x27;read&#x27;, create: &#x27;write&#x27; } })
+</code></pre>
+<h2>Form Actions</h2>
+<p>Source: <code>lib/form-action.ts</code></p>
+<pre><code class="language-typescript">export function createFormAction&lt;pattern, options&gt;(
+  pattern: pattern | RoutePattern&lt;pattern&gt;,
+  options?: options,
+): BuildFormActionMap&lt;pattern, options&gt; {
+  let formMethod = options?.formMethod ?? &#x27;POST&#x27;
+  let indexName = options?.names?.index ?? &#x27;index&#x27;
+  let actionName = options?.names?.action ?? &#x27;action&#x27;
+
+  return createRoutes(pattern, {
+    [indexName]: { method: &#x27;GET&#x27;, pattern: &#x27;/&#x27; },
+    [actionName]: { method: formMethod, pattern: &#x27;/&#x27; },
+  })
+}
+</code></pre>
+<p>Creates two routes at the same pattern — one GET (show form), one POST (handle submission).</p>
+<h2>AppStorage</h2>
+<p>Source: <code>lib/app-storage.ts</code></p>
+<pre><code class="language-typescript">export class AppStorage {
+  #map: Map&lt;StorageKey&lt;any&gt;, StorageValue&lt;any&gt;&gt; = new Map()
+
+  has&lt;key extends StorageKey&lt;any&gt;&gt;(key: key): boolean {
+    return this.#map.has(key)
+  }
+
+  get&lt;key extends StorageKey&lt;any&gt;&gt;(key: key): StorageValue&lt;key&gt; {
+    if (!this.#map.has(key)) {
+      if (key.defaultValue === undefined) {
+        throw new Error(`Missing default value in storage for key ${key}`)
+      }
+      return key.defaultValue
+    }
+    return this.#map.get(key) as StorageValue&lt;key&gt;
+  }
+
+  set&lt;key extends StorageKey&lt;any&gt;&gt;(key: key, value: StorageValue&lt;key&gt;): void {
+    this.#map.set(key, value)
+  }
+}
+
+export function createStorageKey&lt;T&gt;(defaultValue?: T): StorageKey&lt;T&gt; {
+  return { defaultValue }
+}
+</code></pre>
+<p>Type-safe key-value storage. Keys carry their default values, so <code>get()</code> never returns <code>undefined</code> unless no default was set.</p>
+<h2>Request Methods</h2>
+<p>Source: <code>lib/request-methods.ts</code></p>
+<pre><code class="language-typescript">export const RequestMethods = [&#x27;GET&#x27;, &#x27;HEAD&#x27;, &#x27;POST&#x27;, &#x27;PUT&#x27;, &#x27;PATCH&#x27;, &#x27;DELETE&#x27;, &#x27;OPTIONS&#x27;]
+export const RequestBodyMethods = [&#x27;POST&#x27;, &#x27;PUT&#x27;, &#x27;PATCH&#x27;]
+</code></pre>
+<p><code>RequestBodyMethods</code> determines which methods can have <code>formData</code>.</p>
+<h2>raceRequestAbort</h2>
+<p>Source: <code>lib/request-abort.ts</code></p>
+<pre><code class="language-typescript">export async function raceRequestAbort&lt;T&gt;(promise: Promise&lt;T&gt;, request: Request): Promise&lt;T&gt; {
+  let signal = request.signal
+
+  if (signal.aborted) {
+    throw signal.reason
+  }
+
+  return new Promise&lt;T&gt;((resolve, reject) =&gt; {
+    let onAbort = () =&gt; reject(signal.reason)
+    signal.addEventListener(&#x27;abort&#x27;, onAbort, { once: true })
+
+    promise.then(
+      (value) =&gt; {
+        signal.removeEventListener(&#x27;abort&#x27;, onAbort)
+        resolve(value)
+      },
+      (error) =&gt; {
+        signal.removeEventListener(&#x27;abort&#x27;, onAbort)
+        reject(error)
+      },
+    )
+  })
+}
+</code></pre>
+<p>Wraps every promise with abort signal checking. If the request is aborted, the promise rejects with <code>signal.reason</code>.</p>
+<h2>RouteHandlers — Type System</h2>
+<p>Source: <code>lib/route-handlers.ts</code></p>
+<pre><code class="language-typescript">export type RouteHandlers&lt;routes extends RouteMap&gt; =
+  | RouteHandlersWithMiddleware&lt;routes&gt;
+  | RouteHandlersWithoutMiddleware&lt;routes&gt;
+</code></pre>
+<p>Two shapes:</p>
+<ol><li><strong>With middleware</strong>: <code>{ middleware?: Middleware[], handlers: { home: handler, ... } }</code></li><li><strong>Without middleware</strong>: <code>{ home: handler, ... }</code></li></ol>
+<p>The <code>hasHandlers()</code> type guard distinguishes between them at runtime.</p>
+<h2>Type Utilities</h2>
+<p>Source: <code>lib/type-utils.ts</code></p>
+<pre><code class="language-typescript">export type Assert&lt;T extends true&gt; = T
+export type IsEqual&lt;A, B&gt; =
+  (&lt;T&gt;() =&gt; T extends A ? 1 : 2) extends &lt;T&gt;() =&gt; T extends B ? 1 : 2 ? true : false
+export type Simplify&lt;T&gt; = { [K in keyof T]: T[K] } &amp; {}
+</code></pre>
+<ul><li><strong><code>Assert</code></strong>: Compile-time assertion — <code>Assert<true></code> passes, <code>Assert<false></code> fails.</li><li><strong><code>IsEqual</code></strong>: Type equality check using distributive conditional types.</li><li><strong><code>Simplify</code></strong>: Flattens intersection types into a single object type.</li></ul>
+<h2>Package Structure</h2>
+<pre><code class="language-">fetch-router/src/
+├── index.ts                  # Public API
+├── lib/
+│   ├── router.ts             # createRouter, dispatch, mapRoute
+│   ├── route-map.ts          # Route class, createRoutes, buildRouteMap
+│   ├── middleware.ts         # Middleware interface, runMiddleware
+│   ├── request-context.ts    # RequestContext class
+│   ├── request-handler.ts    # RequestHandler type
+│   ├── request-methods.ts    # HTTP method constants
+│   ├── request-abort.ts      # raceRequestAbort
+│   ├── route-handlers.ts     # RouteHandlers type system
+│   ├── resource.ts           # createResource (CRUD routes)
+│   ├── form-action.ts        # createFormAction (GET+POST pairs)
+│   ├── app-storage.ts        # AppStorage + createStorageKey
+│   └── type-utils.ts         # Assert, IsEqual, Simplify
+</code></pre>
+<h2>Cross-References</h2>
+<ul><li><a href="00-overview.md">Overview</a> — What Remix is</li><li><a href="03-architecture.md">Route Pattern</a> — URL pattern matching</li><li><a href="04-session.md">Session</a> — Session management</li><li><a href="06-headers.md">Headers</a> — HTTP headers</li><li><a href="09-node-fetch-server.md">Node Fetch Server</a> — HTTP server</li></ul>
+<p><a href="09-node-fetch-server.md">Next → Node Fetch Server</a></p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

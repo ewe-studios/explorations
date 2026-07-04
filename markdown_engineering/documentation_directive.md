@@ -483,3 +483,4 @@ Did you perform grandfather review on them, to confirm:
   3. Light exploration with no value
   4. Comprehensive coverage as a senior level architect and engineer would expect
   5. Deep details to ensure once read everyone fully understands the protocol or exploration end to end
+  6. Does your document match something like /home/darkvoid/Boxxed/@dev/repo-expolorations/src.datastar/datastar/markdown/02-reactive-signals.md in quality, completeness and correctness? Are you being lazy instead of doing the work? If so, stop yourself and do it properly

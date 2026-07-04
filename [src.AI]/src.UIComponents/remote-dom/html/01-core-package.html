@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Core Package: @remote-dom/core -- remote-dom</title>
+  <title>Core Package: @remote-dom/core Deep Dive -- remote-dom</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
   <script>
@@ -132,52 +132,510 @@
     </div>
   </nav>
   <article class="prose">
-<h1>Core Package: @remote-dom/core</h1>
-<p>The core protocol for remote DOM communication. Version 1.11.1.</p>
+<h1>Core Package: @remote-dom/core Deep Dive</h1>
+<p>The core protocol for remote DOM communication. Version 1.11.1. This package defines the serialization format, the connection layer, receivers, and custom element infrastructure.</p>
 <p>Source: <code>packages/core/source/</code> — multiple files.</p>
-<h2>Exports</h2>
-<pre><code class="language-ts">// packages/core/source/index.ts
-export { createRemoteConnection, type RemoteConnectionHandler } from &#x27;./connection.ts&#x27;;
-export * from &#x27;./types.ts&#x27;;
-export { ROOT_ID, NODE_TYPE_COMMENT, NODE_TYPE_ELEMENT, NODE_TYPE_ROOT, NODE_TYPE_TEXT,
-  MUTATION_TYPE_INSERT_CHILD, MUTATION_TYPE_REMOVE_CHILD, MUTATION_TYPE_UPDATE_TEXT,
-  MUTATION_TYPE_UPDATE_PROPERTY, ... } from &#x27;./constants.ts&#x27;;
+<h2>The Protocol: Tuple-Based Mutations</h2>
+<p>Source: <code>constants.ts</code>, <code>types.ts</code></p>
+<p>The remote-dom protocol uses typed tuples for mutations — not JSON objects, not a binary format. Just positional arrays:</p>
+<pre><code class="language-ts">// constants.ts
+export const NODE_TYPE_ELEMENT = 1;
+export const NODE_TYPE_TEXT = 3;
+export const NODE_TYPE_COMMENT = 8;
+export const NODE_TYPE_ROOT = 9;
+
+export const MUTATION_TYPE_INSERT_CHILD = 0;
+export const MUTATION_TYPE_REMOVE_CHILD = 1;
+export const MUTATION_TYPE_UPDATE_TEXT = 2;
+export const MUTATION_TYPE_UPDATE_PROPERTY = 3;
+
+export const UPDATE_PROPERTY_TYPE_PROPERTY = 1;
+export const UPDATE_PROPERTY_TYPE_ATTRIBUTE = 2;
+export const UPDATE_PROPERTY_TYPE_EVENT_LISTENER = 3;
+
+export const ROOT_ID = &#x27;~&#x27;;
 </code></pre>
-<h2>RemoteConnection Protocol</h2>
-<p>Source: <code>packages/core/source/connection.ts</code></p>
-<p>The core protocol is a tuple-based mutation stream:</p>
-<pre><code class="language-ts">type RemoteMutationRecordInsertChild = [type, parentId, child, index];
-type RemoteMutationRecordRemoveChild = [type, parentId, index];
-type RemoteMutationRecordUpdateText = [type, textNodeId, text];
-type RemoteMutationRecordUpdateProperty = [type, elementId, property, value, propertyType];
+<h3>Mutation Record Types</h3>
+<pre><code class="language-ts">// types.ts
+type RemoteMutationRecordInsertChild = [
+  type: typeof MUTATION_TYPE_INSERT_CHILD,
+  id: string,           // parent node ID
+  child: RemoteTextSerialization | RemoteCommentSerialization | RemoteElementSerialization,
+  index: number,        // insertion index
+];
+
+type RemoteMutationRecordRemoveChild = [
+  type: typeof MUTATION_TYPE_REMOVE_CHILD,
+  id: string,           // parent node ID
+  index: number,        // child index to remove
+];
+
+type RemoteMutationRecordUpdateText = [
+  type: typeof MUTATION_TYPE_UPDATE_TEXT,
+  id: string,           // text node ID
+  text: string,         // new text content
+];
+
+type RemoteMutationRecordUpdateProperty = [
+  type: typeof MUTATION_TYPE_UPDATE_PROPERTY,
+  id: string,           // element ID
+  property: string,     // property name
+  value: any,           // property value
+  type?: typeof UPDATE_PROPERTY_TYPE_PROPERTY
+       | typeof UPDATE_PROPERTY_TYPE_ATTRIBUTE
+       | typeof UPDATE_PROPERTY_TYPE_EVENT_LISTENER,
+];
 </code></pre>
-<p><code>createRemoteConnection</code> wraps this into named handlers:</p>
-<pre><code class="language-ts">const conn = createRemoteConnection({
-  call: (method, args) =&gt; { /* method invocation */ },
-  insertChild: (id, child, index) =&gt; { /* handle insert */ },
-  removeChild: (id, index) =&gt; { /* handle remove */ },
-  updateText: (id, text) =&gt; { /* handle text update */ },
-  updateProperty: (id, property, value, type) =&gt; { /* handle property update */ },
-});
+<p>Aha: The tuple format is deliberately minimal. Each mutation is a 3-5 element array. There's no schema, no field names — just positional data. This minimizes serialization overhead for cross-environment communication (postMessage, worker messages). The tradeoff is readability, but since these are internal protocol messages, that's acceptable.</p>
+<h2>Node Serialization Types</h2>
+<pre><code class="language-ts">interface RemoteTextSerialization {
+  id: string;
+  type: typeof NODE_TYPE_TEXT;
+  data: string;
+}
+
+interface RemoteCommentSerialization {
+  id: string;
+  type: typeof NODE_TYPE_COMMENT;
+  data: string;
+}
+
+interface RemoteElementSerialization {
+  id: string;
+  type: typeof NODE_TYPE_ELEMENT;
+  tag: string;              // Custom element tag name
+  properties: Record&lt;string, any&gt;;
+  attributes: Record&lt;string, string&gt;;
+  eventListeners: Record&lt;string, boolean&gt;;
+  children: RemoteNodeSerialization[];
+}
 </code></pre>
-<h2>Receivers</h2>
-<p>Source: <code>packages/core/source/receivers.ts</code></p>
-<table><tr><th>Receiver</th><th>Purpose</th></tr><tr><td>`RemoteReceiver`</td><td>Pure JS tree representation</td></tr><tr><td>`DOMRemoteReceiver`</td><td>Creates actual DOM elements</td></tr></table>
-<h3>RemoteReceiver Types</h3>
-<table><tr><th>Type</th><th>Description</th></tr><tr><td>`RemoteReceiverElement`</td><td>Element node with properties, attributes, children</td></tr><tr><td>`RemoteReceiverText`</td><td>Text node with `data` property</td></tr><tr><td>`RemoteReceiverComment`</td><td>Comment node with `data` property</td></tr><tr><td>`RemoteReceiverRoot`</td><td>Root of the tree</td></tr><tr><td>`RemoteReceiverNode`</td><td>Union of all node types</td></tr><tr><td>`RemoteReceiverParent`</td><td>Union of parent-capable nodes</td></tr></table>
-<h2>Elements</h2>
-<p>Source: <code>packages/core/source/elements.ts</code></p>
-<table><tr><th>Export</th><th>Purpose</th></tr><tr><td>`RemoteElement`</td><td>Base class for remote custom elements</td></tr><tr><td>`RemoteFragmentElement`</td><td>Fragment wrapper for slotted content</td></tr><tr><td>`RemoteRootElement`</td><td>Root element of a remote tree</td></tr><tr><td>`RemoteReceiverElement`</td><td>Receiver-side element</td></tr><tr><td>`RemoteEvent`</td><td>Custom event class</td></tr><tr><td>`RemoteMutationObserver`</td><td>Observes and serializes mutations</td></tr></table>
-<h3>Decorators</h3>
-<table><tr><th>Decorator</th><th>Purpose</th></tr><tr><td>`@remoteSlots()`</td><td>Define slotted content regions</td></tr><tr><td>`@remoteProperties()`</td><td>Define remote properties</td></tr><tr><td>`@remoteProperty()`</td><td>Single property definition</td></tr><tr><td>`@customElement()`</td><td>Register custom element</td></tr></table>
-<h3>Internals</h3>
-<table><tr><th>Function</th><th>Purpose</th></tr><tr><td>`remoteId(node)`</td><td>Get/set unique ID for a node</td></tr><tr><td>`connectRemoteNode(node, connection)`</td><td>Connect node to remote connection</td></tr><tr><td>`disconnectRemoteNode(node)`</td><td>Disconnect node</td></tr><tr><td>`serializeRemoteNode(node)`</td><td>Serialize node for transport</td></tr><tr><td>`updateRemoteElementProperty(...)`</td><td>Update property on remote element</td></tr><tr><td>`callRemoteElementMethod(...)`</td><td>Invoke method on remote element</td></tr></table>
-<h3>Connection</h3>
-<table><tr><th>Export</th><th>Purpose</th></tr><tr><td>`BatchingRemoteConnection`</td><td>Batches mutations for efficiency</td></tr></table>
-<h2>Property Types</h2>
-<table><tr><th>Type</th><th>Purpose</th></tr><tr><td>`BooleanOrString`</td><td>Property type that accepts boolean or string</td></tr></table>
+<h2>RemoteConnection</h2>
+<p>Source: <code>connection.ts</code></p>
+<pre><code class="language-ts">export interface RemoteConnection {
+  call(method: string, args: any[]): Promise&lt;any&gt;;
+  mutate(records: RemoteMutationRecord[]): void;
+}
+</code></pre>
+<p>Two operations:</p>
+<ul><li><strong><code>call</code></strong>: Invoke a method on the remote side (e.g., <code>element.focus()</code>)</li><li><strong><code>mutate</code></strong>: Apply DOM mutations to the host side</li></ul>
+<h3>createRemoteConnection</h3>
+<pre><code class="language-ts">export function createRemoteConnection({
+  call,
+  insertChild,
+  removeChild,
+  updateText,
+  updateProperty,
+}: RemoteConnectionHandler): RemoteConnection {
+  const handlers = {
+    [MUTATION_TYPE_INSERT_CHILD]: insertChild,
+    [MUTATION_TYPE_REMOVE_CHILD]: removeChild,
+    [MUTATION_TYPE_UPDATE_TEXT]: updateText,
+    [MUTATION_TYPE_UPDATE_PROPERTY]: updateProperty,
+  };
+
+  return {
+    call,
+    mutate(records) {
+      for (const record of records) {
+        const handler = handlers[record[0]];
+        if (handler) handler(record[1], record[2], record[3], record[4]);
+      }
+    },
+  };
+}
+</code></pre>
+<p>Maps mutation type tuples to named handler functions. The <code>mutate()</code> method dispatches each record to its handler by type index.</p>
+<h2>RemoteReceiver</h2>
+<p>Source: <code>receivers/RemoteReceiver.ts</code></p>
+<p>Maintains a JavaScript representation of the remote DOM tree.</p>
+<h3>Node Types with Version Tracking</h3>
+<pre><code class="language-ts">interface RemoteReceiverElement {
+  readonly id: string;
+  readonly tag: string;
+  readonly properties: Record&lt;string, any&gt;;
+  readonly attributes: Record&lt;string, string&gt;;
+  readonly eventListeners: Record&lt;string, boolean&gt;;
+  readonly children: readonly RemoteReceiverNode[];
+  readonly version: number;  // Incremented on every change
+}
+</code></pre>
+<p>Every node has a <code>version</code> counter that increments on every mutation. Subscribers can watch for version changes to know when a specific node has been updated.</p>
+<h3>Receiver Implementation</h3>
+<pre><code class="language-ts">export class RemoteReceiver {
+  readonly root: RemoteReceiverRoot = {
+    id: ROOT_ID,
+    type: NODE_TYPE_ROOT,
+    children: [],
+    version: 0,
+    properties: {},
+    attributes: {},
+    eventListeners: {},
+  };
+
+  readonly connection: RemoteConnection;
+  #nodes = new Map&lt;string, RemoteReceiverNodeOrRoot&gt;();
+
+  constructor(options?: RemoteReceiverOptions) {
+    this.#nodes.set(ROOT_ID, this.root);
+
+    this.connection = createRemoteConnection({
+      call: async (method, id, args) =&gt; {
+        const node = this.#nodes.get(id);
+        if (!node) throw new Error(`Node not found: ${id}`);
+        return this.#call(method, node, args);
+      },
+
+      insertChild: (parentId, child, index) =&gt; {
+        const parent = this.#nodes.get(parentId) as RemoteReceiverParent;
+        const node = this.#deserializeNode(child);
+        parent.children.splice(index, 0, node);
+        parent.version++;
+        this.#notify(parentId);
+      },
+
+      removeChild: (parentId, index) =&gt; {
+        const parent = this.#nodes.get(parentId) as RemoteReceiverParent;
+        const [removed] = parent.children.splice(index, 1);
+        parent.version++;
+        this.#removeNode(removed.id);
+        this.#notify(parentId);
+      },
+
+      updateText: (id, text) =&gt; {
+        const node = this.#nodes.get(id) as RemoteReceiverText;
+        (node as Writable&lt;typeof node&gt;).data = text;
+        node.version++;
+        this.#notify(id);
+      },
+
+      updateProperty: (id, property, value, type) =&gt; {
+        const node = this.#nodes.get(id) as RemoteReceiverElement;
+        switch (type) {
+          case UPDATE_PROPERTY_TYPE_PROPERTY:
+            (node.properties as Writable&lt;typeof node.properties&gt;)[property] = value;
+            break;
+          case UPDATE_PROPERTY_TYPE_ATTRIBUTE:
+            (node.attributes as Writable&lt;typeof node.attributes&gt;)[property] = value;
+            break;
+          case UPDATE_PROPERTY_TYPE_EVENT_LISTENER:
+            (node.eventListeners as Writable&lt;typeof node.eventListeners&gt;)[property] = value != null;
+            break;
+        }
+        node.version++;
+        this.#notify(id);
+      },
+    });
+  }
+</code></pre>
+<h3>Subscription System</h3>
+<pre><code class="language-ts">subscribe(id: string, callback: (node: RemoteReceiverNodeOrRoot) =&gt; void): () =&gt; void {
+  const subscribers = this.#subscribers.get(id) ?? new Set();
+  subscribers.add(callback);
+  this.#subscribers.set(id, subscribers);
+
+  callback(this.#nodes.get(id)!);
+
+  return () =&gt; {
+    subscribers.delete(callback);
+  };
+}
+
+#notify(id: string) {
+  const node = this.#nodes.get(id);
+  if (!node) return;
+
+  const subscribers = this.#subscribers.get(id);
+  if (subscribers) {
+    for (const callback of subscribers) {
+      callback(node);
+    }
+  }
+
+  // Also notify parent subscribers
+  if (node !== this.root) {
+    const parent = this.#findParent(id);
+    if (parent) this.#notify(parent.id);
+  }
+}
+</code></pre>
+<p>Aha: Subscribers are notified not just for the mutated node but also for its parent. This ensures that React components watching a parent element re-render when children are added or removed. The parent chain notification propagates up to the root.</p>
+<h2>DOMRemoteReceiver</h2>
+<p>Source: <code>receivers/DOMRemoteReceiver.ts</code></p>
+<p>Creates actual DOM elements instead of JS objects.</p>
+<pre><code class="language-ts">export class DOMRemoteReceiver {
+  readonly root: DocumentFragment | Element;
+  readonly connection: RemoteConnection;
+  private readonly attached = new Map&lt;string, Node&gt;();
+
+  constructor(options?: RemoteReceiverOptions &amp; { root?: Element; call?; retain?; release?; cache? }) {
+    this.root = options?.root ?? document.createDocumentFragment();
+
+    this.connection = createRemoteConnection({
+      call: async (method, id, args) =&gt; {
+        const element = this.attached.get(id);
+        if (!element) throw new Error(`Element not found: ${id}`);
+        if (options?.call) return options.call(element as Element, method, ...args);
+        return (element as any)[method]?.(...args);
+      },
+
+      insertChild: (parentId, child, index) =&gt; {
+        const parentNode = this.attached.get(parentId);
+        if (!parentNode) return;
+
+        const childNode = this.#createNode(child);
+        const refChild = parentNode.childNodes[index] ?? null;
+        parentNode.insertBefore(childNode, refChild);
+        this.attached.set(child.id, childNode);
+      },
+
+      removeChild: (parentId, index) =&gt; {
+        const parentNode = this.attached.get(parentId);
+        if (!parentNode) return;
+
+        const childNode = parentNode.childNodes[index];
+        if (childNode) {
+          const id = REMOTE_IDS.get(childNode);
+          if (id) this.attached.delete(id);
+          parentNode.removeChild(childNode);
+        }
+      },
+
+      updateText: (id, text) =&gt; {
+        const node = this.attached.get(id);
+        if (node instanceof Text) node.data = text;
+      },
+
+      updateProperty: (id, property, value, type) =&gt; {
+        const element = this.attached.get(id);
+        if (!(element instanceof Element)) return;
+
+        switch (type) {
+          case UPDATE_PROPERTY_TYPE_PROPERTY:
+            (element as any)[property] = value;
+            break;
+          case UPDATE_PROPERTY_TYPE_ATTRIBUTE:
+            if (value == null) element.removeAttribute(property);
+            else element.setAttribute(property, value);
+            break;
+          case UPDATE_PROPERTY_TYPE_EVENT_LISTENER:
+            // Event listener management
+            break;
+        }
+      },
+    });
+  }
+</code></pre>
+<h3>#createNode()</h3>
+<pre><code class="language-ts">#createNode(serialization: RemoteNodeSerialization): Node {
+  switch (serialization.type) {
+    case NODE_TYPE_ELEMENT:
+      const element = document.createElement(serialization.tag);
+      setRemoteId(element, serialization.id);
+      // Apply properties, attributes, event listeners
+      // Recursively create children
+      return element;
+
+    case NODE_TYPE_TEXT:
+      const text = document.createTextNode(serialization.data);
+      setRemoteId(text, serialization.id);
+      return text;
+
+    case NODE_TYPE_COMMENT:
+      const comment = document.createComment(serialization.data);
+      setRemoteId(comment, serialization.id);
+      return comment;
+  }
+}
+</code></pre>
+<h2>RemoteElement</h2>
+<p>Source: <code>elements/RemoteElement.ts</code></p>
+<p>Base class for custom elements in the remote environment.</p>
+<pre><code class="language-ts">export type RemoteElementConstructor&lt;Properties, Methods, Slots, EventListeners&gt; = {
+  new (): RemoteElement&lt;Properties, Methods, Slots, EventListeners&gt; &amp; Properties &amp; Methods;
+
+  readonly remoteSlots?: RemoteElementSlotsDefinition&lt;Slots&gt; | readonly (keyof Slots)[];
+  readonly remoteProperties?: RemoteElementPropertiesDefinition&lt;Properties&gt; | readonly (keyof Properties)[];
+  readonly remoteAttributes?: readonly string[];
+  readonly remoteEvents?: RemoteElementEventListenersDefinition&lt;EventListeners&gt; | readonly (keyof EventListeners)[];
+
+  createProperty&lt;Value&gt;(name: string, definition?: RemoteElementPropertyDefinition&lt;Value&gt;): void;
+  createAttribute(name: string, definition?: RemoteElementAttributeDefinition): void;
+  createEvent(name: string, definition?: RemoteElementEventListenerDefinition): void;
+};
+</code></pre>
+<h3>Defining Properties</h3>
+<pre><code class="language-ts">class ButtonElement extends RemoteElement {
+  static remoteProperties = {
+    disabled: Boolean,
+    variant: String,
+    loading: Boolean,
+  };
+
+  static remoteSlots = [&#x27;icon&#x27;, &#x27;label&#x27;];
+  static remoteEvents = [&#x27;click&#x27;, &#x27;hover&#x27;];
+}
+</code></pre>
+<p>Each property definition specifies how the value is serialized between remote and host:</p>
+<pre><code class="language-ts">interface RemoteElementPropertyDefinition&lt;Value&gt; {
+  type?: RemoteElementPropertyType&lt;Value&gt;;  // Boolean, String, Number, etc.
+  attribute?: string;                        // Map to attribute name
+}
+</code></pre>
+<h2>RemoteMutationObserver</h2>
+<p>Source: <code>elements/RemoteMutationObserver.ts</code></p>
+<p>Wraps the browser's <code>MutationObserver</code> to detect DOM changes and serialize them as remote mutations.</p>
+<pre><code class="language-ts">export class RemoteMutationObserver extends MutationObserver {
+  readonly connection: RemoteConnection;
+  readonly #observed: Set&lt;Node&gt;;
+
+  constructor(connection: RemoteConnection) {
+    super((records) =&gt; {
+      const addedNodes: Node[] = [];
+      const remoteRecords: RemoteMutationRecord[] = [];
+
+      for (const record of records) {
+        const targetId = remoteId(record.target);
+
+        if (record.type === &#x27;childList&#x27;) {
+          // Handle removed nodes
+          record.removedNodes.forEach((node) =&gt; {
+            disconnectRemoteNode(node);
+            remoteRecords.push([MUTATION_TYPE_REMOVE_CHILD, targetId, position]);
+          });
+
+          // Handle added nodes — serialize entire subtree
+          record.addedNodes.forEach((node, index) =&gt; {
+            // Skip if already included in a parent&#x27;s serialization
+            if (addedNodes.some((n) =&gt; n.contains(node))) return;
+
+            addedNodes.push(node);
+            connectRemoteNode(node, connection);
+            remoteRecords.push([MUTATION_TYPE_INSERT_CHILD, targetId, serializeRemoteNode(node), index]);
+          });
+        }
+      }
+
+      if (remoteRecords.length &gt; 0) {
+        this.connection.mutate(remoteRecords);
+      }
+    });
+  }
+</code></pre>
+<p>Aha: When a node is added, the observer serializes the <strong>entire subtree</strong>, not just the single node. This handles the case where React creates a whole tree of elements at once — rather than sending one mutation per element, it sends one mutation with the full tree serialization. The <code>addedNodes.some((n) => n.contains(node))</code> check prevents duplicate mutations when a parent and its children are both in the mutation record list.</p>
+<h2>Element Internals</h2>
+<p>Source: <code>elements/internals.ts</code></p>
+<h3>Remote ID Management</h3>
+<pre><code class="language-ts">const IDS = new WeakMap&lt;Node, string&gt;();
+let nextId = 1;
+
+export function remoteId(node: Node): string | undefined {
+  return IDS.get(node);
+}
+
+export function setRemoteId(node: Node, id?: string): string {
+  if (!id) id = String(nextId++);
+  IDS.set(node, id);
+  return id;
+}
+</code></pre>
+<p>Each DOM node gets a unique string ID stored in a <code>WeakMap</code>. The weak reference ensures nodes are garbage collected when no longer referenced.</p>
+<h3>connectRemoteNode / disconnectRemoteNode</h3>
+<pre><code class="language-ts">export function connectRemoteNode(node: Node, connection: RemoteConnection): void {
+  // Store connection on node for method calls
+  // Set up property/attribute/event synchronization
+}
+
+export function disconnectRemoteNode(node: Node): void {
+  // Remove connection reference
+  // Clean up any observers or listeners
+  IDS.delete(node);
+}
+</code></pre>
+<h3>serializeRemoteNode</h3>
+<pre><code class="language-ts">export function serializeRemoteNode(node: Node): RemoteNodeSerialization {
+  if (node instanceof Text) {
+    return { id: remoteId(node)!, type: NODE_TYPE_TEXT, data: node.data };
+  }
+  if (node instanceof Comment) {
+    return { id: remoteId(node)!, type: NODE_TYPE_COMMENT, data: node.data };
+  }
+  if (node instanceof Element) {
+    return {
+      id: remoteId(node)!,
+      type: NODE_TYPE_ELEMENT,
+      tag: node.tagName.toLowerCase(),
+      properties: getRemoteProperties(node),
+      attributes: Object.fromEntries([...node.attributes].map(a =&gt; [a.name, a.value])),
+      eventListeners: getRemoteEventListeners(node),
+      children: [...node.childNodes].map(serializeRemoteNode),
+    };
+  }
+}
+</code></pre>
+<p>Recursively serializes an element and all its children into the protocol format.</p>
+<h2>BatchingRemoteConnection</h2>
+<p>Source: <code>elements/connection.ts</code></p>
+<pre><code class="language-ts">export class BatchingRemoteConnection implements RemoteConnection {
+  #batch: RemoteMutationRecord[] = [];
+  #scheduled = false;
+  #inner: RemoteConnection;
+
+  constructor(inner: RemoteConnection) {
+    this.#inner = inner;
+  }
+
+  mutate(records: RemoteMutationRecord[]): void {
+    this.#batch.push(...records);
+
+    if (!this.#scheduled) {
+      this.#scheduled = true;
+      queueMicrotask(() =&gt; {
+        this.#scheduled = false;
+        const batch = this.#batch;
+        this.#batch = [];
+        this.#inner.mutate(batch);
+      });
+    }
+  }
+
+  call(method: string, args: any[]): Promise&lt;any&gt; {
+    return this.#inner.call(method, args);
+  }
+}
+</code></pre>
+<p>Aha: Mutations are batched using <code>queueMicrotask()</code>. Multiple DOM changes within the same microtask queue into a single <code>mutate()</code> call. This reduces the number of cross-environment messages — instead of sending one message per DOM change, all changes in a single render cycle are sent together.</p>
+<h2>Package Structure</h2>
+<pre><code class="language-">packages/core/source/
+├── index.ts                    # Public API
+├── connection.ts               # RemoteConnection, createRemoteConnection
+├── constants.ts                # Node types, mutation types, ROOT_ID
+├── types.ts                    # Serialization interfaces
+├── receivers/
+│   ├── RemoteReceiver.ts       # JS object tree representation
+│   ├── DOMRemoteReceiver.ts    # Creates actual DOM elements
+│   └── shared.ts               # RemoteReceiverOptions
+├── elements/
+│   ├── RemoteElement.ts        # Base class for custom elements
+│   ├── RemoteFragmentElement.ts # Fragment wrapper for slots
+│   ├── RemoteRootElement.ts    # Root element
+│   ├── RemoteReceiverElement.ts # Receiver-side element
+│   ├── RemoteEvent.ts          # Custom event class
+│   ├── RemoteMutationObserver.ts # DOM change detection + serialization
+│   ├── internals.ts            # remoteId, connectRemoteNode, serializeRemoteNode
+│   ├── connection.ts           # BatchingRemoteConnection
+│   ├── decorators/
+│   │   ├── remote-slots.ts
+│   │   ├── remote-properties.ts
+│   │   ├── remote-property.ts
+│   │   └── custom-element.ts
+│   └── property-types/
+│       └── BooleanOrString.ts
+└── html.ts                     # HTM/React HTML template
+</code></pre>
 <h2>Cross-References</h2>
-<ul><li><a href="00-overview.md">Overview</a> — Package summary</li><li><a href="02-react-package.md">React Package</a> — React bridge</li><li><a href="07-architecture.md">Architecture</a> — Full flow</li></ul>
+<ul><li><a href="00-overview.md">Overview</a> — Package summary</li><li><a href="02-react-package.md">React Package</a> — React component bridge</li><li><a href="03-polyfill-package.md">Polyfill Package</a> — DOM API emulation</li><li><a href="07-architecture.md">Architecture</a> — Full host/remote flow</li></ul>
+<p><a href="02-react-package.md">Next → React Package</a></p>
   </article>
   <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
 </body>

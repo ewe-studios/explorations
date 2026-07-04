@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Session Management: Event-Sourced Sessions with Flash Data -- remix</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/remix/docs</span>
+    <div class="nav-actions">
+      <a href="01-philosophy.html" class="nav-breadcrumb">Remix 3: Design Philosophy</a><a href="02-packages.html" class="nav-breadcrumb">Remix 3: All 25 Packages</a><a href="03-architecture.html" class="nav-breadcrumb">Route Pattern: Parser, Matchers, and Type System</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="03-architecture.html" class="nav-btn" title="Previous: Route Pattern: Parser, Matchers, and Type System">← prev</a>
+      <a href="05-cookie.html" class="nav-btn nav-btn-next" title="Next: Cookie Toolkit: Parsing, Serialization, and HMAC Signing">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Session Management: Event-Sourced Sessions with Flash Data</h1>
+<p><code>@remix-run/session</code> (v0.4.0) provides typed session persistence with flash data lifecycle, three storage backends (memory, cookie, filesystem), and session ID rotation for security.</p>
+<p>Source: <code>packages/session/src/</code> — 12 source files.</p>
+<h2>Session Class — Full Implementation</h2>
+<p>Source: <code>lib/session.ts</code></p>
+<pre><code class="language-typescript">type Data = Record&lt;string, unknown&gt;
+
+export type SessionData&lt;valueData extends Data = Data, flashData extends Data = Data&gt; = [
+  valueData,
+  flashData,
+]
+</code></pre>
+<h3>Data Model</h3>
+<p>Session data is stored as a <strong>tuple</strong> <code>[valueData, flashData]</code>, not an object. The first element is regular session data, the second is flash data (one-request lifetime).</p>
+<h3>Internal State</h3>
+<pre><code class="language-typescript">export class Session&lt;valueData extends Data, flashData extends Data&gt; {
+  #currentId: string
+  #deleteId: string | undefined = undefined
+  #valueMap: Map&lt;keyof valueData, valueData[keyof valueData]&gt;
+  #flashMap: Map&lt;keyof flashData, flashData[keyof flashData]&gt;
+  #nextMap: Map&lt;keyof flashData, flashData[keyof flashData]&gt;
+  #destroyed = false
+  #dirty: boolean
+
+  constructor(id = createSessionId(), initialData?: SessionData&lt;valueData, flashData&gt;) {
+    this.#currentId = id
+    this.#valueMap = toMap(initialData?.[0])
+    this.#flashMap = toMap(initialData?.[1])
+    this.#nextMap = new Map()
+    this.#dirty = this.#flashMap.size &gt; 0
+  }
+</code></pre>
+<p>Four Maps: | Map | Purpose | |-----|---------| | <code>#valueMap</code> | Regular session data (persists across requests) | | <code>#flashMap</code> | Current flash data (read-only, from previous request) | | <code>#nextMap</code> | Flash data for the NEXT request (written during current request) | | <code>#deleteId</code> | Old session ID to delete on save (for ID rotation) |</p>
+<p>Aha: Flash data has a <strong>two-phase lifecycle</strong>. <code>#flashMap</code> holds data written in the previous request (available for reading now). <code>#nextMap</code> holds data written during the current request (available for reading in the next request). On save, <code>#nextMap</code> becomes the next request's <code>#flashMap</code>, and <code>#nextMap</code> is cleared.</p>
+<h3>Constructor Logic</h3>
+<pre><code class="language-typescript">this.#valueMap = toMap(initialData?.[0])    // Regular data from storage
+this.#flashMap = toMap(initialData?.[1])    // Flash data from previous request
+this.#nextMap = new Map()                   // Empty for next request
+this.#dirty = this.#flashMap.size &gt; 0       // Mark dirty if flash data exists
+</code></pre>
+<p>Aha: The session is marked <code>dirty</code> if <code>#flashMap</code> has entries, even if nothing was written during this request. This ensures flash data is cleared on save — the flash data from the previous request must be consumed (and cleared) even if the current request doesn't write anything.</p>
+<h3>toMap() Helper</h3>
+<pre><code class="language-typescript">function toMap&lt;T&gt;(data?: Record&lt;string, T&gt;): Map&lt;string, T&gt; {
+  return new Map(Object.entries(data ?? {}))
+}
+</code></pre>
+<p>Converts plain objects to Maps.</p>
+<h3>#checkDestroyed()</h3>
+<pre><code class="language-typescript">#checkDestroyed() {
+  if (this.#destroyed) throw new Error(&#x27;Session has been destroyed&#x27;)
+}
+</code></pre>
+<p>Called before every mutation operation.</p>
+<h3>data Getter — Serialization</h3>
+<pre><code class="language-typescript">get data(): SessionData&lt;valueData, flashData&gt; {
+  return (
+    this.#destroyed
+      ? [{}, {}]
+      : [Object.fromEntries(this.#valueMap), Object.fromEntries(this.#nextMap)]
+  ) as SessionData&lt;valueData, flashData&gt;
+}
+</code></pre>
+<p>Returns the serializable form:</p>
+<ul><li><strong>If destroyed</strong>: <code>[{}, {}]</code> — empty data</li><li><strong>Otherwise</strong>: <code>[valueMap, nextMap]</code> — regular data + next flash data</li></ul>
+<p>Aha: The <code>data</code> getter returns <code>#nextMap</code> (not <code>#flashMap</code>) for the flash slot. This means when the session is saved, only the flash data written during this request persists — the flash data from the previous request (<code>#flashMap</code>) is implicitly discarded.</p>
+<h3>deleteId Getter</h3>
+<pre><code class="language-typescript">get deleteId(): string | undefined {
+  return this.#deleteId
+}
+</code></pre>
+<p>Returns the old session ID when <code>regenerateId({ deleteOldSession: true })</code> was called. Storage backends use this to delete the old session data.</p>
+<h3>get() — Read Session Data</h3>
+<pre><code class="language-typescript">get&lt;K extends keyof valueData&gt;(key: K): valueData[K] | undefined {
+  this.#checkDestroyed()
+  return this.#valueMap.get(key)
+}
+</code></pre>
+<h3>getFlash() — Read Flash Data</h3>
+<pre><code class="language-typescript">getFlash&lt;K extends keyof flashData&gt;(key: K): flashData[K] | undefined {
+  this.#checkDestroyed()
+  return this.#flashMap.get(key)
+}
+</code></pre>
+<p>Reads from <code>#flashMap</code> — data written in the previous request.</p>
+<h3>set() — Write Session Data</h3>
+<pre><code class="language-typescript">set&lt;K extends keyof valueData&gt;(key: K, value: valueData[K]): void {
+  this.#checkDestroyed()
+  this.#valueMap.set(key, value)
+  this.#dirty = true
+}
+</code></pre>
+<p>Marks the session as dirty.</p>
+<h3>flash() — Write Flash Data</h3>
+<pre><code class="language-typescript">flash&lt;K extends keyof flashData&gt;(key: K, value: flashData[K]): void {
+  this.#checkDestroyed()
+  this.#nextMap.set(key, value)
+  this.#dirty = true
+}
+</code></pre>
+<p>Writes to <code>#nextMap</code> — available in the NEXT request, not the current one.</p>
+<h3>unset() — Remove Session Data</h3>
+<pre><code class="language-typescript">unset&lt;K extends keyof valueData&gt;(key: K): void {
+  this.#checkDestroyed()
+  this.#valueMap.delete(key)
+  this.#dirty = true
+}
+</code></pre>
+<h3>regenerateId() — Session ID Rotation</h3>
+<pre><code class="language-typescript">regenerateId(options?: { deleteOldSession?: boolean }): string {
+  const oldId = this.#currentId
+  this.#currentId = createSessionId()
+  this.#dirty = true
+  if (options?.deleteOldSession) {
+    this.#deleteId = oldId
+  }
+  return this.#currentId
+}
+</code></pre>
+<p>Aha: When <code>deleteOldSession: true</code>, the old session ID is stored in <code>#deleteId</code>. The storage backend's <code>commitSession</code> method checks <code>session.deleteId</code> and deletes the old session data from storage. This prevents <strong>session fixation attacks</strong> — where an attacker sets a known session ID before the user authenticates.</p>
+<h3>destroy() — Session Destruction</h3>
+<pre><code class="language-typescript">destroy(): void {
+  this.#checkDestroyed()
+  this.#destroyed = true
+  this.#dirty = true
+}
+</code></pre>
+<p>Marks the session as destroyed. Subsequent operations throw.</p>
+<h2>Session ID Generation</h2>
+<pre><code class="language-typescript">function createSessionId(): string {
+  return randomBytes(32).toString(&#x27;hex&#x27;)  // 64-character hex string
+}
+</code></pre>
+<p>256 bits of randomness from <code>crypto.randomBytes</code>.</p>
+<h2>SessionStorage Interface</h2>
+<p>Source: <code>lib/session-storage.ts</code></p>
+<pre><code class="language-typescript">export interface SessionStorage&lt;valueData = Data, flashData = Data&gt; {
+  getSession(cookieHeader?: string | null): Promise&lt;Session&lt;valueData, flashData&gt;&gt;
+  commitSession(session: Session&lt;valueData, flashData&gt;, options?: CookieSerializeOptions): Promise&lt;string&gt;
+  destroySession(session: Session&lt;valueData, flashData&gt;, options?: CookieSerializeOptions): Promise&lt;string&gt;
+}
+</code></pre>
+<p>Three implementations:</p>
+<h2>MemoryStorage</h2>
+<p>Source: <code>lib/session-storage/memory.ts</code></p>
+<pre><code class="language-typescript">export function createMemorySessionStorage(): SessionStorage {
+  const sessions = new Map&lt;string, SessionData&gt;()
+
+  return {
+    async getSession(cookieHeader) {
+      if (!cookieHeader) return new Session()
+      const data = sessions.get(cookieHeader)
+      return data ? new Session(cookieHeader, data) : new Session()
+    },
+
+    async commitSession(session) {
+      const data = session.data
+      sessions.set(session.id, data)
+      return session.id
+    },
+
+    async destroySession(session) {
+      sessions.delete(session.id)
+      return &#x27;&#x27;
+    },
+  }
+}
+</code></pre>
+<p>In-memory storage. Lost on process restart. Used for testing.</p>
+<h2>CookieStorage</h2>
+<p>Source: <code>lib/session-storage/cookie.ts</code></p>
+<pre><code class="language-typescript">export function createCookieSessionStorage({ cookie }: { cookie: Cookie }): SessionStorage {
+  return {
+    async getSession(cookieHeader) {
+      const data = await cookie.parse(cookieHeader ?? &#x27;&#x27;)
+      if (!data) return new Session()
+      return new Session(data.id, data)
+    },
+
+    async commitSession(session, options) {
+      const data = session.data
+      return cookie.serialize({ id: session.id, ...data }, options)
+    },
+
+    async destroySession(session, options) {
+      return cookie.serialize({ id: session.id, data: [{}, {}] }, { ...options, maxAge: 0 })
+    },
+  }
+}
+</code></pre>
+<p>Sessions stored in signed/encrypted cookies. Size-limited (~4KB per cookie).</p>
+<h2>FsStorage</h2>
+<p>Source: <code>lib/session-storage/fs.ts</code></p>
+<pre><code class="language-typescript">export function createFsSessionStorage({ directory, cookie }: { directory: string; cookie: Cookie }): SessionStorage {
+  return {
+    async getSession(cookieHeader) {
+      const data = await cookie.parse(cookieHeader ?? &#x27;&#x27;)
+      if (!data) return new Session()
+      const filePath = path.join(directory, `${data.id}.json`)
+      try {
+        const fileData = JSON.parse(await fs.readFile(filePath, &#x27;utf-8&#x27;))
+        return new Session(data.id, fileData)
+      } catch {
+        return new Session()
+      }
+    },
+
+    async commitSession(session) {
+      const data = session.data
+      const filePath = path.join(directory, `${session.id}.json`)
+      await fs.writeFile(filePath, JSON.stringify(data))
+
+      // Delete old session if ID was rotated
+      if (session.deleteId) {
+        await fs.unlink(path.join(directory, `${session.deleteId}.json`))
+      }
+
+      return cookie.serialize({ id: session.id })
+    },
+
+    async destroySession(session) {
+      const filePath = path.join(directory, `${session.id}.json`)
+      await fs.unlink(filePath)
+      return cookie.serialize({ id: session.id }, { maxAge: 0 })
+    },
+  }
+}
+</code></pre>
+<p>Each session is a JSON file. Includes cleanup of old sessions on ID rotation.</p>
+<h2>Flash Data Lifecycle — Sequence</h2>
+<div class="mermaid">
+sequenceDiagram
+    participant Client
+    participant Server
+    participant Session
+
+    Note over Client,Session: Request N: flash(&quot;error&quot;, &quot;Invalid&quot;)
+    Client-&gt;&gt;Server: POST /login
+    Server-&gt;&gt;Session: flash(&quot;error&quot;, &quot;Invalid&quot;)
+    Session-&gt;&gt;Session: #nextMap.set(&quot;error&quot;, &quot;Invalid&quot;)
+    Session--&gt;&gt;Server: save → cookie with [values, {error: &quot;Invalid&quot;}]
+    Server--&gt;&gt;Client: 302 redirect with Set-Cookie
+
+    Note over Client,Session: Request N+1: read flash data
+    Client-&gt;&gt;Server: GET /login (redirect)
+    Server-&gt;&gt;Session: load from cookie → #flashMap = {error: &quot;Invalid&quot;}
+    Server-&gt;&gt;Session: getFlash(&quot;error&quot;) → &quot;Invalid&quot;
+    Session--&gt;&gt;Server: flash data available
+    Server-&gt;&gt;Session: save → cookie with [values, {}]
+    Session-&gt;&gt;Session: #nextMap = new Map() (cleared)
+    Server--&gt;&gt;Client: Response with cleared flash
+
+    Note over Client,Session: Request N+2: flash is gone
+    Client-&gt;&gt;Server: GET /login
+    Server-&gt;&gt;Session: load → getFlash(&quot;error&quot;) → undefined
+
+</div>
+<h2>Cross-References</h2>
+<ul><li><a href="00-overview.md">Overview</a> — What Remix is</li><li><a href="09-fetch-router.md">Fetch Router</a> — Router that uses sessions</li><li><a href="05-cookie.md">Cookie</a> — Cookie toolkit (used by CookieStorage)</li></ul>
+<p><a href="05-cookie.md">Next → Cookie</a></p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
