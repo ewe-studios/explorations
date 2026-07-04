@@ -1,13 +1,25 @@
-# src.opendesign Documentation
+# src.Opendesign Projects
 
-Open Design — design tool ecosystem (metadata only, no source files in this snapshot).
+Collection of 18+ open design and UI projects.
 
-| Attribute | Value |
-|-----------|-------|
-| Source files | 0 (in this snapshot) |
+## Projects
 
-## Navigation
+| Project | Description |
+|---------|-------------|
+| open-design | Core design system |
+| nexu | Nexu |
+| src.hyprframes | Hyperframes |
+| design | Design tools |
+| html-anything | HTML utils |
+| html-video | Video |
+| looper | Looper |
+| manim | Manim |
+| monet | Monet |
 
-| # | Document | Purpose |
-|---|----------|---------|
-| 00 | [Overview](00-overview.md) | What exists |
+## Docs
+
+[Overview](00-overview.md)
+
+## Source
+
+50,426 files

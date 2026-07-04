@@ -79,24 +79,24 @@ graphify/
 
 | # | Task | Status | File |
 |---|------|--------|------|
-| 15 | Shared CSS (dark/light, code blocks, diagrams) | TODO | `html/styles.css` |
-| 16 | Index page with navigation | TODO | `html/index.html` |
-| 17 | Generate all HTML pages | TODO | `html/*.html` |
+| 15 | Shared CSS (dark/light, code blocks, diagrams) | DONE | `html/styles.css` |
+| 16 | Index page with navigation | DONE | `html/index.html` |
+| 17 | Generate all HTML pages | DONE | `html/*.html` |
 
 ### Phase 3: Diagrams
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 18 | Mermaid rendering in HTML pages | TODO | Client-side via CDN |
-| 19 | Theme-aware diagram re-rendering | TODO | Re-renders on dark/light toggle |
+| 18 | Mermaid rendering in HTML pages | DONE | Client-side via CDN |
+| 19 | Theme-aware diagram re-rendering | DONE | Re-renders on dark/light toggle |
 
 ### Phase 4: Polish
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 20 | Cross-reference links between documents | TODO | Relative md links auto-converted |
-| 21 | Code snippet rendering | TODO | Escaped, syntax-tagged, scrollable |
-| 22 | Mobile-responsive HTML layout | TODO | Media query at 600px |
+| 20 | Cross-reference links between documents | DONE | Relative md links auto-converted |
+| 21 | Code snippet rendering | DONE | Escaped, syntax-tagged, scrollable |
+| 22 | Mobile-responsive HTML layout | DONE | Media query at 600px |
 
 ## Build System
 

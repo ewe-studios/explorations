@@ -82,17 +82,17 @@ resonate/
 
 | # | Task | Status | File |
 |---|------|--------|------|
-| 16 | Shared CSS (dark/light, code blocks, diagrams) | TODO | `html/styles.css` |
-| 17 | Index page with navigation | TODO | `html/index.html` |
-| 18 | Build script (markdown → HTML via Python stdlib) | TODO | `../build.py` |
-| 19 | Generate all HTML pages | TODO | `html/*.html` |
+| 16 | Shared CSS (dark/light, code blocks, diagrams) | DONE | `html/styles.css` |
+| 17 | Index page with navigation | DONE | `html/index.html` |
+| 18 | Build script (markdown → HTML via Python stdlib) | DONE | `../build.py` |
+| 19 | Generate all HTML pages | DONE | `html/*.html` |
 
 ### Phase 3: Diagrams
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 20 | Mermaid rendering in HTML pages | TODO | Client-side via CDN |
-| 21 | Theme-aware diagram re-rendering | TODO | Re-renders on dark/light toggle |
+| 20 | Mermaid rendering in HTML pages | DONE | Client-side via CDN |
+| 21 | Theme-aware diagram re-rendering | DONE | Re-renders on dark/light toggle |
 
 ## Build System
 

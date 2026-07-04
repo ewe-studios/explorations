@@ -1,15 +1,13 @@
 # bolt.diy Documentation
 
-AI Agent web app built with Remix + Vite. Deployable on Cloudflare Pages.
+AI-powered full-stack web development in the browser with your choice of LLM.
 
-| Attribute | Value |
-|-----------|-------|
-| Source files | ~230 |
-| Framework | Remix + Vite |
-| Deploy | Cloudflare Pages |
+## Docs
 
-## Navigation
+| # | Document | Description |
+|---|----------|-------------|
+| 0 | [Overview](00-overview.md) | Features, providers, setup |
 
-| # | Document | Purpose |
-|---|----------|---------|
-| 00 | [Overview](00-overview.md) | Architecture, API routes, providers |
+## Source
+
+396 TypeScript files, MIT license

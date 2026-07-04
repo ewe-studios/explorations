@@ -1,15 +1,22 @@
-# src.Google Documentation
+# src.Google Projects
 
-Google AI ecosystem: ADK (Agent Development Kit), Centravity, CLI tools.
+Multiple Google AI and agent projects in one directory.
 
-| Attribute | Value |
-|-----------|-------|
-| Sub-projects | 5+ |
-| Source files | ~1,722 |
-| Languages | Go, TypeScript |
+## Projects
 
-## Navigation
+| Project | Description |
+|---------|-------------|
+| adk-go | Agent Development Kit |
+| agents-cli | CLI tool |
+| gcsfuse | GCS filesystem |
+| generative-ai | AI tools |
+| stitch-mcp | MCP server |
+| stitch-sdk | SDK |
 
-| # | Document | Purpose |
-|---|----------|---------|
-| 00 | [Overview](00-overview.md) | Architecture, all sub-projects |
+## Docs
+
+[Overview](00-overview.md)
+
+## Source
+
+6,014 files, multiple languages
