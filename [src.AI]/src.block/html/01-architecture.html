@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Goose Agent Architecture — The Reply Loop, Tool Dispatch, Events -- src.block</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.block/docs</span>
+    <div class="nav-actions">
+      <a href="00-overview.html" class="nav-breadcrumb">Goose — On-Machine AI Agent by Block</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="00-overview.html" class="nav-btn" title="Previous: Goose — On-Machine AI Agent by Block">← prev</a>
+      <a href="02-extensions.html" class="nav-btn nav-btn-next" title="Next: Goose Extensions — MCP Client Management, Platform Extensions, Transports">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Goose Agent Architecture — The Reply Loop, Tool Dispatch, Events</h1>
+<p><strong>The <code>Agent</code> struct (1,590 lines) is the central orchestrator.</strong> It owns every subsystem: the LLM provider connection, the extension manager (MCP client lifecycle), the tool inspection pipeline (security/permission/repetition), the tool route manager, the retry manager, the autopilot model selector, the final output tool, and the frontend communication channels. The <code>reply()</code> method implements the main agent loop — a stateful cycle of [assemble context → call LLM → categorize tools → inspect → dispatch → format → compact → repeat] that runs until the LLM produces a text-only response or the turn limit (default: 1000) is reached.</p>
+<p>Source: <code>crates/goose/src/agents/agent.rs</code> — 1,590 lines, <code>crates/goose/src/agents/tool_execution.rs</code></p>
+<h2>The Agent Struct: Every Field Explained</h2>
+<pre><code class="language-rust">// crates/goose/src/agents/agent.rs:86-107
+pub struct Agent {
+    pub(super) provider: SharedProvider,              // Arc&lt;Mutex&lt;Option&lt;Box&lt;dyn Provider&gt;&gt;&gt;&gt;
+    pub extension_manager: Arc&lt;ExtensionManager&gt;,      // MCP client manager (1,647 lines)
+    pub(super) sub_recipe_manager: Mutex&lt;SubRecipeManager&gt;,
+    pub(super) tasks_manager: TasksManager,            // Parallel sub-agent orchestration
+    pub(super) final_output_tool: Arc&lt;Mutex&lt;Option&lt;FinalOutputTool&gt;&gt;&gt;,
+    pub(super) frontend_tools: Mutex&lt;HashMap&lt;String, FrontendTool&gt;&gt;,
+    pub(super) frontend_instructions: Mutex&lt;Option&lt;String&gt;&gt;,
+    pub(super) prompt_manager: Mutex&lt;PromptManager&gt;,
+    pub(super) confirmation_tx: mpsc::Sender&lt;(String, PermissionConfirmation)&gt;,
+    pub(super) confirmation_rx: Mutex&lt;mpsc::Receiver&lt;(String, PermissionConfirmation)&gt;&gt;,
+    pub(super) tool_result_tx: mpsc::Sender&lt;(String, ToolResult&lt;Vec&lt;Content&gt;&gt;)&gt;,
+    pub(super) tool_result_rx: ToolResultReceiver,
+    pub tool_route_manager: Arc&lt;ToolRouteManager&gt;,
+    pub(super) scheduler_service: Mutex&lt;Option&lt;Arc&lt;dyn SchedulerTrait&gt;&gt;&gt;,
+    pub(super) retry_manager: RetryManager,
+    pub(super) tool_inspection_manager: ToolInspectionManager,
+    pub(super) autopilot: Mutex&lt;AutoPilot&gt;,
+}
+</code></pre>
+<h3>Channel Pair Pattern: confirmation_tx/rx + tool_result_tx/rx</h3>
+<p><strong>Aha:</strong> Two <code>mpsc::channel(32)</code> pairs form an async request-response bridge between the agent's tokio task and the frontend (CLI or HTTP server). When the agent needs user confirmation for a destructive tool call:</p>
+<ol><li>Agent sends <code>(request_id, PermissionConfirmation)</code> on <code>confirmation_tx</code></li><li>Agent awaits the response on <code>confirmation_rx</code></li><li>Frontend renders the confirmation prompt, collects user input</li><li>Frontend sends the response back through <code>confirmation_tx</code>'s paired sender</li><li>Agent receives and proceeds</li></ol>
+<p>This decouples the agent loop from the UI without shared mutable state — the channels are the only touch point. The buffer size of 32 means up to 32 pending confirmations before the agent blocks.</p>
+<h3>Provider as Arc<Mutex<Option<Box<dyn Provider>>>></h3>
+<p>The provider is wrapped in THREE layers:</p>
+<ul><li><code>Arc</code> — shared across threads (agent, tool handlers, GooseClient)</li><li><code>Mutex</code> — mutable access (the provider can change during a session, e.g., autopilot model switching)</li><li><code>Option</code> — the provider is lazily initialized. On first access, <code>agent.provider().await</code> calls <code>Config::global()</code> to create the provider from config.</li></ul>
+<p>This means the agent doesn't hold an active LLM connection at rest — it's established on first use.</p>
+<h2>The Complete Reply Loop</h2>
+<div class="mermaid">
+flowchart TD
+    Start([&quot;reply(conversation, working_dir, session,&lt;br/&gt;cancel_token, session_config, extra_messages)&quot;])
+    
+    Start --&gt; Merge[&quot;Merge extra_messages onto conversation&quot;]
+    Merge --&gt; Fix[&quot;fix_conversation() → repair structural issues&quot;]
+    Fix --&gt; Ctx[&quot;prepare_reply_context() → tools + system_prompt + GooseMode&quot;]
+    
+    Ctx --&gt; Loop{&quot;turn &lt; DEFAULT_MAX_TURNS&lt;br/&gt;(1000) &amp;&amp; !cancelled&quot;}
+    
+    Loop --&gt;|&quot;exit&quot;| Final[&quot;Return final Message&quot;]
+    
+    Loop --&gt;|&quot;continue&quot;| RetryCheck{&quot;handle_retry_logic()&lt;br/&gt;Need retry due to&lt;br/&gt;recipe config?&quot;}
+    RetryCheck --&gt;|&quot;retry needed&quot;| ResetRetry[&quot;Reset state ← initial_messages&lt;br/&gt;Compact if needed&quot;]
+    ResetRetry --&gt; Provider
+    RetryCheck --&gt;|&quot;no retry&quot;| HandleDenied[&quot;Process denied tools&lt;br/&gt;from prior turn → add&lt;br/&gt;DECLINED_RESPONSE messages&quot;]
+    
+    HandleDenied --&gt; Provider[&quot;provider.complete() → LLM&lt;br/&gt;messages: Vec&lt;Message&gt;&lt;br/&gt;tools: Vec&lt;Tool&gt;&lt;br/&gt;system: str&quot;]
+    Provider --&gt; Parse[&quot;Parse LLM response → Message&quot;]
+    
+    Parse --&gt; TextOnly{&quot;Has ToolRequests?&quot;}
+    TextOnly --&gt;|&quot;text only&quot;| Finish([&quot;Break → return response&quot;])
+    
+    TextOnly --&gt;|&quot;yes&quot;| Categorize[&quot;categorize_tools() → split&lt;br/&gt;frontend vs backend requests&quot;]
+    Categorize --&gt; Frontend[&quot;Handle frontend tools&lt;br/&gt;→ confirmation channels&quot;]
+    Categorize --&gt; Inspect[&quot;tool_inspection_manager.inspect()&lt;br/&gt;Security → Permission → Repetition&quot;]
+    
+    Inspect --&gt; Approved{&quot;Any approved?&quot;}
+    Approved --&gt;|&quot;yes&quot;| Dispatch[&quot;dispatch_tool_call() →&lt;br/&gt;extension_manager.call_tool()&quot;]
+    Approved --&gt;|&quot;all denied&quot;| DenyResp[&quot;Respond DECLINED_RESPONSE&quot;]
+    
+    Dispatch --&gt; Format[&quot;Convert ToolResult → Message&lt;br/&gt;with tool_response content&quot;]
+    DenyResp --&gt; Format
+    
+    Format --&gt; Push[&quot;conversation.push(message)&quot;]
+    Push --&gt; CompactCheck{&quot;Needs compaction?&lt;br/&gt;check_if_compaction_needed()&quot;}
+    CompactCheck --&gt;|&quot;yes&quot;| Compact[&quot;compact_messages()&lt;br/&gt;Summarize via LLM&lt;br/&gt;Set visibility metadata&quot;]
+    Compact --&gt; Loop
+    CompactCheck --&gt;|&quot;no&quot;| Loop
+
+</div>
+<h3>Step 1: fix_conversation() — Structural Repair</h3>
+<pre><code class="language-rust">// crates/goose/src/conversation/mod.rs
+pub fn fix_conversation(conv: Conversation) -&gt; (Conversation, Vec&lt;ConversationIssue&gt;) {
+    // Runs on EVERY reply() call. Fixes:
+    // 1. Duplicate system messages → keep only the most recent
+    // 2. Tool responses without matching tool requests → remove orphan
+    // 3. Non-alternating user/assistant roles → insert placeholder
+    // 4. Empty messages → remove
+    // 5. Multiple consecutive assistant messages → merge
+}
+</code></pre>
+<p><strong>Why run this every time?</strong> The LLM itself can produce malformed responses — a tool call without a name, a JSON parse failure, or duplicate content. If a previous turn's response was malformed and got into the conversation, the next <code>complete()</code> call would fail. <code>fix_conversation()</code> acts as a safety net: it ensures the conversation is always structurally valid before the LLM sees it, regardless of what the LLM produced last time.</p>
+<h3>Step 2: prepare_reply_context() — Fresh Assembly Per Turn</h3>
+<pre><code class="language-rust">// crates/goose/src/agents/agent.rs:245-281
+async fn prepare_reply_context(&amp;self, unfixed_conversation: Conversation,
+    working_dir: &amp;Path) -&gt; Result&lt;ReplyContext&gt; {
+    let (conversation, issues) = fix_conversation(unfixed_conversation.clone());
+    let initial_messages = conversation.messages().clone();
+    let config = Config::global();
+    
+    // Re-assemble tools and system prompt EVERY turn
+    let (tools, toolshim_tools, system_prompt) =
+        self.prepare_tools_and_prompt(working_dir).await?;
+    
+    let goose_mode = config.get_goose_mode().unwrap_or(GooseMode::Auto);
+    self.tool_inspection_manager.update_permission_inspector_mode(goose_mode).await;
+    
+    Ok(ReplyContext { conversation, tools, toolshim_tools, system_prompt,
+                      goose_mode, initial_messages })
+}
+</code></pre>
+<p><strong>Aha:</strong> Tools are re-assembled from the ExtensionManager on every turn. This means if a new extension was enabled mid-conversation (via the extensionmanager extension), its tools appear in the NEXT turn without restarting. The system prompt is ALSO re-rendered each turn — incorporating any hints or instructions that changed since the conversation started.</p>
+<h3>Step 3: provider.complete() — The LLM Call</h3>
+<p>The <code>complete()</code> method on the Provider trait is the single LLM interface:</p>
+<pre><code class="language-rust">// crates/goose/src/providers/base.rs
+#[async_trait]
+pub trait Provider: Send + Sync {
+    async fn complete(
+        &amp;self, system: &amp;str, messages: &amp;[Message], tools: &amp;[Tool],
+        cancel_token: Option&lt;CancellationToken&gt;,
+    ) -&gt; Result&lt;(Message, ProviderUsage), ProviderError&gt;;
+}
+</code></pre>
+<p>It returns a fully-formed <code>Message</code> — NOT a stream of chunks. The format backends handle streaming internally: they buffer chunks, parse partial JSON for tool calls, and assemble the final <code>Message</code> only when the stream ends. This simplifies the reply loop enormously — it never deals with partial tool call JSON or mid-stream errors.</p>
+<h3>Step 4: categorize_tools() — Frontend vs Backend Split</h3>
+<pre><code class="language-rust">// crates/goose/src/agents/agent.rs:283-297
+async fn categorize_tools(&amp;self, response: &amp;Message, _tools: &amp;[Tool])
+    -&gt; ToolCategorizeResult {
+    let (frontend_requests, remaining_requests, filtered_response) =
+        self.categorize_tool_requests(response).await;
+    ToolCategorizeResult { frontend_requests, remaining_requests, filtered_response }
+}
+</code></pre>
+<p>Frontend tools (like <code>ask_user</code>, <code>file_picker</code>, <code>web_fetch</code>) are routed to the UI for rendering. Backend tools go through the inspection pipeline. This split prevents the LLM from calling <code>ask_user</code> 100 times in a loop — frontend tools are rate-limited by human response time.</p>
+<h3>Step 5: tool_inspection_manager.inspect() — Three Layers</h3>
+<pre><code class="language-rust">// crates/goose/src/tool_inspection/mod.rs
+pub async fn inspect(&amp;self, tool_requests: &amp;[ToolRequest], messages: &amp;[Message])
+    -&gt; Result&lt;PermissionCheckResult&gt; {
+    // Layer 1: SecurityInspector (rule-based, deterministic)
+    // Layer 2: PermissionInspector (LLM-as-judge, GooseMode-aware)
+    // Layer 3: RepetitionInspector (loop detection)
+    // Merged: any Deny → denied, any RequireApproval + no Deny → ask user
+}
+</code></pre>
+<h3>Step 6: dispatch_tool_call() — MCP Execution</h3>
+<pre><code class="language-rust">// crates/goose/src/agents/agent.rs:299-347
+async fn handle_approved_and_denied_tools(&amp;self, 
+    permission_check_result: &amp;PermissionCheckResult, ...) -&gt; Result&lt;Vec&lt;(String, ToolStream)&gt;&gt; {
+    for request in &amp;permission_check_result.approved {
+        let (req_id, tool_result) = self.dispatch_tool_call(
+            tool_call, request.id.clone(), cancel_token.clone(), session).await;
+        // Wrap in tool_stream: merge ServerNotifications with ToolResult
+        tool_futures.push((req_id, tool_stream(notification_stream, result)));
+    }
+    // Denied tools get DECLINED_RESPONSE
+    for request in &amp;permission_check_result.denied {
+        *response = response.clone().with_tool_response(
+            request.id.clone(), Ok(vec![Content::text(DECLINED_RESPONSE)]));
+    }
+}
+</code></pre>
+<h3>The tool_stream() Pattern — Merging Progress Notifications</h3>
+<pre><code class="language-rust">// crates/goose/src/agents/agent.rs:134-155
+pub fn tool_stream&lt;S, F&gt;(rx: S, done: F) -&gt; ToolStream
+where S: Stream&lt;Item = ServerNotification&gt; + Send + Unpin + &#x27;static,
+      F: Future&lt;Output = ToolResult&lt;Vec&lt;Content&gt;&gt;&gt; + Send + &#x27;static,
+{
+    Box::pin(async_stream::stream! {
+        tokio::pin!(done);
+        let mut rx = rx;
+        loop {
+            tokio::select! {
+                Some(msg) = rx.next() =&gt; { yield ToolStreamItem::Message(msg); }
+                r = &amp;mut done =&gt; { yield ToolStreamItem::Result(r); break; }
+            }
+        }
+    })
+}
+</code></pre>
+<p>MCP servers can emit <code>ServerNotification</code> progress events during long tool calls (e.g., "cloning repository... 45%"). This function merges the notification stream with the eventual result into a single <code>ToolStream</code>. <code>tokio::select!</code> yields whichever resolves first — progress notifications stream to the UI immediately, and the stream ends cleanly when the result arrives.</p>
+<h2>Agent Events</h2>
+<pre><code class="language-rust">// crates/goose/src/agents/agent.rs:109-115
+pub enum AgentEvent {
+    Message(Message),                                   // New assistant message
+    McpNotification((String, ServerNotification)),       // MCP server event
+    ModelChange { model: String, mode: String },        // Provider/model switched
+    HistoryReplaced(Conversation),                      // Full replacement (retry)
+}
+</code></pre>
+<p>The <code>AgentEvent</code> enum is how the core communicates with the frontend. The CLI and HTTP server both consume these events and render them appropriately — the CLI as styled terminal output, the server as JSON over WebSocket.</p>
+<h2>Agent Initialization</h2>
+<pre><code class="language-rust">// crates/goose/src/agents/agent.rs:186-204
+fn create_default_tool_inspection_manager() -&gt; ToolInspectionManager {
+    let mut manager = ToolInspectionManager::new();
+    manager.add_inspector(Box::new(SecurityInspector::new()));       // Priority 1
+    manager.add_inspector(Box::new(PermissionInspector::new(
+        GooseMode::SmartApprove, HashSet::new(), HashSet::new())));  // Priority 2
+    manager.add_inspector(Box::new(RepetitionInspector::new(None))); // Priority 3
+    manager
+}
+</code></pre>
+<p>The default inspectors are hardcoded in <code>new()</code> — not loaded from config. Only their parameters (GooseMode, readonly tools list, regular tools list) are updated dynamically from session config via <code>update_permission_inspector_mode()</code>.</p>
+<h2>Cross-References</h2>
+<ul><li><a href="02-extensions.md">Extensions</a> — How ExtensionManager discovers, spawns, and manages MCP clients</li><li><a href="03-providers.md">Providers</a> — The Provider trait and 8 format backends</li><li><a href="04-security-permissions.md">Security & Permissions</a> — The 3-layer inspection pipeline in detail</li><li><a href="06-compaction-context.md">Compaction & Context</a> — How the reply loop triggers and performs compaction</li></ul>
+<h2>Next</h2>
+<p>→ <a href="02-extensions.md">Extensions</a> — MCP client management, platform extensions, transport types, malware scanning.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

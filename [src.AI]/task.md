@@ -15,24 +15,24 @@ Output location: `[src.AI]/<project>/` with `spec.md`, `markdown/`, `html/`, `bu
 
 | # | Project | Source Path | Status |
 |---|---------|-------------|--------|
-| 1 | src.UIComponents | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.UIComponents/` | NEEDS REVIEW — scattered across 10 subdirs, needs consolidation |
-| 2 | src.TenFramework | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.TenFramework/` | TODO |
-| 3 | src.Moltis | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/` | NEEDS REVIEW — 13 docs fixed to root, quality review pending |
-| 4 | src.PDFToMarkdown | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.PDFToMarkdown/` | **DONE** — 8 deep docs (10,317 words), HTML built, grandfather review passed |
-| 5 | src.Alibaba | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Alibaba/` | **DONE** — 7 deep docs, HTML built, grandfather review passed |
-| 6 | bolt.diy | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/bolt.diy/` | **DONE** — 6 deep docs, HTML built, grandfather review passed |
-| 7 | src.Google | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Google/` | NEEDS REWRITE — 2 thin docs for 1,759 source files |
-| 8 | src.Hedr | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Hedr/` | TODO |
-| 9 | src.Instatic | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Instatic/` | NEEDS REVIEW — 15 docs fixed to root, quality review pending |
-| 10 | ponytail | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.PromptOptimizations/ponytail/` | NEEDS REVIEW — 4 docs fixed to root, quality review pending |
-| 11 | src.streamlit | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.streamlit/` | TODO |
-| 12 | src.strukto-ai | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.strukto-ai/` | TODO |
-| 13 | superdesign | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.superdesign/superdesign/` | NEEDS REVIEW — 6 docs fixed to root, quality review pending |
-| 14 | src.opendesign | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Opendesign/` | NEEDS REWRITE — 2 thin docs |
-| 15 | src.designskills | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.DesignSkills/` | TODO |
-| 16 | goose | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.block/goose/` | NEEDS REVIEW — 6 docs fixed to root, quality review pending |
-| 17 | src.jeremychone | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.jeremychone` | NEEDS REWRITE — thin deep dives (28-line files) |
-| 18 | wayfinder | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Wayfinder` | NEEDS REVIEW — 7 docs, quality review pending |
+| 1 | src.UIComponents | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.UIComponents/` | NEEDS REVIEW — 91 docs across 11 components, mermaid injection needed |
+| 2 | src.TenFramework | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.TenFramework/` | **DONE** — 4.7M LOC framework documented (TEN + VAD + turn detection + portal), HTML built |
+| 3 | src.Moltis | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/` | NEEDS REVIEW — 13 docs, content exists, needs mermaids + depth |
+| 4 | src.PDFToMarkdown | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.PDFToMarkdown/` | **DONE** — 8 deep docs (10,317 words), HTML built |
+| 5 | src.Alibaba | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Alibaba/` | **DONE** — 7 deep docs, HTML built |
+| 6 | bolt.diy | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/bolt.diy/` | **DONE** — 6 deep docs, HTML built |
+| 7 | src.Google | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Google/` | **DONE** — 12 projects documented, HTML built |
+| 8 | src.Hedr | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Hedr/` | **DONE** — Terminal workspace manager (20+ agent detectors, PTY management), HTML built |
+| 9 | src.Instatic | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Instatic/` | NEEDS REVIEW — 15 docs, content exists |
+| 10 | ponytail | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.PromptOptimizations/ponytail/` | NEEDS REVIEW — 4 docs |
+| 11 | src.streamlit | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.streamlit/` | **DONE** — Python↔JS protobuf bridge, rerun model, DeltaGenerator, SessionState, HTML built |
+| 12 | src.strukto-ai | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.strukto-ai/` | **DONE** — Mirage VFS (50+ backends, in-process shell, 4-layer architecture), HTML built |
+| 13 | superdesign | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.superdesign/superdesign/` | NEEDS REVIEW — 6 docs |
+| 14 | src.opendesign | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Opendesign/` | **DONE** — 19 projects documented, HTML built |
+| 15 | src.designskills | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.DesignSkills/` | **DONE** — taste-skill, lumenshaders, gemini-extension documented, HTML built |
+| 16 | goose | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.block/goose/` | **DONE** — 14 deep docs (15,944 words) covering all 6 crates, HTML built |
+| 17 | src.jeremychone | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.jeremychone` | **DONE** — 5 deep docs (aiprog, aipack, udiffx, genai + overview), HTML built |
+| 18 | wayfinder | `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Wayfinder` | **DONE** — RAC ecosystem documented (7 projects), HTML built |
 
 ## Notes
 

@@ -1,25 +1,35 @@
-# src.jeremychone Documentation
+# src.jeremychone — The AIP Stack
 
-Jeremy Choney's monorepo: 10 Rust crates + 10+ Python packages for AI, agents, web development, and developer tools.
+Jeremy Chone's ecosystem for building AI agents that execute **programs** rather than calling **tools**. The LLM writes Lua scripts; the runtime executes them deterministically. This collapses N tool-calling round trips into 1.
 
-| Attribute | Value |
-|-----------|-------|
-| Sub-projects | 21 |
-| Source files | ~822 |
-| Languages | Rust, Python, TypeScript |
-| License | MIT (most packages) |
+**Source:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.jeremychone/` — 21 projects, 250K+ LOC
 
-## Navigation
+## Core Stack
 
-| # | Document | Purpose |
-|---|----------|---------|
-| 00 | [Overview](00-overview.md) | All 21 projects at a glance |
-| 01 | [rust-genai](01-rust-genai.md) — AI provider client library (19 providers) |
-| 02 | [rust-rpc-router](02-rust-rpc-router.md) — JSON-RPC 2.0 router with FromResources |
-| 03 | [rust-modql](03-rust-modql.md) — Query language for SeaORM/rusqlite |
-| 04 | [rust-sqlb](04-rust-sqlb.md) — SQL builder |
-| 05 | [rust-udiffx](05-rust-udiffx.md) — Unified diff patcher with security policy |
-| 06 | [rust-agentic](06-rust-agentic.md) — MCP agent framework |
-| 07 | [rust-pretty-sqlite](07-rust-pretty-sqlite.md) — SQLite pretty-printer |
-| 08 | [python-fasthtml](08-python-fasthtml.md) — fasthtml, claudette, RAGatouille, rerankers |
-| 09 | [tools](09-tools.md) — aipack, aiprog, fh-deploy, htmd, packs |
+| # | Document | What You'll Master |
+|---|----------|-------------------|
+| 00 | [Overview](00-overview.md) | The AIP philosophy: AI programs vs AI tools. Full system architecture |
+| 01 | [aiprog](01-aiprog.md) | Lua scripting engine, proc macros, module system, type bridging |
+| 02 | [aipack](02-aipack.md) | Agent orchestrator: Runtime, Hub, 28 Lua modules, agent pipeline |
+| 03 | [rust-udiffx](03-udiffx.md) | Security-hardened unified diff patcher with 3-tier matching |
+| 04 | [rust-genai](04-genai.md) | 19+ provider LLM client with adapter-based dispatch |
+
+## Quick Start
+
+```bash
+# Create a new aipack project
+aipack new my-agent
+
+# Run an agent
+aipack run my-agent
+
+# Use genai directly
+cargo add genai
+```
+
+## Build HTML
+
+```bash
+cd /home/darkvoid/Boxxed/@dev/repo-expolorations/[src.AI]/src.jeremychone
+python3 build.py .
+```
