@@ -1,19 +1,32 @@
-# rust-sqlb — Documentation
+# rust-sqlb Documentation
 
-**Source:** `src/` — 9 Rust files. Postgres-only SQL query builder on `sqlx`.
+Simple SQL builder with sqlx integration.
 
-rust-sqlb is a lightweight SQL query builder for Postgres, built on `sqlx`. It provides a fluent, builder-pattern API for SELECT, INSERT, UPDATE, and DELETE queries with parameterized binding, RETURNING support, automatic identifier escaping, and safety guards against unqualified UPDATE/DELETE operations.
+## Documents
 
-## Documentation
+| # | Document | Description |
+|---|----------|-------------|
+| 0 | [Overview](00-overview.md) | Architecture, builders, SqlxBindable |
 
-- [Overview](00-overview.md) — Architecture at a glance, quick start, key types
-- [Core Types](01-core-types.md) — Field, HasFields, SqlBuilder, Whereable, SqlxBindable, Raw, identifier escaping
-- [Builders](02-builders.md) — Select, Insert, Update, Delete, sqlx_exec execution engine
+## Source
 
-## Feature Flags
+`rust-sqlb/src/` — 9 Rust files
 
-| Feature | Enables |
-|---------|---------|
-| `chrono-support` | `chrono::NaiveDateTime`, `NaiveDate`, `NaiveTime`, `DateTime<Utc>` binding |
-| `json` | `serde_json::Value` binding |
-| `decimal` | `rust_decimal::Decimal` binding |
+## Usage
+
+```rust
+use sqlb::{select, insert, Field, HasFields};
+
+let users: Vec<User> = select()
+    .table("users")
+    .and_where_eq("active", true)
+    .fetch_all(&pool).await?;
+
+#[derive(Fields)]
+struct NewUser { name: String, email: String }
+
+let user = insert()
+    .table("users")
+    .data(user.not_none_fields())
+    .fetch_one(&pool).await?;
+```
