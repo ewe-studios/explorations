@@ -1,178 +1,234 @@
-# Architecture
+# Instatic Architecture
 
-Instatic runs as a single Bun process with two kinds of off-main-thread workers, a hand-written routing table of 19 routes, and a dual-engine database adapter.
+Instatic is a self-hosted CMS running as a single Bun process with two off-main-thread workers, a hand-written 19-route dispatcher, and dual-engine database support (Postgres or SQLite).
 
 **Source:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Instatic/Instatic/`
 
-## Process Architecture
+## Boot Sequence
 
-```mermaid
-flowchart TD
-    subgraph "Bun Process"
-        ENTRY["server/index.ts
-        Entrypoint, boots router"]
-        ROUTER["server/router.ts
-        19-route dispatcher"]
-        CMS["CMS Handlers
-        /admin/api/cms/*
-        → repositories → db"]
-        ADMIN["Admin SPA
-        /admin/* → dist/
-        Vite-built React app"]
-        PUBLIC["Published Pages
-        /<route> → uploads/
-        static HTML files"]
-        MEDIA["Media Files
-        /media/* → uploads/
-        images, documents"]
-        AI["AI Handlers
-        /admin/api/ai/*
-        Chat streams, credentials"]
-    end
-
-    subgraph "Bun.Worker Pool"
-        IMGWORKER["Image Variant Worker
-        sharp + blurhash
-        CPU off main thread"]
-    end
-
-    subgraph "Bun.Worker (per plugin)"
-        QJS["QuickJS-WASM Sandbox
-        Per-plugin VM
-        No Node/Bun ambient access
-        Crash isolation + budget"]
-    end
-
-    subgraph "Database"
-        DB["DbClient interface
-        Postgres (Bun.sql) OR
-        SQLite (bun:sqlite)
-        Selected by DATABASE_URL"]
-    end
-
-    ENTRY --> ROUTER
-    ROUTER --> CMS
-    ROUTER --> ADMIN
-    ROUTER --> PUBLIC
-    ROUTER --> MEDIA
-    ROUTER --> AI
-    ROUTER --> IMGWORKER
-    ROUTER --> QJS
-    CMS --> DB
-```
-
-**Aha:** There is no message queue, no managed service surface. Everything runs in one process (or its workers). Scaling out is a horizontal-Postgres play: both schedulers (plugin tick + scheduled-publish tick) share a leader-election primitive via `pg_try_advisory_lock` so multiple instances behind a load balancer don't double-fire scheduled work. SQLite mode is single-instance by definition; the module falls through to a no-op sentinel.
-
-**Source:** `docs/architecture.md`, `server/db/advisoryLock.ts`.
-
-## Routing Table
-
-The server uses a hand-written router — not Express, not Hono, not Fastify. Routes are tried top-to-bottom; the first match wins.
+Source: `server/index.ts`
 
 ```typescript
-// server/router.ts:62-85 — The 19-route table
-const routes: readonly RouteHandler[] = [
-  tryServeHealth,              // /health
-  tryServeAi,                  // /admin/api/ai/*
-  tryServeCmsApi,              // /admin/api/cms/*
-  tryServeLoopRuntimeAsset,    // /_instatic/loop/*
-  tryServeLoop,                // /_instatic/loop/runtime/*
-  tryServeHoleRuntimeAsset,    // /_instatic/hole/runtime/*
-  tryServeHole,                // /_instatic/hole/<nodeId>
-  tryServeModuleJsAsset,       // /_instatic/module/*.js
-  tryServePublicForm,          // Form submissions
-  tryServeRuntimeAsset,        // /_instatic/runtime/*
-  tryServeRuntimePackageNamespace, // /_instatic/runtime/packages/*
-  tryServeSiteCssNamespace,    // /_instatic/css/*
-  tryServeMediaRedirect,       // Media file redirects
-  tryServeStaticAsset,         // Published static HTML
-  tryServeUpload,              // /uploads/*
-  tryServeAdminApp,            // /admin/* (SPA fallback)
-  tryServePublicRoute,         // /* (public page routing)
-  trySetupRedirect,            // Setup wizard if not configured
-  tryServeNotFoundPage,        // 404 page
-]
+await import('./richtextSanitizer')  // Side-effect: initializes sanitizer
+const { handleServerRequest } = await import('./router')
+const { activateInstalledServerPlugins } = await import('./plugins/runtime')
+const { mediaStorageRegistry } = await import('@core/plugins/mediaStorageRegistry')
+
+const config = readServerConfig()
+configureTrustedProxyCidrs(config.trustedProxyCidrs)
+configurePublicOrigins(config.publicOrigins)
+
+const { db, migrations } = createDbClient(config.databaseUrl)
+await runMigrations(db, migrations)
+await syncSystemRoles(db)                    // Force-reset Owner capabilities
+mediaStorageRegistry.configureLocalDisk({ uploadsDir: config.uploadsDir })
+await activateInstalledServerPlugins(db, config.uploadsDir)
+startConversationPurgeTick(db)               // Nightly AI conversation cleanup
 ```
 
-**Source:** `server/router.ts` lines 62-85.
+Aha: The top-level `await import()` pattern is used to load modules sequentially rather than at the top of the file. This ensures side-effectful initialization (richtext sanitizer) happens before the server starts accepting requests. The `handleServerRequest` import is deferred until after migrations run — if migrations fail, the server never starts.
 
-**Aha:** Each route handler follows the same pattern: check the URL path, return a `Response` if it matches, return `null` if it doesn't. The dispatcher loop (`handleServerRequest`) walks the array and returns the first non-null response. Adding a new endpoint is a one-line edit to the `routes` array plus a focused `tryServeX` function — no per-call type juggling, no editing the dispatcher loop. Routes are prefix-namespaced: handlers like `/_instatic/css/` absorb their entire namespace and emit a 404 themselves rather than falling through, so unknown paths under a known prefix can't accidentally match a later route.
-
-## Database Architecture
-
-### Dual-Engine Adapter
-
-```mermaid
-flowchart TD
-    REPO["Repositories
-    (dialect-naive)"] --> CLIENT["DbClient interface
-    Template-tagged SQL
-    .unsafe() for raw SQL
-    .transaction() for TX
-    .dialect for placeholder type"]
-    CLIENT --> PG["Postgres adapter
-    Bun.sql"]
-    CLIENT --> SQLITE["SQLite adapter
-    bun:sqlite"]
-    PG --> MIGRATIONS["migrations/postgres/*.sql"]
-    SQLITE --> MIGRATIONS2["migrations/sqlite/*.sql
-    Identical IDs, different syntax"]
-```
-
-**Source:** `server/db/client.ts`, `server/db/`.
-
-The `DbClient` interface provides:
-- Template-tagged SQL execution: `` db`SELECT * FROM posts` ``
-- `.unsafe(sql, params)` — raw SQL strings for migrations
-- `.transaction(fn)` — callback-based transactions
-- `.dialect` — returns `'postgres'` or `'sqlite'`
-
-### Placeholder Abstraction
+## Server Bootstrap
 
 ```typescript
-// server/db/client.ts:16-19
-function placeholder(dialect: Dialect, index: number): string {
-  return dialect === 'postgres' ? `$${index}` : '?'
+Bun.serve({
+  port: config.port,
+  idleTimeout: 0,  // Disable 10s default — agent streams NDJSON for minutes
+
+  async fetch(req: Request, server: Bun.Server) {
+    const origin = req.headers.get('origin')
+    const cors = corsHeaders(origin)
+
+    // Stamp real client IP from socket (strips spoofed X-Forwarded-For)
+    stampSocketIp(req, server.requestIP(req)?.address ?? null)
+
+    if (req.method === 'OPTIONS') {
+      return new Response(null, { status: 204, headers: cors })
+    }
+
+    try {
+      const res = await handleServerRequest(req, { db, ... })
+      for (const [k, v] of Object.entries(cors)) res.headers.set(k, v)
+      return res
+    } catch (err) {
+      // Never echo err.message — could leak internal state
+      return new Response('Internal server error', { status: 500 })
+    }
+  },
+})
+```
+
+### idleTimeout: 0
+
+Aha: The default Bun idle timeout is 10 seconds. The AI agent endpoint streams NDJSON for as long as Claude's tool loop is running — "thinking" gaps between tool calls regularly exceed 10s on multi-step builds. Without `idleTimeout: 0`, the streaming response would be killed mid-flight, leaving the bridge resolver hanging server-side.
+
+## CORS — Allowlist-Only
+
+```typescript
+function corsHeaders(origin: string | null): Record<string, string> {
+  if (!origin || !DEV_ORIGIN_ALLOWLIST.includes(origin)) return {}
+  return {
+    'Access-Control-Allow-Origin': origin,
+    'Access-Control-Allow-Credentials': 'true',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Vary': 'Origin',
+  }
 }
 ```
 
-This lets repositories build dialect-agnostic SQL strings. The same SQL template works on both Postgres (`$1, $2, $3`) and SQLite (`?, ?, ?`).
+Aha: In production, the admin shell is same-origin behind Caddy — no CORS headers needed. In dev, only explicitly allowlisted origins get CORS. If an origin isn't on the list, the response gets empty headers — the browser blocks cross-origin reads naturally. This avoids echoing arbitrary origins (a classic broken-CORS bug shape).
 
-**Source:** `server/db/client.ts`.
+## The 19-Route Dispatcher
 
-### Content Storage
+Source: `server/router.ts`
 
-All content lives in two tables:
+```typescript
+type RouteHandler = (
+  req: Request,
+  runtime: ServerRuntime,
+  url: URL,
+  pathname: string,
+) => Promise<Response | null> | Response | null
 
-| Table | Purpose |
-|-------|---------|
-| `data_tables` | Table definitions (posts, pages, components, layouts, plus user-created tables) |
-| `data_rows` | Row data for all tables |
+const routes: readonly RouteHandler[] = [
+  tryServeHealth,                    // 1. /health
+  tryServeAi,                        // 2. /admin/api/ai/*
+  tryServeCmsApi,                    // 3. /admin/api/*
+  tryServeLoopRuntimeAsset,          // 4. /_instatic/runtime/loop/*
+  tryServeLoop,                      // 5. Loop page rendering
+  tryServeHoleRuntimeAsset,          // 6. /_instatic/runtime/hole/*
+  tryServeHole,                      // 7. Lazy-fetch hole pages
+  tryServeModuleJsAsset,             // 8. /_instatic/runtime/module/*.js
+  tryServePublicForm,                // 9. Public form submissions
+  tryServeRuntimeAsset,              // 10. /_instatic/runtime/* (JS/CSS bundles)
+  tryServeRuntimePackageNamespace,   // 11. /_instatic/runtime/cache/*
+  tryServeSiteCssNamespace,          // 12. /_instatic/css/*
+  tryServeMediaRedirect,             // 13. Media file redirects
+  tryServeStaticAsset,               // 14. Static baked pages
+  tryServeUpload,                    // 15. /_instatic/uploads/*
+  tryServeAdminApp,                  // 16. /admin/* (React SPA)
+  tryServePublicRoute,               // 17. Public site routes
+  trySetupRedirect,                  // 18. Redirect to /setup if no site
+  tryServeNotFoundPage,              // 19. 404 page
+]
 
-**Aha:** There are no separate `pages` or `page_versions` tables. The four system tables (`posts`, `pages`, `components`, `layouts`) are seeded and locked from rename/delete. Versioning is handled through `data_row_versions` with `site_snapshot_id` references — each publish stores the `SiteDocument` once in `site_snapshots`, and page versions reference it.
+export async function handleServerRequest(req: Request, runtime: ServerRuntime): Promise<Response> {
+  const url = new URL(req.url)
+  const { pathname } = url
 
-**Source:** `docs/features/content-storage.md`, `docs/reference/database-dialects.md`.
+  for (const route of routes) {
+    const response = await route(req, runtime, url, pathname)
+    if (response) return response
+  }
 
-## Folder Structure
+  return jsonResponse({ error: 'Not found' }, { status: 404 })
+}
+```
+
+Aha: Routes return `Response | null`. `null` means "I don't own this request, try the next route." Prefix-namespaced handlers (e.g., `/_instatic/css/`) absorb their entire namespace and emit a 404 themselves rather than falling through — so unknown paths under a known prefix can't accidentally match a later route. This is a "longest prefix wins" pattern implemented via explicit ownership.
+
+### Route Contract
+
+```typescript
+// Each handler checks its own method/path:
+function tryServeHealth(_req, _runtime, _url, pathname): Response | null {
+  if (pathname !== '/health') return null
+  return jsonResponse({ status: 'ok', ts: Date.now() })
+}
+```
+
+No framework routing — just a `for` loop over functions. Adding a new endpoint is a one-line edit to the `routes` array plus a focused `tryServeX` function.
+
+## Database Layer
+
+Source: `server/db/`
+
+```typescript
+interface ServerConfig {
+  port: number
+  databaseUrl: string          // postgres://... or file:sqlite.db
+  uploadsDir: string
+  staticDir: string
+  trustedProxyCidrs: string[]
+  publicOrigins: string[]
+}
+
+function createDbClient(databaseUrl: string): { db: DbClient; migrations: Migration[] }
+```
+
+The same codebase runs against Postgres or SQLite — selected entirely by `DATABASE_URL`.
+
+## Public Origin Resolution
+
+Source: `server/config.ts`
+
+```typescript
+export function resolvePublicOrigins(env): string[] {
+  // Priority 1: Explicit PUBLIC_ORIGIN env var
+  const explicit = readCsvList(env.PUBLIC_ORIGIN)
+  if (explicit.length > 0) return normalizeOrigins(explicit)
+
+  // Priority 2: Platform auto-detection
+  const derived: string[] = []
+  if (env.RENDER_EXTERNAL_URL) derived.push(env.RENDER_EXTERNAL_URL)
+  if (env.RAILWAY_PUBLIC_DOMAIN) derived.push(`https://${env.RAILWAY_PUBLIC_DOMAIN}`)
+  return normalizeOrigins(derived)
+
+  // Priority 3: [] → CSRF falls back to Host header
+}
+```
+
+Normalization uses `new URL()` — no regex, no `as` casts. Scheme and host lowercased, path/query/fragment stripped.
+
+## ServerRuntime Interface
+
+```typescript
+interface ServerRuntime {
+  db: DbClient
+  staticDir?: string
+  uploadsDir?: string
+  databaseUrl?: string  // Forwarded to CMS handlers for on-disk SQLite resolution
+}
+```
+
+Passed to every route handler — the single source of server-wide state.
+
+## Package Structure
 
 ```
-server/                  Bun server: router, handlers, repositories, plugin runtime, DB
-src/admin/               Admin app shell (auth, navigation, workspaces, plugin host UI)
-src/admin/pages/site/    Visual editor (canvas, panels, toolbar, store)
-src/core/                Engine: page tree, publisher, plugin SDK + runtime, persistence
-src/modules/             First-party block modules (container, text, image, button, …)
-src/ui/                  Shared UI primitives (Button, Input, Tree, icons, cn helper)
-src/styles/              Global tokens (globals.css)
-src/__tests__/architecture/   Gate tests enforcing structural rules
-tests/                   Playwright E2E specs (*.e2e.ts)
-docs/                    Documentation tree
-examples/                Plugin templates, type declarations
-vendor/                  Vendored pixel-art-icons package
-scripts/                 Build, dev, icon sync, benchmark, audit scripts
+Instatic/
+├── server/                     # Bun server (hand-written router)
+│   ├── index.ts               # Boot sequence, Bun.serve()
+│   ├── router.ts              # 19-route dispatcher
+│   ├── config.ts              # Server config, origin resolution
+│   ├── binary.ts              # Binary response helpers
+│   ├── static.ts              # Static file serving, uploads
+│   ├── http.ts                # JSON response helpers
+│   ├── time.ts                # Time utilities
+│   ├── types.ts               # Server types
+│   ├── ai/                    # AI runtime (providers, drivers, tools)
+│   ├── auth/                  # Auth, security, CSRF
+│   ├── db/                    # Database client, migrations
+│   ├── handlers/              # CMS handlers
+│   ├── plugins/               # Plugin runtime
+│   ├── publish/               # Publishing pipeline
+│   ├── repositories/          # Data access layer
+│   ├── secrets/               # Secret management
+│   └── util/                  # Server utilities
+├── src/
+│   ├── core/                  # 301 files: data models, schemas, utilities
+│   ├── admin/                 # 752 files: React admin UI
+│   ├── modules/               # 59 files: CMS module definitions
+│   ├── ui/                    # 105 files: Shared UI components
+│   └── styles/                # CSS
+└── vendor/                    # Vendored dependencies
 ```
 
-**Source:** `docs/architecture.md` "Folders, at a glance".
+## Cross-References
 
-## Next
+- [Overview](00-overview.md) — What Instatic is
+- [Server](02-server.md) — Hand-written router, handlers, repositories
+- [Publisher](03-publisher.md) — Three-layer publishing pipeline
 
-Continue to [02-server](02-server.md) for a deep dive into the hand-written router, CMS handlers, and repository layer.
+[Next → Server](02-server.md)

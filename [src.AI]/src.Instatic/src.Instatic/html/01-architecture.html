@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Architecture -- src.Instatic</title>
+  <title>Instatic Architecture -- src.Instatic</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
   <script>
@@ -132,147 +132,193 @@
     </div>
   </nav>
   <article class="prose">
-<h1>Architecture</h1>
-<p>Instatic runs as a single Bun process with two kinds of off-main-thread workers, a hand-written routing table of 19 routes, and a dual-engine database adapter.</p>
+<h1>Instatic Architecture</h1>
+<p>Instatic is a self-hosted CMS running as a single Bun process with two off-main-thread workers, a hand-written 19-route dispatcher, and dual-engine database support (Postgres or SQLite).</p>
 <p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Instatic/Instatic/</code></p>
-<h2>Process Architecture</h2>
-<div class="mermaid">
-flowchart TD
-    subgraph &quot;Bun Process&quot;
-        ENTRY[&quot;server/index.ts
-        Entrypoint, boots router&quot;]
-        ROUTER[&quot;server/router.ts
-        19-route dispatcher&quot;]
-        CMS[&quot;CMS Handlers
-        /admin/api/cms/*
-        → repositories → db&quot;]
-        ADMIN[&quot;Admin SPA
-        /admin/* → dist/
-        Vite-built React app&quot;]
-        PUBLIC[&quot;Published Pages
-        /&lt;route&gt; → uploads/
-        static HTML files&quot;]
-        MEDIA[&quot;Media Files
-        /media/* → uploads/
-        images, documents&quot;]
-        AI[&quot;AI Handlers
-        /admin/api/ai/*
-        Chat streams, credentials&quot;]
-    end
+<h2>Boot Sequence</h2>
+<p>Source: <code>server/index.ts</code></p>
+<pre><code class="language-typescript">await import(&#x27;./richtextSanitizer&#x27;)  // Side-effect: initializes sanitizer
+const { handleServerRequest } = await import(&#x27;./router&#x27;)
+const { activateInstalledServerPlugins } = await import(&#x27;./plugins/runtime&#x27;)
+const { mediaStorageRegistry } = await import(&#x27;@core/plugins/mediaStorageRegistry&#x27;)
 
-    subgraph &quot;Bun.Worker Pool&quot;
-        IMGWORKER[&quot;Image Variant Worker
-        sharp + blurhash
-        CPU off main thread&quot;]
-    end
+const config = readServerConfig()
+configureTrustedProxyCidrs(config.trustedProxyCidrs)
+configurePublicOrigins(config.publicOrigins)
 
-    subgraph &quot;Bun.Worker (per plugin)&quot;
-        QJS[&quot;QuickJS-WASM Sandbox
-        Per-plugin VM
-        No Node/Bun ambient access
-        Crash isolation + budget&quot;]
-    end
-
-    subgraph &quot;Database&quot;
-        DB[&quot;DbClient interface
-        Postgres (Bun.sql) OR
-        SQLite (bun:sqlite)
-        Selected by DATABASE_URL&quot;]
-    end
-
-    ENTRY --&gt; ROUTER
-    ROUTER --&gt; CMS
-    ROUTER --&gt; ADMIN
-    ROUTER --&gt; PUBLIC
-    ROUTER --&gt; MEDIA
-    ROUTER --&gt; AI
-    ROUTER --&gt; IMGWORKER
-    ROUTER --&gt; QJS
-    CMS --&gt; DB
-
-</div>
-<p><strong>Aha:</strong> There is no message queue, no managed service surface. Everything runs in one process (or its workers). Scaling out is a horizontal-Postgres play: both schedulers (plugin tick + scheduled-publish tick) share a leader-election primitive via <code>pg_try_advisory_lock</code> so multiple instances behind a load balancer don't double-fire scheduled work. SQLite mode is single-instance by definition; the module falls through to a no-op sentinel.</p>
-<p><strong>Source:</strong> <code>docs/architecture.md</code>, <code>server/db/advisoryLock.ts</code>.</p>
-<h2>Routing Table</h2>
-<p>The server uses a hand-written router — not Express, not Hono, not Fastify. Routes are tried top-to-bottom; the first match wins.</p>
-<pre><code class="language-typescript">// server/router.ts:62-85 — The 19-route table
-const routes: readonly RouteHandler[] = [
-  tryServeHealth,              // /health
-  tryServeAi,                  // /admin/api/ai/*
-  tryServeCmsApi,              // /admin/api/cms/*
-  tryServeLoopRuntimeAsset,    // /_instatic/loop/*
-  tryServeLoop,                // /_instatic/loop/runtime/*
-  tryServeHoleRuntimeAsset,    // /_instatic/hole/runtime/*
-  tryServeHole,                // /_instatic/hole/&lt;nodeId&gt;
-  tryServeModuleJsAsset,       // /_instatic/module/*.js
-  tryServePublicForm,          // Form submissions
-  tryServeRuntimeAsset,        // /_instatic/runtime/*
-  tryServeRuntimePackageNamespace, // /_instatic/runtime/packages/*
-  tryServeSiteCssNamespace,    // /_instatic/css/*
-  tryServeMediaRedirect,       // Media file redirects
-  tryServeStaticAsset,         // Published static HTML
-  tryServeUpload,              // /uploads/*
-  tryServeAdminApp,            // /admin/* (SPA fallback)
-  tryServePublicRoute,         // /* (public page routing)
-  trySetupRedirect,            // Setup wizard if not configured
-  tryServeNotFoundPage,        // 404 page
-]
+const { db, migrations } = createDbClient(config.databaseUrl)
+await runMigrations(db, migrations)
+await syncSystemRoles(db)                    // Force-reset Owner capabilities
+mediaStorageRegistry.configureLocalDisk({ uploadsDir: config.uploadsDir })
+await activateInstalledServerPlugins(db, config.uploadsDir)
+startConversationPurgeTick(db)               // Nightly AI conversation cleanup
 </code></pre>
-<p><strong>Source:</strong> <code>server/router.ts</code> lines 62-85.</p>
-<p><strong>Aha:</strong> Each route handler follows the same pattern: check the URL path, return a <code>Response</code> if it matches, return <code>null</code> if it doesn't. The dispatcher loop (<code>handleServerRequest</code>) walks the array and returns the first non-null response. Adding a new endpoint is a one-line edit to the <code>routes</code> array plus a focused <code>tryServeX</code> function — no per-call type juggling, no editing the dispatcher loop. Routes are prefix-namespaced: handlers like <code>/_instatic/css/</code> absorb their entire namespace and emit a 404 themselves rather than falling through, so unknown paths under a known prefix can't accidentally match a later route.</p>
-<h2>Database Architecture</h2>
-<h3>Dual-Engine Adapter</h3>
-<div class="mermaid">
-flowchart TD
-    REPO[&quot;Repositories
-    (dialect-naive)&quot;] --&gt; CLIENT[&quot;DbClient interface
-    Template-tagged SQL
-    .unsafe() for raw SQL
-    .transaction() for TX
-    .dialect for placeholder type&quot;]
-    CLIENT --&gt; PG[&quot;Postgres adapter
-    Bun.sql&quot;]
-    CLIENT --&gt; SQLITE[&quot;SQLite adapter
-    bun:sqlite&quot;]
-    PG --&gt; MIGRATIONS[&quot;migrations/postgres/*.sql&quot;]
-    SQLITE --&gt; MIGRATIONS2[&quot;migrations/sqlite/*.sql
-    Identical IDs, different syntax&quot;]
+<p>Aha: The top-level <code>await import()</code> pattern is used to load modules sequentially rather than at the top of the file. This ensures side-effectful initialization (richtext sanitizer) happens before the server starts accepting requests. The <code>handleServerRequest</code> import is deferred until after migrations run — if migrations fail, the server never starts.</p>
+<h2>Server Bootstrap</h2>
+<pre><code class="language-typescript">Bun.serve({
+  port: config.port,
+  idleTimeout: 0,  // Disable 10s default — agent streams NDJSON for minutes
 
-</div>
-<p><strong>Source:</strong> <code>server/db/client.ts</code>, <code>server/db/</code>.</p>
-<p>The <code>DbClient</code> interface provides:</p>
-<ul><li>Template-tagged SQL execution: `<code> db</code>SELECT * FROM posts<code> </code>`</li><li><code>.unsafe(sql, params)</code> — raw SQL strings for migrations</li><li><code>.transaction(fn)</code> — callback-based transactions</li><li><code>.dialect</code> — returns <code>'postgres'</code> or <code>'sqlite'</code></li></ul>
-<h3>Placeholder Abstraction</h3>
-<pre><code class="language-typescript">// server/db/client.ts:16-19
-function placeholder(dialect: Dialect, index: number): string {
-  return dialect === &#x27;postgres&#x27; ? `$${index}` : &#x27;?&#x27;
+  async fetch(req: Request, server: Bun.Server) {
+    const origin = req.headers.get(&#x27;origin&#x27;)
+    const cors = corsHeaders(origin)
+
+    // Stamp real client IP from socket (strips spoofed X-Forwarded-For)
+    stampSocketIp(req, server.requestIP(req)?.address ?? null)
+
+    if (req.method === &#x27;OPTIONS&#x27;) {
+      return new Response(null, { status: 204, headers: cors })
+    }
+
+    try {
+      const res = await handleServerRequest(req, { db, ... })
+      for (const [k, v] of Object.entries(cors)) res.headers.set(k, v)
+      return res
+    } catch (err) {
+      // Never echo err.message — could leak internal state
+      return new Response(&#x27;Internal server error&#x27;, { status: 500 })
+    }
+  },
+})
+</code></pre>
+<h3>idleTimeout: 0</h3>
+<p>Aha: The default Bun idle timeout is 10 seconds. The AI agent endpoint streams NDJSON for as long as Claude's tool loop is running — "thinking" gaps between tool calls regularly exceed 10s on multi-step builds. Without <code>idleTimeout: 0</code>, the streaming response would be killed mid-flight, leaving the bridge resolver hanging server-side.</p>
+<h2>CORS — Allowlist-Only</h2>
+<pre><code class="language-typescript">function corsHeaders(origin: string | null): Record&lt;string, string&gt; {
+  if (!origin || !DEV_ORIGIN_ALLOWLIST.includes(origin)) return {}
+  return {
+    &#x27;Access-Control-Allow-Origin&#x27;: origin,
+    &#x27;Access-Control-Allow-Credentials&#x27;: &#x27;true&#x27;,
+    &#x27;Access-Control-Allow-Methods&#x27;: &#x27;GET, POST, PUT, PATCH, DELETE, OPTIONS&#x27;,
+    &#x27;Access-Control-Allow-Headers&#x27;: &#x27;Content-Type&#x27;,
+    &#x27;Vary&#x27;: &#x27;Origin&#x27;,
+  }
 }
 </code></pre>
-<p>This lets repositories build dialect-agnostic SQL strings. The same SQL template works on both Postgres (<code>$1, $2, $3</code>) and SQLite (<code>?, ?, ?</code>).</p>
-<p><strong>Source:</strong> <code>server/db/client.ts</code>.</p>
-<h3>Content Storage</h3>
-<p>All content lives in two tables:</p>
-<table><tr><th>Table</th><th>Purpose</th></tr><tr><td>`data_tables`</td><td>Table definitions (posts, pages, components, layouts, plus user-created tables)</td></tr><tr><td>`data_rows`</td><td>Row data for all tables</td></tr></table>
-<p><strong>Aha:</strong> There are no separate <code>pages</code> or <code>page_versions</code> tables. The four system tables (<code>posts</code>, <code>pages</code>, <code>components</code>, <code>layouts</code>) are seeded and locked from rename/delete. Versioning is handled through <code>data_row_versions</code> with <code>site_snapshot_id</code> references — each publish stores the <code>SiteDocument</code> once in <code>site_snapshots</code>, and page versions reference it.</p>
-<p><strong>Source:</strong> <code>docs/features/content-storage.md</code>, <code>docs/reference/database-dialects.md</code>.</p>
-<h2>Folder Structure</h2>
-<pre><code class="language-">server/                  Bun server: router, handlers, repositories, plugin runtime, DB
-src/admin/               Admin app shell (auth, navigation, workspaces, plugin host UI)
-src/admin/pages/site/    Visual editor (canvas, panels, toolbar, store)
-src/core/                Engine: page tree, publisher, plugin SDK + runtime, persistence
-src/modules/             First-party block modules (container, text, image, button, …)
-src/ui/                  Shared UI primitives (Button, Input, Tree, icons, cn helper)
-src/styles/              Global tokens (globals.css)
-src/__tests__/architecture/   Gate tests enforcing structural rules
-tests/                   Playwright E2E specs (*.e2e.ts)
-docs/                    Documentation tree
-examples/                Plugin templates, type declarations
-vendor/                  Vendored pixel-art-icons package
-scripts/                 Build, dev, icon sync, benchmark, audit scripts
+<p>Aha: In production, the admin shell is same-origin behind Caddy — no CORS headers needed. In dev, only explicitly allowlisted origins get CORS. If an origin isn't on the list, the response gets empty headers — the browser blocks cross-origin reads naturally. This avoids echoing arbitrary origins (a classic broken-CORS bug shape).</p>
+<h2>The 19-Route Dispatcher</h2>
+<p>Source: <code>server/router.ts</code></p>
+<pre><code class="language-typescript">type RouteHandler = (
+  req: Request,
+  runtime: ServerRuntime,
+  url: URL,
+  pathname: string,
+) =&gt; Promise&lt;Response | null&gt; | Response | null
+
+const routes: readonly RouteHandler[] = [
+  tryServeHealth,                    // 1. /health
+  tryServeAi,                        // 2. /admin/api/ai/*
+  tryServeCmsApi,                    // 3. /admin/api/*
+  tryServeLoopRuntimeAsset,          // 4. /_instatic/runtime/loop/*
+  tryServeLoop,                      // 5. Loop page rendering
+  tryServeHoleRuntimeAsset,          // 6. /_instatic/runtime/hole/*
+  tryServeHole,                      // 7. Lazy-fetch hole pages
+  tryServeModuleJsAsset,             // 8. /_instatic/runtime/module/*.js
+  tryServePublicForm,                // 9. Public form submissions
+  tryServeRuntimeAsset,              // 10. /_instatic/runtime/* (JS/CSS bundles)
+  tryServeRuntimePackageNamespace,   // 11. /_instatic/runtime/cache/*
+  tryServeSiteCssNamespace,          // 12. /_instatic/css/*
+  tryServeMediaRedirect,             // 13. Media file redirects
+  tryServeStaticAsset,               // 14. Static baked pages
+  tryServeUpload,                    // 15. /_instatic/uploads/*
+  tryServeAdminApp,                  // 16. /admin/* (React SPA)
+  tryServePublicRoute,               // 17. Public site routes
+  trySetupRedirect,                  // 18. Redirect to /setup if no site
+  tryServeNotFoundPage,              // 19. 404 page
+]
+
+export async function handleServerRequest(req: Request, runtime: ServerRuntime): Promise&lt;Response&gt; {
+  const url = new URL(req.url)
+  const { pathname } = url
+
+  for (const route of routes) {
+    const response = await route(req, runtime, url, pathname)
+    if (response) return response
+  }
+
+  return jsonResponse({ error: &#x27;Not found&#x27; }, { status: 404 })
+}
 </code></pre>
-<p><strong>Source:</strong> <code>docs/architecture.md</code> "Folders, at a glance".</p>
-<h2>Next</h2>
-<p>Continue to <a href="02-server.md">02-server</a> for a deep dive into the hand-written router, CMS handlers, and repository layer.</p>
+<p>Aha: Routes return <code>Response | null</code>. <code>null</code> means "I don't own this request, try the next route." Prefix-namespaced handlers (e.g., <code>/_instatic/css/</code>) absorb their entire namespace and emit a 404 themselves rather than falling through — so unknown paths under a known prefix can't accidentally match a later route. This is a "longest prefix wins" pattern implemented via explicit ownership.</p>
+<h3>Route Contract</h3>
+<pre><code class="language-typescript">// Each handler checks its own method/path:
+function tryServeHealth(_req, _runtime, _url, pathname): Response | null {
+  if (pathname !== &#x27;/health&#x27;) return null
+  return jsonResponse({ status: &#x27;ok&#x27;, ts: Date.now() })
+}
+</code></pre>
+<p>No framework routing — just a <code>for</code> loop over functions. Adding a new endpoint is a one-line edit to the <code>routes</code> array plus a focused <code>tryServeX</code> function.</p>
+<h2>Database Layer</h2>
+<p>Source: <code>server/db/</code></p>
+<pre><code class="language-typescript">interface ServerConfig {
+  port: number
+  databaseUrl: string          // postgres://... or file:sqlite.db
+  uploadsDir: string
+  staticDir: string
+  trustedProxyCidrs: string[]
+  publicOrigins: string[]
+}
+
+function createDbClient(databaseUrl: string): { db: DbClient; migrations: Migration[] }
+</code></pre>
+<p>The same codebase runs against Postgres or SQLite — selected entirely by <code>DATABASE_URL</code>.</p>
+<h2>Public Origin Resolution</h2>
+<p>Source: <code>server/config.ts</code></p>
+<pre><code class="language-typescript">export function resolvePublicOrigins(env): string[] {
+  // Priority 1: Explicit PUBLIC_ORIGIN env var
+  const explicit = readCsvList(env.PUBLIC_ORIGIN)
+  if (explicit.length &gt; 0) return normalizeOrigins(explicit)
+
+  // Priority 2: Platform auto-detection
+  const derived: string[] = []
+  if (env.RENDER_EXTERNAL_URL) derived.push(env.RENDER_EXTERNAL_URL)
+  if (env.RAILWAY_PUBLIC_DOMAIN) derived.push(`https://${env.RAILWAY_PUBLIC_DOMAIN}`)
+  return normalizeOrigins(derived)
+
+  // Priority 3: [] → CSRF falls back to Host header
+}
+</code></pre>
+<p>Normalization uses <code>new URL()</code> — no regex, no <code>as</code> casts. Scheme and host lowercased, path/query/fragment stripped.</p>
+<h2>ServerRuntime Interface</h2>
+<pre><code class="language-typescript">interface ServerRuntime {
+  db: DbClient
+  staticDir?: string
+  uploadsDir?: string
+  databaseUrl?: string  // Forwarded to CMS handlers for on-disk SQLite resolution
+}
+</code></pre>
+<p>Passed to every route handler — the single source of server-wide state.</p>
+<h2>Package Structure</h2>
+<pre><code class="language-">Instatic/
+├── server/                     # Bun server (hand-written router)
+│   ├── index.ts               # Boot sequence, Bun.serve()
+│   ├── router.ts              # 19-route dispatcher
+│   ├── config.ts              # Server config, origin resolution
+│   ├── binary.ts              # Binary response helpers
+│   ├── static.ts              # Static file serving, uploads
+│   ├── http.ts                # JSON response helpers
+│   ├── time.ts                # Time utilities
+│   ├── types.ts               # Server types
+│   ├── ai/                    # AI runtime (providers, drivers, tools)
+│   ├── auth/                  # Auth, security, CSRF
+│   ├── db/                    # Database client, migrations
+│   ├── handlers/              # CMS handlers
+│   ├── plugins/               # Plugin runtime
+│   ├── publish/               # Publishing pipeline
+│   ├── repositories/          # Data access layer
+│   ├── secrets/               # Secret management
+│   └── util/                  # Server utilities
+├── src/
+│   ├── core/                  # 301 files: data models, schemas, utilities
+│   ├── admin/                 # 752 files: React admin UI
+│   ├── modules/               # 59 files: CMS module definitions
+│   ├── ui/                    # 105 files: Shared UI components
+│   └── styles/                # CSS
+└── vendor/                    # Vendored dependencies
+</code></pre>
+<h2>Cross-References</h2>
+<ul><li><a href="00-overview.md">Overview</a> — What Instatic is</li><li><a href="02-server.md">Server</a> — Hand-written router, handlers, repositories</li><li><a href="03-publisher.md">Publisher</a> — Three-layer publishing pipeline</li></ul>
+<p><a href="02-server.md">Next → Server</a></p>
   </article>
   <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
 </body>
