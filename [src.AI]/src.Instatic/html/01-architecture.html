@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Instatic Architecture -- src.Instatic</title>
+  <title>Instatic Core Engine — NodeTree, Publisher, Module Engine, Plugin SDK -- src.Instatic</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
   <script>
@@ -124,201 +124,211 @@
   <nav class="nav">
     <span class="nav-brand">~/src.Instatic/docs</span>
     <div class="nav-actions">
-      <a href="00-overview.html" class="nav-breadcrumb">What Is src.Instatic?</a>
+      <a href="00-overview.html" class="nav-breadcrumb">Instatic — Self-Hosted CMS with Visual Editor in a Single Bun Process</a>
       <a href="index.html" class="nav-btn" title="Back to index">index</a>
-      <a href="00-overview.html" class="nav-btn" title="Previous: What Is src.Instatic?">← prev</a>
+      <a href="00-overview.html" class="nav-btn" title="Previous: Instatic — Self-Hosted CMS with Visual Editor in a Single Bun Process">← prev</a>
       <a href="02-server.html" class="nav-btn nav-btn-next" title="Next: Server: Hand-Written Router and Handlers">next →</a>
       <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
     </div>
   </nav>
   <article class="prose">
-<h1>Instatic Architecture</h1>
-<p>Instatic is a self-hosted CMS running as a single Bun process with two off-main-thread workers, a hand-written 19-route dispatcher, and dual-engine database support (Postgres or SQLite).</p>
-<p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Instatic/Instatic/</code></p>
-<h2>Boot Sequence</h2>
-<p>Source: <code>server/index.ts</code></p>
-<pre><code class="language-typescript">await import(&#x27;./richtextSanitizer&#x27;)  // Side-effect: initializes sanitizer
-const { handleServerRequest } = await import(&#x27;./router&#x27;)
-const { activateInstalledServerPlugins } = await import(&#x27;./plugins/runtime&#x27;)
-const { mediaStorageRegistry } = await import(&#x27;@core/plugins/mediaStorageRegistry&#x27;)
-
-const config = readServerConfig()
-configureTrustedProxyCidrs(config.trustedProxyCidrs)
-configurePublicOrigins(config.publicOrigins)
-
-const { db, migrations } = createDbClient(config.databaseUrl)
-await runMigrations(db, migrations)
-await syncSystemRoles(db)                    // Force-reset Owner capabilities
-mediaStorageRegistry.configureLocalDisk({ uploadsDir: config.uploadsDir })
-await activateInstalledServerPlugins(db, config.uploadsDir)
-startConversationPurgeTick(db)               // Nightly AI conversation cleanup
+<h1>Instatic Core Engine — NodeTree, Publisher, Module Engine</h1>
+<p><strong>The <code>src/core/</code> directory (36 subdirectories) contains all host-independent logic.</strong> It defines the universal tree type (<code>NodeTree<T></code>), the 3-layer publishing pipeline (disk → LRU → server islands), the module block system (18 built-in blocks + registry), the Plugin SDK (23 capabilities, QuickJS sandbox), visual components (VCs with slot outlets), the CSS framework (fluid typography, token generation), and data validation (TypeBox throughout). None of these modules import from <code>server/</code> or <code>src/admin/</code> — they are pure engine code.</p>
+<p>Source: <code>src/core/</code> — 36 subdirectories</p>
+<h2>NodeTree — The Universal Tree Primitive</h2>
+<pre><code class="language-typescript">// src/core/page-tree/treeSchema.ts
+type NodeTree&lt;TNode&gt; = {
+  nodes: Record&lt;string, TNode&gt;    // Flat map for O(1) lookup
+  rootNodeId: string              // Entry point for traversal
+}
 </code></pre>
-<p>Aha: The top-level <code>await import()</code> pattern is used to load modules sequentially rather than at the top of the file. This ensures side-effectful initialization (richtext sanitizer) happens before the server starts accepting requests. The <code>handleServerRequest</code> import is deferred until after migrations run — if migrations fail, the server never starts.</p>
-<h2>Server Bootstrap</h2>
-<pre><code class="language-typescript">Bun.serve({
-  port: config.port,
-  idleTimeout: 0,  // Disable 10s default — agent streams NDJSON for minutes
-
-  async fetch(req: Request, server: Bun.Server) {
-    const origin = req.headers.get(&#x27;origin&#x27;)
-    const cors = corsHeaders(origin)
-
-    // Stamp real client IP from socket (strips spoofed X-Forwarded-For)
-    stampSocketIp(req, server.requestIP(req)?.address ?? null)
-
-    if (req.method === &#x27;OPTIONS&#x27;) {
-      return new Response(null, { status: 204, headers: cors })
-    }
-
-    try {
-      const res = await handleServerRequest(req, { db, ... })
-      for (const [k, v] of Object.entries(cors)) res.headers.set(k, v)
-      return res
-    } catch (err) {
-      // Never echo err.message — could leak internal state
-      return new Response(&#x27;Internal server error&#x27;, { status: 500 })
-    }
-  },
-})
+<p><strong>Aha:</strong> The flat map + root ID pattern means node lookup is O(1) regardless of tree depth. There's no recursive <code>children</code> array — parent-child relationships are maintained via <code>parentId</code> on each node. This makes mutations simple: <code>deleteNode</code> removes the node from the flat map and updates the parent's child list; <code>moveNode</code> changes the <code>parentId</code> — no tree rebalancing, no deep cloning.</p>
+<h3>PageNode</h3>
+<pre><code class="language-typescript">// src/core/page-tree/pageNode.ts — extends BaseNode
+interface PageNode extends BaseNode {
+  parentId: string | null
+  childrenIds: string[]
+  breakpointOverrides: Record&lt;BreakpointId, Partial&lt;PageNode&gt;&gt;
+  dynamicBindings: DynamicBinding[]
+  classIds: string[]
+  inlineStyles: Record&lt;string, string&gt;
+  hidden: boolean
+  locked: boolean
+}
 </code></pre>
-<h3>idleTimeout: 0</h3>
-<p>Aha: The default Bun idle timeout is 10 seconds. The AI agent endpoint streams NDJSON for as long as Claude's tool loop is running — "thinking" gaps between tool calls regularly exceed 10s on multi-step builds. Without <code>idleTimeout: 0</code>, the streaming response would be killed mid-flight, leaving the bridge resolver hanging server-side.</p>
-<h2>CORS — Allowlist-Only</h2>
-<pre><code class="language-typescript">function corsHeaders(origin: string | null): Record&lt;string, string&gt; {
-  if (!origin || !DEV_ORIGIN_ALLOWLIST.includes(origin)) return {}
-  return {
-    &#x27;Access-Control-Allow-Origin&#x27;: origin,
-    &#x27;Access-Control-Allow-Credentials&#x27;: &#x27;true&#x27;,
-    &#x27;Access-Control-Allow-Methods&#x27;: &#x27;GET, POST, PUT, PATCH, DELETE, OPTIONS&#x27;,
-    &#x27;Access-Control-Allow-Headers&#x27;: &#x27;Content-Type&#x27;,
-    &#x27;Vary&#x27;: &#x27;Origin&#x27;,
+<h3>11 Pure Mutations</h3>
+<pre><code class="language-typescript">// src/core/page-tree/mutations.ts
+// All mutations are pure functions: (NodeTree&lt;PageNode&gt;, ...args) → NodeTree&lt;PageNode&gt;
+// Same functions work for pages AND visual components
+function insertNode(tree, parentId, node, index): NodeTree&lt;PageNode&gt;
+function deleteNode(tree, nodeId): NodeTree&lt;PageNode&gt;
+function moveNode(tree, nodeId, newParentId, index): NodeTree&lt;PageNode&gt;
+function duplicateNode(tree, nodeId): NodeTree&lt;PageNode&gt;
+function wrapNode(tree, nodeId, wrapperModuleId): NodeTree&lt;PageNode&gt;
+function updateNodeProps(tree, nodeId, props): NodeTree&lt;PageNode&gt;
+function setBreakpointOverride(tree, nodeId, breakpointId, overrides): NodeTree&lt;PageNode&gt;
+function clearBreakpointOverride(tree, nodeId, breakpointId): NodeTree&lt;PageNode&gt;
+function renameNode(tree, nodeId, name): NodeTree&lt;PageNode&gt;
+function toggleNodeLocked(tree, nodeId): NodeTree&lt;PageNode&gt;
+function toggleNodeHidden(tree, nodeId): NodeTree&lt;PageNode&gt;
+</code></pre>
+<p><strong>Aha:</strong> Mutations route through <code>mutateActiveTree(fn)</code> in the editor store — the ONLY place that branches on whether the editor is in page mode or VC mode. The mutations themselves are mode-agnostic.</p>
+<h2>The 3-Layer Publishing Pipeline</h2>
+<div class="mermaid">
+flowchart TD
+    Request[&quot;HTTP GET /some-page&quot;] --&gt; LayerA{&quot;Layer A: Disk&lt;br/&gt;static artifact exists?&quot;}
+    LayerA --&gt;|&quot;yes&quot;| ServeStatic[&quot;Serve from disk&lt;br/&gt;atomic symlink swap&quot;]
+    LayerA --&gt;|&quot;no&quot;| LayerB{&quot;Layer B: LRU Cache&lt;br/&gt;entry for (path, query, version)?&quot;}
+
+    LayerB --&gt;|&quot;yes + fresh&quot;| ServeCache[&quot;Serve from memory&quot;]
+    LayerB --&gt;|&quot;no or stale&quot;| Render[&quot;renderNode() → full HTML&quot;]
+
+    Render --&gt; DynamicCheck{&quot;findDynamicNodeIds()&lt;br/&gt;any dynamic nodes?&quot;}
+    DynamicCheck --&gt;|&quot;yes&quot;| InjectHoles[&quot;Replace dynamic nodes&lt;br/&gt;with &lt;instatic-hole&gt; placeholders&quot;]
+    DynamicCheck --&gt;|&quot;no&quot;| CacheFull[&quot;Cache full HTML in LRU&quot;]
+
+    InjectHoles --&gt; ServePage[&quot;Serve page with holes&quot;]
+    ServePage --&gt; HoleRuntime[&quot;668B IntersectionObserver&lt;br/&gt;lazy-loads each hole on viewport entry&lt;br/&gt;GET /_instatic/hole/&lt;nodeId&gt;&quot;]
+
+    CacheFull --&gt; ServePage
+
+</div>
+<h3>Layer A: Static Artifact Swap</h3>
+<pre><code class="language-typescript">// server/publish/staticArtefact.ts
+// Atomic publish via dual-slot symlink swap:
+// 1. Write new HTML to inactive slot (current/ or staging/)
+// 2. Atomically swap symlink
+// 3. Old slot becomes the next staging target
+</code></pre>
+<h3>Layer B: LRU Cache</h3>
+<pre><code class="language-typescript">// server/publish/renderCache.ts
+// Key: (urlPath, queryString, publishVersion)
+// LRU eviction, single-flight (dedup concurrent renders for same key)
+// publishVersion bump invalidates all entries
+// canonicalRenderQuery() filters junk params, keeps loop_&lt;nodeId&gt;_page
+</code></pre>
+<h3>Layer C: Server Islands (Holes)</h3>
+<pre><code class="language-typescript">// server/publish/holeRuntime.ts — 668B runtime
+// 1. Find all &lt;instatic-hole&gt; elements
+// 2. IntersectionObserver triggers lazy load on viewport entry
+// 3. Fetch GET /_instatic/hole/&lt;nodeId&gt;?v=&lt;publishVersion&gt;
+// 4. Replace hole with fetched HTML
+</code></pre>
+<h3>findDynamicNodeIds — 4 Rules + Pre-Scan</h3>
+<pre><code class="language-typescript">// src/core/publisher/dynamicDetection.ts
+function findDynamicNodeIds(page, site, registry): Set&lt;string&gt; {
+  // Rule 1: Module is marked dynamic: true
+  // Rule 2: Node has dynamicBindings with request-dependent source (route.query.*)
+  // Rule 2b: String prop value contains {source.field} markers
+  // Rule 3: Node is base.loop with requestDependent: true source
+  // Rule 3.5 (pre-scan): Static loop whose children contain dynamic nodes
+  //   → whole loop upgrades to hole, child IDs suppressed
+  // Rule 4: VC reference whose definition tree contains any dynamic node
+  //   (recursive, cycle-guarded via seenVcs Set)
+}
+</code></pre>
+<h2>Module Engine — Block Rendering</h2>
+<pre><code class="language-typescript">// src/core/module-engine/
+interface AnyModuleDefinition {
+  id: string                       // &quot;base.container&quot;, &quot;base.image&quot;
+  schema: Record&lt;string, PropertyControl&gt;  // TypeBox-backed property controls
+  render(props, childrenHTML: string[]): RenderOutput
+  publishBehavior?: &#x27;standard&#x27; | &#x27;special&#x27;  // &#x27;special&#x27; bypasses standard rendering
+  dynamic?: boolean                 // Dynamic detection Rule 1
+  staticPlaceholder?(props): string  // Fallback content for holes
+}
+
+interface RenderOutput {
+  html: string
+  css?: string
+  js?: string
+}
+</code></pre>
+<h3>publishPage — The Main Entry Point</h3>
+<pre><code class="language-typescript">// src/core/publisher/render.ts
+function publishPage(
+  page: Page,
+  site: SiteDocument,
+  registry: IModuleRegistry,
+  options?: PublishPageOptions
+): PublishedPage {
+  // { filename, html, jsModuleIds }
+}
+</code></pre>
+<h3>renderNode — The Core Render Function</h3>
+<pre><code class="language-typescript">// src/core/publisher/renderNode.ts — conceptual
+function renderNode(node, site, registry, ctx): string {
+  if (node.hidden) return &#x27;&#x27;
+  if (ctx.dynamicNodeIds.has(node.id)) {
+    return `&lt;instatic-hole node-id=&quot;${node.id}&quot;&gt;&lt;/instatic-hole&gt;`
   }
+  if (node.moduleId === &#x27;base.visual-component-ref&#x27;) return renderVCRef(node, ...)
+  if (node.moduleId === &#x27;base.loop&#x27;) return renderLoop(node, ...)
+
+  // Standard node: bottom-up
+  const childrenHTML = node.childrenIds.map(id =&gt; renderNode(tree.nodes[id], ...))
+  const resolvedProps = resolveDynamicProps(node.props, ctx.bindings)
+  const escapedProps = escapeProps(resolvedProps)
+  const output = registry.get(node.moduleId).render(escapedProps, childrenHTML)
+  // Collect deduped CSS by moduleId
+  // Inject author CSS classes
+  // Inject uid attribute if annotateNodeIds
+  return output.html
 }
 </code></pre>
-<p>Aha: In production, the admin shell is same-origin behind Caddy — no CORS headers needed. In dev, only explicitly allowlisted origins get CORS. If an origin isn't on the list, the response gets empty headers — the browser blocks cross-origin reads naturally. This avoids echoing arbitrary origins (a classic broken-CORS bug shape).</p>
-<h2>The 19-Route Dispatcher</h2>
-<p>Source: <code>server/router.ts</code></p>
-<pre><code class="language-typescript">type RouteHandler = (
-  req: Request,
-  runtime: ServerRuntime,
-  url: URL,
-  pathname: string,
-) =&gt; Promise&lt;Response | null&gt; | Response | null
-
-const routes: readonly RouteHandler[] = [
-  tryServeHealth,                    // 1. /health
-  tryServeAi,                        // 2. /admin/api/ai/*
-  tryServeCmsApi,                    // 3. /admin/api/*
-  tryServeLoopRuntimeAsset,          // 4. /_instatic/runtime/loop/*
-  tryServeLoop,                      // 5. Loop page rendering
-  tryServeHoleRuntimeAsset,          // 6. /_instatic/runtime/hole/*
-  tryServeHole,                      // 7. Lazy-fetch hole pages
-  tryServeModuleJsAsset,             // 8. /_instatic/runtime/module/*.js
-  tryServePublicForm,                // 9. Public form submissions
-  tryServeRuntimeAsset,              // 10. /_instatic/runtime/* (JS/CSS bundles)
-  tryServeRuntimePackageNamespace,   // 11. /_instatic/runtime/cache/*
-  tryServeSiteCssNamespace,          // 12. /_instatic/css/*
-  tryServeMediaRedirect,             // 13. Media file redirects
-  tryServeStaticAsset,               // 14. Static baked pages
-  tryServeUpload,                    // 15. /_instatic/uploads/*
-  tryServeAdminApp,                  // 16. /admin/* (React SPA)
-  tryServePublicRoute,               // 17. Public site routes
-  trySetupRedirect,                  // 18. Redirect to /setup if no site
-  tryServeNotFoundPage,              // 19. 404 page
-]
-
-export async function handleServerRequest(req: Request, runtime: ServerRuntime): Promise&lt;Response&gt; {
-  const url = new URL(req.url)
-  const { pathname } = url
-
-  for (const route of routes) {
-    const response = await route(req, runtime, url, pathname)
-    if (response) return response
+<h3>CSS Concatenation Order</h3>
+<pre><code class="language-">1. reset.css
+2. framework.css  (tokens + generated utilities + module CSS)
+3. style.css      (class registry)
+4. userStyles.css (user-defined — last, highest specificity)
+</code></pre>
+<h2>Plugin System — QuickJS-WASM Sandbox</h2>
+<pre><code class="language-typescript">// server/plugins/quickjs/vm.ts
+const DISPATCHER_NAMES = [
+  &#x27;__runLifecycle&#x27;, &#x27;__runMigrate&#x27;, &#x27;__runRoute&#x27;,
+  &#x27;__runHookListener&#x27;, &#x27;__runHookFilter&#x27;, &#x27;__runLoopFetch&#x27;,
+  &#x27;__runLoopPreview&#x27;, &#x27;__runSchedule&#x27;, &#x27;__updateSettings&#x27;,
+  &#x27;__runMediaAdapterCall&#x27;, &#x27;__runMediaUrlTransformer&#x27;,
+] as const
+</code></pre>
+<h3>23 Capabilities with Runtime Enforcement</h3>
+<pre><code class="language-typescript">// src/core/plugin-sdk/capabilities.ts
+// 23 capabilities at detail levels: dangerous, high, medium, low
+// Runtime enforces against grantedPermissions (operator-approved),
+// NEVER against the declared permissions array.
+// Network access requires networkAllowedHosts with *. wildcard support.
+</code></pre>
+<h3>Plugin Manifest</h3>
+<pre><code class="language-typescript">interface PluginManifest {
+  entrypoints: {
+    server: string    // IIFE in QuickJS-WASM sandbox
+    editor: string    // Loaded in editor iframe, editor.code permission
+    admin: string     // Admin Shell page, admin.navigation permission
+    modules: string   // Canvas module blocks, QuickJS module VM
   }
+  permissions: Capability[]
+  networkAllowedHosts?: string[]
+  dataTables?: string[]  // Content tables this plugin can access
+}
+</code></pre>
+<h2>Data Model — Two Universal Tables</h2>
+<pre><code class="language-">data_tables  — user-defined collections with kind (postType, page, component)
+               System tables (posts, pages, components, layouts) seeded by baseline migration
+               Locked against rename/delete
 
-  return jsonResponse({ error: &#x27;Not found&#x27; }, { status: 404 })
-}
+data_rows    — rows with cells typed by data_tables schema
+               Page rows have body (pageTree type)
+               Component rows have tree (pageTree) + params (fieldSchema)
+               No separate pages/components tables — everything is uniform
 </code></pre>
-<p>Aha: Routes return <code>Response | null</code>. <code>null</code> means "I don't own this request, try the next route." Prefix-namespaced handlers (e.g., <code>/_instatic/css/</code>) absorb their entire namespace and emit a 404 themselves rather than falling through — so unknown paths under a known prefix can't accidentally match a later route. This is a "longest prefix wins" pattern implemented via explicit ownership.</p>
-<h3>Route Contract</h3>
-<pre><code class="language-typescript">// Each handler checks its own method/path:
-function tryServeHealth(_req, _runtime, _url, pathname): Response | null {
-  if (pathname !== &#x27;/health&#x27;) return null
-  return jsonResponse({ status: &#x27;ok&#x27;, ts: Date.now() })
-}
-</code></pre>
-<p>No framework routing — just a <code>for</code> loop over functions. Adding a new endpoint is a one-line edit to the <code>routes</code> array plus a focused <code>tryServeX</code> function.</p>
-<h2>Database Layer</h2>
-<p>Source: <code>server/db/</code></p>
-<pre><code class="language-typescript">interface ServerConfig {
-  port: number
-  databaseUrl: string          // postgres://... or file:sqlite.db
-  uploadsDir: string
-  staticDir: string
-  trustedProxyCidrs: string[]
-  publicOrigins: string[]
-}
-
-function createDbClient(databaseUrl: string): { db: DbClient; migrations: Migration[] }
-</code></pre>
-<p>The same codebase runs against Postgres or SQLite — selected entirely by <code>DATABASE_URL</code>.</p>
-<h2>Public Origin Resolution</h2>
-<p>Source: <code>server/config.ts</code></p>
-<pre><code class="language-typescript">export function resolvePublicOrigins(env): string[] {
-  // Priority 1: Explicit PUBLIC_ORIGIN env var
-  const explicit = readCsvList(env.PUBLIC_ORIGIN)
-  if (explicit.length &gt; 0) return normalizeOrigins(explicit)
-
-  // Priority 2: Platform auto-detection
-  const derived: string[] = []
-  if (env.RENDER_EXTERNAL_URL) derived.push(env.RENDER_EXTERNAL_URL)
-  if (env.RAILWAY_PUBLIC_DOMAIN) derived.push(`https://${env.RAILWAY_PUBLIC_DOMAIN}`)
-  return normalizeOrigins(derived)
-
-  // Priority 3: [] → CSRF falls back to Host header
-}
-</code></pre>
-<p>Normalization uses <code>new URL()</code> — no regex, no <code>as</code> casts. Scheme and host lowercased, path/query/fragment stripped.</p>
-<h2>ServerRuntime Interface</h2>
-<pre><code class="language-typescript">interface ServerRuntime {
-  db: DbClient
-  staticDir?: string
-  uploadsDir?: string
-  databaseUrl?: string  // Forwarded to CMS handlers for on-disk SQLite resolution
-}
-</code></pre>
-<p>Passed to every route handler — the single source of server-wide state.</p>
-<h2>Package Structure</h2>
-<pre><code class="language-">Instatic/
-├── server/                     # Bun server (hand-written router)
-│   ├── index.ts               # Boot sequence, Bun.serve()
-│   ├── router.ts              # 19-route dispatcher
-│   ├── config.ts              # Server config, origin resolution
-│   ├── binary.ts              # Binary response helpers
-│   ├── static.ts              # Static file serving, uploads
-│   ├── http.ts                # JSON response helpers
-│   ├── time.ts                # Time utilities
-│   ├── types.ts               # Server types
-│   ├── ai/                    # AI runtime (providers, drivers, tools)
-│   ├── auth/                  # Auth, security, CSRF
-│   ├── db/                    # Database client, migrations
-│   ├── handlers/              # CMS handlers
-│   ├── plugins/               # Plugin runtime
-│   ├── publish/               # Publishing pipeline
-│   ├── repositories/          # Data access layer
-│   ├── secrets/               # Secret management
-│   └── util/                  # Server utilities
-├── src/
-│   ├── core/                  # 301 files: data models, schemas, utilities
-│   ├── admin/                 # 752 files: React admin UI
-│   ├── modules/               # 59 files: CMS module definitions
-│   ├── ui/                    # 105 files: Shared UI components
-│   └── styles/                # CSS
-└── vendor/                    # Vendored dependencies
-</code></pre>
+<p><strong>Aha:</strong> JSON columns MUST be named <code>*_json</code>. The SQLite adapter auto-parses these on read and auto-stringifies on write. This convention is enforced by <code>db-json-column-naming.test.ts</code>.</p>
+<h2>Visual Components — Slot System</h2>
+<p>Visual Components have a definition tree and a parameter schema. When a <code>base.visual-component-ref</code> is dropped on a page, <code>syncSlotInstances</code> auto-generates <code>base.slot-instance</code> children for each <code>base.slot-outlet</code> in the VC definition. Slot fills live as materialized children in the consumer page tree — there's no separate slot content tree.</p>
+<p>The publisher pairs each <code>base.slot-instance</code> (consumer fill) with its matching <code>base.slot-outlet</code> (VC definition position) by <code>slotName</code>. If the VC definition tree contains any dynamic node, the entire VC reference boundary upgrades to <code><instatic-hole></code>.</p>
 <h2>Cross-References</h2>
-<ul><li><a href="00-overview.md">Overview</a> — What Instatic is</li><li><a href="02-server.md">Server</a> — Hand-written router, handlers, repositories</li><li><a href="03-publisher.md">Publisher</a> — Three-layer publishing pipeline</li></ul>
-<p><a href="02-server.md">Next → Server</a></p>
+<ul><li><a href="03-publisher.md">Publisher</a> — Deep dive into all 3 publishing layers</li><li><a href="06-ai-runtime.md">AI Runtime</a> — HTTP-only LLM drivers with shared tool loop</li><li><a href="04-plugin-system.md">Plugin System</a> — QuickJS sandbox, RPC protocol, bootstrap</li></ul>
+<h2>Next</h2>
+<p>→ <a href="03-publisher.md">Publisher</a> — The full publishing pipeline: disk artifacts, LRU cache, hole runtime.</p>
   </article>
   <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
 </body>

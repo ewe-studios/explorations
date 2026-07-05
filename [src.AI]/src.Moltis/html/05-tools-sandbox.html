@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Tools and Sandboxing: How Tool Execution Works -- src.Moltis</title>
+  <title>Moltis Tools & Sandbox — 30+ Tools with 6-Layer Policy Engine -- src.Moltis</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
   <script>
@@ -124,7 +124,7 @@
   <nav class="nav">
     <span class="nav-brand">~/src.Moltis/docs</span>
     <div class="nav-actions">
-      <a href="03-gateway-deep.html" class="nav-breadcrumb">Moltis Deep Dive: Voice, Channels, Agents, Providers, Native Apps</a><a href="04-channels.html" class="nav-breadcrumb">Channels: How Messages Flow In and Out</a><a href="05-agents-deep.html" class="nav-breadcrumb">Voice Pipeline: STT → Agent → TTS</a>
+      <a href="04-channels.html" class="nav-breadcrumb">Channels: How Messages Flow In and Out</a><a href="04-providers.html" class="nav-breadcrumb">Moltis Providers — LLM Backend Registry, Model Discovery, Local LLM Support</a><a href="05-agents-deep.html" class="nav-breadcrumb">Voice Pipeline: STT → Agent → TTS</a>
       <a href="index.html" class="nav-btn" title="Back to index">index</a>
       <a href="05-agents-deep.html" class="nav-btn" title="Previous: Voice Pipeline: STT → Agent → TTS">← prev</a>
       <a href="06-memory.html" class="nav-btn nav-btn-next" title="Next: Memory: Markdown Files → Chunks → Embeddings → SQLite Search">next →</a>
@@ -132,253 +132,96 @@
     </div>
   </nav>
   <article class="prose">
-<h1>Tools and Sandboxing: How Tool Execution Works</h1>
-<p>This document explains how Moltis executes tools: the tool registry, individual tool implementations, sandbox routing, and WASM tools.</p>
-<p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/crates/tools/src/</code></p>
-<hr>
-<h2>Tool Execution Flow</h2>
-<pre><code class="language-">Agent loop calls tool.execute(args)
-    ↓
-ToolDispatcher.dispatch(tool_name, args)
-    ↓
-1. Schema validation (pre-dispatch)
-2. BeforeToolCall hook (can block/modify)
-3. tool.execute(args)
-    ↓
-SandboxRouter.route(session_key)
-    ↓
-Backend: Docker | Podman | Apple Container | WASM | Vercel | Daytona | Firecracker
-    ↓
-Command execution → stdout, stderr, exit_code
-    ↓
-AfterToolCall hook
-    ↓
-Result returned to agent loop
-</code></pre>
-<hr>
-<h2>ToolRegistry</h2>
-<p><strong>Source:</strong> <code>tool_registry.rs</code></p>
-<pre><code class="language-rust">pub struct ToolRegistry {
-    tools: HashMap&lt;String, Box&lt;dyn AgentTool&gt;&gt;,
+<h1>Moltis Tools & Sandbox — 30+ Tools with Multi-Layered Policy</h1>
+<p><strong>The tools crate (90 files, 53K LOC) implements 30+ agent tools with a 6-layer policy engine that evaluates allow/deny at global, provider, agent, group, sender, and sandbox levels.</strong> Each layer can only RESTRICT permissions — no layer can grant more access than the layers above it. Execution backends include native process spawning, Docker containers, Firecracker microVMs, Apple sandbox, WASM (wasmtime component model), and Vercel edge functions.</p>
+<p>Source: <code>crates/tools/src/</code> — 90 files, 52,957 LOC</p>
+<h2>Tool Catalog</h2>
+<div class="mermaid">
+flowchart TD
+    subgraph Core[&quot;Core Tools&quot;]
+        Exec[&quot;exec — sandboxed shell&lt;br/&gt;timeout + output-cap&quot;]
+        Browser[&quot;browser — headless Chromium&lt;br/&gt;via chromiumoxide&quot;]
+        WebFetch[&quot;web_fetch — HTTP GET&lt;br/&gt;with SSRF protection&quot;]
+        WebSearch[&quot;web_search — search queries&quot;]
+        Calc[&quot;calc — math expressions&quot;]
+    end
+    subgraph FS[&quot;Filesystem&quot;]
+        Read[&quot;Read — offset/limit&quot;]
+        Write[&quot;Write — atomic rename&quot;]
+        Edit[&quot;Edit — exact str_replace&quot;]
+        MultiEdit[&quot;MultiEdit — batch&quot;]
+        Glob[&quot;Glob — pattern search&quot;]
+        Grep[&quot;Grep — regex content&quot;]
+    end
+    subgraph Sandbox[&quot;Sandboxes&quot;]
+        Host[&quot;Host — native process&quot;]
+        Docker[&quot;Docker container&quot;]
+        Firecracker[&quot;Firecracker microVM&quot;]
+        Apple[&quot;Apple macOS sandbox&quot;]
+        WASM[&quot;WASM component model&quot;]
+        Vercel[&quot;Vercel edge functions&quot;]
+    end
+    subgraph Agents[&quot;Multi-Agent&quot;]
+        Spawn[&quot;spawn_agent&quot;]
+        SpawnTasks[&quot;spawn_agent_tasks&lt;br/&gt;parallel JoinSet&quot;]
+        Communicate[&quot;sessions_communicate&quot;]
+        Branch[&quot;branch_session&quot;]
+    end
+    subgraph Policy[&quot;6-Layer Policy&quot;]
+        L1[&quot;1. Global → 2. Provider → 3. Agent&lt;br/&gt;4. Group → 5. Sender → 6. Sandbox&quot;]
+    end
+
+</div>
+<h2>The 6-Layer Policy Engine</h2>
+<pre><code class="language-rust">// tools/src/policy.rs — conceptual
+pub struct PolicyEngine {
+    global: GlobalPolicy,
+    providers: HashMap&lt;ProviderId, ProviderPolicy&gt;,
+    agents: HashMap&lt;AgentId, AgentPolicy&gt;,
+    groups: HashMap&lt;GroupId, GroupPolicy&gt;,
+    senders: HashMap&lt;SenderId, SenderPolicy&gt;,
+    sandbox: SandboxLimits,
 }
 
-#[async_trait]
-pub trait AgentTool: Send + Sync {
-    fn name(&amp;self) -&gt; &amp;str;
-    fn description(&amp;self) -&gt; &amp;str;
-    fn parameters_schema(&amp;self) -&gt; serde_json::Value;
-    async fn execute(&amp;self, params: serde_json::Value) -&gt; anyhow::Result&lt;serde_json::Value&gt;;
-}
-</code></pre>
-<p>Registration:</p>
-<pre><code class="language-rust">registry.register(Box::new(ExecTool::default()
-    .with_sandbox(sandbox, id)
-    .with_approval(approval_mgr, broadcaster)
-    .with_sandbox_router(router)
-    .with_env_provider(env_provider)
-));
-</code></pre>
-<hr>
-<h2>Exec Tool: Shell Command Execution</h2>
-<p><strong>Source:</strong> <code>exec.rs</code></p>
-<h3>Core Function</h3>
-<pre><code class="language-rust">pub async fn exec_command(command: &amp;str, opts: &amp;ExecOpts) -&gt; Result&lt;ExecResult&gt; {
-    let mut cmd = Command::new(&quot;sh&quot;);
-    cmd.arg(&quot;-c&quot;).arg(command);
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-    cmd.stdin(Stdio::null());  // Child cannot read stdin
-
-    if let Some(ref dir) = opts.working_dir { cmd.current_dir(dir); }
-    for (k, v) in &amp;opts.env { cmd.env(k, v); }
-
-    let child = cmd.spawn()?;
-    let result = tokio::time::timeout(opts.timeout, child.wait_with_output()).await;
-
-    match result {
-        Ok(Ok(output)) =&gt; {
-            let mut stdout = String::from_utf8_lossy(&amp;output.stdout).into_owned();
-            let mut stderr = String::from_utf8_lossy(&amp;output.stderr).into_owned();
-            truncate_output_for_display(&amp;mut stdout, opts.max_output_bytes);
-            truncate_output_for_display(&amp;mut stderr, opts.max_output_bytes);
-            Ok(ExecResult { stdout, stderr, exit_code: output.status.code().unwrap_or(-1) })
-        },
-        Ok(Err(e)) =&gt; Err(Error::message(format!(&quot;failed to run command: {e}&quot;))),
-        Err(_) =&gt; Err(Error::message(format!(&quot;command timed out after {}s&quot;, opts.timeout.as_secs()))),
-    }
-}
-</code></pre>
-<p><strong>Security measures:</strong></p>
-<ul><li><code>stdin = null</code> — child processes cannot read from stdin</li><li>Output truncated at 200KB with <code>... [output truncated]</code> appended</li><li>Timeout enforced via <code>tokio::time::timeout</code></li></ul>
-<h3>ExecTool Builder Pattern</h3>
-<pre><code class="language-rust">pub struct ExecTool {
-    pub default_timeout: Duration,          // Default: 30 seconds
-    pub max_output_bytes: usize,            // Default: 200KB
-    pub working_dir: Option&lt;PathBuf&gt;,
-    approval_manager: Option&lt;Arc&lt;ApprovalManager&gt;&gt;,
-    broadcaster: Option&lt;Arc&lt;dyn ApprovalBroadcaster&gt;&gt;,
-    sandbox: Arc&lt;dyn Sandbox&gt;,
-    sandbox_router: Option&lt;Arc&lt;SandboxRouter&gt;&gt;,
-    env_provider: Option&lt;Arc&lt;dyn EnvVarProvider&gt;&gt;,
-    node_provider: Option&lt;Arc&lt;dyn NodeExecProvider&gt;&gt;,
-    default_node: Option&lt;String&gt;,
-}
-</code></pre>
-<h3>Node Routing</h3>
-<p>When remote nodes are connected, commands can be forwarded:</p>
-<pre><code class="language-rust">// Determine effective node reference
-let node_ref = if let Some(provider) = &amp;self.node_provider {
-    if provider.has_connected_nodes() {
-        match model_node.or_else(|| self.default_node.clone()) {
-            Some(node_ref) =&gt; Some(node_ref),   // Model-supplied or configured default
-            None =&gt; provider.default_node_ref().await,  // Use provider&#x27;s default
+impl PolicyEngine {
+    pub fn check(&amp;self, tool: &amp;str, ctx: &amp;ToolContext) -&gt; PolicyDecision {
+        // Each layer is checked in order. First Deny wins.
+        // No layer can grant more access than the layers above it.
+        if let Some(d) = self.global.check(tool, ctx)   { return Denied(d); }
+        if let Some(d) = self.providers.get(&amp;ctx.provider).and_then(|p| p.check(tool)) {
+            return Denied(d);
         }
-    } else if let Some(ref dn) = self.default_node {
-        return Err(Error::message(&quot;default node &#x27;{dn}&#x27; is configured but no nodes connected&quot;));
-    } else {
-        None  // Fall through to local execution
-    }
-} else { None };
-
-// Forward to remote node
-if let (Some(provider), Some(node_ref)) = (&amp;self.node_provider, &amp;node_ref) {
-    let node_id = provider.resolve_node_id(node_ref).await?;
-    let result = provider.exec_on_node(&amp;node_id, command, timeout_secs, cwd, None).await?;
-    return Ok(serde_json::to_value(&amp;result)?);
-}
-</code></pre>
-<p><strong>Key detail:</strong> Model-hallucinated node values are silently dropped when no nodes are connected. A configured <code>default_node</code> produces a clear error so the admin knows the intended remote host is unavailable.</p>
-<hr>
-<h2>Sandbox Routing</h2>
-<p><strong>Source:</strong> <code>sandbox.rs</code></p>
-<h3>SandboxRouter</h3>
-<pre><code class="language-rust">pub struct SandboxRouter {
-    config: SandboxConfig,
-    backends: Vec&lt;Box&lt;dyn Sandbox&gt;&gt;,
-    primary_index: usize,
-}
-
-impl SandboxRouter {
-    pub async fn route(&amp;self, session_key: &amp;str) -&gt; &amp;dyn Sandbox {
-        // Determine which backend to use for this session
-        // 1. Check agent-scoped override
-        // 2. Check session-scoped override
-        // 3. Fall back to primary backend
-    }
-
-    pub async fn is_sandboxed(&amp;self, session_key: &amp;str) -&gt; bool {
-        // Returns true if this session should run in sandbox
-    }
-
-    pub fn resolve_backend(&amp;self, session_key: &amp;str) -&gt; SandboxBackend {
-        // Returns the backend type (Docker, Podman, AppleContainer, etc.)
+        // ... layers 3-5
+        if let Some(d) = self.sandbox.check(tool, ctx)  { return Denied(d); }
+        Allowed
     }
 }
 </code></pre>
-<h3>Sandbox Trait</h3>
-<pre><code class="language-rust">#[async_trait]
-pub trait Sandbox: Send + Sync {
-    async fn execute(&amp;self, command: &amp;str, opts: ExecOpts) -&gt; Result&lt;ExecResult&gt;;
-    fn provides_fs_isolation(&amp;self) -&gt; bool;
-    async fn cleanup(&amp;self, id: &amp;SandboxId) -&gt; Result&lt;()&gt;;
+<p><strong>Aha:</strong> The policy engine is purely RESTRICTIVE. Even if agent configuration grants <code>exec</code>, the global policy can deny it. This provides defense-in-depth — a misconfigured agent can't escalate beyond what the admin allows.</p>
+<h2>Sandbox Backends</h2>
+<table><tr><th>Backend</th><th>Isolation</th><th>Latency</th><th>Use Case</th></tr><tr><td>**Host**</td><td>Process only</td><td>~1ms</td><td>Trusted code, file ops</td></tr><tr><td>**Docker**</td><td>Container</td><td>~500ms</td><td>Untrusted code, network isolation</td></tr><tr><td>**Firecracker**</td><td>microVM (KVM)</td><td>~125ms</td><td>Multi-tenant, strong isolation</td></tr><tr><td>**Apple**</td><td>macOS seatbelt</td><td>~1ms</td><td>Native macOS sandbox</td></tr><tr><td>**WASM**</td><td>wasmtime component model</td><td>~1ms</td><td>Cross-platform, deterministic</td></tr></table>
+<h3>WASM Component Model</h3>
+<p><strong>Aha:</strong> WASM tools use the component model with WIT (Wasm Interface Type) declarations. The host validates WIT at load time — a tool claiming <code>wasi:http/outgoing-handler</code> without the <code>network</code> permission is rejected before any code executes.</p>
+<h2>Agent Tools — Parallel Sub-Agent Spawning</h2>
+<pre><code class="language-rust">// tools/src/spawn_agent_tasks.rs — conceptual
+async fn execute(args: Vec&lt;SpawnTaskArgs&gt;, ctx: &amp;ToolContext) -&gt; Result&lt;String&gt; {
+    let mut joinset = JoinSet::new();
+    for task in args {
+        let tools = ctx.tool_registry.restrict(task.allowed_tools);
+        joinset.spawn(async move {
+            run_agent_loop(task.prompt, tools, task.provider).await
+        });
+    }
+    // Collect all results, merge into single response
+    let results: Vec&lt;_&gt; = joinset.join_all().await;
+    format_results(results)
 }
 </code></pre>
-<h3>Backend Types</h3>
-<table><tr><th>Backend</th><th>Platform</th><th>FS Isolation</th><th>Config</th></tr><tr><td>Docker</td><td>Linux, macOS</td><td>Yes</td><td>`docker.enabled`</td></tr><tr><td>Podman</td><td>Linux, macOS</td><td>Yes</td><td>`podman.enabled`</td></tr><tr><td>Apple Container</td><td>macOS</td><td>Yes</td><td>macOS only</td></tr><tr><td>Firecracker</td><td>Linux</td><td>Yes</td><td>`firecracker_bin` available</td></tr><tr><td>Vercel</td><td>Cloud</td><td>Yes</td><td>`vercel_token` set</td></tr><tr><td>Daytona</td><td>Cloud</td><td>Yes</td><td>`daytona_api_key` set</td></tr><tr><td>WASM</td><td>Cross-platform</td><td>Yes</td><td>`wasm.enabled`</td></tr><tr><td>RestrictedHost</td><td>Any</td><td>No</td><td>Fallback</td></tr><tr><td>Cgroup</td><td>Linux</td><td>No</td><td>Fallback</td></tr><tr><td>None</td><td>Any</td><td>No</td><td>Fallback</td></tr></table>
-<h3>Filesystem Isolation Check</h3>
-<pre><code class="language-rust">let has_container_backend = if let Some(ref router) = self.sandbox_router {
-    router.resolve_backend(session_key).await.provides_fs_isolation()
-} else {
-    self.sandbox.provides_fs_isolation()
-};
-</code></pre>
-<p>When the backend doesn't provide filesystem isolation (<code>RestrictedHost</code>, <code>Cgroup</code>, <code>None</code>), commands run directly on the host even when the session mode says "sandboxed."</p>
-<hr>
-<h2>WASM Tools</h2>
-<p><strong>Source:</strong> <code>crates/wasm-tools/</code></p>
-<h3>Calc Tool</h3>
-<p><strong>Source:</strong> <code>crates/wasm-tools/calc/</code></p>
-<pre><code class="language-rust">// Precompiled WASM calculator
-// Tool name: &quot;calc&quot;
-// Parameters: { &quot;expression&quot;: &quot;2 + 2&quot; }
-// Returns: { &quot;result&quot;: 4 }
-</code></pre>
-<h3>Web Fetch Tool</h3>
-<p><strong>Source:</strong> <code>crates/wasm-tools/web-fetch/</code></p>
-<pre><code class="language-rust">// Precompiled WASM web fetcher
-// Tool name: &quot;web_fetch&quot;
-// Parameters: { &quot;url&quot;: &quot;https://example.com&quot; }
-// Returns: { &quot;content&quot;: &quot;...&quot;, &quot;status&quot;: 200 }
-</code></pre>
-<h3>Web Search Tool</h3>
-<p><strong>Source:</strong> <code>crates/wasm-tools/web-search/</code></p>
-<pre><code class="language-rust">// Precompiled WASM web searcher
-// Tool name: &quot;web_search&quot;
-// Parameters: { &quot;query&quot;: &quot;Rust programming&quot; }
-// Returns: { &quot;results&quot;: [...] }
-</code></pre>
-<hr>
-<h2>Other Tools</h2>
-<h3>File Read Tool</h3>
-<p><strong>Source:</strong> <code>fs/read/tool.rs</code></p>
-<pre><code class="language-json">{
-  &quot;name&quot;: &quot;read&quot;,
-  &quot;parameters&quot;: {
-    &quot;path&quot;: { &quot;type&quot;: &quot;string&quot; },
-    &quot;offset&quot;: { &quot;type&quot;: &quot;integer&quot;, &quot;description&quot;: &quot;Start line (0-based)&quot; },
-    &quot;limit&quot;: { &quot;type&quot;: &quot;integer&quot;, &quot;description&quot;: &quot;Max lines&quot; }
-  }
-}
-</code></pre>
-<h3>File Write Tool</h3>
-<p><strong>Source:</strong> <code>fs/write.rs</code></p>
-<pre><code class="language-json">{
-  &quot;name&quot;: &quot;write&quot;,
-  &quot;parameters&quot;: {
-    &quot;path&quot;: { &quot;type&quot;: &quot;string&quot; },
-    &quot;content&quot;: { &quot;type&quot;: &quot;string&quot; },
-    &quot;append&quot;: { &quot;type&quot;: &quot;boolean&quot;, &quot;default&quot;: false }
-  }
-}
-</code></pre>
-<h3>Glob Tool</h3>
-<p><strong>Source:</strong> <code>fs/glob.rs</code></p>
-<pre><code class="language-json">{
-  &quot;name&quot;: &quot;glob&quot;,
-  &quot;parameters&quot;: {
-    &quot;pattern&quot;: { &quot;type&quot;: &quot;string&quot; },
-    &quot;path&quot;: { &quot;type&quot;: &quot;string&quot;, &quot;description&quot;: &quot;Search root&quot; }
-  }
-}
-</code></pre>
-<h3>Grep Tool</h3>
-<p><strong>Source:</strong> <code>fs/grep.rs</code></p>
-<pre><code class="language-json">{
-  &quot;name&quot;: &quot;grep&quot;,
-  &quot;parameters&quot;: {
-    &quot;pattern&quot;: { &quot;type&quot;: &quot;string&quot; },
-    &quot;path&quot;: { &quot;type&quot;: &quot;string&quot; },
-    &quot;case_sensitive&quot;: { &quot;type&quot;: &quot;boolean&quot; },
-    &quot;max_results&quot;: { &quot;type&quot;: &quot;integer&quot;, &quot;default&quot;: 100 }
-  }
-}
-</code></pre>
-<hr>
-<h2>Approval Gating</h2>
-<p><strong>Source:</strong> <code>approval.rs</code></p>
-<pre><code class="language-rust">pub struct ApprovalManager { ... }
-
-pub enum ApprovalDecision {
-    Approve,
-    Deny,
-    DenyAndBlock,  // Block future similar commands
-}
-</code></pre>
-<p>When a command requires approval:</p>
-<ol><li><code>create_request()</code> stores the pending approval</li><li><code>broadcast_request()</code> notifies connected clients</li><li>Client approves/denies via REST API</li><li><code>await_response()</code> waits for decision (with timeout)</li></ol>
-<hr>
+<p>N sub-agents run concurrently via <code>tokio::task::JoinSet</code>. Each gets an independent tool set and conversation context. The parent LLM only sees aggregated results — sub-agent tool calls don't consume the parent's context window.</p>
+<h2>Cross-References</h2>
+<ul><li><a href="02-agent-loop.md">Agent Loop</a> — How the loop dispatches tool execution</li><li><a href="01-gateway.md">Gateway</a> — Approval flow for dangerous tools</li></ul>
 <h2>Next</h2>
-<p>Continue to <a href="06-memory.md">06-memory</a> for the memory system.</p>
+<p>→ <a href="06-voice.md">Voice</a> — 11 STT + 6 TTS providers for telephony.</p>
   </article>
   <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
 </body>

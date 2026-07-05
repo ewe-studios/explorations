@@ -1,74 +1,137 @@
-# What Is src.Instatic?
+---
+title: Instatic — Self-Hosted CMS with Visual Editor in a Single Bun Process
+---
 
-Instatic is a self-hosted, open-source CMS (version 0.0.6, pre-release) with a built-in visual editor. It runs as a single Bun process serving the public website, the admin editor, the CMS API, published pages, and uploaded media — backed by either Postgres or SQLite.
+# Instatic — Self-Hosted CMS with Visual Editor
 
-**Source:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Instatic/Instatic/`
+**Instatic is a self-hosted open-source CMS (v0.0.6, MIT) running as a single Bun process that serves the public website, admin editor, CMS API, published pages, and uploaded media — all from one binary.** It outputs plain semantic HTML and hand-authored CSS; no framework runtime is injected into published pages. The architecture centers on four pillars: a **Core Engine** (`NodeTree<T>` primitives, 3-layer publishing pipeline, module block system, Plugin SDK), a **Visual Editor** (React 19 + Zustand/Mutative with 14 store slices and per-breakpoint iframe canvas), an **AI Agent Runtime** (HTTP-only drivers with no vendor SDKs, 35 tools, shared multi-turn tool loop), and a **Plugin System** (QuickJS-WASM sandbox with Bun.Worker isolation, 23 capabilities, runtime permission enforcement).
 
-## What It Is (and Is Not)
+Source: `Instatic/` — 2,433 TypeScript files, Bun runtime, PostgreSQL or SQLite
 
-Instatic is a **visual CMS** — you design pages by dragging and configuring blocks on a canvas, then publish them as plain semantic HTML. The published output has **no framework runtime**, **no client-side hydration**, and **no decorative markup**.
+## Single Process Architecture
 
-**It is not** a multi-tenant SaaS. The codebase intentionally avoids assumptions about multi-tenant operation. It is designed for self-hosting: one instance, one database, one set of sites.
+```mermaid
+flowchart TD
+    HTTP["HTTP Request"] --> Router["19-route dispatcher<br/>server/router.ts"]
+    
+    Router --> Health["/health"]
+    Router --> AI["/admin/api/ai/*<br/>NDJSON streaming"]
+    Router --> CMS["/admin/api/cms/*<br/>36 handler modules"]
+    Router --> Plugins["/admin/api/cms/plugins/:id/*<br/>→ Worker pool"]
+    Router --> Runtime["/_instatic/*<br/>runtime assets, holes, loops"]
+    Router --> Uploads["/uploads/*<br/>static files"]
+    Router --> Admin["/admin/*<br/>SPA static files"]
+    Router --> Public["/*<br/>Published pages"]
 
-**Aha:** Instatic is in **pre-release** — there are no external users, no production traffic, nothing shipped. This means backward compatibility is explicitly not a goal. The CLAUDE.md states: "No backward compatibility. Ever." Breaking changes are expected and acceptable. This shapes how the code is written — no migration paths, no deprecation warnings, no feature flags for gradual rollout.
+    subgraph Workers["Off-Main-Thread Workers"]
+        PluginWorker["Plugin Worker Pool<br/>Bun.Worker + QuickJS-WASM<br/>Crash isolation, crash budget"]
+        ImageWorker["Image Variant Worker<br/>sharp + blurhash pool"]
+    end
 
-## Stack at a Glance
+    subgraph DB["Database (dual-engine)"]
+        PG["Postgres via Bun.sql"]
+        SQLite["SQLite via bun:sqlite"]
+    end
 
-| Layer | Technology |
-|-------|-----------|
-| Runtime | Bun (server + tooling) — **not Node** |
-| Language | TypeScript everywhere |
-| Frontend | React 19 with **React Compiler** (Babel preset) + Vite |
-| State | Zustand + Mutative (patch-based undo history) |
-| Code editing | CodeMirror (CSS, HTML, JS, JSON, Markdown) |
-| Rich text | TipTap (with table extensions) |
-| Drag-and-drop | @dnd-kit/core |
-| Server | `Bun.serve` with hand-written router (`server/router.ts`) |
-| Database | Postgres (`Bun.sql`) OR SQLite (`bun:sqlite`), selected by `DATABASE_URL` |
-| Validation | TypeBox at every untyped boundary — **zod is banned** |
-| Sanitization | DOMPurify at publisher boundary |
-| Plugins | QuickJS-WASM sandbox with capability-gated SDK |
-| Icons | pixel-art-icons (vendored) — **lucide-react is banned** |
-| Routing | In-house router (`src/admin/lib/routing/`) — **react-router-dom is banned** |
-| AI | HTTP-only drivers (no provider SDKs) — **@anthropic-ai/sdk, @openai/agents are banned** |
-| Testing | `bun test` (unit) + Playwright (E2E) |
-
-## Key Architectural Principles
-
-1. **One process** — The same Bun process serves visitors, admins, the API, the streaming agent endpoint, and uploads.
-2. **Two off-main-thread workers** — Plugin server code (QuickJS-WASM) and image processing (sharp) run in `Bun.Worker`s to keep the main thread responsive.
-3. **One content model** — Posts, pages, and visual components all live in `data_tables` + `data_rows`. No separate `pages` or `page_versions` tables.
-4. **Two frontends, one bundle** — The admin app and visual editor run in the same Vite-built SPA under `/admin/*`.
-5. **Plugins run sandboxed** — Server entrypoints and canvas module packs execute inside a QuickJS-WASM VM with no host access.
-6. **Three publishing layers** — Static bake (A), in-memory LRU (B), lazy-fetch holes (C).
-7. **Every untyped boundary uses TypeBox** — HTTP responses, request bodies, persisted JSON, plugin manifests, settings.
-
-## Pre-Release Status
-
-**This project is in PRE-RELEASE.** Consequences:
-
-- No backward compatibility — breaking changes are expected
-- No migration paths needed — the database schema is still evolving
-- No deprecation cycles — old APIs can be removed without warning
-- No feature flags — features are either on or off
-- Schema evolution is handled by editing the migration files directly
-
-**Source:** `CLAUDE.md` line 76+: "Development status — READ THIS FIRST"
-
-## Quick Start
-
-```bash
-bun install        # Install dependencies
-bun dev            # Start dev server (Vite + Bun server)
-bun dev:server     # Start server only
-bun dev:vite       # Start Vite only
-bun test           # Run unit tests
-bun test:e2e       # Run Playwright E2E tests
-bun doctor         # Health check all subsystems
+    CMS --> PluginWorker
+    CMS --> DB
+    AI --> DB
 ```
 
-**Source:** `package.json` scripts (38 scripts total).
+### Key Constraints
+
+- **Single Bun process** — two Worker types off the main thread: plugin QuickJS sandboxes and image processing
+- **Dual database engine** — identical ANSI SQL, separate migration files for PG/SQLite, enforced parity
+- **No framework in output** — published pages are plain HTML+CSS, no React, no JS framework
+- **No vendor AI SDKs** — every LLM driver is raw HTTP/SSE, no `@anthropic-ai/sdk`, no `openai` npm package
+- **81 architecture tests** — gatekeeping imports, color tokens, CSS modules, JSON boundaries, migration parity
+
+## Architecture at Depth
+
+```mermaid
+flowchart TD
+    subgraph Core["src/core/ — Engine (36 subdirs)"]
+        PageTree["page-tree/<br/>NodeTree<TNode>, mutations"]
+        Publisher["publisher/<br/>3-layer: disk → LRU → holes"]
+        ModuleEngine["module-engine/<br/>render(), schema, registry"]
+        PluginSDK["plugin-sdk/<br/>23 capabilities, CLI, types"]
+        VC["visualComponents/<br/>slot outlets, sync, params"]
+        Framework["framework/<br/>CSS tokens, fluid typography"]
+    end
+
+    subgraph Admin["src/admin/ — SPA"]
+        Store["14 Zustand slices<br/>+ Mutative patch-based undo"]
+        Canvas["iframe canvas<br/>per-breakpoint surfaces"]
+        Spotlight["Cmd+K command palette"]
+        AgentPanel["AI agent panel<br/>streaming NDJSON bridge"]
+    end
+
+    subgraph Server["server/ — Bun Backend"]
+        Handlers["36 CMS handler modules"]
+        AI2["AI agent: 4 drivers, 35 tools<br/>shared tool loop"]
+        Publish2["publish/: static artifact swap<br/>LRU cache, hole runtime"]
+        Repos["21 repositories<br/>ANSI SQL, no PG-isms"]
+    end
+
+    subgraph Modules["src/modules/base/ — 18 Blocks"]
+        Layout["body, container, loop"]
+        Text["text, list, outlet"]
+        Media["image, svg, video"]
+        Interactive["button, link"]
+        VC2["slotInstance, slotOutlet, vcRef"]
+        Forms["forms/ directory"]
+    end
+
+    Core --> Admin
+    Core --> Server
+    Server --> Modules
+```
+
+## Core Engine Primitives
+
+### NodeTree — The Universal Tree Type
+
+```typescript
+// src/core/page-tree/treeSchema.ts
+type NodeTree<TNode> = {
+  nodes: Record<string, TNode>    // Flat map — O(1) lookup by ID
+  rootNodeId: string              // Traversal entry point
+}
+```
+
+Everything is a `NodeTree<T>`: pages, visual components, slot fills. 11 pure mutation operations (`insertNode`, `deleteNode`, `moveNode`, `duplicateNode`, `wrapNode`, `updateNodeProps`, `setBreakpointOverride`, `clearBreakpointOverride`, `renameNode`, `toggleNodeLocked`, `toggleNodeHidden`) operate on `NodeTree<PageNode>` and are valid for both pages and VCs.
+
+### The 3-Layer Publishing Pipeline
+
+```
+Layer A (disk fast path)    →  static HTML on disk, atomic symlink swap
+Layer B (memory LRU cache)  →  (urlPath, queryString, publishVersion) keyed
+Layer C (server islands)    →  <instatic-hole> + 668B IntersectionObserver runtime
+```
+
+Dynamic node detection (`findDynamicNodeIds`) classifies nodes via 4 rules:
+1. Module marked `dynamic: true`
+2. Node has `dynamicBindings` with request-dependent source
+3. Node is `base.loop` with request-dependent source
+4. VC reference whose definition tree contains any dynamic node
+
+### Data Model — Two Tables for Everything
+
+```
+data_tables  — user-defined collections with kind (page, post, component)
+data_rows    — rows with cells typed by data_tables schema
+```
+
+Pages are `data_rows` with `body` (pageTree type). Components are `data_rows` with `tree` (pageTree) + `params` (fieldSchema). No separate `pages` or `components` tables — everything is uniform.
+
+## Key Design Decisions
+
+1. **QuickJS-WASM for plugins, not V8 isolates.** QuickJS compiles to WASM, runs in a `Bun.Worker`, and has zero access to Node/Bun APIs. Crash isolation via Worker boundary; crash budget prevents infinite respawn.
+2. **HTTP-only AI drivers.** No `@anthropic-ai/sdk`, no `openai` npm package. Each driver is ~200 lines of raw HTTP/SSE. Shared tool loop handles multi-turn conversation; drivers only provide `mapHistory`, `createTranslator`, `buildRequestBody`.
+3. **19-route hand-written dispatcher.** No framework router. Routes are tried in order; first non-null response wins. `idleTimeout: 0` because AI streams can pause 10+ seconds between tool calls.
+4. **CSS Modules only. No Tailwind.** Enforced by `noTailwindUtilities.test.ts`. Colors use CSS custom properties exclusively; no hardcoded hex/RGB in admin/ui CSS.
+5. **Patch-based undo.** Zustand + Mutative middleware tracks patches, not snapshots. Undo is O(change), not O(site).
 
 ## Next
 
-Continue to [01-architecture](01-architecture.md) for the system architecture: one process, two workers, 19-route dispatcher, and dual database engines.
+→ [Core Engine](01-architecture.md) — NodeTree, mutations, page tree, visual components, module engine.

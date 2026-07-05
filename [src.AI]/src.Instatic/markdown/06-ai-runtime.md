@@ -1,176 +1,157 @@
-# AI Runtime: HTTP-Only Drivers
+---
+title: Instatic AI Runtime — HTTP-Only Drivers, Shared Tool Loop, 35 Tools
+---
 
-Instatic's AI integration talks directly to provider REST APIs over HTTP/SSE — **no provider SDKs**. Each driver in `server/ai/drivers/` shares one multi-turn tool loop. `@anthropic-ai/sdk`, `@openai/agents`, and `@modelcontextprotocol/sdk` are all **banned** repo-wide.
+# Instatic AI Runtime — HTTP-Only Drivers with Shared Tool Loop
 
-**Source:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Instatic/Instatic/server/ai/`
+**Instatic's AI integration talks directly to provider REST APIs over raw HTTP/SSE — zero vendor SDKs.** Each driver in `server/ai/drivers/` (Anthropic, OpenAI, Ollama, OpenRouter) is ~200 lines of HTTP request/response handling. They share a single multi-turn tool loop (`server/ai/drivers/http/toolLoop.ts`) that handles tool call parsing, execution, and result injection — the drivers only provide a small `ProviderAdapter` with three mapping functions. The system exposes 35 tools (6 server-side directory readers + 29 browser-bridged write tools) through a dual-endpoint bridge: the server streams NDJSON to the editor, editor-side tools execute in the browser, and results POST back to `/admin/api/ai/tool-result`.
+
+Source: `server/ai/` + `src/core/ai/` + `src/admin/pages/site/agent/`
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-    EDITOR["Site Editor
-    POST /admin/api/ai/chat/site"] --> HANDLER["server/ai/handlers/
-    tryHandleAi()"]
-    HANDLER --> LOOP["Multi-turn tool loop
-    drivers/http/toolLoop.ts"]
-    LOOP --> DRIVER["AI Driver
-    HTTP/SSE to provider API"]
-    DRIVER --> ANTHROPIC["Anthropic API
-    messages.create (stream)"]
-    DRIVER --> OPENAI["OpenAI API
-    chat.completions.create (stream)"]
-    DRIVER --> OTHER["Other providers
-    Direct HTTP calls"]
-    LOOP --> TOOLS["Available tools
-    server/ai/tools/"]
-    LOOP --> CONTEXT["Context tokens
-    server/ai/contextTokens.ts"]
+    Editor["Editor Agent Panel<br/>React component"] -->|"NDJSON stream"| AIEndpoint["POST /admin/api/ai/chat/site"]
+
+    AIEndpoint --> Drivers["HTTP Drivers<br/>server/ai/drivers/"]
+    Drivers --> Anthropic["anthropicDriver<br/>POST /v1/messages"]
+    Drivers --> OpenAI["openaiDriver<br/>POST /v1/responses"]
+    Drivers --> Ollama["ollamaDriver<br/>POST /v1/chat/completions"]
+    Drivers --> OpenRouter["openrouterDriver<br/>POST /v1/responses"]
+
+    Anthropic & OpenAI & Ollama & OpenRouter --> ToolLoop["Shared Tool Loop<br/>drivers/http/toolLoop.ts"]
+
+    ToolLoop --> ServerTools["6 Server-Side Tools<br/>describeAgentModules, listPages,<br/>getPageTree, getDataTableSchema..."]
+    ToolLoop --> BridgeTools["29 Browser-Bridged Tools<br/>insertNode, updateNodeProps,<br/>applyCss, render_snapshot..."]
+
+    BridgeTools -->|"toolRequest via NDJSON"| Editor
+    Editor -->|"POST /admin/api/ai/tool-result"| ToolResult["Tool Result Handler"]
+    ToolResult --> ToolLoop
 ```
 
-**Aha:** The AI drivers don't use any provider SDK. They make raw `fetch()` calls to the provider's REST API, passing TypeBox schemas through as JSON Schema. This means:
-
-1. **No SDK dependency updates** — when Anthropic releases a new SDK version, Instatic doesn't need to update
-2. **Consistent interface** — all drivers share the same tool loop implementation
-3. **Smaller bundle** — no SDK code in the server
-4. **Gated by test** — `ai-driver-isolation.test.ts` verifies no banned SDK imports exist
-
-**Source:** `CLAUDE.md` line 50, `server/ai/drivers/`.
-
-## AI Handlers
-
-```
-server/ai/handlers/
-├── index.ts            — Route dispatcher for /admin/api/ai/*
-├── chat.ts             — Chat stream handler
-├── browser.ts          — Browser bridge for AI agent
-├── credentials.ts      — API key CRUD
-├── conversations.ts    — Conversation history
-├── defaults.ts         — Default model/provider settings
-└── models.ts           — Model discovery
-```
-
-### Chat Endpoint
-
-```
-POST /admin/api/ai/chat/site
-```
-
-The site editor sends chat messages here. The handler:
-1. Validates the request with TypeBox
-2. Checks `requireCapability('ai.chat')`
-3. Routes to the configured provider's driver
-4. Streams the response back via SSE
-
-**Source:** `server/ai/handlers/chat.ts`.
-
-## Driver Architecture
-
-Each driver implements the same interface:
+## AiProvider Interface
 
 ```typescript
-// server/ai/drivers/
-// Each driver:
-// 1. Reads provider config (API key, model, etc.)
-// 2. Makes HTTP/SSE call to provider API
-// 3. Parses response
-// 4. Returns to the tool loop
+// server/ai/drivers/index.ts
+const DRIVERS: Record<AiProviderId, AiProvider> = {
+  anthropic: anthropicDriver,
+  openai: openaiDriver,
+  ollama: ollamaDriver,
+  openrouter: openrouterDriver,
+}
+
+interface AiProvider {
+  readonly id: AiProviderId
+  stream(req: AiStreamRequest): AsyncIterable<AiStreamEvent>
+  listModels(credentials: AiResolvedCredential): Promise<AiProviderModel[]>
+  capabilities(modelId: string): AiProviderCapabilities
+}
 ```
 
-### Provider Drivers
+**Aha:** There's no `@anthropic-ai/sdk`, no `openai` npm package, no `@modelcontextprotocol/sdk`. Each driver is a thin HTTP client using Bun's native `fetch`. The `ai-driver-isolation.test.ts` architecture test bans all AI vendor SDKs — the repo enforces this with import checking. The rationale: SDKs add ~40-80KB of bundled deps per provider, introduce supply-chain risk, and hide the actual API contract behind abstraction layers that break silently on provider API changes.
 
-| Driver | Provider API | Method |
-|--------|-------------|--------|
-| `drivers/anthropic/` | `https://api.anthropic.com/v1/messages` | POST, SSE stream |
-| `drivers/openai/` | `https://api.openai.com/v1/chat/completions` | POST, SSE stream |
-| `drivers/other/` | Provider-specific | HTTP |
-
-**Source:** `server/ai/drivers/`.
-
-## Multi-Turn Tool Loop
-
-The tool loop (`drivers/http/toolLoop.ts`) manages the conversation:
-
-```mermaid
-sequenceDiagram
-    participant Client as Site Editor
-    participant Loop as toolLoop.ts
-    participant Driver as AI Driver
-    participant Tools as Available Tools
-    participant Provider as Provider API
-
-    Client->>Loop: POST /ai/chat/site { messages }
-    Loop->>Driver: Send messages to provider
-    Driver->>Provider: HTTP/SSE request
-    Provider-->>Driver: Stream response
-    Driver-->>Loop: Parsed response
-    alt Tool call
-        Loop->>Tools: Execute tool
-        Tools-->>Loop: Tool result
-        Loop->>Driver: Send tool result
-        Driver->>Provider: HTTP/SSE request
-        Provider-->>Driver: Stream response
-        Driver-->>Loop: Parsed response
-    end
-    Loop-->>Client: SSE stream response
-```
-
-**Source:** `server/ai/drivers/http/toolLoop.ts`.
-
-## Credentials Management
-
-API keys are stored and managed through:
-
-```
-server/ai/credentials/
-```
-
-Each provider has its own credential type. Credentials are validated before use and redacted from logs.
-
-## Context Tokens
-
-The AI system uses context tokens for pricing and tracking:
+## The Shared Tool Loop
 
 ```typescript
-// server/ai/contextTokens.ts
-// Tracks token usage per conversation
+// server/ai/drivers/http/toolLoop.ts — shared by all 4 drivers
+// Each driver provides a minimal ProviderAdapter:
+interface ProviderAdapter {
+  mapHistory(messages: AiMessage[]): ProviderNativeMessage[]
+  createTranslator(): TurnTranslator  // Parses SSE chunks into AiStreamEvent
+  buildRequestBody(messages, tools, config): ProviderRequestBody
+}
+
+// The shared loop:
+async function* runToolLoop(
+  adapter: ProviderAdapter,
+  messages: AiMessage[],
+  tools: AiTool[],
+  abortSignal: AbortSignal,
+): AsyncIterable<AiStreamEvent> {
+  while (true) {
+    const body = adapter.buildRequestBody(messages, tools)
+    const response = await fetch(endpoint, {
+      method: 'POST', body: JSON.stringify(body),
+      headers: { 'Content-Type': 'application/json', ...authHeaders },
+      signal: abortSignal,
+    })
+    const translator = adapter.createTranslator()
+    let hasToolCalls = false
+
+    for await (const chunk of parseSSE(response.body)) {
+      const event = translator.translate(chunk)
+      if (event.type === 'tool_call') {
+        hasToolCalls = true
+        const result = await executeAiTool(event.toolName, event.toolArgs)
+        messages.push({ role: 'assistant', tool_calls: [event.toolCall] })
+        messages.push({ role: 'tool', tool_call_id: event.toolCall.id, content: result })
+      } else {
+        yield event  // Text delta, usage, etc. — stream to editor
+      }
+    }
+
+    if (!hasToolCalls) break  // Model finished without tool calls — done
+  }
+}
 ```
 
-**Source:** `server/ai/contextTokens.ts`.
+**Aha:** The tool loop is provider-agnostic because tool calls are normalized to a common format BEFORE they enter the loop. The `createTranslator()` function handles the format differences: Anthropic uses `content_block_start`/`content_block_delta` SSE events, OpenAI uses `response.output_text.delta` and `response.output_item.added`, Ollama uses plain JSON chunks. The translator maps all of these to the same `AiStreamEvent` type.
 
-## AI Audit
+## 35 Tools — 6 Server-Side + 29 Browser-Bridged
 
-The AI system includes audit logging:
+### Server-Side Tools (read-only directory operations)
+
+| Tool | What It Returns |
+|------|----------------|
+| `describeAgentModules` | All registered block modules with schemas |
+| `describeAgentTokens` | CSS custom properties, font families, color tokens |
+| `listPages` | All pages in the site |
+| `listComponents` | All visual components |
+| `getPageTree` | Full page tree as JSON |
+| `getDataTableSchema` | Schema for a content data table |
+
+### Browser-Bridged Tools (mutate the page tree)
+
+These 29 tools execute in the EDITOR's browser context, not the server. The server sends `toolRequest` via NDJSON; the editor executes and POSTs results back:
+
+| Category | Tools |
+|----------|-------|
+| **Node CRUD** | `insertNode`, `replaceNodeHtml`, `deleteNode`, `updateNodeProps`, `moveNode`, `renameNode`, `duplicateNode` |
+| **CSS** | `applyCss` (upserts — reapplying a selector changes the existing rule), `assignClass`, `removeClass` |
+| **Pages** | `addPage`, `deletePage`, `renamePage`, `duplicatePage`, `setPageTemplate`, `clearPageTemplate` |
+| **Tokens** | `setColorTokens`, `setFontTokens`, `setTypeScale`, `setSpacingScale` |
+| **Code** | `list_code_assets`, `read_code_asset`, `write_code_asset`, `patch_code_asset`, `inspect_code_runtime` |
+| **Read** | `read_document`, `open_document` |
+| **Debug** | `render_snapshot`, `getNodeHtml` |
+
+**Aha:** `insertNode` and `replaceNodeHtml` accept semantic HTML strings. The browser executor calls `importHtml` to convert HTML → `PageNode` fragments. CSS is imported the same way humans paste CSS: `<style>` blocks in the payload, `class=` attributes on elements, or the dedicated `applyCss` tool for standalone CSS editing. The AI writes HTML, not JSON.
+
+## Dual-Endpoint Bridge
 
 ```
-server/ai/audit/
+Server                          Editor
+  |                                |
+  |── NDJSON stream ─────────────→|  (text deltas, toolRequests)
+  |                                |
+  |                          [Browser executes tool]
+  |                                |
+  |←─ POST /admin/api/ai/tool-result ──|  (tool results)
+  |                                |
+  |── continue stream ───────────→|
 ```
 
-**Source:** `server/ai/audit/`.
+**Aha:** `idleTimeout: 0` on `Bun.serve` because AI streams can pause 10+ seconds between tool calls (the LLM is thinking, the tool is executing). Without this, Bun would close the connection.
 
-## Pricing
+## System Prompt — Split Design
 
-AI pricing information is tracked for cost estimation:
+The system prompt has a static prefix (module catalog, token families, page metadata — built once at session start) and a dynamic suffix (current page context, runtime agent state — rebuilt at the start of each turn). This avoids re-sending the entire module catalog on every LLM call.
 
-```
-server/ai/pricing/
-```
+## Cross-References
 
-**Source:** `server/ai/pricing/`.
-
-## Banned SDKs
-
-The following are banned repo-wide, gated by `ai-driver-isolation.test.ts`:
-
-| Banned Package | Reason |
-|---------------|--------|
-| `@anthropic-ai/sdk` | Direct HTTP calls instead |
-| `@anthropic-ai/claude-agent-sdk` | Direct HTTP calls instead |
-| `@openai/agents` | Direct HTTP calls instead |
-| `@openrouter/agent` | Direct HTTP calls instead |
-| `@modelcontextprotocol/sdk` | No MCP needed |
-
-**Source:** `CLAUDE.md` line 50, `src/__tests__/architecture/ai-driver-isolation.test.ts`.
+- [Core Engine](01-architecture.md) — The page tree and module engine that AI tools operate on
+- [Plugin System](04-plugin-system.md) — QuickJS sandbox (AI tools are native, not sandboxed)
 
 ## Next
 
-Continue to [07-content-model](07-content-model.md) for the content model, NodeTree, and TypeBox validation.
+→ [Plugin System](04-plugin-system.md) — QuickJS-WASM sandbox, RPC protocol, 23 capabilities.

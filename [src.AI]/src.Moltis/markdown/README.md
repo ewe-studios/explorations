@@ -1,38 +1,23 @@
-# src.Moltis Documentation
+# Moltis — Multi-Channel AI Agent Platform
 
-A secure, persistent personal agent server in Rust. One binary — sandboxed, secure, yours.
+Self-hosted Rust agent server connecting LLMs to 9 messaging channels with 68 crates and sandboxed tool execution.
 
-| Attribute | Value |
-|-----------|-------|
-| Language | Rust (+ Swift for native apps) |
-| Workspace | 68 crates, ~270K lines, 1038 Rust files |
-| License | MIT |
-| Runtime | Single Rust binary |
-| Native Apps | iOS (51 Swift files), macOS (31 Swift files) |
+**Source:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/` — 1,038 Rust files, 72 workspace members, MIT
 
-## Navigation
+## Documents
 
-Start here:
+| # | Document | What You'll Master |
+|---|----------|-------------------|
+| 00 | [Overview](00-overview.md) | Architecture, 68-crate map, key design decisions |
+| 01 | [Gateway](01-gateway.md) | Method dispatch, session registry, channel store, webhook middleware |
+| 02 | [Agent Loop](02-agent-loop.md) | Streaming execution, tool accumulation, retry, loop detection, compaction |
+| 03 | [Channels](03-channels.md) | ChannelPlugin trait, 9 channel types, webhook verification, media download |
+| 04 | [Providers](04-providers.md) | LlmProvider trait, 10+ backends, model discovery, local GGUF, ProviderChain |
+| 05 | [Tools & Sandbox](05-tools-sandbox.md) | 30+ tools, 6-layer policy, Firecracker/Docker/WASM sandboxes, sub-agent spawning |
 
-- **[00-overview](00-overview.md)** — What Moltis is, installation, comparison table
-- **[01-architecture](01-architecture.md)** — Workspace structure, crate map, dependency graph
+## Build HTML
 
-Core systems:
-
-- **[02-gateway](02-gateway.md)** — HTTP/WS server, RPC, auth, MCP
-- **[03-gateway-deep](03-gateway-deep.md)** — Gateway internals: 129 files, 55.6K LoC
-- **[04-agents-chat](04-agents-chat.md)** — Agent loop, chat engine, providers
-- **[05-agents-deep](05-agents-deep.md)** — Agent internals: 46 files, 20.3K LoC
-- **[06-providers-deep](06-providers-deep.md)** — Provider internals: 72 files, 33.2K LoC
-- **[07-channels](07-channels.md)** — Telegram, Signal, Discord, Slack, WhatsApp, Matrix, MS Teams, Nostr
-
-Advanced:
-
-- **[08-tools-sandbox](08-tools-sandbox.md)** — Tool execution, sandboxing, WASM, skills
-- **[09-tools-deep](09-tools-deep.md)** — Tools internals: 90 files, 52.9K LoC
-- **[10-memory](10-memory.md)** — SQLite + FTS + vector memory
-
-Native:
-
-- **[11-native-apps](11-native-apps.md)** — iOS and macOS Swift apps
-- **[12-security](12-security.md)** — Sandboxing, vault, auth, security model
+```bash
+cd /home/darkvoid/Boxxed/@dev/repo-expolorations/[src.AI]/src.Moltis
+python3 build.py .
+```
