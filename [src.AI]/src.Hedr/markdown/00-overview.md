@@ -4,7 +4,7 @@ title: Herdr — Terminal Workspace Manager for AI Coding Agents
 
 # Herdr — Terminal Workspace Manager for AI Coding Agents
 
-**Herdr is a terminal workspace manager purpose-built for AI coding agents.** It's a Rust TUI (ratatui + crossterm, v0.6.8, AGPL-3.0) that auto-detects 20+ AI agents by analyzing terminal screen output, provides mouse-first workspace/tab/pane management with PTY isolation, and enables remote terminal attach/detach via Unix socket IPC. The architecture separates pure state (`AppState`) from runtime (`PaneRuntime`) — workspace logic is testable without real PTYs.
+**Herdr is a terminal workspace manager purpose-built for AI coding agents.** It's a Rust TUI (ratatui + crossterm, v0.6.8, AGPL-3.0) that auto-detects 17 AI agents by analyzing terminal screen output, provides mouse-first workspace/tab/pane management with PTY isolation, and enables remote terminal attach/detach via Unix socket IPC. The architecture separates pure state (`AppState`) from runtime (`PaneRuntime`) — workspace logic is testable without real PTYs.
 
 Source: `src/` — ~130 Rust files, AGPL-3.0
 
@@ -28,7 +28,7 @@ flowchart TD
 
     subgraph Runtime["PTY Runtime"]
         PaneRuntime["PaneRuntime<br/>portable-pty processes<br/>async I/O via tokio"]
-        AgentDetect["Agent Detection<br/>20+ detectors<br/>Screen snapshot analysis"]
+        AgentDetect["Agent Detection<br/>17 detectors<br/>Screen snapshot analysis"]
         GhosttyVT["libghostty-vt<br/>Vendored terminal parser<br/>ANSI → structured output"]
     end
 
@@ -63,7 +63,7 @@ flowchart TD
 
 ### 2. Agent Detection from Screen Snapshots
 
-Herdr detects 20+ AI agents by analyzing terminal output:
+Herdr detects 17 AI agents by analyzing terminal output:
 
 | Agent | Detector File | Detection Method |
 |-------|--------------|-----------------|
