@@ -29,6 +29,40 @@ flowchart TD
 
 **Source:** `src/services/customAgentService.ts` lines 80-163.
 
+## Provider Resolution Flow
+
+When the AI provider is determined, the resolution follows a two-tier cascade:
+
+```mermaid
+flowchart TD
+    ReadCfg["Read VS Code config
+    aiModelProvider, aiModel"] --> HasModel{"aiModel set?"}
+
+    HasModel -->|"Yes"| Infer{"Model name analysis"}
+    HasModel -->|"No"| UseDefault["Use default for aiModelProvider"]
+
+    Infer --> ContainsSlash{"Model contains '/'?"}
+    ContainsSlash -->|"Yes"| RouteOR["OpenRouter
+    e.g. google/gemini-2.5-pro"]
+    ContainsSlash -->|"No"| StartsWithClaude{"Starts with 'claude-'?"}
+    StartsWithClaude -->|"Yes"| RouteAnth["Anthropic
+    e.g. claude-3-5-sonnet-20241022"]
+    StartsWithClaude -->|"No"| RouteOpenAI["OpenAI
+    e.g. gpt-4o"]
+
+    UseDefault --> DefAnthropic["Default: claude-3-5-sonnet-20241022"]
+    RouteOR --> CheckKeyOR["Validate OpenRouter API key"]
+    RouteAnth --> CheckKeyAnth["Validate Anthropic API key + Helicone proxy"]
+    RouteOpenAI --> CheckKeyOpenAI["Validate OpenAI API key + Helicone proxy"]
+    DefAnthropic --> CheckKeyAnth
+
+    CheckKeyOR --> CreateModel["createProvider(model)"]
+    CheckKeyAnth --> CreateModel
+    CheckKeyOpenAI --> CreateModel
+```
+
+**Source:** `src/services/customAgentService.ts` lines 80-163 — `getModel()` method.
+
 ## Provider Configuration
 
 | Provider | API Key Setting | Default Model | Helicone Proxy |
@@ -38,9 +72,42 @@ flowchart TD
 | OpenRouter | `superdesign.openrouterApiKey` | `anthropic/claude-3-7-sonnet-20250219` | No |
 | Google | `superdesign.googleApiKey` | — | No |
 
-**Aha:** Anthropic and OpenAI providers use Helicone as a proxy for observability and caching. The Helicone auth header is hardcoded in the SDK configuration, meaning all requests through these providers go through Helicone's proxy layer.
+**Aha:** Anthropic and OpenAI providers use Helicone as a proxy for observability and caching. The Helicone auth header is hardcoded in the SDK configuration, meaning all requests through these providers go through Helicone's proxy layer. OpenRouter connects directly without a proxy.
 
 **Source:** `src/services/customAgentService.ts` lines 120-162.
+
+## Provider SDK Construction Sequence
+
+```mermaid
+sequenceDiagram
+    participant Query as CustomAgentService.query()
+    participant GetModel as getModel()
+    participant Config as vscode.workspace.getConfiguration()
+    participant SDK as AI SDK Factory
+    participant Model as Model Instance
+
+    Query->>GetModel: this.getModel()
+    GetModel->>Config: get('aiModelProvider')
+    GetModel->>Config: get('aiModel')
+    GetModel->>GetModel: Infer effectiveProvider
+    alt openrouter
+        GetModel->>Config: get('openrouterApiKey')
+        GetModel->>SDK: createOpenRouter({apiKey})
+        SDK-->>GetModel: openrouter provider
+        GetModel->>Model: openrouter.chat('anthropic/claude-3-7-sonnet')
+    else anthropic
+        GetModel->>Config: get('anthropicApiKey')
+        GetModel->>SDK: createAnthropic({apiKey, baseURL: helicone})
+        SDK-->>GetModel: anthropic provider
+        GetModel->>Model: anthropic('claude-3-5-sonnet-20241022')
+    else openai
+        GetModel->>Config: get('openaiApiKey')
+        GetModel->>SDK: createOpenAI({apiKey, baseURL: helicone})
+        SDK-->>GetModel: openai provider
+        GetModel->>Model: openai('gpt-4o')
+    end
+    Model-->>Query: Model instance for streamText()
+```
 
 ## Streaming
 

@@ -11,7 +11,7 @@ Comprehensive source-level documentation of every file in the SuperDesign VS Cod
 | `extension.ts` | 1,888 | VS Code extension entry point |
 | `services/customAgentService.ts` | 927 | AI agent orchestration |
 | `services/chatMessageService.ts` | 456 | Chat message management |
-| `services/claudeCodeService.ts` | 453 | Claude Code integration |
+| `services/claudeCodeService.ts` | 453 | Claude Code integration (deprecated) |
 | `services/logger.ts` | 79 | Logging service |
 | `providers/chatSidebarProvider.ts` | 339 | Sidebar panel provider |
 | `templates/webviewTemplate.ts` | 80 | Webview HTML template |
@@ -47,6 +47,100 @@ Comprehensive source-level documentation of every file in the SuperDesign VS Cod
 
 ---
 
+## Module Dependency Graph
+
+```mermaid
+flowchart TD
+    subgraph Entry["entry"]
+        EXT["extension.ts"]
+    end
+
+    subgraph Providers["providers"]
+        CSP["chatSidebarProvider.ts"]
+    end
+
+    subgraph Services["services"]
+        CAS["customAgentService.ts"]
+        CMS["chatMessageService.ts"]
+        CCS["claudeCodeService.ts<br/>deprecated"]
+        LOG["logger.ts"]
+    end
+
+    subgraph Tools["tools"]
+        TUT["tool-utils.ts"]
+        RT["read-tool.ts"]
+        WT["write-tool.ts"]
+        ET["edit-tool.ts"]
+        MET["multiedit-tool.ts"]
+        BT["bash-tool.ts"]
+        GT["glob-tool.ts"]
+        GRT["grep-tool.ts"]
+        LT["ls-tool.ts"]
+        TT["theme-tool.ts"]
+    end
+
+    subgraph Types["types"]
+        AGT["agent.ts"]
+        CTX["context.ts"]
+    end
+
+    subgraph Templates["templates"]
+        WVT["webviewTemplate.ts"]
+    end
+
+    EXT --> CSP & CAS & CCS & LOG & WVT
+    CSP --> CMS & WVT & CTX & AGT
+    CAS --> RT & WT & ET & MET & BT & GT & GRT & LT & TT & TUT & AGT
+    CMS --> CAS & LOG & AGT
+    RT & WT & ET & MET & BT & GT & GRT & LT & TT --> TUT & AGT
+    CAS --> AGT
+```
+
+## End-to-End Chat Flow
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant W as Webview React
+    participant UC as useChat Hook
+    participant CSP as ChatSidebarProvider
+    participant CMS as ChatMessageService
+    participant CAS as CustomAgentService
+    participant SDK as Vercel AI SDK
+    participant AI as AI Provider
+    participant T as Tools
+    participant OC as OutputChannel
+
+    U->>W: Type message + click send
+    W->>UC: sendMessage(text)
+    UC->>UC: Add user message to history
+    UC->>CSP: postMessage('chatMessage', {chatHistory, message})
+    CSP->>CMS: handleChatMessage(message, webview)
+    CMS->>CMS: Create AbortController
+    CMS->>CSP: postMessage('chatStreamStart')
+    CMS->>CAS: query(undefined, chatHistory, ctrl, onMessage)
+    CAS->>CAS: getModel() - read config
+    CAS->>CAS: getSystemPrompt()
+    CAS->>CAS: Build tools object
+    CAS->>SDK: streamText({model, system, tools, maxSteps:10})
+    SDK->>AI: HTTP request with tools
+    AI-->>SDK: Stream response chunks
+    SDK-->>CAS: text-delta / tool-call / tool-result
+    CAS->>OC: Log each chunk
+    CAS->>CMS: onMessage callback
+    CMS->>CSP: webview.postMessage(chunk)
+    CSP->>W: postMessage to webview
+    W->>UC: event handler processes chunk
+    UC->>UC: Update chatHistory state
+    UC->>W: React re-renders
+    SDK->>CAS: finish event
+    CAS-->>CMS: Return responseMessages[]
+    CMS->>CSP: postMessage('chatStreamEnd')
+    CSP->>W: postMessage('chatStreamEnd')
+    W->>UC: setIsLoading(false)
+    W->>U: Response fully displayed
+```
+
 ## extension.ts: VS Code Extension Entry Point
 
 **Source:** `src/extension.ts` (1,888 lines)
@@ -69,13 +163,16 @@ The extension activates when:
 
 | Command | Purpose |
 |---------|---------|
-| `superdesign.open` | Open the sidebar panel |
-| `superdesign.configureAnthropicKey` | Configure Anthropic API key |
-| `superdesign.configureOpenAIKey` | Configure OpenAI API key |
-| `superdesign.configureOpenRouterKey` | Configure OpenRouter API key |
-| `superdesign.configureGoogleKey` | Configure Google AI API key |
-| `superdesign.clearConversation` | Clear chat history |
-| `superdesign.exportDesign` | Export current design |
+| `superdesign.helloWorld` | Test/development command |
+| `superdesign.configureApiKey` | Configure Anthropic API key |
+| `superdesign.configureOpenAIApiKey` | Configure OpenAI API key |
+| `superdesign.configureOpenRouterApiKey` | Configure OpenRouter API key |
+| `superdesign.showChatSidebar` | Open sidebar view |
+| `superdesign.openCanvas` | Open canvas panel (singleton) |
+| `superdesign.clearChat` | Clear chat history |
+| `superdesign.resetWelcome` | Reset welcome screen |
+| `superdesign.initializeProject` | Create `.superdesign/` and inject rules |
+| `superdesign.openSettings` | Filter settings to this extension |
 
 ### Webview Communication
 
@@ -193,6 +290,8 @@ The `query()` method:
 ---
 
 ## Tools
+
+**Aha: The `getTools()` method returns a plain object, not an array.** The Vercel AI SDK expects tools as `{toolName: toolDefinition}`, not `[{name, definition}]`. This object-based approach means tool names are keys, not properties, which enables the SDK's internal `switch(toolName)` dispatcher to work. If a tool name doesn't match a key in the object, the SDK silently skips it — no error, no fallback. This is why the names in `getTools()` must exactly match what the system prompt lists.
 
 All tools use Zod schemas for validation and share utilities from `tool-utils.ts`.
 
@@ -503,6 +602,12 @@ Parses theme definitions:
 - Theme validation
 
 ---
+
+## Aha Moments
+
+**Aha: The `ClaudeCodeService` is marked as deprecated but still wired up.** In `extension.ts`, the `ClaudeCodeService` is instantiated and registered alongside `CustomAgentService`, but it's no longer the primary agent. The `AgentService` interface was designed to support multiple implementations, and `ClaudeCodeService` was the original implementation before `CustomAgentService` replaced it. The interface exists as an abstraction layer, but currently only `CustomAgentService` is actively used for queries.
+
+**Aha: The logger is a simple OutputChannel wrapper, not a structured logger.** The `Logger` service in `src/services/logger.ts` (79 lines) writes to `vscode.OutputChannel` with a `LogLevel` enum. It doesn't use Winston, pino, or any structured logging library — just `appendLine()` calls with timestamp prefixes. This is the right choice for a VS Code extension where the output panel is the primary debugging interface and structured JSON logs would be harder to read.
 
 ## Next
 

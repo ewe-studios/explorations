@@ -127,7 +127,7 @@
       <a href="00-overview.html" class="nav-breadcrumb">Superdesign — AI Design Agent Inside Your IDE</a><a href="01-architecture.html" class="nav-breadcrumb">SuperDesign Architecture</a><a href="02-ai-providers.html" class="nav-breadcrumb">AI Providers: Vercel AI SDK</a>
       <a href="index.html" class="nav-btn" title="Back to index">index</a>
       <a href="02-ai-providers.html" class="nav-btn" title="Previous: AI Providers: Vercel AI SDK">← prev</a>
-      <a href="04-webview-ui.html" class="nav-btn nav-btn-next" title="Next: Webview UI">next →</a>
+      <a href="04-webview-ui.html" class="nav-btn nav-btn-next" title="Next: Webview UI: React App, Components, Hooks, Message Protocol">next →</a>
       <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
     </div>
   </nav>
@@ -138,55 +138,182 @@
 <h2>Tool Catalog</h2>
 <table><tr><th>Tool</th><th>File</th><th>Purpose</th></tr><tr><td>Read</td><td>`read-tool.ts`</td><td>Read file contents</td></tr><tr><td>Write</td><td>`write-tool.ts`</td><td>Write file contents</td></tr><tr><td>Edit</td><td>`edit-tool.ts`</td><td>Edit file contents (search and replace)</td></tr><tr><td>Bash</td><td>`bash-tool.ts`</td><td>Execute shell commands</td></tr><tr><td>Glob</td><td>`glob-tool.ts`</td><td>Find files matching a pattern</td></tr><tr><td>Grep</td><td>`grep-tool.ts`</td><td>Search for text patterns in files</td></tr><tr><td>Ls</td><td>`ls-tool.ts`</td><td>List directory contents</td></tr><tr><td>Multiedit</td><td>`multiedit-tool.ts`</td><td>Edit multiple files simultaneously</td></tr><tr><td>Theme</td><td>`theme-tool.ts`</td><td>Manage design themes</td></tr></table>
 <h2>Tool Architecture</h2>
-<p>Each tool follows the same pattern:</p>
+<p>Each tool follows the same factory pattern:</p>
 <pre><code class="language-typescript">// tools/&lt;name&gt;-tool.ts
-// create&lt;Name&gt;Tool() → returns tool definition with:
-//   - name: string
-//   - description: string
-//   - parameters: Zod schema
-//   - execute: function
+// create&lt;Name&gt;Tool(context: ExecutionContext) → returns tool() from &#x27;ai&#x27;
+//   - description: string (shown to AI model)
+//   - parameters: Zod schema (validated by AI SDK)
+//   - execute: async function with validated params
 </code></pre>
-<p><strong>Source:</strong> <code>src/tools/tool-utils.ts</code> for shared utilities.</p>
-<h2>Tool Utilities</h2>
-<pre><code class="language-typescript">// tools/tool-utils.ts
-// Shared helper functions used across tools
+<p>All tools receive an <code>ExecutionContext</code> containing:</p>
+<ul><li><code>workingDirectory: string</code> — the <code>.superdesign/</code> directory</li><li><code>sessionId: string</code> — unique session ID like <code>session_1720000000000</code></li><li><code>outputChannel: vscode.OutputChannel</code> — for logging</li><li><code>abortController?: AbortController</code> — for cancellation</li></ul>
+<p><strong>Source:</strong> <code>src/types/agent.ts</code> lines 17-22.</p>
+<h2>Shared Utilities: tool-utils.ts</h2>
+<p>Every tool imports from <code>tool-utils.ts</code> for shared validation and response formatting:</p>
+<pre><code class="language-typescript">// src/tools/tool-utils.ts:7-22
+export interface ToolErrorResponse {
+  success: false;
+  error: string;
+  error_type?: &#x27;validation&#x27; | &#x27;security&#x27; | &#x27;file_not_found&#x27; | &#x27;permission&#x27; | &#x27;execution&#x27; | &#x27;unknown&#x27;;
+  details?: any;
+}
+
+export interface ToolSuccessResponse {
+  success: true;
+  [key: string]: any;
+}
 </code></pre>
+<h3>Path Security</h3>
+<p>The <code>validateWorkspacePath()</code> function (lines 66-96) prevents directory traversal:</p>
+<pre><code class="language-typescript">// src/tools/tool-utils.ts:66-96
+export function validateWorkspacePath(filePath: string, context: ExecutionContext): ToolErrorResponse | null {
+  if (filePath.includes(&#x27;..&#x27;)) {
+    return handleToolError(&#x27;Path cannot contain &quot;..&quot; for security reasons&#x27;, &#x27;Path validation&#x27;, &#x27;security&#x27;);
+  }
+  // Normalize and check path is within workspace
+  const resolvedPath = path.isAbsolute(filePath) 
+    ? path.normalize(filePath) 
+    : path.resolve(context.workingDirectory, filePath);
+  if (!resolvedPath.startsWith(normalizedWorkspace)) {
+    return handleToolError(`Path must be within workspace directory`, &#x27;Security check&#x27;, &#x27;security&#x27;);
+  }
+  return null;
+}
+</code></pre>
+<p>The security model is simple but effective: no <code>..</code> allowed, and the resolved path must start with the workspace directory. Both absolute and relative paths are supported.</p>
+<h2>Key Tools</h2>
+<h3>Read Tool (<code>read-tool.ts</code>, 300 lines)</h3>
+<p><strong>Source:</strong> <code>src/tools/read-tool.ts</code></p>
+<p>Parameters:</p>
+<ul><li><code>filePath</code> (required) — relative or absolute path within workspace</li><li><code>startLine</code> (optional) — 1-based starting line</li><li><code>lineCount</code> (optional) — number of lines to read</li><li><code>encoding</code> (optional, default <code>utf-8</code>)</li></ul>
+<p>Constants:</p>
+<ul><li><code>DEFAULT_MAX_LINES = 1000</code></li><li><code>MAX_LINE_LENGTH = 2000</code> (longer lines are truncated)</li><li><code>MAX_FILE_SIZE_BYTES = 10 <em> 1024 </em> 1024</code> (10MB)</li></ul>
+<p>File type detection (<code>detectFileType</code>, line 82):</p>
+<ol><li>Check MIME type via <code>mime-types</code> — images → <code>'image'</code>, PDF → <code>'pdf'</code></li><li>Check known binary extensions (<code>.exe</code>, <code>.dll</code>, <code>.zip</code>, <code>.wasm</code>, etc.)</li><li>Content-based binary detection via <code>isBinaryFile()</code> — samples first 4KB, checks for null bytes and >30% non-printable characters</li></ol>
+<p>Text processing (<code>processTextFile</code>, line 119):</p>
+<ul><li>Splits by <code>\n</code>, applies line range</li><li>Truncates lines exceeding <code>MAX_LINE_LENGTH</code></li><li>Adds truncation notices like <code>[Content truncated: showing lines 1-1000 of 2500 total lines]</code></li></ul>
+<h3>Write Tool (<code>write-tool.ts</code>, 100 lines)</h3>
+<p><strong>Source:</strong> <code>src/tools/write-tool.ts</code></p>
+<p>Parameters:</p>
+<ul><li><code>path</code> (required) — file path</li><li><code>content</code> (required) — file content</li><li><code>overwrite</code> (optional) — whether to overwrite existing file</li></ul>
+<p>Creates parent directories automatically via <code>fs.mkdirSync({ recursive: true })</code>.</p>
+<h3>Edit Tool (<code>edit-tool.ts</code>, 196 lines)</h3>
+<p><strong>Source:</strong> <code>src/tools/edit-tool.ts</code></p>
+<p>Parameters:</p>
+<ul><li><code>path</code> (required) — file path</li><li><code>oldText</code> (required) — exact text to find</li><li><code>newText</code> (required) — replacement text</li><li><code>replaceAll</code> (optional) — replace all occurrences</li></ul>
+<p>Uses exact string matching — no regex. The AI must provide the exact whitespace and indentation to match.</p>
+<h3>Multiedit Tool (<code>multiedit-tool.ts</code>, 182 lines)</h3>
+<p><strong>Source:</strong> <code>src/tools/multiedit-tool.ts</code></p>
+<p>Parameters:</p>
+<ul><li><code>edits</code> (required) — array of <code>{path, oldText, newText}</code></li></ul>
+<p>Applies edits sequentially — each edit is applied to the result of the previous one on the same file.</p>
+<h3>Bash Tool (<code>bash-tool.ts</code>, 262 lines)</h3>
+<p><strong>Source:</strong> <code>src/tools/bash-tool.ts</code></p>
+<p>Parameters:</p>
+<ul><li><code>command</code> (required) — shell command</li><li><code>workingDirectory</code> (optional) — override working directory</li><li><code>timeout</code> (optional) — timeout in milliseconds</li></ul>
+<p>Uses <code>execa</code> for process execution with timeout and output capture.</p>
+<h3>Glob Tool (<code>glob-tool.ts</code>, 293 lines)</h3>
+<p><strong>Source:</strong> <code>src/tools/glob-tool.ts</code></p>
+<p>Parameters:</p>
+<ul><li><code>pattern</code> (required) — glob pattern like <code><em>*/</em>.ts</code></li><li><code>exclude</code> (optional) — patterns to exclude</li></ul>
+<p>Uses the <code>glob</code> package (v11) for file pattern matching.</p>
+<h3>Grep Tool (<code>grep-tool.ts</code>, 314 lines)</h3>
+<p><strong>Source:</strong> <code>src/tools/grep-tool.ts</code></p>
+<p>Parameters:</p>
+<ul><li><code>pattern</code> (required) — regex search pattern</li><li><code>path</code> (optional) — directory to search</li><li><code>include</code> (optional) — file pattern to include</li><li><code>exclude</code> (optional) — file pattern to exclude</li><li><code>caseSensitive</code> (optional)</li><li><code>maxResults</code> (optional)</li></ul>
+<h3>Ls Tool (<code>ls-tool.ts</code>, 226 lines)</h3>
+<p><strong>Source:</strong> <code>src/tools/ls-tool.ts</code></p>
+<p>Parameters:</p>
+<ul><li><code>path</code> (optional) — directory to list</li><li><code>recursive</code> (optional) — list recursively</li><li><code>maxDepth</code> (optional) — maximum recursion depth</li></ul>
+<h3>Theme Tool (<code>theme-tool.ts</code>, 89 lines)</h3>
+<p><strong>Source:</strong> <code>src/tools/theme-tool.ts</code></p>
+<p>This is SuperDesign's unique tool. Parameters:</p>
+<ul><li><code>theme_name</code> (required) — name for the theme</li><li><code>reasoning_reference</code> (required) — AI's reasoning for the design choices</li><li><code>cssSheet</code> (required) — full CSS content with <code>:root</code> custom properties</li><li><code>cssFilePath</code> (required) — where to write the CSS file</li><li><code>create_dirs</code> (optional, default <code>true</code>)</li></ul>
+<p>The tool validates the CSS sheet must include specific variables: <code>--background</code>, <code>--foreground</code>, <code>--primary</code>, <code>--font-sans</code>, <code>--font-serif</code>, <code>--font-mono</code>, <code>--radius</code>, <code>--spacing</code>, <code>--shadow-*</code> variants, and semantic colors (<code>--card</code>, <code>--popover</code>, <code>--muted</code>, <code>--accent</code>, <code>--destructive</code>, <code>--border</code>, <code>--input</code>, <code>--ring</code>).</p>
+<p><strong>Source:</strong> <code>src/tools/theme-tool.ts</code> lines 20-35 — the <code>cssSheetDescription</code> constant.</p>
+<h2>Tool Factory Architecture</h2>
+<p>Every tool follows the same factory pattern, receiving an <code>ExecutionContext</code> and returning a Vercel AI SDK <code>tool()</code> definition:</p>
+<div class="mermaid">
+flowchart TD
+    subgraph Query[&quot;CustomAgentService.query()&quot;]
+        EC[&quot;ExecutionContext
+        workingDirectory: &#x27;.superdesign/&#x27;
+        sessionId: &#x27;session_1720000000000&#x27;
+        outputChannel: OutputChannel
+        abortController: AbortController&quot;]
+    end
+
+    subgraph Factories[&quot;Tool Factories&quot;]
+        CRT[&quot;createReadTool(ctx)&quot;]
+        CWT[&quot;createWriteTool(ctx)&quot;]
+        CET[&quot;createEditTool(ctx)&quot;]
+        CMT[&quot;createMultieditTool(ctx)&quot;]
+        CBT[&quot;createBashTool(ctx)&quot;]
+        CGT[&quot;createGlobTool(ctx)&quot;]
+        CGRT[&quot;createGrepTool(ctx)&quot;]
+        CLT[&quot;createLsTool(ctx)&quot;]
+        CTT[&quot;createThemeTool(ctx)&quot;]
+    end
+
+    subgraph ToolsObj[&quot;tools object passed to streamText()&quot;]
+        T1[&quot;read: read_file&quot;]
+        T2[&quot;write: write_file&quot;]
+        T3[&quot;edit: edit_file&quot;]
+        T4[&quot;multiedit: multiedit&quot;]
+        T5[&quot;bash: bash&quot;]
+        T6[&quot;glob: glob&quot;]
+        T7[&quot;grep: grep&quot;]
+        T8[&quot;ls: ls&quot;]
+        T9[&quot;generateTheme: theme&quot;]
+    end
+
+    EC --&gt; CRT &amp; CWT &amp; CET &amp; CMT &amp; CBT &amp; CGT &amp; CGRT &amp; CLT &amp; CTT
+    CRT --&gt; T1
+    CWT --&gt; T2
+    CET --&gt; T3
+    CMT --&gt; T4
+    CBT --&gt; T5
+    CGT --&gt; T6
+    CGRT --&gt; T7
+    CLT --&gt; T8
+    CTT --&gt; T9
+
+    subgraph SDK[&quot;Vercel AI SDK streamText()&quot;]
+        ST[&quot;streamText({model, system, tools, maxSteps: 10})&quot;]
+    end
+
+    T1 &amp; T2 &amp; T3 &amp; T4 &amp; T5 &amp; T6 &amp; T7 &amp; T8 &amp; T9 --&gt; ST
+
+</div>
+<p><strong>Source:</strong> <code>src/services/customAgentService.ts</code> lines 603-622 — tool object construction.</p>
 <h2>Tool Execution Flow</h2>
 <div class="mermaid">
 sequenceDiagram
     participant AI as AI Model
     participant Agent as CustomAgentService
+    participant SDK as Vercel AI SDK
     participant Tool as Coding Tool
     participant FS as Filesystem
+    participant OC as OutputChannel
 
-    AI-&gt;&gt;Agent: Tool call request
-    Agent-&gt;&gt;Tool: Create tool with params
-    Tool-&gt;&gt;FS: Execute operation
-    FS--&gt;&gt;Tool: Result
-    Tool--&gt;&gt;Agent: Tool result
-    Agent-&gt;&gt;AI: Tool result in stream
-    AI--&gt;&gt;Agent: Next response (may call more tools)
+    AI-&gt;&gt;SDK: tool-call chunk
+    SDK-&gt;&gt;Agent: case &#x27;tool-call&#x27; chunk
+    Agent-&gt;&gt;Agent: Auto-executed by SDK streamText
+    Agent-&gt;&gt;Tool: execute(params)
+    Tool-&gt;&gt;Tool: validateWorkspacePath()
+    Tool-&gt;&gt;FS: file operation
+    FS--&gt;&gt;Tool: result
+    Tool--&gt;&gt;Agent: ToolResponse
+    Agent-&gt;&gt;OC: appendLine(&#x27;[tool] ...&#x27;)
+    SDK-&gt;&gt;Agent: case &#x27;tool-result&#x27; chunk
+    Agent-&gt;&gt;Agent: forward as CoreMessage
+    Agent--&gt;&gt;Webview: chatResponseChunk (tool-result)
 
 </div>
-<h2>Key Tools</h2>
-<h3>Read Tool</h3>
-<p>Reads file contents and returns them as a string. Used by the AI to understand existing code.</p>
-<p><strong>Source:</strong> <code>src/tools/read-tool.ts</code>.</p>
-<h3>Write Tool</h3>
-<p>Writes content to a file. Creates the file if it doesn't exist.</p>
-<p><strong>Source:</strong> <code>src/tools/write-tool.ts</code>.</p>
-<h3>Edit Tool</h3>
-<p>Performs search-and-replace editing on a file. More precise than write for small changes.</p>
-<p><strong>Source:</strong> <code>src/tools/edit-tool.ts</code>.</p>
-<h3>Bash Tool</h3>
-<p>Executes shell commands via <code>execa</code>. Used for build commands, package installs, etc.</p>
-<p><strong>Source:</strong> <code>src/tools/bash-tool.ts</code>.</p>
-<h3>Multiedit Tool</h3>
-<p>Edits multiple files simultaneously in a single operation. More efficient than multiple edit calls.</p>
-<p><strong>Source:</strong> <code>src/tools/multiedit-tool.ts</code>.</p>
-<h3>Theme Tool</h3>
-<p>Manages design themes — creating, reading, and applying theme configurations.</p>
-<p><strong>Source:</strong> <code>src/tools/theme-tool.ts</code>.</p>
+<h2>Aha Moments</h2>
+<p><strong>Aha: The Vercel AI SDK auto-executes tools — the extension never manually dispatches them.</strong> In <code>CustomAgentService.query()</code>, the tools object is passed to <code>streamText()</code> with <code>toolCallStreaming: true</code>. The AI SDK handles the entire tool call loop internally: when the model emits a <code>tool-call</code> chunk, the SDK automatically invokes the matching tool function and feeds the result back into the next step. The extension's role is purely observational — it reads the <code>fullStream</code> and forwards chunks to the webview. This means <code>maxSteps: 10</code> controls the maximum tool-call round-trips, and the extension never writes a <code>switch(toolName)</code> dispatcher. The <code>getTools()</code> method just returns an object mapping tool names to tool definitions.</p>
+<p><strong>Aha: Binary file detection samples only the first 4KB, not the entire file.</strong> The <code>isBinaryFile()</code> function (read-tool.ts:40-77) opens the file, reads a 4KB buffer, and checks for null bytes or >30% non-printable characters. This is a pragmatic tradeoff — sampling is O(1) regardless of file size, but it means a file with binary content only in its second 4KB block would be misclassified as text. The 30% threshold is generous enough to handle UTF-8 multi-byte characters while still catching most binary formats.</p>
+<p><strong>Aha: Tool responses use typed discriminated unions for error handling.</strong> Rather than throwing exceptions that bubble up as unhandled errors, every tool returns either <code>ToolSuccessResponse</code> (<code>{ success: true, ...data }</code>) or <code>ToolErrorResponse</code> (<code>{ success: false, error, error_type }</code>). The <code>error_type</code> field is a discriminated union of <code>'validation' | 'security' | 'file_not_found' | 'permission' | 'execution' | 'unknown'</code>, which allows the AI model to understand why a tool failed and potentially recover. A <code>security</code> error means the path escaped the workspace, while a <code>file_not_found</code> error means the AI can try creating the file first.</p>
 <h2>Next</h2>
 <p>Continue to <a href="04-webview-ui.md">04-webview-ui</a> for the React webview UI components.</p>
   </article>

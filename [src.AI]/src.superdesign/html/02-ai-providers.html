@@ -157,10 +157,73 @@ flowchart TD
 </div>
 <p><strong>Aha:</strong> The provider is determined by a combination of <code>aiModelProvider</code> setting and the model name prefix. If the model contains <code>/</code>, it uses OpenRouter. If it starts with <code>claude-</code>, it uses Anthropic. Otherwise, OpenAI.</p>
 <p><strong>Source:</strong> <code>src/services/customAgentService.ts</code> lines 80-163.</p>
+<h2>Provider Resolution Flow</h2>
+<p>When the AI provider is determined, the resolution follows a two-tier cascade:</p>
+<div class="mermaid">
+flowchart TD
+    ReadCfg[&quot;Read VS Code config
+    aiModelProvider, aiModel&quot;] --&gt; HasModel{&quot;aiModel set?&quot;}
+
+    HasModel --&gt;|&quot;Yes&quot;| Infer{&quot;Model name analysis&quot;}
+    HasModel --&gt;|&quot;No&quot;| UseDefault[&quot;Use default for aiModelProvider&quot;]
+
+    Infer --&gt; ContainsSlash{&quot;Model contains &#x27;/&#x27;?&quot;}
+    ContainsSlash --&gt;|&quot;Yes&quot;| RouteOR[&quot;OpenRouter
+    e.g. google/gemini-2.5-pro&quot;]
+    ContainsSlash --&gt;|&quot;No&quot;| StartsWithClaude{&quot;Starts with &#x27;claude-&#x27;?&quot;}
+    StartsWithClaude --&gt;|&quot;Yes&quot;| RouteAnth[&quot;Anthropic
+    e.g. claude-3-5-sonnet-20241022&quot;]
+    StartsWithClaude --&gt;|&quot;No&quot;| RouteOpenAI[&quot;OpenAI
+    e.g. gpt-4o&quot;]
+
+    UseDefault --&gt; DefAnthropic[&quot;Default: claude-3-5-sonnet-20241022&quot;]
+    RouteOR --&gt; CheckKeyOR[&quot;Validate OpenRouter API key&quot;]
+    RouteAnth --&gt; CheckKeyAnth[&quot;Validate Anthropic API key + Helicone proxy&quot;]
+    RouteOpenAI --&gt; CheckKeyOpenAI[&quot;Validate OpenAI API key + Helicone proxy&quot;]
+    DefAnthropic --&gt; CheckKeyAnth
+
+    CheckKeyOR --&gt; CreateModel[&quot;createProvider(model)&quot;]
+    CheckKeyAnth --&gt; CreateModel
+    CheckKeyOpenAI --&gt; CreateModel
+
+</div>
+<p><strong>Source:</strong> <code>src/services/customAgentService.ts</code> lines 80-163 — <code>getModel()</code> method.</p>
 <h2>Provider Configuration</h2>
 <table><tr><th>Provider</th><th>API Key Setting</th><th>Default Model</th><th>Helicone Proxy</th></tr><tr><td>Anthropic</td><td>`superdesign.anthropicApiKey`</td><td>`claude-3-5-sonnet-20241022`</td><td>Yes (`anthropic.helicone.ai`)</td></tr><tr><td>OpenAI</td><td>`superdesign.openaiApiKey`</td><td>`gpt-4o`</td><td>Yes (`oai.helicone.ai`)</td></tr><tr><td>OpenRouter</td><td>`superdesign.openrouterApiKey`</td><td>`anthropic/claude-3-7-sonnet-20250219`</td><td>No</td></tr><tr><td>Google</td><td>`superdesign.googleApiKey`</td><td>—</td><td>No</td></tr></table>
-<p><strong>Aha:</strong> Anthropic and OpenAI providers use Helicone as a proxy for observability and caching. The Helicone auth header is hardcoded in the SDK configuration, meaning all requests through these providers go through Helicone's proxy layer.</p>
+<p><strong>Aha:</strong> Anthropic and OpenAI providers use Helicone as a proxy for observability and caching. The Helicone auth header is hardcoded in the SDK configuration, meaning all requests through these providers go through Helicone's proxy layer. OpenRouter connects directly without a proxy.</p>
 <p><strong>Source:</strong> <code>src/services/customAgentService.ts</code> lines 120-162.</p>
+<h2>Provider SDK Construction Sequence</h2>
+<div class="mermaid">
+sequenceDiagram
+    participant Query as CustomAgentService.query()
+    participant GetModel as getModel()
+    participant Config as vscode.workspace.getConfiguration()
+    participant SDK as AI SDK Factory
+    participant Model as Model Instance
+
+    Query-&gt;&gt;GetModel: this.getModel()
+    GetModel-&gt;&gt;Config: get(&#x27;aiModelProvider&#x27;)
+    GetModel-&gt;&gt;Config: get(&#x27;aiModel&#x27;)
+    GetModel-&gt;&gt;GetModel: Infer effectiveProvider
+    alt openrouter
+        GetModel-&gt;&gt;Config: get(&#x27;openrouterApiKey&#x27;)
+        GetModel-&gt;&gt;SDK: createOpenRouter({apiKey})
+        SDK--&gt;&gt;GetModel: openrouter provider
+        GetModel-&gt;&gt;Model: openrouter.chat(&#x27;anthropic/claude-3-7-sonnet&#x27;)
+    else anthropic
+        GetModel-&gt;&gt;Config: get(&#x27;anthropicApiKey&#x27;)
+        GetModel-&gt;&gt;SDK: createAnthropic({apiKey, baseURL: helicone})
+        SDK--&gt;&gt;GetModel: anthropic provider
+        GetModel-&gt;&gt;Model: anthropic(&#x27;claude-3-5-sonnet-20241022&#x27;)
+    else openai
+        GetModel-&gt;&gt;Config: get(&#x27;openaiApiKey&#x27;)
+        GetModel-&gt;&gt;SDK: createOpenAI({apiKey, baseURL: helicone})
+        SDK--&gt;&gt;GetModel: openai provider
+        GetModel-&gt;&gt;Model: openai(&#x27;gpt-4o&#x27;)
+    end
+    Model--&gt;&gt;Query: Model instance for streamText()
+
+</div>
 <h2>Streaming</h2>
 <p>The agent uses <code>streamText()</code> from the Vercel AI SDK:</p>
 <pre><code class="language-typescript">import { streamText, CoreMessage } from &#x27;ai&#x27;;
