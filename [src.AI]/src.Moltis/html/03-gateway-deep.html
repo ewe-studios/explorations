@@ -124,7 +124,7 @@
   <nav class="nav">
     <span class="nav-brand">~/src.Moltis/docs</span>
     <div class="nav-actions">
-      <a href="02-gateway.html" class="nav-breadcrumb">Configuration: Loading, Validation, and Schema</a><a href="03-agents-chat.html" class="nav-breadcrumb">Agents and Chat: How a Message Flows Through the System</a><a href="03-channels.html" class="nav-breadcrumb">Moltis Channels — ChannelPlugin Trait, Webhook Middleware, Per-Channel Implementations</a>
+      <a href="02-gateway.html" class="nav-breadcrumb">Gateway: Central Hub Architecture</a><a href="03-agents-chat.html" class="nav-breadcrumb">Agents and Chat: How a Message Flows Through the System</a><a href="03-channels.html" class="nav-breadcrumb">Moltis Channels — ChannelPlugin Trait, Webhook Middleware, Per-Channel Implementations</a>
       <a href="index.html" class="nav-btn" title="Back to index">index</a>
       <a href="03-channels.html" class="nav-btn" title="Previous: Moltis Channels — ChannelPlugin Trait, Webhook Middleware, Per-Channel Implementations">← prev</a>
       <a href="04-channels.html" class="nav-btn nav-btn-next" title="Next: Channels: How Messages Flow In and Out">next →</a>
@@ -135,6 +135,82 @@
 <h1>Moltis Deep Dive: Voice, Channels, Agents, Providers, Native Apps</h1>
 <p>Comprehensive source-level documentation covering the full Moltis system: voice configuration with 11 STT and 6 TTS providers, channel implementations (WhatsApp via Linked Devices, Slack via webhooks, Discord via Serenity gateway), the agent loop with parallel tool execution, provider registry with 10+ providers, native iOS/macOS apps with FFI bridges, and the full startup sequence.</p>
 <p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/</code></p>
+<hr>
+<h2>Full System Data Flow: Voice + Channel + Agent</h2>
+<div class="mermaid">
+flowchart TD
+    VoiceInput[&quot;Voice Input (audio)&quot;]
+    STT[&quot;STT Pipeline\n11 providers: Whisper, Deepgram,\nElevenLabs, Google, Groq, etc.&quot;]
+    Transcript[&quot;Transcript {text, confidence, words}&quot;]
+    ChannelInput[&quot;Channel Message\nWhatsApp/Telegram/Discord/etc.&quot;]
+    GW[&quot;Gateway\ngateway/src/methods/&quot;]
+    RunTools[&quot;run_with_tools()\nchat/src/run_with_tools.rs&quot;]
+    AgentLoop[&quot;Agent Loop\nagents/src/runner/streaming.rs&quot;]
+    Provider[&quot;LLM Provider\nanthropic/openai/ollama&quot;]
+    ToolExec[&quot;Tool Execution\ntools/src/&quot;]
+    TTS[&quot;TTS Pipeline\n6 providers: ElevenLabs,\nOpenAI, Google, Coqui, Piper&quot;]
+    AudioOut[&quot;Audio Output (mp3/opus/wav)&quot;]
+    ChannelOut[&quot;Channel Outbound\nsend_message/send_stream_chunk&quot;]
+
+    VoiceInput --&gt; STT
+    STT --&gt; Transcript
+    Transcript --&gt; ChannelInput
+    ChannelInput --&gt; GW
+    GW --&gt; RunTools
+    RunTools --&gt; AgentLoop
+    AgentLoop --&gt; Provider
+    Provider --&gt; AgentLoop
+    AgentLoop --&gt; ToolExec
+    ToolExec --&gt; AgentLoop
+    AgentLoop --&gt; TTS
+    TTS --&gt; AudioOut
+    AgentLoop --&gt; ChannelOut
+
+</div>
+<h2>Gateway Startup: From Config to Running Server</h2>
+<div class="mermaid">
+sequenceDiagram
+    participant Main as courier/main.rs
+    participant Core as prepare_core.rs
+    participant Config as moltis_config
+    participant Auth as moltis_auth
+    participant Channels as init_channels
+    participant Memory as init_memory
+    participant CodeIdx as init_code_index
+    participant Cron as cron tasks
+    participant MCP as mcp_service
+    participant Registry as ProviderRegistry
+    participant State as GatewayState
+    participant HTTPD as moltis-httpd
+
+    Main-&gt;&gt;Core: prepare_gateway_core()
+    Core-&gt;&gt;Config: discover_and_load()
+    Core-&gt;&gt;Auth: resolve_auth(token, password)
+    Core-&gt;&gt;Core: validate_proxy_tls()
+    Core-&gt;&gt;Core: migrate_voice_keys_to_key_store()
+    Core-&gt;&gt;Core: config_with_saved_keys()
+    Core-&gt;&gt;Core: detect_auto_provider_sources()
+    Core-&gt;&gt;Registry: ProviderRegistry::new()
+    Core-&gt;&gt;State: LiveSessionService::new()
+    Core-&gt;&gt;State: LiveModelService::new()
+    Core-&gt;&gt;Channels: init(config)
+    Core-&gt;&gt;Memory: init(config)
+    Core-&gt;&gt;CodeIdx: init(config)
+    Core-&gt;&gt;Core: seed_default_workspace_markdown()
+    Core-&gt;&gt;Cron: maybe_deliver_cron_output()
+    Core--&gt;&gt;Main: PreparedGatewayCore
+    Main-&gt;&gt;HTTPD: start_server(core, config)
+    HTTPD--&gt;&gt;Main: server running
+
+</div>
+<h2>Aha: Gateway Startup is Transport-Agnostic</h2>
+<p>The <code>prepare_gateway_core()</code> function returns a <code>PreparedGatewayCore</code> that is completely transport-agnostic. It builds all state, services, and method handlers without knowing whether the transport will be HTTP, WebSocket, or FFI. The HTTP/WS server lives in <code>moltis-httpd</code> and takes the prepared core as input. This means the same gateway logic powers the server, the macOS app (via swift-bridge FFI), and any future transport layer. See <code>gateway/src/server/prepare_core.rs:600-653</code>.</p>
+<h2>Aha: Voice API Keys Migrate to Credential Store at Startup</h2>
+<p>On every gateway startup, <code>migrate_voice_keys_to_key_store()</code> runs to migrate legacy voice API keys from the config file into the encrypted credential store. This means users who configured voice providers via environment variables or config files get automatic migration — their keys are securely stored without any manual action. See <code>gateway/src/server/prepare_core.rs</code> line 619.</p>
+<h2>Aha: Workspace Markdown Is Seeded at Startup</h2>
+<p>The <code>seed_default_workspace_markdown_files()</code> call in <code>prepare_gateway_core()</code> creates initial markdown files in the workspace directory on first run. This means new Moltis installations get example documentation, project context, and agent boot texts pre-populated — the agent has content to work with from the very first message. See <code>gateway/src/server/prepare_core.rs</code>.</p>
+<h2>Aha: Provider Auto-Detection Reads Environment Variables</h2>
+<p>The <code>detect_auto_provider_sources_with_overrides()</code> function scans environment variables (<code>OPENAI_API_KEY</code>, <code>ANTHROPIC_API_KEY</code>, <code>GROQ_API_KEY</code>, <code>GEMINI_API_KEY</code>, <code>OLLAMA_BASE_URL</code>) to automatically register providers without explicit config. If the user has set ANY explicit provider settings in their config file, auto-detection is skipped entirely — explicit config always wins. When <code>deploy_platform</code> is set (cloud deployment), local providers are hidden from the auto-detected list.</p>
 <hr>
 <h2>Voice: 11 STT Providers, 6 TTS Providers</h2>
 <p><strong>Source:</strong> <code>crates/voice/src/</code></p>

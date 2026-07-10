@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RAC Ingest Pipeline and OKF (Open Knowledge Format) -- src.Wayfinder</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.Wayfinder/docs</span>
+    <div class="nav-actions">
+      <a href="11-explorer-tui.html" class="nav-breadcrumb">11 - Explorer TUI</a><a href="12-skills-agent-rules.html" class="nav-breadcrumb">Skills System and Agent Rules Projection — Deep Dive</a><a href="13-portfolio-gate.html" class="nav-breadcrumb">13-portfolio-gate — Portfolio Health Scoring and Gate Enforcement Deep Dive</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="13-portfolio-gate.html" class="nav-btn" title="Previous: 13-portfolio-gate — Portfolio Health Scoring and Gate Enforcement Deep Dive">← prev</a>
+      <a href="15-mcp-server.html" class="nav-btn nav-btn-next" title="Next: RAC MCP Server (Lore)">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>RAC Ingest Pipeline and OKF (Open Knowledge Format)</h1>
+<p>The ingest pipeline converts source documents (DOCX, PDF, HTML, PPTX, XLS, Markdown) into Markdown that enters the RAC workflow. OKF (Open Knowledge Format) is the carrier profile (ADR-048) that defines how a RAC corpus is exported as a portable bundle of Markdown files with <code>index.md</code> and <code>log.md</code> entry points. Together they form the input and output faces of RAC's knowledge management: ingest brings external documents in, OKF carries the authoritative corpus out.</p>
+<p>Source: <code>rac-core/src/rac/services/ingest.py</code>, <code>rac-core/src/rac/core/okf.py</code>, <code>rac-core/src/rac/output/okf.py</code>, <code>rac-core/src/rac/services/okf_conformance.py</code>, <code>rac-core/src/rac/services/export.py</code></p>
+<hr>
+<h2>Ingest Pipeline: DocumentConverter Protocol Pattern</h2>
+<p>The ingest pipeline uses a <strong>Protocol-based registry</strong> pattern. Converters declare the file extensions they handle, and <code>converter_for()</code> returns the first match. Per ADR-008 (agent-ready architecture), the CLI is a thin wrapper; new sources are added by registering another converter without changing the CLI.</p>
+<p><strong>Source:</strong> <code>rac-core/src/rac/services/ingest.py:40-52</code></p>
+<pre><code class="language-python">@runtime_checkable
+class DocumentConverter(Protocol):
+    &quot;&quot;&quot;Turns a source document into Markdown.
+
+    Implementations declare the file extensions they handle and convert a path
+    to a Markdown string. They should raise :class:`ConversionError` on failure.
+    &quot;&quot;&quot;
+
+    name: str
+    extensions: tuple[str, ...]
+
+    def convert(self, path: Path) -&gt; str: ...
+</code></pre>
+<p>The protocol requires three things: a <code>name</code> string (used in <code>IngestResult.converter</code>), an <code>extensions</code> tuple (used for matching), and a <code>convert(path)</code> method that returns Markdown text. The <code>@runtime_checkable</code> decorator enables <code>isinstance()</code> checks at runtime.</p>
+<p>The registry is a simple ordered list, explicit even though extension sets are currently disjoint:</p>
+<p><strong>Source:</strong> <code>rac-core/src/rac/services/ingest.py:125-136</code></p>
+<pre><code class="language-python"># Registry — first converter whose extensions match wins. Order is not currently
+# significant since extension sets are disjoint, but kept explicit for clarity.
+_CONVERTERS: list[DocumentConverter] = [MarkdownConverter(), MarkItDownConverter()]
+
+
+def converter_for(path: Path) -&gt; DocumentConverter | None:
+    &quot;&quot;&quot;Return the converter that handles ``path``&#x27;s extension, or None.&quot;&quot;&quot;
+    suffix = path.suffix.lower()
+    for converter in _CONVERTERS:
+        if suffix in converter.extensions:
+            return converter
+    return None
+
+
+def supported_extensions() -&gt; list[str]:
+    &quot;&quot;&quot;All file extensions any registered converter can handle.&quot;&quot;&quot;
+    return sorted({ext for c in _CONVERTERS for ext in c.extensions})
+</code></pre>
+<p><strong>Aha:</strong> The registry order is preserved explicitly even though the current extension sets are disjoint (<code>.md</code>/<code>.markdown</code> vs <code>.docx</code>/<code>.pdf</code>/<code>.html</code>/<code>.htm</code>/<code>.pptx</code>/<code>.xls</code>/<code>.xlsx</code>). This is forward-proofing: when a third converter is added (e.g., a Notion converter), the order will matter for any overlapping extensions. The pattern avoids the <code>match/case</code> or <code>if-elif</code> sprawl that plagues format dispatch code -- adding a converter is one class and one list append.</p>
+<p>The ingestion entry point ties everything together:</p>
+<p><strong>Source:</strong> <code>rac-core/src/rac/services/ingest.py:144-158</code></p>
+<pre><code class="language-python">def ingest(path: str) -&gt; IngestResult:
+    &quot;&quot;&quot;Convert ``path`` to Markdown, preserving its structure.
+
+    Raises :class:`UnsupportedDocument` for unhandled file types and
+    :class:`ConversionError` when a recognized document fails to convert.
+    &quot;&quot;&quot;
+    p = Path(path)
+    converter = converter_for(p)
+    if converter is None:
+        raise UnsupportedDocument(
+            f&quot;unsupported file type &#x27;{p.suffix or p.name}&#x27;. &quot;
+            f&quot;Supported: {&#x27;, &#x27;.join(supported_extensions())}&quot;
+        )
+    markdown = converter.convert(p)
+    return IngestResult(source_path=str(p), converter=converter.name, markdown=markdown)
+</code></pre>
+<p>The result is a typed dataclass (ADR-003: structured outputs):</p>
+<p><strong>Source:</strong> <code>rac-core/src/rac/services/ingest.py:31-38</code></p>
+<pre><code class="language-python">@dataclass
+class IngestResult:
+    &quot;&quot;&quot;Typed result of an ingestion (ADR-003: structured outputs).&quot;&quot;&quot;
+
+    source_path: str
+    converter: str  # name of the converter that produced the Markdown
+    markdown: str
+</code></pre>
+<p>The error hierarchy is two-level:</p>
+<p><strong>Source:</strong> <code>rac-core/src/rac/services/ingest.py:23-29</code></p>
+<pre><code class="language-python">class ConversionError(RACError):
+    &quot;&quot;&quot;A document was recognized but could not be converted.&quot;&quot;&quot;
+
+
+class UnsupportedDocument(ConversionError):
+    &quot;&quot;&quot;The file type has no registered converter (or a needed extra is missing).&quot;&quot;&quot;
+</code></pre>
+<p><code>ConversionError</code> is the base: the file type was recognized, but conversion failed (e.g., a corrupted DOCX). <code>UnsupportedDocument</code> is the subtype: no converter handles this extension, or the required optional dependency is missing. Both inherit from <code>RACError</code>.</p>
+<hr>
+<h2>MarkdownConverter: Zero-Dependency Pass-Through</h2>
+<p><strong>Source:</strong> <code>rac-core/src/rac/services/ingest.py:54-61</code></p>
+<pre><code class="language-python">class MarkdownConverter:
+    &quot;&quot;&quot;Pass-through for files already in Markdown — needs no extra dependency.&quot;&quot;&quot;
+
+    name = &quot;markdown&quot;
+    extensions: tuple[str, ...] = (&quot;.md&quot;, &quot;.markdown&quot;)
+
+    def convert(self, path: Path) -&gt; str:
+        return path.read_text(encoding=&quot;utf-8&quot;)
+</code></pre>
+<p>This is the simplest converter in the registry. It reads the file as UTF-8 text and returns it unchanged. No parsing, no transformation, no dependency. This matters because <code>rac ingest file.md</code> works with the core install -- no optional extras needed. It also means the ingest pipeline handles the case where a team already has Markdown artifacts and wants to normalize or validate them through RAC.</p>
+<hr>
+<h2>MarkItDownConverter: Lazy Import for Optional Dependency</h2>
+<p><strong>Source:</strong> <code>rac-core/src/rac/services/ingest.py:64-89</code></p>
+<pre><code class="language-python">class MarkItDownConverter:
+    &quot;&quot;&quot;Convert rich documents to Markdown via MarkItDown (optional dependency).
+
+    Imported lazily so the core install (and `rac ingest file.md`) works without
+    the `ingest` extra installed.
+    &quot;&quot;&quot;
+
+    name = &quot;markitdown&quot;
+    # HTML needs no extra (built into MarkItDown); the others come from the
+    # corresponding markitdown extras, exposed as our granular ingest extras.
+    extensions: tuple[str, ...] = (&quot;.docx&quot;, &quot;.pdf&quot;, &quot;.html&quot;, &quot;.htm&quot;, &quot;.pptx&quot;, &quot;.xls&quot;, &quot;.xlsx&quot;)
+
+    def convert(self, path: Path) -&gt; str:
+        try:
+            from markitdown import MarkItDown
+        except ModuleNotFoundError as exc:
+            raise UnsupportedDocument(_missing_extra_message(path.suffix)) from exc
+
+        try:
+            result = MarkItDown().convert(str(path))
+        except Exception as exc:  # MarkItDown raises a variety of errors
+            if _is_missing_dependency(exc):
+                # MarkItDown is installed but this format&#x27;s reader extra isn&#x27;t.
+                raise UnsupportedDocument(_missing_extra_message(path.suffix)) from exc
+            raise ConversionError(f&quot;could not convert {path.name}: {exc}&quot;) from exc
+        return result.text_content
+</code></pre>
+<p>MarkItDown is an <strong>optional dependency</strong>. The import is deferred to <code>convert()</code> time rather than module load time. This means <code>rac ingest file.md</code> never touches MarkItDown at all -- the <code>MarkdownConverter</code> handles it first.</p>
+<p>The supported extensions map to granular pip extras:</p>
+<p><strong>Source:</strong> <code>rac-core/src/rac/services/ingest.py:92-105</code></p>
+<pre><code class="language-python"># Which optional extra provides the reader for a given file type. HTML/HTM need
+# no extra (built into MarkItDown), so they fall back to the base `ingest`.
+_EXTRA_FOR_SUFFIX = {
+    &quot;.docx&quot;: &quot;ingest&quot;,
+    &quot;.pdf&quot;: &quot;ingest-pdf&quot;,
+    &quot;.pptx&quot;: &quot;ingest-office&quot;,
+    &quot;.xls&quot;: &quot;ingest-office&quot;,
+    &quot;.xlsx&quot;: &quot;ingest-office&quot;,
+}
+
+
+def _missing_extra_message(suffix: str) -&gt; str:
+    extra = _EXTRA_FOR_SUFFIX.get(suffix.lower(), &quot;ingest&quot;)
+    return f&quot;converting &#x27;{suffix}&#x27; needs the {extra} extra: pip install &#x27;rac-core[{extra}]&#x27;&quot;
+</code></pre>
+<p>HTML and HTM are the only extensions that need no extra -- they are built into MarkItDown's base install. DOCX needs <code>ingest</code>, PDF needs <code>ingest-pdf</code>, and the Office formats (PPTX, XLS, XLSX) need <code>ingest-office</code>.</p>
+<hr>
+<h2>Missing Dependency Detection</h2>
+<p><strong>Source:</strong> <code>rac-core/src/rac/services/ingest.py:108-122</code></p>
+<pre><code class="language-python">def _is_missing_dependency(exc: Exception) -&gt; bool:
+    &quot;&quot;&quot;True if ``exc`` is (or wraps) a MarkItDown missing-dependency error.&quot;&quot;&quot;
+    try:
+        from markitdown._exceptions import MissingDependencyException
+    except Exception:  # pragma: no cover - defensive
+        return False
+    if isinstance(exc, MissingDependencyException):
+        return True
+    # MarkItDown wraps converter failures in FileConversionException(attempts=...),
+    # each attempt carrying the original error in .exc_info = (type, value, tb).
+    for attempt in getattr(exc, &quot;attempts&quot;, None) or []:
+        info = getattr(attempt, &quot;exc_info&quot;, None)
+        if info and isinstance(info[1], MissingDependencyException):
+            return True
+    return False
+</code></pre>
+<p><strong>Aha:</strong> MarkItDown has a two-layer error model that must be navigated. The base <code>MissingDependencyException</code> catches the direct case (MarkItDown is not installed at all). But when MarkItDown <em>is</em> installed and a specific format's reader extra is missing, it wraps the error in a <code>FileConversionException</code> with an <code>attempts</code> list, where each attempt carries <code>exc_info = (type, value, tb)</code>. The detection function unpacks this wrapper by iterating <code>attempts</code> and checking <code>info[1]</code> (the <code>value</code> from the exception info tuple). Without this unwrapping, a missing <code>ingest-pdf</code> extra would surface as a generic <code>ConversionError</code> instead of the actionable <code>UnsupportedDocument</code> with a pip install hint.</p>
+<hr>
+<h2>Ingest Pipeline Flow</h2>
+<div class="mermaid">
+flowchart TD
+    A[ingest path] --&gt; B{converter_for path}
+    B --&gt;|no match| C[raise UnsupportedDocument]
+    B --&gt;|MarkdownConverter| D[read_text utf-8]
+    B --&gt;|MarkItDownConverter| E{MarkItDown installed?}
+    E --&gt;|no| F[raise UnsupportedDocument + pip hint]
+    E --&gt;|yes| G{MarkItDown.convert succeeds?}
+    G --&gt;|missing dep extra| H[_is_missing_dependency detects]
+    H --&gt; F
+    G --&gt;|other error| I[raise ConversionError]
+    G --&gt;|success| J[result.text_content]
+    D --&gt; K[IngestResult]
+    J --&gt; K
+    K --&gt; L[source_path, converter, markdown]
+
+</div>
+<hr>
+<h2>OKF v0.1: Open Knowledge Format Carrier Profile</h2>
+<p>OKF (ADR-048) is an <strong>informative carrier profile</strong> -- it defines how a RAC corpus is exported as a portable bundle, but OKF is never a source format. The RAC corpus stays authoritative; the OKF bundle is a derived, deterministic view.</p>
+<p>The core constants live in <code>rac.core.okf</code> so all consumers share one definition:</p>
+<p><strong>Source:</strong> <code>rac-core/src/rac/core/okf.py:1-28</code></p>
+<pre><code class="language-python">&quot;&quot;&quot;OKF v0.1 carrier-profile constants (ADR-048).
+
+The RAC ``type`` -&gt; OKF ``type`` mapping and OKF&#x27;s reserved filenames live here,
+in core, so the OKF bundle export (``output/okf.py``) and the write-time OKF
+conformance check (``services/okf_conformance.py``) share one definition
+(ADR-002: a single deterministic source of truth). ADR-048 makes OKF an
+informative carrier profile; these constants are the checkable part of it.
+&quot;&quot;&quot;
+
+# RAC ``type`` -&gt; OKF ``type`` (ADR-048; docs/okf-profile.md is the normative
+# statement). The five enumerated RAC types map one-to-one. A registered RAC type
+# absent here is an OKF conformance error, never a silent drop from the bundle.
+OKF_TYPE = {
+    &quot;requirement&quot;: &quot;Requirement&quot;,
+    &quot;decision&quot;: &quot;ADR&quot;,
+    &quot;design&quot;: &quot;Design&quot;,
+    &quot;roadmap&quot;: &quot;Roadmap&quot;,
+    &quot;prompt&quot;: &quot;Prompt&quot;,
+}
+
+# OKF reserves these filenames for generated entry points: ``index.md`` for
+# progressive disclosure and ``log.md`` for chronological history. A *typed
+# artifact* at one of these paths would collide with the generated bundle file
+# (a conformance error); an *untyped* document at index.md/log.md is a legitimate
+# reserved entry point and is left alone (ADR-010).
+RESERVED_FILENAMES = (&quot;index.md&quot;, &quot;log.md&quot;)
+</code></pre>
+<p>The mapping is one-to-one and uppercase. A RAC <code>requirement</code> becomes an OKF <code>Requirement</code>, a <code>decision</code> becomes an <code>ADR</code>, and so on. The design explicitly guards against future type additions: if a new RAC type is added to the system but forgotten from <code>OKF_TYPE</code>, the conformance check will catch it as an <code>okf-unmapped-type</code> error rather than silently excluding the artifact from the bundle.</p>
+<hr>
+<h2>Reserved Filenames: index.md and log.md</h2>
+<p>OKF reserves two filenames for generated entry points:</p>
+<table><tr><th>Filename</th><th>Purpose</th><th>Typed artifact collision</th><th>Untyped document</th></tr><tr><td>`index.md`</td><td>Progressive disclosure: overview, then artifacts grouped by type</td><td>`okf-reserved-filename-collision` error</td><td>Legitimate reserved entry point, left alone (ADR-010)</td></tr><tr><td>`log.md`</td><td>Chronological history grouped by commit date, newest first</td><td>`okf-reserved-filename-collision` error</td><td>Legitimate reserved entry point, left alone (ADR-010)</td></tr></table>
+<p>The distinction matters: a typed artifact named <code>index.md</code> would collide with the generated index and produce a conformance error. But an untyped document at <code>index.md</code> is exactly what the reserved entry point is -- it's the generated file itself, not a collision.</p>
+<hr>
+<h2>OKF Bundle Structure</h2>
+<p>An OKF bundle is a <code>{relative path: file contents}</code> mapping. Each typed artifact becomes one Markdown file at its corpus-relative path, plus two generated files:</p>
+<pre><code class="language-">bundle/
+  index.md          &lt;- generated: knowledge index with artifacts by type
+  log.md            &lt;- generated: chronological history by commit date
+  decisions/
+    DEC-001.md      &lt;- one OKF artifact file per typed artifact
+  requirements/
+    REQ-001.md
+  designs/
+    DES-001.md
+</code></pre>
+<p>Each artifact file projects the RAC frontmatter to OKF type and appends a derived <code># Citations</code> section from resolved relationships:</p>
+<p><strong>Source:</strong> <code>rac-core/src/rac/output/okf.py:58-81</code></p>
+<pre><code class="language-python">def _artifact_file(
+    art: ExportArtifact,
+    citations: list[tuple[str, str]],
+    created: str | None,
+    updated: str | None,
+) -&gt; str:
+    &quot;&quot;&quot;One OKF artifact file: projected front matter, body, derived citations.
+
+    OKF-reserved descriptive fields (ADR-050), projected present-only so the
+    bundle stays minimal and deterministic: ``tags`` from the source frontmatter,
+    ``created``/``updated`` derived from git (never stored in source, ADR-045).
+    &quot;&quot;&quot;
+    front = [&quot;---&quot;, f&quot;type: {OKF_TYPE[art.type]}&quot;, f&quot;id: {art.id}&quot;]
+    if created is not None:
+        front.append(f&quot;created: {created}&quot;)
+    if updated is not None:
+        front.append(f&quot;updated: {created}&quot;)
+    if art.tags:
+        front.append(f&quot;tags: [{&#x27;, &#x27;.join(art.tags)}]&quot;)
+    lines = [*front, &quot;---&quot;, &quot;&quot;, _body(art.path)]
+    if citations:
+        lines += [&quot;&quot;, &quot;# Citations&quot;, &quot;&quot;]
+        lines += [f&quot;- [{title}]({path})&quot; for title, path in citations]
+    return &quot;\n&quot;.join(lines) + &quot;\n&quot;
+</code></pre>
+<p>The frontmatter carries the OKF-projected <code>type</code>, the canonical <code>id</code>, git-derived <code>created</code>/<code>updated</code> timestamps (never stored in source per ADR-045), and <code>tags</code> from the source frontmatter. The body is the artifact's Markdown with frontmatter stripped. Resolved relationships become links in a <code># Citations</code> section.</p>
+<p>The <code>index.md</code> provides progressive disclosure:</p>
+<p><strong>Source:</strong> <code>rac-core/src/rac/output/okf.py:106-125</code></p>
+<pre><code class="language-python">_INDEX_SECTIONS: tuple[tuple[str, str], ...] = (
+    (&quot;requirement&quot;, &quot;Requirements&quot;),
+    (&quot;decision&quot;, &quot;Decisions&quot;),
+    (&quot;design&quot;, &quot;Designs&quot;),
+    (&quot;roadmap&quot;, &quot;Roadmaps&quot;),
+    (&quot;prompt&quot;, &quot;Prompts&quot;),
+)
+
+def _index(export: CorpusExport, rel: dict[str, str]) -&gt; str:
+    &quot;&quot;&quot;``index.md`` -- progressive disclosure: overview, then artifacts by type.&quot;&quot;&quot;
+    count = export.artifact_count
+    noun = &quot;artifact&quot; if count == 1 else &quot;artifacts&quot;
+    lines = [
+        f&quot;# {export.corpus_name} -- Knowledge Index&quot;,
+        &quot;&quot;,
+        f&quot;A derived OKF bundle of {count} {noun}. The RAC corpus is authoritative;&quot;
+        &quot; this index is a generated entry point.&quot;,
+    ]
+    by_type: dict[str, list[ExportArtifact]] = {}
+    for art in export.artifacts:
+        by_type.setdefault(art.type, []).append(art)
+    for type_name, heading in _INDEX_SECTIONS:
+        members = by_type.get(type_name)
+        if not members:
+            continue
+        lines += [&quot;&quot;, f&quot;## {heading}&quot;, &quot;&quot;]
+        lines += [f&quot;- [{art.title}]({rel[art.path]})&quot; for art in members]
+    return &quot;\n&quot;.join(lines) + &quot;\n&quot;
+</code></pre>
+<p>The <code>log.md</code> groups artifacts by commit date, newest first:</p>
+<p><strong>Source:</strong> <code>rac-core/src/rac/output/okf.py:128-147</code></p>
+<pre><code class="language-python">def _log(export: CorpusExport, recency: RecencyReport, rel: dict[str, str]) -&gt; str:
+    &quot;&quot;&quot;``log.md`` -- corpus history grouped by commit date, newest first.&quot;&quot;&quot;
+    last_by_path = {a.path: a.last_committed for a in recency.artifacts}
+    title_by_path = {art.path: art.title for art in export.artifacts}
+
+    dated: dict[str, list[str]] = {}
+    for path, committed in last_by_path.items():
+        if committed is None or path not in title_by_path:
+            continue
+        dated.setdefault(committed.date().isoformat(), []).append(path)
+
+    if not dated:
+        return &quot;# Log\n\n_No commit history available._\n&quot;
+
+    lines = [&quot;# Log&quot;]
+    for day in sorted(dated, reverse=True):
+        lines += [&quot;&quot;, f&quot;## {day}&quot;, &quot;&quot;]
+        for path in sorted(dated[day]):
+            lines.append(f&quot;- [{title_by_path[path]}]({rel[path]})&quot;)
+    return &quot;\n&quot;.join(lines) + &quot;\n&quot;
+</code></pre>
+<p>When git cannot answer (no git history), <code>log.md</code> degrades to <code>"_No commit history available._"</code> rather than failing.</p>
+<hr>
+<h2>OKF Bundle Rendering Pipeline</h2>
+<div class="mermaid">
+flowchart TD
+    A[render_okf_bundle export, recency, root] --&gt; B[build rel path map]
+    B --&gt; C[build by_id lookup]
+    C --&gt; D[for each artifact]
+    D --&gt; E{path collides with index.md or log.md?}
+    E --&gt;|yes| F[raise ValueError]
+    E --&gt;|no| G[_artifact_file: frontmatter + body + citations]
+    G --&gt; H[add to files dict]
+    D --&gt; I[all artifacts done]
+    I --&gt; J[_index: progressive disclosure by type]
+    I --&gt; K[_log: chronological by commit date]
+    J --&gt; L[files index.md]
+    K --&gt; M[files log.md]
+    L --&gt; N[return dict path -&gt; contents]
+    M --&gt; N
+
+</div>
+<hr>
+<h2>OKF Conformance Checking</h2>
+<p>OKF conformance is a write-time gate (ADR-048, ADR-049). It runs during <code>rac validate</code> over a corpus and reports two finding codes:</p>
+<p><strong>Source:</strong> <code>rac-core/src/rac/services/okf_conformance.py:34-35</code></p>
+<pre><code class="language-python">CODE_UNMAPPED_TYPE = &quot;okf-unmapped-type&quot;
+CODE_RESERVED_FILENAME = &quot;okf-reserved-filename-collision&quot;
+</code></pre>
+<p>The check function is deterministic, per-artifact (Layer 0):</p>
+<p><strong>Source:</strong> <code>rac-core/src/rac/services/okf_conformance.py:79-127</code></p>
+<pre><code class="language-python">def check_okf_conformance(
+    directory: str,
+    entries: list[CorpusEntry],
+    recursive: bool = True,
+    overrides: SeverityOverrides = EMPTY,
+) -&gt; OkfConformanceReport:
+    &quot;&quot;&quot;Check OKF v0.1 conformance over an already-walked corpus snapshot.
+
+    Deterministic: entries arrive in sorted path order, so findings do too. Only
+    typed artifacts are checked; untyped documents are excluded (ADR-010), which
+    also exempts untyped ``index.md``/``log.md`` reserved entry points. Severity
+    overrides (ADR-053) may downgrade or suppress a finding by code or type.
+    &quot;&quot;&quot;
+    findings: list[OkfFinding] = []
+    checked = 0
+    for entry in entries:
+        artifact_type = entry.artifact_type
+        if spec_for(artifact_type) is None:
+            continue  # untyped documents skipped (ADR-010)
+        checked += 1
+        path = str(entry.path)
+        if artifact_type not in OKF_TYPE:
+            _add(findings, CODE_UNMAPPED_TYPE, path,
+                 f&quot;artifact type {artifact_type!r} has no OKF type mapping; add &quot;
+                 f&quot;it to rac.core.okf.OKF_TYPE so the artifact is carried in the &quot;
+                 f&quot;OKF bundle (ADR-048)&quot;,
+                 artifact_type, overrides)
+        if entry.path.name in RESERVED_FILENAMES:
+            _add(findings, CODE_RESERVED_FILENAME, path,
+                 f&quot;a typed artifact named {entry.path.name!r} collides with the &quot;
+                 f&quot;generated OKF bundle entry point; rename the file -- OKF &quot;
+                 f&quot;reserves index.md and log.md (ADR-048)&quot;,
+                 artifact_type, overrides)
+    return OkfConformanceReport(
+        directory=directory, recursive=recursive,
+        artifacts_checked=checked, findings=findings)
+</code></pre>
+<p>The <code>OkfFinding</code> dataclass carries a stable code, path, message, and severity (default <code>"error"</code>, subject to overrides per ADR-053):</p>
+<pre><code class="language-python">@dataclass
+class OkfFinding:
+    code: str
+    path: str
+    message: str
+    severity: str = &quot;error&quot;
+
+    def to_dict(self) -&gt; dict:
+        return asdict(self)
+</code></pre>
+<p>The conformance report considers the corpus conformant when no finding remains at error severity (overrides may downgrade to warning or suppress):</p>
+<pre><code class="language-python">@property
+def ok(self) -&gt; bool:
+    return not any(f.severity == &quot;error&quot; for f in self.findings)
+</code></pre>
+<hr>
+<h2>Export Modes: Full Comparison</h2>
+<p>The <code>export</code> service provides six output modes, each a deterministic projection of the same corpus walk:</p>
+<p><strong>Source:</strong> <code>rac-core/src/rac/services/export.py</code></p>
+<table><tr><th>Mode</th><th>Dataclass</th><th>Purpose</th><th>Shape</th><th>Key Characteristics</th></tr><tr><td>`--json`</td><td>`CorpusExport`</td><td>Viewer contract (Portal, external viewers)</td><td>Single JSON object</td><td>`body_html` via markdown-it-py CommonMark with raw HTML disabled, `relates-to` edges, `schema_version: "1"`</td></tr><tr><td>`--documents`</td><td>`DocumentsExport`</td><td>RAG/memory backend ingestion</td><td>JSON Lines (one per line)</td><td>Markdown body as `text` (not HTML), per-record `metadata.path/aliases/tags/source`, `ensure_ascii=False` for UTF-8</td></tr><tr><td>`--okf`</td><td>OKF bundle via `render_okf_bundle`</td><td>Portable OKF v0.1 bundle</td><td>`{path: contents}` dict</td><td>One Markdown per artifact + `index.md` + `log.md`, OKF type projection, git-derived `created`/`updated`</td></tr><tr><td>`--html` / `--portal`</td><td>N/A</td><td>Self-contained HTML viewer</td><td>Single HTML string</td><td>Vendored Portal shell with data seam injection, `<script>`-safe escaping (`</` to `<\\/`, `<!--` to `<\\u0021--`)</td></tr><tr><td>`--graph`</td><td>`GraphExport`</td><td>Graph backend ingestion</td><td>Single JSON object</td><td>Typed nodes + edges (`supersedes`, `related_decisions`), `directed`/`resolved`/`external` flags, sorted by `(source, type, target)`</td></tr><tr><td>`--agent-rules`</td><td>`AgentRulesResult`</td><td>Editor/CI agent rule generation</td><td>Per-target `files` with `state`</td><td>Corpus `digest`, `mode` (generate/check), states: `in_sync`, `stale`, `missing`, `written`, `updated`</td></tr></table>
+<p><strong>Determinism guarantee (ADR-002):</strong> All export modes produce byte-identical output for the same corpus state. No timestamps in the payload (except <code>rac_version</code> captured at build time), artifacts in sorted-path order, relationships sorted explicitly.</p>
+<hr>
+<h2>Output Renderers: Six Format Families</h2>
+<p>Each export mode has renderers for different output formats:</p>
+<table><tr><th>Renderer</th><th>Module</th><th>Commands</th><th>Purpose</th></tr><tr><td>**Human**</td><td>`rac/output/human.py`</td><td>All CLI commands</td><td>Terminal-colored output (auto-disabled when not writing to a TTY), `EMPTY_CORPUS_HINT` for zero-artifact corpora</td></tr><tr><td>**JSON**</td><td>`rac/output/json.py`</td><td>`--json` on all commands</td><td>Stable, versioned contracts (ADR-007), `schema_version: "1"`, `json.dumps(indent=2)`</td></tr><tr><td>**SARIF**</td><td>`rac/output/sarif.py`</td><td>`--sarif` on validate/review/gate/relationships</td><td>SARIF 2.1.0 for GitHub Code Scanning, RFC 3986 URI percent-encoding, deterministic sort by `(uri, line, ruleId)`</td></tr><tr><td>**Portal**</td><td>`rac/output/portal.py`</td><td>`--html` / `--portal`</td><td>Self-contained HTML via vendored shell + data seam injection, `file://` compatible, zero network requests</td></tr><tr><td>**OKF**</td><td>`rac/output/okf.py`</td><td>`--okf`</td><td>OKF v0.1 bundle as `{path: contents}` dict</td></tr><tr><td>**GitHub**</td><td>`rac/output/github.py`</td><td>`watchkeeper --format github`</td><td>GitHub-flavored Markdown for `$GITHUB_STEP_SUMMARY`, `::error`/`::warning`/`::notice` workflow command annotations</td></tr></table>
+<p>The Portal renderer uses a single data seam pattern:</p>
+<p><strong>Source:</strong> <code>rac-core/src/rac/output/portal.py:37-80</code></p>
+<pre><code class="language-python">_SEAM = &#x27;&lt;script type=&quot;application/json&quot; id=&quot;lore-export&quot;&gt;&lt;/script&gt;&#x27;
+
+def _escape_for_script(payload: str) -&gt; str:
+    &quot;&quot;&quot;Make a serialized JSON document safe inside a ``&lt;script&gt;`` element.&quot;&quot;&quot;
+    return payload.replace(&quot;&lt;/&quot;, &quot;&lt;\\/&quot;).replace(&quot;&lt;!--&quot;, &quot;&lt;\\u0021--&quot;)
+
+def render_export_html(export: CorpusExport) -&gt; str:
+    &quot;&quot;&quot;The vendored Portal shell with ``export`` injected into its data seam.&quot;&quot;&quot;
+    shell = _load_shell()
+    if shell.count(_SEAM) != 1:
+        raise PortalSeamMissing()
+    payload = _escape_for_script(render_export_json(export))
+    populated = f&#x27;&lt;script type=&quot;application/json&quot; id=&quot;lore-export&quot;&gt;{payload}&lt;/script&gt;&#x27;
+    return shell.replace(_SEAM, populated)
+</code></pre>
+<p>Two distinct failure modes are separate exceptions: <code>PortalShellMissing</code> (broken installation) vs <code>PortalSeamMissing</code> (corrupt vendoring). Neither is a caller error -- the shell ships with the distribution.</p>
+<hr>
+<h2>Robustness Limits</h2>
+<p><strong>Source:</strong> <code>rac-core/src/rac/core/limits.py</code></p>
+<p>The MCP server sits in an agent's critical path (ADR-032/ADR-033). These caps bound work ahead of the response budget:</p>
+<table><tr><th>Constant</th><th>Value</th><th>Purpose</th><th>Override</th></tr><tr><td>`DEFAULT_MAX_FILE_BYTES`</td><td>`1 << 20` (1 MiB)</td><td>Per-file byte cap (REQ-001)</td><td>`RAC_MAX_FILE_BYTES` env var; non-positive falls back to default</td></tr><tr><td>`MAX_FRONTMATTER_BYTES`</td><td>`64 << 10` (64 KiB)</td><td>Raw front-matter block cap before PyYAML (REQ-002)</td><td>Fixed</td></tr><tr><td>`MAX_FRONTMATTER_DEPTH`</td><td>`32`</td><td>Max YAML nesting depth (REQ-002)</td><td>Fixed</td></tr><tr><td>`MAX_FIELD_CHARS`</td><td>`256 << 10` (256 KiB)</td><td>Per captured body section cap (REQ-003)</td><td>Fixed</td></tr><tr><td>`MAX_CAPTURED_LINES`</td><td>`50_000`</td><td>Total non-blank body lines per document (REQ-003)</td><td>Fixed</td></tr><tr><td>`MAX_RELATED_EDGES`</td><td>`1_000`</td><td>Per-call edge cap for `get_related` (REQ-007)</td><td>Fixed</td></tr><tr><td>`MAX_TRAVERSAL_DEPTH`</td><td>`5`</td><td>Max BFS hop depth for multi-hop traversal</td><td>Fixed</td></tr><tr><td>`MAX_TRAVERSAL_FRONTIER`</td><td>`1_000`</td><td>Max nodes per BFS level</td><td>Fixed</td></tr><tr><td>`MAX_TRAVERSAL_WORK`</td><td>`10_000`</td><td>Max edges examined across whole walk</td><td>Fixed</td></tr></table>
+<p>The <code>max_file_bytes()</code> function honors the environment override with safe fallback:</p>
+<pre><code class="language-python">def max_file_bytes() -&gt; int:
+    &quot;&quot;&quot;The per-file byte cap, honoring ``RAC_MAX_FILE_BYTES`` (REQ-001).&quot;&quot;&quot;
+    raw = os.environ.get(_MAX_FILE_BYTES_ENV)
+    if raw is not None:
+        try:
+            value = int(raw)
+        except ValueError:
+            return DEFAULT_MAX_FILE_BYTES
+        if value &gt; 0:
+            return value
+    return DEFAULT_MAX_FILE_BYTES
+</code></pre>
+<p>The <code>exceeds_byte_cap()</code> function uses a character-count shortcut to avoid expensive encoding for small inputs:</p>
+<pre><code class="language-python">def exceeds_byte_cap(text: str, cap: int) -&gt; bool:
+    &quot;&quot;&quot;True when ``text`` exceeds ``cap`` UTF-8 bytes, encoding only if needed.&quot;&quot;&quot;
+    length = len(text)
+    if length &gt; cap:
+        return True       # chars &gt; cap =&gt; bytes definitely &gt; cap
+    if length &lt;= cap // 4:
+        return False      # max UTF-8 is 4 bytes/char, so safe
+    return len(text.encode(&quot;utf-8&quot;)) &gt; cap   # only encode for borderline cases
+</code></pre>
+<hr>
+<h2>Complete Architecture: Ingest to OKF Bundle</h2>
+<div class="mermaid">
+sequenceDiagram
+    participant CLI as rac CLI
+    participant Ingest as ingest()
+    participant MC as MarkdownConverter
+    participant MIC as MarkItDownConverter
+    participant OKF as render_okf_bundle
+    participant Conform as check_okf_conformance
+    participant Export as build_corpus_export
+
+    Note over CLI,Export: Ingest Phase (documents in)
+    CLI-&gt;&gt;Ingest: rac ingest file.docx
+    Ingest-&gt;&gt;Ingest: converter_for(path)
+    alt .md / .markdown
+        Ingest-&gt;&gt;MC: convert(path)
+        MC--&gt;&gt;Ingest: read_text(utf-8)
+    else .docx / .pdf / .html / .pptx / .xls
+        Ingest-&gt;&gt;MIC: convert(path)
+        MIC-&gt;&gt;MIC: lazy import MarkItDown
+        MIC--&gt;&gt;Ingest: result.text_content
+    else unsupported
+        Ingest--&gt;&gt;CLI: raise UnsupportedDocument
+    end
+    Ingest--&gt;&gt;CLI: IngestResult(source, converter, markdown)
+
+    Note over CLI,Export: Export Phase (corpus out)
+    CLI-&gt;&gt;Export: rac export --okf
+    Export-&gt;&gt;Export: walk_corpus(entries)
+    Export--&gt;&gt;OKF: CorpusExport + RecencyReport
+    OKF-&gt;&gt;OKF: _artifact_file per artifact
+    OKF-&gt;&gt;OKF: _index + _log
+    OKF--&gt;&gt;CLI: {path: contents} bundle
+
+    Note over CLI,Export: Conformance Gate
+    CLI-&gt;&gt;Conform: rac validate
+    Conform-&gt;&gt;Conform: check OKF_TYPE mapping
+    Conform-&gt;&gt;Conform: check RESERVED_FILENAMES
+    Conform--&gt;&gt;CLI: OkfConformanceReport(ok, findings)
+
+</div>
+<hr>
+<h2>Aha Moments</h2>
+<p><strong>Aha: Lazy import is the right dependency boundary.</strong> MarkItDown is imported inside <code>convert()</code>, not at module top. This means <code>rac ingest file.md</code> never loads MarkItDown at all -- the <code>MarkdownConverter</code> handles it with zero extra dependencies. The core install is clean; optional extras are truly optional. If the team later adds a pure-Python converter for a new format, it can be added without bloating the base install.</p>
+<p><strong>Aha: OKF is a derived view, never a source.</strong> The OKF bundle is explicitly a projection of the RAC corpus -- it carries the OKF type, git-derived timestamps, and resolved relationship links. But it is never read back as input. The RAC corpus stays authoritative. This unidirectional flow (corpus -> OKF, never OKF -> corpus) prevents round-trip corruption and keeps the system simple.</p>
+<p><strong>Aha: The missing dependency detection digs into exception internals.</strong> MarkItDown wraps format-specific failures in a <code>FileConversionException(attempts=...)</code> where each attempt carries <code>exc_info = (type, value, tb)</code>. The <code>_is_missing_dependency()</code> function unpacks <code>info[1]</code> to check for <code>MissingDependencyException</code>. Without this, a missing <code>ingest-pdf</code> extra would surface as an unhelpful generic error instead of the actionable "pip install 'rac-core[ingest-pdf]'" hint.</p>
+<hr>
+<h2>Cross-References</h2>
+<ul><li><a href="00-overview.md">00-overview.md</a> -- Wayfinder/RAC ecosystem overview, all 7 sub-projects</li><li><a href="01-architecture.md">01-architecture.md</a> -- RAC Core architecture, layers, Product AST</li><li><a href="02-rac-core.md">02-rac-core.md</a> -- CLI, services, validation, relationships, watchkeeper</li><li><a href="07-knowledge-graph.md">07-knowledge-graph.md</a> -- Artifact relationships and graph export (<code>--graph</code> mode)</li><li><a href="09-data-flow.md">09-data-flow.md</a> -- Request lifecycle including export paths</li><li><a href="10-error-handling.md">10-error-handling.md</a> -- Exit codes, error types, <code>RACError</code> hierarchy</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

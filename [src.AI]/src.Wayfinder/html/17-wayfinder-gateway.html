@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>17. Wayfinder Router Gateway — Deep-Dive -- src.Wayfinder</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.Wayfinder/docs</span>
+    <div class="nav-actions">
+      <a href="14-ingest-okf.html" class="nav-breadcrumb">RAC Ingest Pipeline and OKF (Open Knowledge Format)</a><a href="15-mcp-server.html" class="nav-breadcrumb">RAC MCP Server (Lore)</a><a href="16-proofkeeper-components.html" class="nav-breadcrumb">Proofkeeper Deep Components</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="16-proofkeeper-components.html" class="nav-btn" title="Previous: Proofkeeper Deep Components">← prev</a>
+      <a href="18-diff-intent-ci.html" class="nav-btn nav-btn-next" title="Next: RAC Diff Service, Intent Classification, and CI Integration">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>17. Wayfinder Router Gateway — Deep-Dive</h1>
+<blockquote><strong>Gateway</strong>: FastAPI OpenAI-compatible proxy, deterministic scoring, streaming support, reliability, and observability.
+<strong>Source</strong>: <code>wayfinder_router/gateway.py</code> (+ calibrate, judge, cache, pricing, reliability, vkeys, feedback)</blockquote>
+<hr>
+<h2>Table of Contents</h2>
+<ul><li><a href="#1-gateway-architecture">1. Gateway Architecture</a></li><li><a href="#2-per-call-steering">2. Per-Call Steering</a></li><li><a href="#3-response-headers">3. Response Headers</a></li><li><a href="#4-streaming-sse-relay">4. Streaming: SSE Relay</a></li><li><a href="#5-metrics-endpoint">5. Metrics Endpoint</a></li><li><a href="#6-dashboard-get-router">6. Dashboard: GET /router</a></li><li><a href="#7-cache-exact-match-response-cache">7. Cache: Exact-Match Response Cache</a></li><li><a href="#8-pricing-per-model-cost-tracking">8. Pricing: Per-Model Cost Tracking</a></li><li><a href="#9-rate-limiting">9. Rate Limiting</a></li><li><a href="#10-reliability-circuit-breaker-and-failover">10. Reliability: Circuit Breaker and Failover</a></li><li><a href="#11-virtual-keys">11. Virtual Keys</a></li><li><a href="#12-calibration">12. Calibration</a></li><li><a href="#13-judge-routing-quality-evaluation">13. Judge: Routing Quality Evaluation</a></li><li><a href="#14-feedback-loop">14. Feedback Loop</a></li><li><a href="#15-anthropic-adapter">15. Anthropic Adapter</a></li><li><a href="#16-config-hot-reload">16. Config Hot-Reload</a></li><li><a href="#cross-references">Cross-References</a></li></ul>
+<hr>
+<h2>1. Gateway Architecture</h2>
+<p>The Wayfinder Gateway is a <strong>FastAPI</strong> application that acts as an <strong>OpenAI-compatible proxy</strong>. Clients point their <code>base_url</code> at the gateway and send standard <code>POST /v1/chat/completions</code> requests. The gateway scores the prompt using the deterministic <code>complexity.py</code> core, maps the recommended model to a configured upstream endpoint, and forwards the call with the user's own API key. Keys are read from the environment at request time and never stored in <code>wayfinder-router.toml</code> (<a href="../04-wayfinder-router.md#wf-adr-0004">WF-ADR-0004</a>).</p>
+<h3>Core Data Types</h3>
+<p><strong><code>GatewayModel</code></strong> (<code>gateway.py:383</code>): Maps a routing name to an upstream.</p>
+<pre><code class="language-python">@dataclass(frozen=True)
+class GatewayModel:
+    base_url: str          # OpenAI-compatible base, e.g. http://localhost:11434/v1
+    model: str             # the upstream model id to send in the forwarded request
+    api_key_env: str | None = None      # env var holding the key
+    api_key_cmd: str | None = None      # command that fills api_key_env when unset
+    cost_per_1k: float | None = None    # optional cost metadata (WF-ADR-0017)
+    fallbacks: tuple[str, ...] = ()     # same-tier endpoints to try if this one fails
+    context_window: int | None = None   # optional token limit for pre-call check
+</code></pre>
+<p><strong><code>GatewayConfig</code></strong> (<code>gateway.py:460</code>): Holds the full gateway configuration.</p>
+<pre><code class="language-python">@dataclass(frozen=True)
+class GatewayConfig:
+    models: dict[str, GatewayModel]
+    route_on: str = &quot;turn&quot;             # which part of chat to score: turn|last_user|user|all
+    sticky: bool = False               # conversation latch
+    sticky_cooldown: int = 0           # calm turns before latch decays
+    slash_directives: bool = False     # in-message /directive routing
+    retries: int = 2
+    breaker_threshold: int = 5
+    breaker_cooldown: float = 30.0
+    failover: str = &quot;same-tier&quot;        # same-tier|degrade|escalate
+    offline: bool = False              # offline-first mode
+    budget: Budget | None = None
+    cache: CacheConfig | None = None
+    rate_limit: RateLimit | None = None
+    keys: dict[str, VirtualKey] = field(default_factory=dict)
+</code></pre>
+<h3>Request Lifecycle</h3>
+<p>Each request flows through a sequence of guardrails, scoring, and delivery:</p>
+<ol><li><strong>Rate limit admission</strong> (gateway-wide, then per-key)</li><li><strong>Virtual-key auth</strong> (if keys are configured)</li><li><strong>Per-call override resolution</strong> (headers, slash directives, scoring tuning)</li><li><strong>Scoring</strong> — <code>score_complexity()</code> runs once, ~sub-millisecond</li><li><strong>Pin/override resolution</strong> — <code>model</code> field, threshold header, sticky latch, budget, key allowlist</li><li><strong>Cache lookup</strong> (if enabled and cacheable)</li><li><strong>Delivery plan</strong> — primary + fallbacks filtered by circuit breaker + context-window precheck</li><li><strong>Forward</strong> — buffered or streaming, with retries</li><li><strong>Cost recording</strong> — token counts x price table</li><li><strong>Cache store</strong> (on cache miss + storable response)</li></ol>
+<h3>Gateway Flowchart</h3>
+<div class="mermaid">
+flowchart TD
+    A[&quot;POST /v1/chat/completions&quot;] --&gt; B[&quot;Rate Limit Admission&quot;]
+    B -- 429 --&gt; C[&quot;Reject with Retry-After&quot;]
+    B -- OK --&gt; D[&quot;Virtual-Key Auth&quot;]
+    D -- 401 --&gt; E[&quot;Reject: missing/invalid key&quot;]
+    D -- OK / open --&gt; F[&quot;Resolve Overrides&quot;]
+    F --&gt; G[&quot;score_complexity()&quot;]
+    G --&gt; H{Pin?}
+    H -- model field --&gt; I[&quot;Pinned endpoint&quot;]
+    H -- slash directive --&gt; J[&quot;Slash-pinned endpoint&quot;]
+    H -- threshold header --&gt; K[&quot;Threshold override tiers&quot;]
+    H -- none --&gt; L[&quot;Scored recommendation&quot;]
+    I --&gt; M{Sticky latch?}
+    J --&gt; M
+    K --&gt; M
+    L --&gt; M
+    M -- higher tier --&gt; N[&quot;Sticky escalation&quot;]
+    M -- no escalation --&gt; O[&quot;Apply budget + key allowlist&quot;]
+    N --&gt; O
+    O --&gt; P{Cache hit?}
+    P -- yes --&gt; Q[&quot;Replay cached response&quot;]
+    P -- no --&gt; R[&quot;Build delivery plan&quot;]
+    R --&gt; S[&quot;Forward with retries&quot;]
+    S -- all fail --&gt; T[&quot;502/503 error&quot;]
+    S -- success --&gt; U[&quot;Record cost + cache store&quot;]
+    U --&gt; V[&quot;Return response + Wayfinder headers&quot;]
+    Q --&gt; V
+
+</div>
+<hr>
+<h2>2. Per-Call Steering</h2>
+<p>A request can steer routing <strong>without changing application code</strong> (<a href="../04-wayfinder-router.md#wf-adr-0011">WF-ADR-0011</a>). This only moves which threshold/decision applies; it never adds inference.</p>
+<h3><code>model</code> Field Directives</h3>
+<p>The OpenAI <code>model</code> field doubles as a routing directive:</p>
+<table><tr><th>Value</th><th>Behavior</th></tr><tr><td>`"auto"` (or empty/unrecognized)</td><td>Score per config, let Wayfinder decide</td></tr><tr><td>Configured endpoint name (e.g. `"local"`)</td><td>Pin to that exact endpoint</td></tr><tr><td>`"prefer-local"`</td><td>Pin to the lowest tier's model</td></tr><tr><td>`"prefer-hosted"`</td><td>Pin to the highest tier's model</td></tr><tr><td>`"prefer-cloud"`</td><td>Back-compat alias of `prefer-hosted`</td></tr></table>
+<p>Resolved by <code>resolve_pin()</code> (<code>gateway.py:965</code>):</p>
+<pre><code class="language-python">def resolve_pin(model_field: object, routing: RoutingConfig, gateway: GatewayConfig) -&gt; str | None:
+    &quot;&quot;&quot;Resolve an explicit endpoint pin from the OpenAI model field, or None.&quot;&quot;&quot;
+    if not isinstance(model_field, str):
+        return None
+    name = model_field.strip()
+    if not name or name == _AUTO:
+        return None
+    if routing.classifier is None and routing.tiers:
+        if name == _PREFER_LOW:
+            return routing.tiers[0].model
+        if name == _PREFER_HIGH or name in _PREFER_HIGH_ALIASES:
+            return routing.tiers[-1].model
+    return name if name in gateway.models else None
+</code></pre>
+<h3><code>X-Wayfinder-Threshold</code> Header</h3>
+<p>A number in <code>0.0</code>-<code>1.0</code> that re-decides the call at that binary cut, reusing configured scoring weights. Only valid for a binary (two-tier) router. Parsed by <code>parse_threshold_header()</code> (<code>gateway.py:1037</code>).</p>
+<h3>Slash Directives (WF-ADR-0036)</h3>
+<p>When <code>gateway.slash_directives = true</code>, a recognized <code>/directive</code> at the start of the latest user message pins the route and is <strong>stripped</strong> before forwarding. <code>resolve_slash_directive()</code> (<code>gateway.py:990</code>) returns <code>(pin, cleaned_messages)</code> — unrecognized tokens like <code>/help</code> are left untouched.</p>
+<h3>Conversation Latch / Sticky (WF-ADR-0022)</h3>
+<p><code>conversation_high_water()</code> (<code>gateway.py:1189</code>) scores each user turn independently and latches to the highest tier any turn reached. With <code>sticky_cooldown > 0</code>, the latch decays after N consecutive calm turns below the current tier.</p>
+<h3>Scoring Tuning (WF-ADR-0023)</h3>
+<p>The <code>wayfinder_tuning</code> request body field allows per-request weight/lexicon overrides (for the demo only). <code>apply_scoring_overrides()</code> (<code>gateway.py:1136</code>) returns a <code>RoutingConfig</code> variant with merged weights and replaced lexicon terms.</p>
+<hr>
+<h2>3. Response Headers</h2>
+<p>Every response carries the decision signal:</p>
+<table><tr><th>Header</th><th>Value</th></tr><tr><td>`x-wayfinder-router-model`</td><td>The chosen endpoint name</td></tr><tr><td>`x-wayfinder-router-score`</td><td>The structural score (0.00-1.00)</td></tr><tr><td>`x-wayfinder-router-mode`</td><td>`scored` / `pinned` / `threshold-override` / `sticky` / `slash-pinned` / `budget-degraded` / `key-scoped`</td></tr><tr><td>`x-wayfinder-router-request-id`</td><td>12-char hex UUID</td></tr><tr><td>`x-wayfinder-router-served-by`</td><td>The actual upstream that served (may differ from `model` on failover)</td></tr><tr><td>`x-wayfinder-router-cache`</td><td>`hit` / `miss` (when cache is enabled)</td></tr><tr><td>`x-wayfinder-router-offline`</td><td>`true` (when offline-first is active)</td></tr><tr><td>`x-wayfinder-router-failover`</td><td>`true` (when served_by != chosen)</td></tr><tr><td>`x-wayfinder-router-budget`</td><td>`blocked` / `degraded`</td></tr><tr><td>`X-RateLimit-Limit` / `Remaining` / `Reset`</td><td>Informational RPM headroom</td></tr></table>
+<p>Set at <code>gateway.py:2029</code>:</p>
+<pre><code class="language-python">wf_headers = {
+    &quot;x-wayfinder-router-model&quot;: chosen,
+    &quot;x-wayfinder-router-score&quot;: f&quot;{decision.score:.2f}&quot;,
+    &quot;x-wayfinder-router-mode&quot;: mode,
+    &quot;x-wayfinder-router-request-id&quot;: request_id,
+}
+</code></pre>
+<h3>Debug Mode</h3>
+<p><code>X-Wayfinder-Debug: true</code> surfaces the full decision payload in the response body: score, features, feature contributions, tiers, and cost block. Built by <code>_explain_payload()</code> (<code>gateway.py:2109</code>), which calls <code>explain_score()</code> from the complexity core.</p>
+<hr>
+<h2>4. Streaming: SSE Relay</h2>
+<p>A request with <code>stream: true</code> is relayed as a Server-Sent-Events stream so chat clients render tokens progressively (<a href="../04-wayfinder-router.md#wf-adr-0013">WF-ADR-0013</a>). The forward path uses <code>httpx.AsyncClient</code>.</p>
+<h3>Streaming Functions</h3>
+<ul><li><strong><code>aforward_stream()</code></strong> (<code>gateway.py:1271</code>): Async generator relaying upstream SSE chunk by chunk.</li><li><strong><code>parse_sse_deltas()</code></strong> (<code>gateway.py:1329</code>): Pure function yielding assistant text deltas from <code>data:</code> lines.</li><li><strong>Stream handler</strong> (<code>gateway.py:2233-2272</code>): Creates a <code>StreamingResponse</code> that relays upstream SSE, collects streamed text for token estimation, records cost, and optionally emits a <code>wayfinder</code> debug event.</li></ul>
+<pre><code class="language-python">async def aforward_stream(
+    url: str, headers: dict[str, str], json_body: dict, timeout: float = _DEFAULT_TIMEOUT
+) -&gt; AsyncIterator[bytes]:
+    &quot;&quot;&quot;Async generator relaying an upstream Server-Sent-Events stream chunk by chunk.&quot;&quot;&quot;
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream(&quot;POST&quot;, url, headers=headers, json=json_body) as response:
+                async for chunk in response.aiter_bytes():
+                    yield chunk
+    except httpx.HTTPError as exc:
+        raise UpstreamError(str(exc) or exc.__class__.__name__) from exc
+</code></pre>
+<p>Streaming skips the response cache (non-deterministic), and uses a single delivery attempt (no retry on stream, per WF-ADR-0031).</p>
+<hr>
+<h2>5. Metrics Endpoint</h2>
+<p><code>GET /metrics</code> exposes Prometheus text-format counters and histograms (<a href="../04-wayfinder-router.md#wf-adr-0018">WF-ADR-0018</a>). Metadata only — model/mode labels, never prompt text. The <code>Metrics</code> class (<code>gateway.py:192</code>) is a hand-rolled, zero-dependency implementation.</p>
+<h3>Counters</h3>
+<table><tr><th>Metric</th><th>Labels</th></tr><tr><td>`wayfinder_router_requests_total`</td><td>`model`, `mode`</td></tr><tr><td>`wayfinder_router_upstream_errors_total`</td><td>`model`</td></tr><tr><td>`wayfinder_router_cache_hits_total`</td><td>—</td></tr><tr><td>`wayfinder_router_cache_misses_total`</td><td>—</td></tr><tr><td>`wayfinder_router_cache_avoided_cost_total`</td><td>—</td></tr><tr><td>`wayfinder_router_rate_limited_total`</td><td>`limit` ("rpm"/"tpm")</td></tr><tr><td>`wayfinder_router_key_requests_total`</td><td>`key` (WF-ADR-0035)</td></tr><tr><td>`wayfinder_router_config_reload_failures_total`</td><td>—</td></tr><tr><td>`wayfinder_router_realized_cost_total`</td><td>—</td></tr><tr><td>`wayfinder_router_baseline_cost_total`</td><td>—</td></tr><tr><td>`wayfinder_router_savings_cost_total`</td><td>—</td></tr></table>
+<h3>Gauges</h3>
+<table><tr><th>Metric</th><th>Labels</th></tr><tr><td>`wayfinder_router_build_info`</td><td>`version`</td></tr><tr><td>`wayfinder_router_model_cost_per_1k`</td><td>`model`</td></tr></table>
+<h3>Histograms</h3>
+<table><tr><th>Metric</th><th>Buckets</th><th>Labels</th></tr><tr><td>`wayfinder_router_decision_latency_seconds`</td><td>0.0001 - 0.05s</td><td>—</td></tr><tr><td>`wayfinder_router_upstream_latency_seconds`</td><td>0.05 - 60s</td><td>`model`</td></tr></table>
+<p>Histogram buckets are defined at <code>gateway.py:160-161</code>:</p>
+<pre><code class="language-python">_DECISION_BUCKETS = (0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05)
+_UPSTREAM_BUCKETS = (0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0)
+</code></pre>
+<hr>
+<h2>6. Dashboard: GET /router</h2>
+<p>A self-contained HTML dashboard at <code>GET /router</code> (<code>gateway.py:1733</code>) polls <code>/router/recent</code> every 2 seconds and shows recent routing decisions. No CDN, no build step, no prompt text — just decision metadata.</p>
+<pre><code class="language-html">&lt;!-- polls /router/recent?limit=50, shows: when, model, score, mode, request_id --&gt;
+</code></pre>
+<p>The <code>/router/recent</code> endpoint (<code>gateway.py:1718</code>) returns the last 200 decisions stored in an in-memory <code>deque</code>:</p>
+<pre><code class="language-python">recent: deque[dict] = deque(maxlen=_RECENT_MAX)  # 200 entries
+</code></pre>
+<hr>
+<h2>7. Cache: Exact-Match Response Cache</h2>
+<p>The response cache (<a href="../04-wayfinder-router.md#wf-adr-0033">WF-ADR-0033</a>) is an in-memory LRU exact-match cache, <strong>off by default</strong>. An identical request replays a stored completion — instant, free, no upstream call.</p>
+<h3>Key Generation</h3>
+<p><code>cache_key()</code> (<code>cache.py:38</code>) hashes <code>SHA-256(served_model + canonical_body)</code>:</p>
+<pre><code class="language-python">def cache_key(served_model: str, body: Mapping) -&gt; str:
+    projected = {k: v for k, v in body.items() if k not in EXCLUDED_KEY_FIELDS}
+    # EXCLUDED_KEY_FIELDS = frozenset({&quot;model&quot;, &quot;stream&quot;})
+    blob = json.dumps(
+        {&quot;m&quot;: served_model, &quot;b&quot;: projected},
+        sort_keys=True, separators=(&quot;,&quot;, &quot;:&quot;), ensure_ascii=False, default=str,
+    ).encode(&quot;utf-8&quot;)
+    return hashlib.sha256(blob).hexdigest()
+</code></pre>
+<p>The raw prompt is <strong>never stored</strong> — only its SHA-256 digest.</p>
+<h3>Cacheability Rules</h3>
+<p><code>is_cacheable()</code> (<code>cache.py:57</code>) is conservative. Only contractually deterministic requests qualify:</p>
+<ul><li>Excludes: <code>stream=true</code>, <code>temperature != 0</code>, <code>top_p != 1</code>, <code>n != 1</code>, <code>seed</code> set, tool calls, <code>logit_bias</code>, multimodal content</li><li>Requires: text-only messages list</li></ul>
+<p><code>is_storable()</code> (<code>cache.py:89</code>) guards against caching error-shaped or empty 200 responses (a common upstream behavior under overload).</p>
+<h3>Cache Configuration</h3>
+<pre><code class="language-python">@dataclass(frozen=True)
+class CacheConfig:
+    enabled: bool = False
+    ttl: float = cache.DEFAULT_TTL           # 300 seconds
+    max_entries: int = cache.DEFAULT_MAX_ENTRIES  # 1024
+    max_bytes: int = cache.DEFAULT_MAX_BYTES      # 64 MiB
+</code></pre>
+<p><code>ResponseCache</code> (<code>cache.py:130</code>) is bounded by <strong>both</strong> entry count and byte ceiling, with dual eviction. On disable, all retained bodies are <strong>purged immediately</strong> (privacy guarantee).</p>
+<h3>Cache Hit Flow in Handler</h3>
+<p>At <code>gateway.py:2162-2188</code>: cache lookup happens before delivery, after budget enforcement. A hit returns the cached body verbatim with <code>x-wayfinder-router-cache: hit</code> and <code>x-wayfinder-router-served-by</code> headers. No breaker effect, no budget spend.</p>
+<hr>
+<h2>8. Pricing: Per-Model Cost Tracking</h2>
+<p>Per-model cost tracking (<a href="../04-wayfinder-router.md#wf-adr-0017">WF-ADR-0017</a>, <a href="../04-wayfinder-router.md#wf-design-0007">WF-DESIGN-0007</a>) turns routing decisions into a persisted <strong>savings</strong> report: realized cost vs. "always-frontier" counterfactual.</p>
+<h3>Price Table</h3>
+<p><code>price_table()</code> (<code>pricing.py:34</code>) builds <code>{model: cost_per_1k}</code> from configured metadata, or falls back to relative units (0.2 to 1.0 across the tier ladder) when no real costs are set.</p>
+<h3>Turn Cost</h3>
+<p><code>turn_cost()</code> (<code>pricing.py:94</code>):</p>
+<pre><code class="language-python">def turn_cost(
+    route: str, prompt_tokens: int, completion_tokens: int,
+    costs: Mapping[str, float], *, estimated: bool, baseline: str | None = None,
+) -&gt; TurnCost:
+    total_k = (max(0, prompt_tokens) + max(0, completion_tokens)) / 1000.0
+    dearest = max(costs.values()) if costs else 0.0
+    baseline_per1k = costs.get(baseline, dearest) if baseline is not None else dearest
+    chosen_per1k = costs.get(route, dearest)
+    realized = round(chosen_per1k * total_k, 6)
+    base = round(baseline_per1k * total_k, 6)
+    return TurnCost(route, realized, base, round(base - realized, 6), ...)
+</code></pre>
+<h3>Savings Ledger</h3>
+<p><code>SavingsLedger</code> (<code>pricing.py:180</code>) is a daily-bucket accumulator persisted to <code>wayfinder-savings.json</code>. Debounced saves every 5 seconds (<code>_SAVINGS_SAVE_INTERVAL</code>). Periodic reports at <code>GET /v1/savings</code> support <code>today</code>, <code>7d</code>, <code>30d</code>, <code>all</code>.</p>
+<hr>
+<h2>9. Rate Limiting</h2>
+<p>Fixed-window RPM/TPM caps (<a href="../04-wayfinder-router.md#wf-adr-0034">WF-ADR-0034</a>). Returns HTTP 429 on breach with <code>Retry-After</code> header.</p>
+<pre><code class="language-python">@dataclass
+class RateLimiter:
+    rpm: int | None = None
+    tpm: int | None = None
+    window: float = DEFAULT_WINDOW  # 60 seconds
+</code></pre>
+<p><code>admit()</code> (<code>ratelimit.py:56</code>) checks and increments in one atomic operation. <code>add_tokens()</code> records served turn tokens against the TPM window. Windows are keyed by <code>floor(now / window)</code> so they roll deterministically.</p>
+<p>On breach: <code>RateResult(allowed=False, limit="rpm"/"tpm", retry_after=N)</code>.</p>
+<hr>
+<h2>10. Reliability: Circuit Breaker and Failover</h2>
+<p>Reliability primitives (<a href="../04-wayfinder-router.md#wf-adr-0031">WF-ADR-0031</a>, <a href="../04-wayfinder-router.md#wf-design-0010">WF-DESIGN-0010</a>) change <strong>how a request is delivered</strong>, never <strong>what was decided</strong>.</p>
+<h3>Retryable Statuses</h3>
+<pre><code class="language-python">RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+AUTH_FAILURE_STATUS = frozenset({401, 403, 407})
+</code></pre>
+<p>Auth failures (401/403/407) are not retried but <strong>do</strong> count as breaker failures (a stale key must eventually open the breaker).</p>
+<h3>Circuit Breaker</h3>
+<pre><code class="language-python">@dataclass
+class CircuitBreaker:
+    threshold: int = 5      # consecutive failures to trip
+    cooldown: float = 30.0  # seconds before half-open probe
+</code></pre>
+<p><code>allow(target)</code> returns True if closed or cooldown elapsed. <code>record(target, ok)</code> — success closes, failures may open. Half-open mode: after cooldown, one probe attempt is allowed.</p>
+<h3>Delivery Plan</h3>
+<p><code>delivery_plan()</code> (<code>reliability.py:100</code>) builds an ordered, de-duplicated target list: primary, then same-tier fallbacks. Targets with open breakers or failing the context-window precheck are dropped.</p>
+<h3>Failover Policies</h3>
+<table><tr><th>Policy</th><th>Behavior</th></tr><tr><td>`same-tier` (default)</td><td>Only configured alternate endpoints; never changes cost</td></tr><tr><td>`degrade`</td><td>Walks to cheaper tiers (nearest-cheaper first)</td></tr><tr><td>`escalate`</td><td>Walks to dearer tiers (nearest-dearer first)</td></tr></table>
+<p><code>failover_candidates()</code> (<code>reliability.py:130</code>) generates the cross-tier targets after same-tier exhaustion.</p>
+<h3>Delivery Function</h3>
+<p><code>_deliver()</code> (<code>gateway.py:1591</code>) tries each target in the plan with bounded retries (<code>gateway.retries</code>, default 2). Backoff via <code>retry_delays()</code> — exponential, capped at 5s, full-jitter. On all-target exhaustion, returns 502 with <code>wayfinder_router_upstream_error</code>.</p>
+<hr>
+<h2>11. Virtual Keys</h2>
+<p>Gateway-issued bearer tokens (<a href="../04-wayfinder-router.md#wf-adr-0035">WF-ADR-0035</a>) that authenticate callers and attribute spend. <strong>Not provider keys</strong> — those still come from the environment (WF-ADR-0004).</p>
+<h3>Key Management (<code>vkeys.py</code>)</h3>
+<pre><code class="language-python">def hash_key(presented: str) -&gt; str:
+    &quot;&quot;&quot;SHA-256 hex digest — what the gateway stores.&quot;&quot;&quot;
+    return hashlib.sha256(presented.encode(&quot;utf-8&quot;)).hexdigest()
+
+def verify(presented: str, expected_hash: str) -&gt; bool:
+    &quot;&quot;&quot;Constant-time check.&quot;&quot;&quot;
+    return hmac.compare_digest(hash_key(presented), expected_hash.strip().lower())
+
+def generate(prefix: str = &quot;wf&quot;) -&gt; tuple[str, str]:
+    &quot;&quot;&quot;Mint a new key: (plaintext, hash). Uses secrets.token_urlsafe(32).&quot;&quot;&quot;
+    token = secrets.token_urlsafe(32)
+    plaintext = f&quot;{prefix}-{token}&quot;
+    return plaintext, hash_key(plaintext)
+</code></pre>
+<p>Minted keys look like <code>wf-<token></code>, easy to spot in logs. Matching is constant-time against all configured hashes (<code>vkeys.match()</code>).</p>
+<h3>VirtualKey Dataclass</h3>
+<pre><code class="language-python">@dataclass(frozen=True)
+class VirtualKey:
+    hash: str                          # SHA-256 hex (never plaintext)
+    tags: tuple[str, ...] = ()         # attribution labels
+    budget: Budget | None = None       # per-key spend cap
+    rate_limit: RateLimit | None = None  # per-key RPM/TPM
+    models: tuple[str, ...] = ()       # allowlist; empty = unrestricted
+</code></pre>
+<h3>Per-Key Scope</h3>
+<ul><li><strong>Budget</strong>: Stricter of gateway-wide vs. key budget wins. Block beats degrade.</li><li><strong>Rate limit</strong>: Checked after gateway-wide rate limit (so a token flood can't bypass the limiter).</li><li><strong>Model allowlist</strong>: <code>_clamp_to_allowed()</code> clamps to the nearest allowed tier rather than rejecting.</li><li><strong>Attribution</strong>: Spend is tracked per-key in the savings ledger's <code>by_key</code> breakdown.</li></ul>
+<hr>
+<h2>12. Calibration</h2>
+<p>Calibration is the <strong>offline</strong> empirical step that maps the structural proxy onto a real decision (<a href="../04-wayfinder-router.md#wf-adr-0003">WF-ADR-0003</a>). It runs on a labeled dataset and emits a <code>wayfinder-router.toml</code> fragment. No model is touched.</p>
+<h3>Three Modes</h3>
+<p><strong>Threshold</strong> (<code>calibrate_threshold()</code>, <code>calibrate.py:175</code>): Binary sweep. Finds the cut that best separates two labels. Supports three objectives:</p>
+<table><tr><th>Objective</th><th>What it optimizes</th></tr><tr><td>`accuracy` (default)</td><td>Most accurate cut</td></tr><tr><td>`knee`</td><td>Maximizes quality-recovered x cost-saved</td></tr><tr><td>`cost-quality`</td><td>Most accurate cut reaching `target_savings`</td></tr></table>
+<p>The knee objective (<code>_sweep_cut_knee()</code>, <code>calibrate.py:316</code>) mirrors the benchmark knee from <a href="../05-rac-benchmarks.md">05-rac-benchmarks</a>: quality recovered is the recall of the high arm, cost saved is savings vs. always-high.</p>
+<p><strong>Tiers</strong> (<code>calibrate_tiers()</code>, <code>calibrate.py:350</code>): Ordinal multi-class. Orders models by mean score, sweeps each adjacent breakpoint.</p>
+<p><strong>Classifier</strong> (<code>fit_classifier()</code>, <code>calibrate.py:387</code>): Multinomial logistic regression via L2-regularized Newton/IRLS. Deterministic: zero initialization, exact Newton steps, Gaussian elimination with partial pivoting, stopped on tolerance.</p>
+<pre><code class="language-python">def fit_classifier(
+    samples: list[Sample], models_order: list[str] | None = None,
+    *, iterations: int = 100, l2: float = 0.01, tol: float = 1e-8,
+) -&gt; CalibrationResult:
+</code></pre>
+<h3>Sweep Curve</h3>
+<p><code>sweep_curve()</code> (<code>calibrate.py:147</code>) returns the full (threshold, accuracy) curve for visualization — the chart behind threshold calibration.</p>
+<hr>
+<h2>13. Judge: Routing Quality Evaluation</h2>
+<p>Automated sufficiency judges for offline calibration (<a href="../04-wayfinder-router.md#wf-adr-0037">WF-ADR-0037</a>). The onboarding loop (<code>onboard.py</code>) collects per-prompt sufficiency labels through an injected <code>Judge</code> callable.</p>
+<h3>Judge Protocol</h3>
+<pre><code class="language-python">@runtime_checkable
+class Judge(Protocol):
+    @property
+    def version(self) -&gt; str: ...
+    def judge(self, prompt: str, cheap: str, expensive: str) -&gt; Verdict: ...
+</code></pre>
+<h3>Verdict (Tri-State)</h3>
+<pre><code class="language-python">@dataclass(frozen=True)
+class Verdict:
+    sufficient: bool | None   # True = cheap good enough, False = need dearer, None = abstain
+    reason: str
+    comparator: str
+</code></pre>
+<p><strong>Abstain</strong> (<code>sufficient is None</code>) means the judge has no grounds — the prompt is skipped and <strong>no label is recorded</strong>, preserving the two-label contract of threshold calibration.</p>
+<h3>HeuristicJudge</h3>
+<p><code>HeuristicJudge</code> (<code>judge.py:98</code>) is a pure, deterministic ensemble of text comparators running in fixed order:</p>
+<ol><li><strong>Refusal/stub</strong> — empty, too-short, or refusal-shaped answers. If cheap refused but dear answered: insufficient. If both refused: abstain.</li><li><strong>Agreement</strong> — identical after normalization: sufficient.</li><li><strong>Similarity</strong> — difflib ratio >= 0.8: sufficient.</li><li><strong>Divergence</strong> — abstain (heuristic cannot adjudicate genuinely divergent prose).</li></ol>
+<pre><code class="language-python">@dataclass(frozen=True)
+class HeuristicJudge:
+    similarity_sufficient: float = 0.8
+    min_answer_chars: int = 16
+    refusal_markers: tuple[str, ...] = DEFAULT_REFUSAL_MARKERS  # 12 markers
+    version: str = &quot;heuristic-1&quot;
+</code></pre>
+<p>The abstention posture is deliberate — this is strongest on verifiable/structured prompts and silent on open-ended prose. Labels are only trusted after the sufficiency gates (agreement vs. human gold set, out-of-fold lift) clear.</p>
+<hr>
+<h2>14. Feedback Loop</h2>
+<p>The feedback faucet (<a href="../04-wayfinder-router.md#wf-adr-0006">WF-ADR-0006</a>) that feeds calibration. <code>POST /v1/feedback</code> records a <code>{"text", "label"}</code> JSON line — exactly what <code>calibrate</code> consumes.</p>
+<h3>Recording</h3>
+<p><code>record_label()</code> (<code>feedback.py:21</code>):</p>
+<pre><code class="language-python">def record_label(log_path: str, text: str, label: str) -&gt; None:
+    line = json.dumps({&quot;text&quot;: text, &quot;label&quot;: label}, ensure_ascii=False)
+    with open(log_path, &quot;a&quot;, encoding=&quot;utf-8&quot;) as handle:
+        handle.write(line + &quot;\n&quot;)
+</code></pre>
+<p>Default log: <code>wayfinder-router-feedback.jsonl</code>.</p>
+<h3>Authentication</h3>
+<p>Guarded by an optional bearer token (<code>WAYFINDER_ROUTER_FEEDBACK_TOKEN</code> env var) to prevent log poisoning. Without it, the endpoint is unauthenticated.</p>
+<h3>Recalibration</h3>
+<p><code>recalibrate()</code> (<code>recalibrate.py:37</code>): Reads the feedback log, runs <code>calibrate()</code>, writes the routing section of <code>wayfinder-router.toml</code> while preserving the <code>[gateway]</code> section. The gateway hot-reloads the new file automatically. Skips when fewer than <code>min_labels</code> (default 2) labels exist.</p>
+<hr>
+<h2>15. Anthropic Adapter</h2>
+<p><code>POST /v1/messages</code> (<a href="../04-wayfinder-router.md#wf-design-0011">WF-DESIGN-0011</a>) lets Anthropic-Messages-native clients (notably Claude Code) use the gateway. Pure format translation — scores nothing, calls no model.</p>
+<h3>Request Translation</h3>
+<p><code>anthropic_to_openai_request()</code> reshapes the inbound Anthropic body: system messages, content blocks (text/tool_use/tool_result), tools, tool_choice. Model passed through so <code>resolve_pin</code> decides.</p>
+<h3>Response Translation</h3>
+<p><code>openai_to_anthropic_response()</code> maps OpenAI choices back to Anthropic message objects with content blocks.</p>
+<h3>Streaming Translation</h3>
+<p><code>MessagesStreamTranslator</code> (<code>anthropic_adapter.py:260</code>) is a state machine that turns OpenAI SSE chunks into the Anthropic event sequence: <code>message_start</code> -> <code>content_block_start</code>/<code>content_block_delta</code>/<code>content_block_stop</code> -> <code>message_delta</code> -> <code>message_stop</code>. Tool calls are buffered by OpenAI index and emitted as complete blocks in <code>finish()</code> to handle interleaved parallel tool-call deltas.</p>
+<hr>
+<h2>16. Config Hot-Reload</h2>
+<p><code>_ConfigHolder</code> (<code>gateway.py:1398</code>) caches routing + gateway config and reloads when <code>wayfinder-router.toml</code> changes. Each request checks the file's mtime and re-reads only when it moved.</p>
+<pre><code class="language-python">class _ConfigHolder:
+    def current(self) -&gt; tuple[RoutingConfig, GatewayConfig]:
+        mtime = self._mtime_now()
+        if mtime != self._mtime:
+            self._mtime = mtime
+            try:
+                self._routing = load_routing_config(self.start_dir)
+                self._gateway = load_gateway_config(self.start_dir)
+            except WayfinderConfigError as exc:
+                # Keep last-good config; increment reload-failure metric
+                logger.warning(&quot;config reload failed, keeping last-good config: %s&quot;, exc)
+        return self._routing, self._gateway
+</code></pre>
+<p>A malformed mid-flight write keeps the last-good config (marker advances so it is not retried), is logged, and increments the <code>wayfinder_router_config_reload_failures_total</code> metric.</p>
+<h3>Long-Lived State Sync</h3>
+<p>The breaker, cache, and rate limiter are created once at startup (their state survives config hot-reloads) and reconfigured on each request to match the current config values.</p>
+<hr>
+<h2>Sequence Diagram: A Routed Request</h2>
+<div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant Client
+    participant Gateway
+    participant Cache
+    participant Breaker
+    participant Upstream
+
+    Client-&gt;&gt;Gateway: POST /v1/chat/completions (model=&quot;auto&quot;, stream=true)
+    Gateway-&gt;&gt;Gateway: Rate limit admission (rpm/tpm)
+    Gateway-&gt;&gt;Gateway: Virtual-key auth (Bearer token)
+    Gateway-&gt;&gt;Gateway: Extract prompt from messages (route_on=&quot;turn&quot;)
+    Gateway-&gt;&gt;Gateway: score_complexity() -&gt; score=0.42
+    Gateway-&gt;&gt;Gateway: resolve_pin(&quot;auto&quot;) -&gt; None (score)
+    Gateway-&gt;&gt;Gateway: chosen=&quot;local&quot;, mode=&quot;scored&quot;
+    Gateway-&gt;&gt;Gateway: Build delivery plan: [local, local-alt]
+    Gateway-&gt;&gt;Breaker: breaker.allow(&quot;local&quot;) -&gt; True
+    Gateway-&gt;&gt;Cache: enabled=False (skip)
+    Gateway-&gt;&gt;Upstream: POST {base_url}/chat/completions (stream)
+    Upstream--&gt;&gt;Gateway: SSE chunks (async stream)
+    Gateway--&gt;&gt;Client: SSE chunks (relayed)
+    Gateway-&gt;&gt;Gateway: Record cost: realized=0.0012, saved=0.0036
+    Gateway-&gt;&gt;Gateway: Response headers: model=local, score=0.42, mode=scored
+    Note over Client,Upstream: Headers: x-wayfinder-router-model: local&lt;br/&gt;x-wayfinder-router-score: 0.42&lt;br/&gt;x-wayfinder-router-mode: scored
+
+</div>
+<hr>
+<h2>Aha Moment</h2>
+<p><strong>The gateway's scoring path is 100% offline and dependency-free.</strong> The <code>complexity.py</code> core has zero imports beyond the standard library — no <code>httpx</code>, no <code>fastapi</code>, no network. The gateway is the impure layer (<code>gateway.py</code> imports <code>fastapi</code>/<code>httpx</code> lazily via <code>build_app()</code>), and the scored core never imports the gateway. This means:</p>
+<ul><li>Calibration (<code>calibrate.py</code>) runs without any gateway installed</li><li>The CLI <code>wayfinder-router score</code> needs no server</li><li>The <code>complexity.py</code> module is golden-testable, golden-replayable, and has a stable JSON contract (<code>schema_version: "3"</code>)</li><li>The gateway's <code>score_complexity()</code> call is ~sub-millisecond even with all 11 features — it's regex scans and arithmetic over a string</li><li>Per-request steering (threshold header, model pin, sticky) only changes <strong>which decision boundary applies</strong>, never how the score is computed</li></ul>
+<p>The boundary between "what to route" (scored decision) and "how to deliver" (retries, failover, cache, budget) is the architectural spine of the entire system. The scored decision is immutable once made; everything downstream only changes delivery mechanics.</p>
+<hr>
+<h2>Cross-References</h2>
+<table><tr><th>Document</th><th>Relationship</th></tr><tr><td>[00-overview](../00-overview.md)</td><td>RAC system overview; Wayfinder as the routing layer</td></tr><tr><td>[04-wayfinder-router](../04-wayfinder-router.md)</td><td>Wayfinder router architecture, all WF-ADR design decisions referenced throughout this document</td></tr><tr><td>[05-rac-benchmarks](../05-rac-benchmarks.md)</td><td>Benchmark knee methodology that the calibration `knee` objective mirrors</td></tr><tr><td>[09-data-flow](../09-data-flow.md)</td><td>How routing decisions flow through the system; feedback log feeding recalibration</td></tr></table>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

@@ -6,6 +6,93 @@ Comprehensive source-level documentation covering the full Moltis system: voice 
 
 ---
 
+## Full System Data Flow: Voice + Channel + Agent
+
+```mermaid
+flowchart TD
+    VoiceInput["Voice Input (audio)"]
+    STT["STT Pipeline\n11 providers: Whisper, Deepgram,\nElevenLabs, Google, Groq, etc."]
+    Transcript["Transcript {text, confidence, words}"]
+    ChannelInput["Channel Message\nWhatsApp/Telegram/Discord/etc."]
+    GW["Gateway\ngateway/src/methods/"]
+    RunTools["run_with_tools()\nchat/src/run_with_tools.rs"]
+    AgentLoop["Agent Loop\nagents/src/runner/streaming.rs"]
+    Provider["LLM Provider\nanthropic/openai/ollama"]
+    ToolExec["Tool Execution\ntools/src/"]
+    TTS["TTS Pipeline\n6 providers: ElevenLabs,\nOpenAI, Google, Coqui, Piper"]
+    AudioOut["Audio Output (mp3/opus/wav)"]
+    ChannelOut["Channel Outbound\nsend_message/send_stream_chunk"]
+
+    VoiceInput --> STT
+    STT --> Transcript
+    Transcript --> ChannelInput
+    ChannelInput --> GW
+    GW --> RunTools
+    RunTools --> AgentLoop
+    AgentLoop --> Provider
+    Provider --> AgentLoop
+    AgentLoop --> ToolExec
+    ToolExec --> AgentLoop
+    AgentLoop --> TTS
+    TTS --> AudioOut
+    AgentLoop --> ChannelOut
+```
+
+## Gateway Startup: From Config to Running Server
+
+```mermaid
+sequenceDiagram
+    participant Main as courier/main.rs
+    participant Core as prepare_core.rs
+    participant Config as moltis_config
+    participant Auth as moltis_auth
+    participant Channels as init_channels
+    participant Memory as init_memory
+    participant CodeIdx as init_code_index
+    participant Cron as cron tasks
+    participant MCP as mcp_service
+    participant Registry as ProviderRegistry
+    participant State as GatewayState
+    participant HTTPD as moltis-httpd
+
+    Main->>Core: prepare_gateway_core()
+    Core->>Config: discover_and_load()
+    Core->>Auth: resolve_auth(token, password)
+    Core->>Core: validate_proxy_tls()
+    Core->>Core: migrate_voice_keys_to_key_store()
+    Core->>Core: config_with_saved_keys()
+    Core->>Core: detect_auto_provider_sources()
+    Core->>Registry: ProviderRegistry::new()
+    Core->>State: LiveSessionService::new()
+    Core->>State: LiveModelService::new()
+    Core->>Channels: init(config)
+    Core->>Memory: init(config)
+    Core->>CodeIdx: init(config)
+    Core->>Core: seed_default_workspace_markdown()
+    Core->>Cron: maybe_deliver_cron_output()
+    Core-->>Main: PreparedGatewayCore
+    Main->>HTTPD: start_server(core, config)
+    HTTPD-->>Main: server running
+```
+
+## Aha: Gateway Startup is Transport-Agnostic
+
+The `prepare_gateway_core()` function returns a `PreparedGatewayCore` that is completely transport-agnostic. It builds all state, services, and method handlers without knowing whether the transport will be HTTP, WebSocket, or FFI. The HTTP/WS server lives in `moltis-httpd` and takes the prepared core as input. This means the same gateway logic powers the server, the macOS app (via swift-bridge FFI), and any future transport layer. See `gateway/src/server/prepare_core.rs:600-653`.
+
+## Aha: Voice API Keys Migrate to Credential Store at Startup
+
+On every gateway startup, `migrate_voice_keys_to_key_store()` runs to migrate legacy voice API keys from the config file into the encrypted credential store. This means users who configured voice providers via environment variables or config files get automatic migration — their keys are securely stored without any manual action. See `gateway/src/server/prepare_core.rs` line 619.
+
+## Aha: Workspace Markdown Is Seeded at Startup
+
+The `seed_default_workspace_markdown_files()` call in `prepare_gateway_core()` creates initial markdown files in the workspace directory on first run. This means new Moltis installations get example documentation, project context, and agent boot texts pre-populated — the agent has content to work with from the very first message. See `gateway/src/server/prepare_core.rs`.
+
+## Aha: Provider Auto-Detection Reads Environment Variables
+
+The `detect_auto_provider_sources_with_overrides()` function scans environment variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`, `OLLAMA_BASE_URL`) to automatically register providers without explicit config. If the user has set ANY explicit provider settings in their config file, auto-detection is skipped entirely — explicit config always wins. When `deploy_platform` is set (cloud deployment), local providers are hidden from the auto-detected list.
+
+---
+
 ## Voice: 11 STT Providers, 6 TTS Providers
 
 **Source:** `crates/voice/src/`

@@ -51,6 +51,54 @@ flowchart TD
     Loop -->|"max iterations"| Error["AgentRunError::MaxIterations"]
 ```
 
+## Retry and Error Handling Flow
+
+```mermaid
+flowchart TD
+    LLM["provider.stream()"]
+    StreamOk{Stream\nOK?}
+    HasTools{Has tool\ncalls?}
+    Execute["Execute tools\nvalidate + run"]
+    ToolOk{Tool\nsuccess?}
+    Compact["compact_tool_results_oldest_first_in_place()"]
+    NextIter["Next iteration"]
+    Final["finish_agent_run()\nreturn result"]
+    Substantive["is_substantive_answer_text()?"]
+    AutoCont{Auto-continue\navailable?}
+    Nudge["Add AUTO_CONTINUE_NUDGE\n'Please continue with the next step.'"]
+    Retry{"Error type?"}
+    RateLimit["Rate limit\nexponential backoff"]
+    ContextErr["Context window error\ntrigger compaction"]
+    OtherErr["Other error\nretry with backoff"]
+    MaxRetry{Max retries\nexceeded?}
+    Fail["RetryingAfterError event\nthen retry or fail"]
+    LoopDetect["ToolLoopDetector.check()\nfingerprint match?"]
+    Intervene["Inject loop warning\nstrip tools on second fire"]
+
+    LLM --> StreamOk
+    StreamOk -->|OK| HasTools
+    StreamOk -->|Error| Retry
+    Retry -->|429 Rate Limit| RateLimit
+    Retry -->|Context Window| ContextErr
+    Retry -->|Other| OtherErr
+    RateLimit --> MaxRetry
+    ContextErr --> Compact
+    OtherErr --> MaxRetry
+    MaxRetry -->|No| Fail --> LLM
+    MaxRetry -->|Yes| Final
+    HasTools -->|Yes| Execute
+    HasTools -->|No| Substantive
+    Execute --> ToolOk
+    ToolOk -->|Yes| LoopDetect
+    ToolOk -->|No| NextIter
+    LoopDetect -->|Yes| Intervene --> NextIter
+    LoopDetect -->|No| NextIter
+    Substantive -->|Yes| Final
+    Substantive -->|No| AutoCont
+    AutoCont -->|Yes| Nudge --> NextIter
+    AutoCont -->|No| Final
+```
+
 ## The Function Signature
 
 ```rust

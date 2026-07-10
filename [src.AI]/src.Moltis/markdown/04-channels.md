@@ -6,6 +6,87 @@ This document explains how Moltis connects to WhatsApp, Telegram, Slack, Discord
 
 ---
 
+## Channel Plugin Architecture
+
+```mermaid
+flowchart TD
+    subgraph "ChannelPlugin Trait"
+        CP["dyn ChannelPlugin"]
+        CP --> CT["channel_type()"]
+        CP --> RA["register_account()"]
+        CP --> SA["start_account()"]
+        CP --> ST["stop_account()"]
+        CP --> OB["outbound()"]
+        CP --> STATUS["status()"]
+        CP --> PROBE["probe()"]
+        CP --> OTP["supports_otp()"]
+        CP --> PAIR["supports_pairing()"]
+    end
+
+    subgraph "ChannelOutbound"
+        CO["dyn ChannelOutbound"]
+        CO --> SM["send_message()"]
+        CO --> SMe["send_media()"]
+        CO --> SL["send_location()"]
+        CO --> SD["send_document()"]
+    end
+
+    subgraph "ChannelStreamOutbound"
+        CSO["dyn ChannelStreamOutbound"]
+        CSO --> StartS["start_stream()"]
+        CSO --> Chunk["send_stream_chunk()"]
+        CSO --> EndS["end_stream()"]
+    end
+
+    CP -.-> CO
+    CP -.-> CSO
+```
+
+## Inbound Message Flow: From Channel to Agent
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Channel as ChannelPlugin
+    participant Sink as event_sink
+    participant GW as Gateway
+    participant LC as LiveChatService
+    participant RWT as run_with_tools()
+    participant Loop as Agent Loop
+    participant Outbound as ChannelOutbound
+
+    User->>Channel: message/audio/image
+    Channel->>Channel: access::check()
+    Channel->>Channel: classify_chat()
+    Channel->>Channel: build ChannelEvent
+    Channel->>Sink: emit(ChannelEvent)
+    Sink->>GW: channel handler
+    GW->>LC: send(session_key, content)
+    LC->>RWT: run_with_tools()
+    RWT->>Loop: run_agent_loop_streaming()
+    Loop->>Loop: LLM + tool iterations
+    Loop->>Outbound: deliver_channel_replies()
+    Outbound->>User: send_message/send_stream_chunk
+```
+
+## Aha: WhatsApp Has No API Key — Authentication Is via QR Pairing
+
+Unlike Telegram (bot token), Discord (bot token), or Slack (bot token + signing secret), WhatsApp requires zero API keys. Authentication is via QR code pairing using the Linked Devices protocol. The `whatsapp_rust` library handles the multi-device handshake, and session state persists across restarts via a `sled` database at `<data_dir>/whatsapp/<account_id>/`. The `secret_fields()` method returns `[]` for WhatsApp — there are no secrets to configure. When the connection establishes, `auto_approve_owner_jid()` automatically adds the owner's phone number to the allowlist.
+
+## Aha: Slack Supports Both Socket Mode and Events API
+
+Slack can receive messages via two completely different mechanisms. **Socket Mode** opens a WebSocket to Slack (requires app token + bot token) — no public endpoint needed. **Events API** receives HTTP POST webhooks at a public URL — requires HMAC-SHA256 signature verification. The webhook handler verifies `X-Slack-Signature: v0=<hex-hmac>` against `X-Slack-Request-Timestamp` using `Hmac<Sha256>` with base string `v0:{timestamp}:{body}`. See `crates/slack/src/webhook.rs:93-120`.
+
+## Aha: ChannelType's FromStr Accepts Multiple Aliases per Platform
+
+The `FromStr` impl for `ChannelType` (`plugin.rs:112-128`) accepts multiple string aliases per platform. `msteams` can be written as `"msteams"`, `"microsoft_teams"`, `"microsoft-teams"`, or `"teams"`. Matrix accepts both `"matrix"` and `"element"`. Telephony accepts `"telephony"`, `"phone"`, or `"call"`. This user-friendliness means config files and CLI arguments can use whichever naming convention the user prefers — no need to look up the canonical enum name.
+
+## Aha: Channel Capabilities Are Declarative, Not Implicit
+
+The `ChannelCapabilities` struct (`plugin.rs`) exposes 9 boolean flags (`supports_voice`, `supports_documents`, `supports_images`, `supports_video`, `supports_threading`, `supports_reactions`, `supports_otp`, `supports_interactive_buttons`, plus `max_message_length` and `max_file_size_bytes`). Each channel declares its capabilities at registration time — the gateway doesn't probe or infer them. This means the UI can dynamically show/hide features (e.g., "send voice message" button) based on the active channel's capabilities, and the agent loop knows whether streaming responses are possible before sending the first token.
+
+---
+
 ## Channel Event Flow
 
 ```

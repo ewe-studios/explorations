@@ -1,0 +1,752 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RAC Diff Service, Intent Classification, and CI Integration -- src.Wayfinder</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.Wayfinder/docs</span>
+    <div class="nav-actions">
+      <a href="15-mcp-server.html" class="nav-breadcrumb">RAC MCP Server (Lore)</a><a href="16-proofkeeper-components.html" class="nav-breadcrumb">Proofkeeper Deep Components</a><a href="17-wayfinder-gateway.html" class="nav-breadcrumb">17. Wayfinder Router Gateway — Deep-Dive</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="17-wayfinder-gateway.html" class="nav-btn" title="Previous: 17. Wayfinder Router Gateway — Deep-Dive">← prev</a>
+      <a href="19-benchmarks-deep.html" class="nav-btn nav-btn-next" title="Next: RAC Benchmarks: Harness Architecture, Decision Grounding, and Autonomous QA">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>RAC Diff Service, Intent Classification, and CI Integration</h1>
+<p><strong>Document:</strong> 18-diff-intent-ci.md <strong>Series:</strong> src.Wayfinder Deep-Dive <strong>Source:</strong> <code>rac-core/src/rac/services/</code> and <code>rac-ci/</code></p>
+<p>This document traces the complete change-analysis pipeline in RAC -- from AST-based diffing through deterministic intent classification to GitHub CI integration. Every component is pure, explainable, and contract-stable under ADR-007 (JSON schema) and ADR-015 (CLI is the source of truth).</p>
+<hr>
+<h2>Table of Contents</h2>
+<ol><li><a href="#1-diff-service-ast-based-comparison">Diff Service: AST-Based Comparison</a></li><li><a href="#2-ordered-difference-preserving-document-order">Ordered Difference: Preserving Document Order</a></li><li><a href="#3-intent-classification-deterministic-findings">Intent Classification: Deterministic Findings</a></li><li><a href="#4-watchkeeper-git-diff-knowledge-review">Watchkeeper: Git Diff Knowledge Review</a></li><li><a href="#5-revision-tracking-materializing-git-revisions">Revision Tracking: Materializing Git Revisions</a></li><li><a href="#6-id-generation-crockford-base32">ID Generation: Crockford Base32</a></li><li><a href="#7-identity-resolution-5-level-precedence-chain">Identity Resolution: 5-Level Precedence Chain</a></li><li><a href="#8-frontmatter-parsing-yaml-metadata-extraction">Frontmatter Parsing: YAML Metadata Extraction</a></li><li><a href="#9-severity-overrides-adr-053">Severity Overrides (ADR-053)</a></li><li><a href="#10-consent-management-telemetry-opt-in">Consent Management: Telemetry Opt-In</a></li><li><a href="#11-ci-integration-three-github-actions">CI Integration: Three GitHub Actions</a></li><li><a href="#aha-moment">Aha Moment</a></li></ol>
+<hr>
+<h2>1. Diff Service: AST-Based Comparison</h2>
+<p><strong>File:</strong> <code>rac-core/src/rac/services/diff.py</code></p>
+<p>The diff service operates purely on the <code>Product</code> AST, never on raw Markdown text. This is the foundational design decision that makes RAC's diffing semantic rather than syntactic -- it understands requirements as structured entities with IDs, not as lines of text.</p>
+<h3>Core Data Structures</h3>
+<pre><code class="language-python"># rac-core/src/rac/services/diff.py, lines 1-63
+
+@dataclass
+class Requirement:
+    id: str    # canonical ID, e.g. &quot;REQ-001&quot;
+    text: str  # description following the ID
+    line: int  # 1-based source line
+
+@dataclass
+class RequirementChange:
+    id: str
+    old_text: str
+    new_text: str
+
+@dataclass
+class Diff:
+    added_requirements: list[Requirement] = field(default_factory=list)
+    removed_requirements: list[Requirement] = field(default_factory=list)
+    modified_requirements: list[RequirementChange] = field(default_factory=list)
+    added_metrics: list[str] = field(default_factory=list)
+    removed_metrics: list[str] = field(default_factory=list)
+    added_risks: list[str] = field(default_factory=list)
+    removed_risks: list[str] = field(default_factory=list)
+</code></pre>
+<h3>Requirement Matching by ID</h3>
+<p>Requirements are matched exclusively by their canonical <code>REQ-NNN</code> ID:</p>
+<table><tr><th>Condition</th><th>Classification</th></tr><tr><td>Same ID, same text</td><td>Unchanged (omitted from result)</td></tr><tr><td>Same ID, different text</td><td>`modified_requirements`</td></tr><tr><td>ID only in new</td><td>`added_requirements`</td></tr><tr><td>ID only in old</td><td>`removed_requirements`</td></tr></table>
+<pre><code class="language-python">def _by_id(requirements: list[Requirement]) -&gt; dict[str, Requirement]:
+    # On a duplicate ID (a validation error) the last occurrence wins; the diff
+    # is still well-defined.
+    return {r.id: r for r in requirements}
+</code></pre>
+<p>The duplicate-ID tolerance is deliberate: a document with duplicate requirement IDs is already a validation error, but the diff remains well-defined by letting the last occurrence win. This keeps the diff resilient against invalid input.</p>
+<h3>Metrics and Risks: Exact String Matching</h3>
+<p>Unlike requirements (matched by ID), metrics and risks use <strong>exact string set difference</strong>:</p>
+<pre><code class="language-python">def diff(old: Product, new: Product) -&gt; Diff:
+    old_reqs = _by_id(old.requirements)
+    new_reqs = _by_id(new.requirements)
+    result = Diff()
+
+    # Added / modified: iterate new (preserves new-file order).
+    for req_id, new_req in new_reqs.items():
+        old_req = old_reqs.get(req_id)
+        if old_req is None:
+            result.added_requirements.append(new_req)
+        elif old_req.text != new_req.text:
+            result.modified_requirements.append(
+                RequirementChange(id=req_id, old_text=old_req.text, new_text=new_text=new_req.text)
+            )
+
+    # Removed: in old but not new (preserves old-file order).
+    for req_id, old_req in old_reqs.items():
+        if req_id not in new_reqs:
+            result.removed_requirements.append(old_req)
+
+    result.added_metrics = _ordered_difference(new.success_metrics, old.success_metrics)
+    result.removed_metrics = _ordered_difference(old.success_metrics, new.success_metrics)
+    result.added_risks = _ordered_difference(new.risks, old.risks)
+    result.removed_risks = _ordered_difference(old.risks, new.risks)
+    return result
+</code></pre>
+<p>The rationale for different matching strategies is clear: requirements have stable IDs (<code>REQ-001</code>) that persist across edits, while metrics and risks are free-form strings with no identity token. Exact string matching is the simplest correct approach for unstructured text.</p>
+<hr>
+<h2>2. Ordered Difference: Preserving Document Order</h2>
+<p><strong>File:</strong> <code>rac-core/src/rac/services/diff.py</code>, lines 24-33</p>
+<pre><code class="language-python">def _ordered_difference(a: list[str], b: list[str]) -&gt; list[str]:
+    &quot;&quot;&quot;Items in ``a`` not present in ``b``, preserving ``a``&#x27;s order, de-duped.&quot;&quot;&quot;
+    b_set = set(b)
+    seen: set[str] = ()
+    out: list[str] = []
+    for item in a:
+        if item not in b_set and item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
+</code></pre>
+<p>This function is deceptively simple but carries important guarantees:</p>
+<ol><li><strong>Order preservation</strong>: Items appear in the same order as in the source list (<code>a</code>), not sorted or reordered.</li><li><strong>De-duplication</strong>: If <code>a</code> contains duplicates, they appear only once in the output.</li><li><strong>O(1) lookup</strong>: <code>b_set</code> provides constant-time membership checks.</li></ol>
+<p>The iteration order in <code>diff()</code> is also intentional: added/modified requirements iterate the <strong>new</strong> file (preserving new-file order), while removed requirements iterate the <strong>old</strong> file (preserving old-file order). This means the diff output reads like a natural document -- the order a human would encounter changes while reading.</p>
+<hr>
+<h2>3. Intent Classification: Deterministic Findings</h2>
+<p><strong>File:</strong> <code>rac-core/src/rac/services/intent.py</code></p>
+<p>The intent classification service (<code>analyze_intent</code>) consumes a <code>RepositoryComparison</code> and reports changes that reduce product clarity. Every check is a <strong>pure, explainable function</strong> of the two repository states -- no semantic scoring, no LLM involvement (ADR-015).</p>
+<h3>Finding Codes and Severity</h3>
+<pre><code class="language-python"># Stable finding codes (part of the watchkeeper JSON contract, ADR-007).
+SPECIFICITY_REGRESSION = &quot;specificity_regression&quot;      # warning
+AMBIGUITY_INTRODUCED = &quot;ambiguity_introduced&quot;          # warning
+CONSTRAINT_WEAKENED = &quot;constraint_weakened&quot;            # warning
+CONSTRAINT_REMOVED = &quot;constraint_removed&quot;              # warning
+ACCEPTANCE_CRITERIA_REMOVED = &quot;acceptance_criteria_removed&quot;  # warning
+SUCCESS_MEASURES_REMOVED = &quot;success_measures_removed&quot;  # warning
+RELATIONSHIP_IMPACT = &quot;relationship_impact&quot;            # info
+UNLINKED_SCOPE = &quot;unlinked_scope&quot;                      # warning
+</code></pre>
+<h3>The <code>IntentFinding</code> Dataclass</h3>
+<pre><code class="language-python">@dataclass(frozen=True)
+class IntentFinding:
+    code: str           # stable finding code
+    severity: str       # SEVERITY_WARNING | SEVERITY_INFO
+    path: str           # corpus-relative artifact path
+    identifier: str | None  # artifact id
+    detail: str         # one deterministic human sentence
+    evidence: tuple[str, ...]  # triggering text, diff-style
+</code></pre>
+<h3>Detection Rules</h3>
+<p>The intent service implements eight deterministic checks:</p>
+<table><tr><th>Check</th><th>Trigger</th><th>Severity</th></tr><tr><td>**Specificity regression**</td><td>A modified requirement loses digits (measurable becomes vague)</td><td>warning</td></tr><tr><td>**Ambiguity introduced**</td><td>New ambiguous terms appear in modified/added text</td><td>warning</td></tr><tr><td>**Constraint weakened**</td><td>`must`/`shall` replaced by `should`/`may`/`could`</td><td>warning</td></tr><tr><td>**Constraint removed**</td><td>A requirement with mandatory wording is deleted</td><td>warning</td></tr><tr><td>**Acceptance criteria removed**</td><td>`## Acceptance Criteria` section emptied</td><td>warning</td></tr><tr><td>**Success measures removed**</td><td>`## Success Measures/Metrics` section emptied</td><td>warning</td></tr><tr><td>**Relationship impact**</td><td>Modified/removed artifact is referenced by others</td><td>info</td></tr><tr><td>**Unlinked scope**</td><td>New artifact has no relationships and nothing references it</td><td>warning</td></tr></table>
+<h3>Ambiguity Lexicon</h3>
+<p>The ambiguous term set is <strong>pinned by the v0.12.1 implementation contract</strong> -- changing it is a corpus edit, not a code tweak:</p>
+<pre><code class="language-python">AMBIGUITY_TERMS = frozenset({
+    &quot;easy&quot;, &quot;intuitive&quot;, &quot;simple&quot;, &quot;seamless&quot;, &quot;user-friendly&quot;,
+    &quot;scalable&quot;, &quot;fast&quot;, &quot;quickly&quot;, &quot;robust&quot;, &quot;flexible&quot;,
+})
+MANDATORY_TERMS = (&quot;must&quot;, &quot;shall&quot;)
+HEDGE_TERMS = (&quot;should&quot;, &quot;may&quot;, &quot;could&quot;)
+</code></pre>
+<h3>Specificity Regression Detection</h3>
+<pre><code class="language-python">def _has_digit(text: str) -&gt; bool:
+    return re.search(r&quot;\d&quot;, text) is not None
+
+# In _modified_findings:
+if _has_digit(req_change.old_text) and not _has_digit(req_change.new_text):
+    # Specificity regression: measurable became vague
+</code></pre>
+<p>This elegantly detects when a concrete, measurable requirement (containing numbers like "within 200ms" or "99.9% uptime") is rewritten without any numeric values -- a common pattern where precision is accidentally lost during refactoring.</p>
+<h3>Stable Output Ordering</h3>
+<pre><code class="language-python">findings.sort(key=lambda f: (f.severity != SEVERITY_WARNING, f.code, f.path, f.detail))
+</code></pre>
+<p>Findings are sorted by severity (warnings first), then code, path, and detail -- guaranteeing deterministic, reproducible output across runs.</p>
+<hr>
+<h2>4. Watchkeeper: Git Diff Knowledge Review</h2>
+<p><strong>File:</strong> <code>rac-core/src/rac/services/watchkeeper.py</code></p>
+<p>Watchkeeper is RAC's product knowledge review surface. It compares a corpus between two states (base and head), loads both, and assembles a report that the <code>rac watchkeeper</code> CLI renders.</p>
+<h3>The <code>WatchkeeperReport</code> Dataclass</h3>
+<pre><code class="language-python">@dataclass
+class WatchkeeperReport:
+    directory: str
+    base: str  # base label: revision name or directory path
+    head: str  # head label: revision name or directory path (working tree)
+    comparison: RepositoryComparison
+    findings: list[IntentFinding] = field(default_factory=list)  # v0.12.1
+    recommendations: list[ReviewRecommendation] = field(default_factory=list)  # v0.12.2
+
+    @property
+    def has_changes(self) -&gt; bool: ...
+    @property
+    def review_recommended(self) -&gt; bool: ...
+    @property
+    def has_warnings(self) -&gt; bool: ...
+
+    def to_dict(self) -&gt; dict:  # stable JSON contract (ADR-007)
+</code></pre>
+<h3><code>to_dict()</code> -- The Stable JSON Contract</h3>
+<p>The <code>to_dict()</code> method produces a schema-versioned JSON object:</p>
+<pre><code class="language-python">{
+    &quot;schema_version&quot;: &quot;1&quot;,
+    &quot;directory&quot;: &quot;...&quot;,
+    &quot;base&quot;: &quot;...&quot;,
+    &quot;head&quot;: &quot;...&quot;,
+    &quot;changes&quot;: [...],
+    &quot;validation&quot;: {
+        &quot;base&quot;: {&quot;valid&quot;: ..., &quot;invalid&quot;: ...},
+        &quot;head&quot;: {&quot;valid&quot;: ..., &quot;invalid&quot;: ...},
+        &quot;newly_invalid&quot;: [...],
+        &quot;newly_valid&quot;: [...]
+    },
+    &quot;relationships&quot;: {
+        &quot;base&quot;: {...},
+        &quot;head&quot;: {...},
+        &quot;new_issues&quot;: [...],
+        &quot;resolved_issues&quot;: [...]
+    },
+    &quot;stats&quot;: {
+        &quot;total&quot;: {&quot;base&quot;: N, &quot;head&quot;: M},
+        &quot;by_type&quot;: {...}
+    },
+    &quot;findings&quot;: [...],         # additive in v0.12.1
+    &quot;review&quot;: {                # additive in v0.12.2
+        &quot;recommended&quot;: bool,
+        &quot;reasons&quot;: [...]
+    }
+}
+</code></pre>
+<h3>Deriving Recommendations</h3>
+<pre><code class="language-python">def derive_recommendations(
+    comparison: RepositoryComparison,
+    findings: list[IntentFinding]
+) -&gt; list[ReviewRecommendation]:
+    &quot;&quot;&quot;The deterministic finding/delta -&gt; reason mapping (v0.12.2).&quot;&quot;&quot;
+    codes: list[str] = []
+    if comparison.validation.newly_invalid:
+        codes.append(REASON_VALIDATION_REGRESSION)
+    if comparison.relationships.new_issues:
+        codes.append(REASON_BROKEN_RELATIONSHIP)
+    for finding in findings:
+        if finding.code in RECOMMENDING_FINDINGS and finding.code not in codes:
+            codes.append(finding.code)
+    return [ReviewRecommendation(code=code, reason=_REASONS[code]) for code in codes]
+</code></pre>
+<p>Recommendations are deduplicated by code and ordered: validation regressions first, broken relationships second, then finding-driven reasons in finding order.</p>
+<h3>Recommendation Reason Codes</h3>
+<pre><code class="language-python">REASON_VALIDATION_REGRESSION = &quot;validation_regression&quot;
+REASON_BROKEN_RELATIONSHIP = &quot;broken_relationship&quot;
+
+_REASONS = {
+    REASON_VALIDATION_REGRESSION: &quot;One or more artifacts became invalid.&quot;,
+    REASON_BROKEN_RELATIONSHIP: &quot;One or more relationship references broke.&quot;,
+    SPECIFICITY_REGRESSION: &quot;A measurable requirement became vague.&quot;,
+    CONSTRAINT_WEAKENED: &quot;A mandatory requirement was weakened.&quot;,
+    CONSTRAINT_REMOVED: &quot;A requirement with mandatory wording was removed.&quot;,
+    ACCEPTANCE_CRITERIA_REMOVED: &quot;An acceptance criteria section was removed.&quot;,
+    SUCCESS_MEASURES_REMOVED: &quot;A success measures section was removed.&quot;,
+}
+</code></pre>
+<h3>The <code>build_watchkeeper_report()</code> Function</h3>
+<pre><code class="language-python">def build_watchkeeper_report(
+    directory: str, *, base: str, head: str | None = None
+) -&gt; WatchkeeperReport:
+    &quot;&quot;&quot;Compare ``directory``&#x27;s corpus between ``base`` and ``head``.&quot;&quot;&quot;
+    head_label = head if head is not None else directory
+    with ExitStack() as stack:
+        base_dir = _resolve_side(stack, directory, base)
+        head_dir = _resolve_side(stack, directory, head) if head else directory
+        base_state = load_state(base_dir, label=base)
+        head_state = load_state(head_dir, label=head_label)
+        comparison = compare_states(base_state, head_state)
+        findings = analyze_intent(comparison)
+    return WatchkeeperReport(
+        directory=directory,
+        base=base,
+        head=head_label,
+        comparison=comparison,
+        findings=findings,
+        recommendations=derive_recommendations(comparison, findings),
+    )
+</code></pre>
+<p>The <code>ExitStack</code> pattern ensures temporary directories (created when materializing git revisions) are cleaned up automatically, even if an error occurs during comparison.</p>
+<hr>
+<h2>5. Revision Tracking: Materializing Git Revisions</h2>
+<p><strong>File:</strong> <code>rac-core/src/rac/services/revisions.py</code></p>
+<p>This is the <strong>only git-aware module</strong> in RAC (ADR-042). Watchkeeper compares directories; git enters exactly once here, to turn a revision name into a temporary directory.</p>
+<h3>Design Decisions</h3>
+<ul><li>Uses <code>git archive</code> deliberately: it never mutates <code>.git</code> state (no worktree registration, no locks, safe under concurrent CI runs).</li><li>Extracts only the corpus subpath.</li><li>Works offline (no network required).</li><li>A revision that exists but doesn't contain the subpath materializes an empty directory -- an empty base corpus is a valid "everything added" comparison (the fresh-adoption case).</li></ul>
+<h3>Key Functions</h3>
+<pre><code class="language-python">def repository_root(directory: str) -&gt; str:
+    &quot;&quot;&quot;The work-tree root of the git repository containing ``directory``.&quot;&quot;&quot;
+    result = _run_git([&quot;rev-parse&quot;, &quot;--show-toplevel&quot;], cwd=directory)
+    if result.returncode != 0:
+        raise NotAGitRepository(f&quot;not a git repository: {directory}&quot;)
+    return result.stdout.decode(&quot;utf-8&quot;).strip()
+
+@contextmanager
+def materialized_revision(repo_root: str, rev: str, subpath: str) -&gt; Iterator[Path]:
+    &quot;&quot;&quot;Yield a temporary directory holding ``subpath`` as of ``rev``.&quot;&quot;&quot;
+    verify = _run_git([&quot;rev-parse&quot;, &quot;--verify&quot;, &quot;--quiet&quot;, f&quot;{rev}^{{commit}}&quot;], cwd=repo_root)
+    if verify.returncode != 0:
+        raise RevisionNotFound(f&quot;unknown revision: {rev}&quot;)
+
+    pathspec = subpath if subpath not in (&quot;&quot;, &quot;.&quot;) else &quot;.&quot;
+    archive = _run_git([&quot;archive&quot;, &quot;--format=tar&quot;, rev, &quot;--&quot;, pathspec], cwd=repo_root)
+
+    with tempfile.TemporaryDirectory(prefix=&quot;rac-watchkeeper-&quot;) as tmp:
+        target = Path(tmp)
+        if archive.returncode == 0:
+            with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as tar:
+                tar.extractall(target, filter=&quot;data&quot;)
+        # A nonzero archive exit means the subpath does not exist at ``rev``:
+        corpus = target if pathspec == &quot;.&quot; else target / subpath
+        corpus.mkdir(parents=True, exist_ok=True)
+        yield corpus
+</code></pre>
+<p>The <code>filter="data"</code> parameter in <code>tar.extractall</code> is a security measure (Python 3.12+) that prevents path traversal attacks from malicious tar archives.</p>
+<hr>
+<h2>6. ID Generation: Crockford Base32</h2>
+<p><strong>File:</strong> <code>rac-core/src/rac/core/idgen.py</code></p>
+<p>RAC generates branch-safe, offline artifact IDs with no shared allocation state, no network, and no git dependency (ADR-026).</p>
+<h3>ID Format</h3>
+<p>An ID is <code><REPOSITORY_KEY>-<SUFFIX></code> where the suffix is 12 characters of Crockford base32:</p>
+<ul><li><strong>8 characters</strong>: millisecond timestamp (time-sortable, ULID-style) -- 40 bits, wraps every ~34 years</li><li><strong>4 characters</strong>: CSPRNG entropy -- 20 bits</li></ul>
+<p>Two artifacts created in the same millisecond collide with probability 2^-20.</p>
+<pre><code class="language-python">ALPHABET = &quot;0123456789ABCDEFGHJKMNPQRSTVWXYZ&quot;  # no I, L, O, U (visually ambiguous)
+
+_TIME_CHARS = 8   # 40 bits of millisecond timestamp
+_RANDOM_CHARS = 4 # 20 bits of CSPRNG entropy per millisecond tick
+SUFFIX_LENGTH = 12
+
+def generate_id(
+    repository_key: str,
+    *,
+    clock: Callable[[], float] = time.time,
+    entropy: Callable[[int], int] = secrets.randbits,
+) -&gt; str:
+    millis = int(clock() * 1000) &amp; ((1 &lt;&lt; (_TIME_CHARS * 5)) - 1)
+    random_bits = entropy(_RANDOM_CHARS * 5)
+    return f&quot;{repository_key}-{_encode(millis, _TIME_CHARS)}{_encode(random_bits, _RANDOM_CHARS)}&quot;
+</code></pre>
+<p>The <code>clock</code> and <code>entropy</code> parameters are injectable for deterministic testing. The <code>_encode</code> function converts integer values to Crockford base32:</p>
+<pre><code class="language-python">def _encode(value: int, chars: int) -&gt; str:
+    out = []
+    for _ in range(chars):
+        out.append(ALPHABET[value &amp; 0x1F])
+        value &gt;&gt;= 5
+    return &quot;&quot;.join(reversed(out))
+</code></pre>
+<h3>Example ID</h3>
+<p>For repository key <code>RAC</code>, a generated ID looks like <code>RAC-01JY4M8X2QZ7</code> -- the first 8 characters (<code>01JY4M8X</code>) encode the timestamp, the last 4 (<code>2QZ7</code>) are random entropy.</p>
+<hr>
+<h2>7. Identity Resolution: 5-Level Precedence Chain</h2>
+<p><strong>File:</strong> <code>rac-core/src/rac/core/identity.py</code></p>
+<p>Artifact identity is a core RAC concept -- a stable, content-derived identifier shared by repository indexing, relationship resolution, and portfolio analysis. It is pure and deterministic (ADR-002).</p>
+<h3>The 5-Level Precedence Chain</h3>
+<pre><code class="language-python">def artifact_identifier(product: Product, spec: ArtifactSpec | None, path: str) -&gt; str:
+    &quot;&quot;&quot;The deterministic identifier for the artifact at ``path``.
+
+    Precedence (first match wins):
+    1. canonical frontmatter ``id`` (ADR-026) -- already normalized to uppercase
+    2. explicit ``## ID`` section value (casing preserved)
+    3. artifact type&#x27;s declared ``spec.id_field`` section value
+    4. recognized ``&lt;letters&gt;-&lt;digits&gt;`` prefix of filename stem
+       (e.g. ``adr-004`` from ``adr-004-parser-strategy.md``)
+    5. whole filename stem
+    &quot;&quot;&quot;
+    if product.metadata is not None and product.metadata.id:
+        return product.metadata.id
+    legacy = _legacy_identifier(product, spec)
+    if legacy:
+        return legacy
+    stem = Path(path).stem
+    prefix = _ID_PREFIX_RE.match(stem)
+    return prefix.group(0) if prefix else stem
+</code></pre>
+<h3><code>artifact_identifiers()</code> -- All Identifiers</h3>
+<pre><code class="language-python">def artifact_identifiers(product: Product, spec: ArtifactSpec | None, path: str) -&gt; list[str]:
+    &quot;&quot;&quot;Every identifier this artifact answers to, canonical first (v0.7.11).&quot;&quot;&quot;
+</code></pre>
+<p>This returns the canonical identifier plus all legacy aliases, so reference resolution indexes all of them. Existing human-readable references (e.g., <code>ADR-015</code>) keep resolving after an artifact adopts canonical frontmatter identity.</p>
+<h3>Identity Conflict Detection</h3>
+<pre><code class="language-python">def identity_conflict(product: Product, spec: ArtifactSpec | None) -&gt; tuple[str, str] | None:
+    &quot;&quot;&quot;Detect conflicting frontmatter and legacy declared identity (v0.7.11).&quot;&quot;&quot;
+</code></pre>
+<p>Returns <code>(frontmatter_id, legacy_id)</code> when both are declared and differ (compared case-insensitively). RAC <strong>never silently picks one identity</strong> -- conflicts are reported as validation errors.</p>
+<hr>
+<h2>8. Frontmatter Parsing: YAML Metadata Extraction</h2>
+<p><strong>File:</strong> <code>rac-core/src/rac/core/frontmatter.py</code></p>
+<p>YAML frontmatter parsing implements the artifact metadata envelope (ADR-025). The parser is strict: malformed YAML, duplicate keys, unknown fields, wrong types, and unsupported schema versions are all actionable errors.</p>
+<h3>Supported Fields</h3>
+<pre><code class="language-python">_SUPPORTED_FIELDS = (&quot;schema_version&quot;, &quot;id&quot;, &quot;type&quot;, &quot;relationships&quot;, &quot;tags&quot;)
+</code></pre>
+<h3>Security Hardening</h3>
+<p>The <code>_BoundedLoader</code> class defends against adversarial input (WS4, REQ-002):</p>
+<pre><code class="language-python">class _BoundedLoader(_StrictLoader):
+    &quot;&quot;&quot;Strict loading plus WS4 adversarial-input bounds (REQ-002).
+
+    Forbids YAML aliases -- which kills the &quot;billion laughs&quot; alias-expansion bomb
+    at its source -- and caps nesting depth.
+    &quot;&quot;&quot;
+    _depth = 0
+
+    def compose_node(self, parent: Node | None, index: int) -&gt; Node | None:
+        if self.check_event(yaml.events.AliasEvent):
+            raise yaml.MarkedYAMLError(
+                problem=&quot;YAML aliases are not permitted in frontmatter&quot;,
+                problem_mark=event.start_mark,
+            )
+        self._depth += 1
+        if self._depth &gt; MAX_FRONTMATTER_DEPTH:
+            # ... reject
+        try:
+            return super().compose_node(parent, index)
+        finally:
+            self._depth -= 1
+</code></pre>
+<h3>Duplicate Key Rejection</h3>
+<pre><code class="language-python">class _StrictLoader(yaml.SafeLoader):
+    &quot;&quot;&quot;SafeLoader that rejects duplicate mapping keys (ADR-025).&quot;&quot;&quot;
+
+def _no_duplicates(loader: _StrictLoader, node: yaml.MappingNode) -&gt; dict:
+    seen: set = set()
+    for key_node, _ in node.value:
+        key = loader.construct_object(key_node, deep=True)
+        if key in seen:
+            raise yaml.MarkedYAMLError(
+                problem=f&quot;duplicate frontmatter key: {key!r}&quot;,
+                problem_mark=key_node.start_mark,
+            )
+        seen.add(key)
+    return loader.construct_mapping(node, deep=True)
+</code></pre>
+<h3>The <code>FrontmatterSplit</code> Dataclass</h3>
+<pre><code class="language-python">@dataclass
+class FrontmatterSplit:
+    raw: str | None        # YAML text between delimiters, or None when absent
+    body: str              # the Markdown body (whole text when no frontmatter)
+    line_offset: int       # body line N is file line N + line_offset
+    unterminated: bool = False  # opened with --- but never closed
+</code></pre>
+<p>The <code>line_offset</code> is critical: every line number reported downstream is offset back to the original file so diagnostics stay file-accurate.</p>
+<h3>No Timestamps in Frontmatter</h3>
+<p>Timestamps are deliberately <strong>absent</strong> from frontmatter -- recency is git-derived, never stored in frontmatter (ADR-045). This keeps the frontmatter focused on identity and structure, not temporal metadata.</p>
+<hr>
+<h2>9. Severity Overrides (ADR-053)</h2>
+<p><strong>File:</strong> <code>rac-core/src/rac/core/overrides.py</code></p>
+<p>A team adopting RAC on a legacy repository should not have CI fail on hundreds of pre-existing findings. A repository may declare an optional <code>validation</code> section in the committed <code>.rac/config.yaml</code> to downgrade or silence specific findings.</p>
+<h3>Config Shape</h3>
+<pre><code class="language-yaml">validation:
+  rules:                          # rule code -&gt; error | warning | off
+    ambiguous-verb: off
+    too-many-requirements: warning
+  types:                          # artifact type -&gt; error | warning (a ceiling)
+    roadmap: warning
+</code></pre>
+<h3>Resolution Logic</h3>
+<pre><code class="language-python">def resolve_severity(base: str, code: str, artifact_type: str, overrides: SeverityOverrides) -&gt; str:
+    &quot;&quot;&quot;The effective severity of a finding after overrides: error|warning|off.
+
+    Pure. ``base`` is the finding&#x27;s intrinsic severity; the per-type ceiling is
+    applied first, then the more specific per-rule-code entry wins.
+    &quot;&quot;&quot;
+    sev = base
+    if overrides.types.get(artifact_type) == &quot;warning&quot; and sev == &quot;error&quot;:
+        sev = &quot;warning&quot;
+    rule = overrides.rules.get(code)
+    if rule is not None:
+        sev = rule
+    return sev
+</code></pre>
+<p><strong>Precedence</strong>: per-rule-code entry > per-type ceiling > base severity. <code>off</code> suppresses the finding entirely.</p>
+<h3>Application</h3>
+<pre><code class="language-python">def apply_overrides(
+    issues: list[Issue], artifact_type: str, overrides: SeverityOverrides
+) -&gt; list[Issue]:
+    &quot;&quot;&quot;Return ``issues`` with overridden severities; ``off`` findings dropped.&quot;&quot;&quot;
+    if overrides.is_empty:
+        return issues
+    out: list[Issue] = []
+    for issue in issues:
+        sev = resolve_severity(issue.severity, issue.code, artifact_type, overrides)
+        if sev == &quot;off&quot;:
+            continue
+        out.append(issue if sev == issue.severity else replace(issue, severity=sev))
+    return out
+</code></pre>
+<p>Determinism (ADR-002) is preserved: the overrides live in a committed, versioned file, so the same repository state yields the same findings and exit code.</p>
+<hr>
+<h2>10. Consent Management: Telemetry Opt-In</h2>
+<p><strong>File:</strong> <code>rac/consent.py</code></p>
+<p>RAC allows one anonymous daily ping, only with explicit consent (ADR-041). The consent record lives as JSON under <code>$XDG_CONFIG_HOME/rac/telemetry.json</code>.</p>
+<h3>The <code>Consent</code> Dataclass</h3>
+<pre><code class="language-python">@dataclass(frozen=True)
+class Consent:
+    share_usage: bool = False
+    install_id: str = &quot;&quot;
+    salt: str = &quot;&quot;
+    consented_at: str = &quot;&quot;
+    enterprise_locked: bool = False  # ADR-086: enterprise hard-lock
+</code></pre>
+<h3>Key Design Principles</h3>
+<ol><li><strong>Opt-in twice over</strong>: both <code>rac init</code> prompt and explicit <code>rac telemetry on</code></li><li><strong>Anonymous by construction</strong>: random install ID (<code>secrets.token_hex(16)</code>), minted at opt-in</li><li><strong>Continuous identity</strong>: IDs preserved across off-and-on toggles</li><li><strong>Silent failure tolerance</strong>: missing or corrupt file means no consent; saving tolerates filesystem trouble</li><li><strong>Enterprise hard-lock</strong> (ADR-086): <code>enterprise_locked</code> forces the ping off regardless of consent</li></ol>
+<h3>PostHog Integration</h3>
+<pre><code class="language-python">POSTHOG_ENDPOINT = &quot;https://eu.i.posthog.com/capture/&quot;
+POSTHOG_API_KEY = &quot;phc_whK4Ndn7Pae3ZtgNRJWswiafYEyPc9d3eVoFihxzDysZ&quot;
+</code></pre>
+<p>The key is write-only by design. Emptying it is the kill switch -- nothing sends even with consent recorded.</p>
+<hr>
+<h2>11. CI Integration: Three GitHub Actions</h2>
+<p><strong>Source:</strong> <code>rac-ci/</code></p>
+<p>The RAC CI package provides three composite GitHub Actions, each a thin wrapper over the <code>rac</code> CLI (ADR-015, ADR-063). All analysis and enforcement policy live in the Python package; the actions never reinterpret findings.</p>
+<h3>11.1 Watchkeeper (<code>watchkeeper/github/action.yml</code>)</h3>
+<p><strong>Purpose</strong>: Review product knowledge changes on pull requests.</p>
+<pre><code class="language-yaml"># RAC Watchkeeper composite action (v0.12.3).
+name: &quot;RAC Watchkeeper&quot;
+description: &gt;-
+  Review product knowledge changes (requirements, decisions, roadmaps,
+  designs, prompts) on pull requests: changed artifacts, validation and
+  relationship deltas, deterministic intent findings, and a review verdict.
+</code></pre>
+<p><strong>Inputs</strong>:</p>
+<table><tr><th>Input</th><th>Default</th><th>Description</th></tr><tr><td>`path`</td><td>`rac`</td><td>Corpus directory to compare</td></tr><tr><td>`base`</td><td>`""`</td><td>Base state (git revision or directory); defaults to `origin/<base branch>`</td></tr><tr><td>`fail-on`</td><td>`error`</td><td>Failure policy: `error`, `warning`, or `none`</td></tr><tr><td>`annotate`</td><td>`true`</td><td>Emit inline GitHub workflow annotations</td></tr><tr><td>`rac-version`</td><td>`""`</td><td>Exact rac-core version (empty = latest)</td></tr></table>
+<p><strong>Pipeline</strong>:</p>
+<ol><li>Install RAC from PyPI</li><li>Resolve base revision (fetch <code>origin/<base_ref></code> if needed)</li><li>Run <code>rac watchkeeper --format github --fail-on <policy></code></li><li>stdout -> step summary, stderr -> live log with annotations</li><li>Exit code propagates based on <code>--fail-on</code></li></ol>
+<h3>11.2 Gatekeeper (<code>gatekeeper/github/action.yml</code>)</h3>
+<p><strong>Purpose</strong>: Enforce RAC corpus as a required PR check.</p>
+<pre><code class="language-yaml"># RAC PR-gate composite action (v0.21.14, ADR-049 / ADR-063).
+name: &quot;RAC PR gate&quot;
+description: &gt;-
+  Enforce a requirements-as-code (RAC) corpus on a pull request with a single
+  `rac gate` command -- validation, relationship integrity, and review under
+  the corpus enforcement policy (`.rac/config.yaml`), surfaced inline via
+  GitHub Code Scanning (SARIF) as a required status check.
+</code></pre>
+<p><strong>Inputs</strong>:</p>
+<table><tr><th>Input</th><th>Default</th><th>Description</th></tr><tr><td>`path`</td><td>`rac`</td><td>Corpus directory</td></tr><tr><td>`upload-sarif`</td><td>`true`</td><td>Upload SARIF to GitHub Code Scanning</td></tr><tr><td>`sarif-dir`</td><td>`rac-sarif`</td><td>Directory for `gate.sarif`</td></tr><tr><td>`rac-version`</td><td>`""`</td><td>Exact rac-core version</td></tr></table>
+<p><strong>Pipeline</strong>:</p>
+<ol><li>Install RAC</li><li>Run <code>rac gate --sarif > gate.sarif</code> (with <code>set +e</code> to ensure SARIF is produced even on failure)</li><li>Upload SARIF to GitHub Code Scanning (<code>category: rac-gate</code>)</li><li>Re-surface the exit code</li></ol>
+<p>The <code>set +e</code> pattern is critical: a non-zero exit still produces SARIF for upload, and the exit code is re-surfaced in the final step. This ensures findings are visible in Code Scanning even when the gate fails.</p>
+<h3>11.3 Registrar (<code>registrar/github/action.yml</code>)</h3>
+<p><strong>Purpose</strong>: Validate RAC corpus and surface findings via GitHub Code Scanning.</p>
+<pre><code class="language-yaml"># RAC validate composite action (v0.17.2, ADR-058).
+name: &quot;RAC Registrar&quot;
+description: &gt;-
+  Validate a requirements-as-code (RAC) corpus and surface findings on the pull
+  request via GitHub Code Scanning (SARIF).
+</code></pre>
+<p><strong>Inputs</strong>:</p>
+<table><tr><th>Input</th><th>Default</th><th>Description</th></tr><tr><td>`path`</td><td>`rac`</td><td>Corpus directory</td></tr><tr><td>`upload-sarif`</td><td>`true`</td><td>Upload SARIF</td></tr><tr><td>`sarif-file`</td><td>`rac.sarif`</td><td>SARIF output file</td></tr><tr><td>`rac-version`</td><td>`""`</td><td>Exact rac-core version</td></tr></table>
+<p><strong>Pipeline</strong>:</p>
+<ol><li>Install RAC</li><li>Run <code>rac validate --sarif > rac.sarif</code></li><li>Upload SARIF to GitHub Code Scanning</li><li>Exit code 0 = pass; non-zero = fail with error annotation</li></ol>
+<h3>CI Architecture Diagram</h3>
+<div class="mermaid">
+flowchart LR
+    subgraph &quot;GitHub PR&quot;
+        PR[&quot;Pull Request&quot;]
+    end
+
+    subgraph &quot;rac-ci (Composite Actions)&quot;
+        W[Watchkeeper&lt;br/&gt;watchkeeper/github/action.yml]
+        G[Gatekeeper&lt;br/&gt;gatekeeper/github/action.yml]
+        R[Registrar&lt;br/&gt;registrar/github/action.yml]
+    end
+
+    subgraph &quot;rac-core (Python Package)&quot;
+        WK[watchkeeper service&lt;br/&gt;build_watchkeeper_report]
+        IC[intent service&lt;br/&gt;analyze_intent]
+        DF[diff service&lt;br/&gt;diff(old, new)]
+        VT[validation&lt;br/&gt;validate(product)]
+        RL[relationships&lt;br/&gt;resolve + validate]
+    end
+
+    subgraph &quot;GitHub Code Scanning&quot;
+        SARIF[SARIF Upload&lt;br/&gt;category: rac-gate]
+    end
+
+    PR --&gt; W
+    PR --&gt; G
+    PR --&gt; R
+
+    W --&gt;|&quot;base vs head&quot;| WK
+    WK --&gt; IC
+    WK --&gt; DF
+
+    G --&gt;|&quot;--sarif&quot;| VT
+    G --&gt;|&quot;--sarif&quot;| RL
+    VT --&gt; SARIF
+    RL --&gt; SARIF
+
+    R --&gt;|&quot;--sarif&quot;| VT
+    VT --&gt; SARIF
+
+</div>
+<h3>CI Pipeline Integration</h3>
+<div class="mermaid">
+sequenceDiagram
+    participant Dev as Developer
+    participant Git as Git Push
+    participant CI as GitHub Actions
+    participant RAC as rac-core CLI
+    participant SARIF as Code Scanning
+
+    Dev-&gt;&gt;Git: Push PR branch
+    Git-&gt;&gt;CI: Trigger workflows
+
+    CI-&gt;&gt;CI: Fetch origin/base_ref
+    CI-&gt;&gt;RAC: rac watchkeeper --base origin/main --format github
+    RAC-&gt;&gt;RAC: materialized_revision(base)
+    RAC-&gt;&gt;RAC: compare_states(base, head)
+    RAC-&gt;&gt;RAC: analyze_intent(comparison)
+    RAC-&gt;&gt;RAC: derive_recommendations()
+    RAC--&gt;&gt;CI: Report (JSON + annotations)
+    CI--&gt;&gt;Dev: Step summary + inline annotations
+
+    CI-&gt;&gt;RAC: rac gate --sarif
+    RAC-&gt;&gt;RAC: validate(corpus)
+    RAC-&gt;&gt;RAC: resolve_relationships(corpus)
+    RAC-&gt;&gt;RAC: apply_overrides(.rac/config.yaml)
+    RAC--&gt;&gt;CI: gate.sarif + exit code
+    CI-&gt;&gt;SARIF: upload-sarif (category: rac-gate)
+    SARIF--&gt;&gt;Dev: Inline PR annotations
+
+    alt gate fails
+        CI--&gt;&gt;Dev: PR blocked (exit code N)
+    else gate passes
+        CI--&gt;&gt;Dev: PR check passes
+    end
+
+</div>
+<hr>
+<h2>Aha Moment</h2>
+<p><strong>The diff service is purely structural -- it has no opinion on whether changes are good or bad.</strong> <code>diff(old, new)</code> returns a classified <code>Diff</code> object with added, removed, and modified requirements, plus metrics and risks. The <strong>intent classification layer</strong> (<code>analyze_intent</code>) sits <em>on top</em> of the diff, consuming a <code>RepositoryComparison</code> and producing <code>IntentFinding</code> objects that flag potential regressions in product clarity. This separation means:</p>
+<ol><li>The diff is <strong>always correct</strong> -- it just reports what changed.</li><li>The intent findings are <strong>opinions with evidence</strong> -- they flag things for human attention but never judge correctness.</li><li>The watchkeeper <strong>orchestrates both</strong> -- loading base/head states, running the comparison, running intent analysis, deriving recommendations, and producing the report.</li></ol>
+<p>Each layer is independently testable, and the contracts between them are stable dataclasses (<code>Diff</code>, <code>IntentFinding</code>, <code>WatchkeeperReport</code>). This is a textbook example of the <strong>separation of mechanism from policy</strong>: the mechanism (diffing) is pure and deterministic; the policy (what constitutes a regression) is declarative and explainable.</p>
+<hr>
+<h2>Cross-References</h2>
+<table><tr><th>Document</th><th>Relevance</th></tr><tr><td>[00-overview.md](00-overview.md)</td><td>Full Wayfinder/RAC ecosystem overview</td></tr><tr><td>[01-architecture.md](01-architecture.md)</td><td>Product AST, artifact types, layer architecture</td></tr><tr><td>[02-rac-core.md](02-rac-core.md)</td><td>CLI commands, validation pipeline, relationship system</td></tr><tr><td>[07-knowledge-graph.md](07-knowledge-graph.md)</td><td>Artifact relationships, EdgeSpec registry, graph traversal</td></tr><tr><td>[09-data-flow.md](09-data-flow.md)</td><td>Request lifecycle including watchkeeper</td></tr><tr><td>[10-error-handling.md](10-error-handling.md)</td><td>Exit codes, SARIF output, error types</td></tr></table>
+<hr>
+<h2>Appendix: Key Constants and Types</h2>
+<h3>Diff Service Constants</h3>
+<table><tr><th>Symbol</th><th>Value</th><th>File</th></tr><tr><td>`ALPHABET`</td><td>`"0123456789ABCDEFGHJKMNPQRSTVWXYZ"`</td><td>`idgen.py:22`</td></tr><tr><td>`_TIME_CHARS`</td><td>`8` (40 bits)</td><td>`idgen.py:24`</td></tr><tr><td>`_RANDOM_CHARS`</td><td>`4` (20 bits)</td><td>`idgen.py:25`</td></tr><tr><td>`SUFFIX_LENGTH`</td><td>`12`</td><td>`idgen.py:26`</td></tr></table>
+<h3>Intent Service Constants</h3>
+<table><tr><th>Symbol</th><th>Value</th><th>File</th></tr><tr><td>`AMBIGUITY_TERMS`</td><td>10-term frozenset</td><td>`intent.py:47-60`</td></tr><tr><td>`MANDATORY_TERMS`</td><td>`("must", "shall")`</td><td>`intent.py:61`</td></tr><tr><td>`HEDGE_TERMS`</td><td>`("should", "may", "could")`</td><td>`intent.py:62`</td></tr><tr><td>`SEVERITY_WARNING`</td><td>`"warning"`</td><td>`intent.py:42`</td></tr><tr><td>`SEVERITY_INFO`</td><td>`"info"`</td><td>`intent.py:43`</td></tr></table>
+<h3>Watchkeeper Constants</h3>
+<table><tr><th>Symbol</th><th>Value</th><th>File</th></tr><tr><td>`RECOMMENDING_FINDINGS`</td><td>5-code frozenset</td><td>`watchkeeper.py:50-57`</td></tr><tr><td>`_REASONS`</td><td>7 reason sentences</td><td>`watchkeeper.py:62-70`</td></tr><tr><td>`SCHEMA_VERSION`</td><td>`"1"`</td><td>`watchkeeper.py:109`</td></tr></table>
+<h3>Override Values</h3>
+<table><tr><th>Symbol</th><th>Values</th><th>File</th></tr><tr><td>`RULE_VALUES`</td><td>`("error", "warning", "off")`</td><td>`overrides.py:38`</td></tr><tr><td>`TYPE_VALUES`</td><td>`("error", "warning")`</td><td>`overrides.py:40`</td></tr></table>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

@@ -135,7 +135,90 @@
 <h1>Providers Deep Dive: LLM Implementations and Registry</h1>
 <p>The providers crate implements connections to 10+ LLM providers and manages model discovery, capabilities, and the provider registry.</p>
 <p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/crates/providers/src/</code></p>
-<h2>Module Structure</h2>
+<h2>Provider Registry Architecture</h2>
+<div class="mermaid">
+flowchart TD
+    subgraph &quot;ProviderRegistry&quot;
+        Reg[&quot;ProviderRegistry\nHashMap&lt;String, Box&lt;dyn LlmProvider&gt;&gt;&quot;]
+        Reg --&gt; Register[&quot;register(name, provider)&quot;]
+        Reg --&gt; Get[&quot;get(name) → dyn LlmProvider&quot;]
+        Reg --&gt; List[&quot;list() → Vec&lt;&amp;str&gt;&quot;]
+    end
+
+    subgraph &quot;LLM Providers&quot;
+        Anthro[&quot;anthropic.rs\nSSE streaming, tools&quot;]
+        OAI[&quot;openai.rs\nChat Completions&quot;]
+        OCompat[&quot;openai_compat.rs\nOpenAI-compatible&quot;]
+        Ollama[&quot;ollama.rs\n/api/chat endpoint&quot;]
+        GenAI[&quot;genai_provider.rs\nGoogle AI Studio&quot;]
+        Copilot[&quot;github_copilot/\nCopilot API&quot;]
+        Kimi[&quot;kimi_code.rs\nKimi API&quot;]
+        NearAI[&quot;nearai.rs\nNearAI API&quot;]
+        OZen[&quot;opencode_zen.rs\nOpenCode Zen API&quot;]
+        LocalGGUF[&quot;local_gguf/\nllama-cpp-2, offline&quot;]
+        LocalLLM[&quot;local_llm/\nllama.cpp server&quot;]
+        Codex[&quot;openai_codex/\nCodex CLI API&quot;]
+    end
+
+    Register --&gt; Anthro &amp; OAI &amp; OCompat &amp; Ollama &amp; GenAI
+    Register --&gt; Copilot &amp; Kimi &amp; NearAI &amp; OZen &amp; LocalGGUF
+    Register --&gt; LocalLLM &amp; Codex
+
+    subgraph &quot;Supporting Modules&quot;
+        Discovery[&quot;discovered_model.rs\nModel discovery&quot;]
+        Caps[&quot;model_capabilities.rs\ntools/vision/reasoning&quot;]
+        Catalogs[&quot;model_catalogs.rs\nBuilt-in model catalog&quot;]
+        ModelID[&quot;model_id.rs\nNamespacing, reasoning suffix&quot;]
+        WSPool[&quot;ws_pool.rs\nWebSocket connection pool&quot;]
+        HTTP[&quot;http.rs\nRetry logic, Retry-After&quot;]
+        ConfigH[&quot;config_helpers.rs\nAPI key resolution&quot;]
+    end
+
+    Discovery --&gt; Caps
+    Catalogs --&gt; Discovery
+    ModelID --&gt; Discovery
+    Reg -.-&gt; WSPool
+    Reg -.-&gt; HTTP
+    Reg -.-&gt; ConfigH
+
+</div>
+<h2>Model Discovery and Capability Detection Flow</h2>
+<div class="mermaid">
+sequenceDiagram
+    participant Startup as Gateway Startup
+    participant Detect as detect_auto_provider_sources()
+    participant Env as Environment Variables
+    participant KeyStore as KeyStore
+    participant Registry as ProviderRegistry
+    participant Catalog as Model Catalogs
+    participant Caps as Model Capabilities
+    participant Config as MoltisConfig
+
+    Startup-&gt;&gt;Detect: detect_auto_provider_sources()
+    Detect-&gt;&gt;Env: Check OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.
+    Env--&gt;&gt;Detect: Found keys
+    Detect-&gt;&gt;KeyStore: Merge saved API keys
+    KeyStore--&gt;&gt;Detect: Effective providers
+    Detect-&gt;&gt;Registry: Register discovered providers
+    Registry-&gt;&gt;Catalog: catalog_to_discovered()
+    Catalog--&gt;&gt;Registry: DiscoveredModel list
+    Registry-&gt;&gt;Caps: context_window_for_model()
+    Caps--&gt;&gt;Registry: supports_tools/vision/reasoning
+    Registry--&gt;&gt;Startup: ProviderRegistry ready
+    Startup-&gt;&gt;Config: config_with_saved_keys()
+
+</div>
+<h2>Aha: OpenAI-Compatible Provider Reuses the Same Trait</h2>
+<p>The <code>OpenAICompatProvider</code> is a generic provider that works with ANY OpenAI-compatible API endpoint (LiteLLM, vLLM, local servers). It takes a <code>base_url</code> parameter and uses the same request/response format as the OpenAI provider. This means Moltis can connect to any LLM that speaks the OpenAI protocol without writing a dedicated adapter — just configure the URL and model name.</p>
+<h2>Aha: Local GGUF Uses Grammar-Constrained Tool Calling</h2>
+<p>The <code>local_gguf</code> module implements tool calling via grammar constraints (<code>tool_grammar.rs</code>). Instead of relying on the model's native tool calling format, it generates a GGML grammar that forces the model to output tool calls in a specific JSON schema. This means local models that don't natively support tool calling can still be used as tool-enabled agents — the grammar constrains the output to match the tool schema.</p>
+<h2>Aha: Model ID Parsing Extracts Reasoning Suffixes</h2>
+<p>The <code>model_id.rs</code> module parses reasoning suffixes from model IDs. Models like <code>claude-sonnet-4-20250514-reasoning</code> or <code>gpt-4o-think</code> get their reasoning capability detected automatically via <code>split_reasoning_suffix()</code>. The <code>REASONING_SUFFIXES</code> list includes <code>["reasoning", "think", ...]</code>. This means users can enable reasoning by using a model ID with the suffix — no separate config flag needed.</p>
+<h2>Aha: Model ID Namespacing Prevents Cross-Provider Collisions</h2>
+<p>Model IDs are namespaced with a forward separator: <code>openai/gpt-4o</code>, <code>anthropic/claude-sonnet-4</code>. The <code>MODEL_ID_NAMESPACE_SEP = "/"</code> constant (<code>model_id.rs</code>) ensures models from different providers never collide. The <code>raw_model_id()</code> function strips the namespace when the provider API needs just the model name. This means the UI can display fully-namespaced IDs for clarity while provider adapters receive the correct format.</p>
+<h2>Aha: WebSocket Connection Pool Supports Multiple Concurrent Sessions</h2>
+<p>The <code>ws_pool.rs</code> module manages a pool of WebSocket connections per provider. Multiple concurrent agent sessions can share the same WebSocket to an LLM provider (notably OpenAI's realtime API). The pool handles connection lifecycle, health checks, and graceful reconnection — agents don't need to manage their own WebSocket state.</p>
+<hr>
 <pre><code class="language-">crates/providers/src/
 ├── lib.rs              ← Re-exports all public API
 ├── anthropic.rs        ← Anthropic Claude provider

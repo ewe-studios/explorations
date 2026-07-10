@@ -6,6 +6,109 @@ This document explains the complete flow of a user message through Moltis: from 
 
 ---
 
+## System Architecture: Channel to Agent Loop
+
+```mermaid
+flowchart TD
+    User["User on WhatsApp/Telegram/Discord"]
+    Channel["ChannelPlugin\nwhatsapp/signal/discord"]
+    Sink["event_sink.emit()\nChannelEvent::Message"]
+    GW["Gateway channel handler\nchannel_events.rs"]
+    LiveChat["LiveChatService::send()\nchat.rs"]
+    RunTools["run_with_tools()\nrun_with_tools.rs"]
+    Limits["Runtime limits resolution\ntimeout, max_iterations"]
+    Tools["Filtered tool registry\napply_runtime_tool_filters"]
+    Memory["Memory prefetch\nmanager.search(query, limit)"]
+    Prompt["System prompt assembly\nprompt/builder.rs"]
+    Sandbox["Sandbox resolution\nsandbox router"]
+    Loop["run_agent_loop_streaming()\nrunner/streaming.rs"]
+    Provider["LLM provider stream\nanthropic/openai/ollama"]
+    ToolExec["Concurrent tool execution\nfutures::join_all"]
+    PostProcess["Post-processing\ncompact, TTS, deliver"]
+    Reply["Channel outbound delivery\nsend_message / send_stream_chunk"]
+
+    User --> Channel
+    Channel --> Sink
+    Sink --> GW
+    GW --> LiveChat
+    LiveChat --> RunTools
+    RunTools --> Limits
+    Limits --> Tools
+    Tools --> Memory
+    Memory --> Prompt
+    Prompt --> Sandbox
+    Sandbox --> Loop
+    Loop --> Provider
+    Provider --> ToolExec
+    ToolExec --> Loop
+    Loop --> PostProcess
+    PostProcess --> Reply
+    Reply --> User
+```
+
+## Agent Loop State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> ResolveLimits
+    ResolveLimits --> BuildTools
+    BuildTools --> MemoryPrefetch
+    MemoryPrefetch --> BuildPrompt
+    BuildPrompt --> SandboxResolve
+    SandboxResolve --> StartEventForwarder
+    StartEventForwarder --> AgentIteration
+
+    state AgentIteration {
+        [*] --> EnforceBudget
+        EnforceBudget --> BeforeLLMCall
+        BeforeLLMCall --> StreamFromLLM
+        StreamFromLLM --> ParseToolCalls
+        ParseToolCalls --> HasTools?
+
+        HasTools? --> Yes: Execute Concurrent
+        HasTools? --> No: Check AutoContinue
+
+        Yes: Execute Concurrent --> BeforeToolCall
+        BeforeToolCall --> ToolExecute
+        ToolExecute --> ProcessResults
+        ProcessResults --> NextIteration
+
+        Check AutoContinue --> HasContinues?
+        HasContinues? --> Yes: Add nudge
+        HasContinues? --> No: Return Final
+        Yes: Add nudge --> NextIteration
+        NextIteration --> [*]
+        No: Return Final --> [*]
+    }
+
+    AgentIteration --> Compact
+    Compact --> TTS
+    TTS --> Deliver
+    Deliver --> [*]
+```
+
+## Aha: Datetime Goes in User Message, Not System Prompt
+
+The datetime is prepended to the **user message**, not the system prompt. This is deliberate — putting it in the system prompt would shift the position between turns and break the KV cache prefix matching. By keeping the system prompt stable across turns, Moltis maximizes KV cache hits for the system prompt tokens, reducing API costs and latency. See `agents/src/prompt/builder.rs:230-243` — `prepend_datetime_to_user_content()`.
+
+## Aha: Tool Arguments Are Tracked Across Events for Persistence
+
+The event forwarder tracks tool arguments in a `tool_args_map` during `ToolCallStart` events and uses them during `ToolCallEnd` to persist the complete tool call + result pair in the session store. This means the UI can show full tool call details (name + args + result) even though the events arrive separately. The alternative — sending the full payload in each event — would duplicate data across WebSocket messages. See `chat/src/run_with_tools.rs:272-400+`.
+
+## Aha: `/sh` Command Forcing on First Iteration
+
+If the user sends `/sh some_command` and the LLM doesn't call any tools, the agent loop has a fallback at `streaming.rs:353-357`: it creates an implicit `exec` tool call with the command from the `/sh` prefix. This only fires on iteration 1 when total_tool_calls == 0. It ensures shell commands always execute even if the model ignores the tool schema.
+
+## Aha: Memory Prefetch Has a 10-Character Minimum Threshold
+
+The memory prefetch in `run_with_tools.rs` only triggers for queries ≥ 10 characters that don't start with `/`. This is a cost optimization: greetings like "hi" or commands like "/help" are extremely unlikely to match any stored memory, so the embedding API call (typically $0.0001-0.001 per request) is saved. Only substantive user messages trigger the prefetch.
+
+## Aha: All Tool Calls Run Concurrently via join_all
+
+When the LLM returns multiple tool calls in a single response, Moltis executes ALL of them concurrently using `futures::future::join_all(tool_futures)`. There's no sequential ordering — if the model calls `exec("ls")`, `exec("pwd")`, and `glob("*.rs")` simultaneously, all three run in parallel. Results are processed in the original declaration order for deterministic message ordering. This means tool calls should be designed to be independent — if one tool's output affects another's input, the LLM must split them across iterations.
+
+---
+
 ## The Complete Message Flow
 
 When a user sends a message (e.g., on WhatsApp), here's exactly what happens:

@@ -49,6 +49,36 @@ flowchart TD
     WebhookMW --> ChannelStore
 ```
 
+## Webhook Middleware Pipeline
+
+```mermaid
+flowchart TD
+    Webhook["Incoming Webhook\nHTTP POST"]
+    Dedup["channel_webhook_dedup\nHash + sliding window"]
+    IsDup{Duplicate\nwithin window?}
+    RejectDup["Reject: Duplicate\nChannelWebhookRejection::Duplicate"]
+    RateLimit["channel_webhook_rate_limit\nToken bucket per account"]
+    IsLimited{Rate\nlimited?}
+    RejectRate["Reject: Rate Limited\nChannelWebhookRejection::RateLimited"]
+    Verify["channel_webhook_verifier\nHMAC-SHA256 / signature"]
+    IsVerified{Signature\nvalid?}
+    RejectVerify["Reject: Verification Failed\nChannelWebhookRejection::VerificationFailed"]
+    Handler["Channel handler\nprocess message"]
+    Emit["event_sink.emit()\nChannelEvent::Message"]
+
+    Webhook --> Dedup
+    Dedup --> IsDup
+    IsDup -->|Yes| RejectDup
+    IsDup -->|No| RateLimit
+    RateLimit --> IsLimited
+    IsLimited -->|Yes| RejectRate
+    IsLimited -->|No| Verify
+    Verify --> IsVerified
+    IsVerified -->|No| RejectVerify
+    IsVerified -->|Yes| Handler
+    Handler --> Emit
+```
+
 ## Methods Registry — The Dispatch Hub
 
 The `methods.rs` module is the single dispatch point for all domain operations:

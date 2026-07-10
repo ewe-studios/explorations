@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>13-portfolio-gate — Portfolio Health Scoring and Gate Enforcement Deep Dive -- src.Wayfinder</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.Wayfinder/docs</span>
+    <div class="nav-actions">
+      <a href="10-error-handling.html" class="nav-breadcrumb">Error Handling — Exit Codes, Error Types, and Recovery</a><a href="11-explorer-tui.html" class="nav-breadcrumb">11 - Explorer TUI</a><a href="12-skills-agent-rules.html" class="nav-breadcrumb">Skills System and Agent Rules Projection — Deep Dive</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="12-skills-agent-rules.html" class="nav-btn" title="Previous: Skills System and Agent Rules Projection — Deep Dive">← prev</a>
+      <a href="14-ingest-okf.html" class="nav-btn nav-btn-next" title="Next: RAC Ingest Pipeline and OKF (Open Knowledge Format)">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>13-portfolio-gate — Portfolio Health Scoring and Gate Enforcement Deep Dive</h1>
+<p>RAC's Portfolio, Gate, and Review services form the corpus intelligence layer: a single deterministic walk through a knowledge repository produces a health score, a prioritized list of actionable findings, and a unified PR gate report that can block or advise on merges. The portfolio answers "how healthy is this repository?" the review answers "what should I fix first?" and the gate answers "can this merge?"</p>
+<p>Source: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Wayfinder/rac-core/src/rac/services/</code></p>
+<p><strong>Aha:</strong> The gate's policy is <em>governed, not hardcoded</em>. A committed <code>.rac/config.yaml</code> declares which finding codes block versus advise, so the enforcement posture is a diffable, auditable artifact — not an implementation detail buried in code. The default enforcement still produces the same blocking/advisory behavior as the prior hardcoded version, but now teams can tune it without code changes (ADR-049, ADR-063).</p>
+<p><strong>Aha:</strong> Since v0.21.19, <code>rac gate</code> feeds validation, relationships, portfolio, and review from a <em>single pre-walked corpus snapshot</em>. Before, each service walked and parsed independently; now <code>walk_corpus()</code> is called once, and every analysis uses <code>*_from_corpus()</code> snapshot seams. The result is byte-identical — only corpus acquisition changed.</p>
+<p><strong>Aha:</strong> The health score formula is deliberately asymmetric: validity (is it structurally correct?) counts for 50%, while completeness (does it have recommended sections?) and relationship integrity (do cross-references resolve?) split the other 50%. This means a repository with perfect structure but no cross-linking still scores 75, reflecting that RAC treats correctness as the floor and traceability as the ceiling.</p>
+<h2>Portfolio Health Score Formula</h2>
+<p>The health score is a weighted composite of three sub-scores, each normalized to [0, 1].</p>
+<p>Source: <code>rac/services/portfolio.py:117-124</code></p>
+<pre><code class="language-python">@property
+def health_score(self) -&gt; int:
+    total = self.total_artifacts
+    validity = self.valid_artifacts / total if total else 1.0
+    completeness = self.completeness
+    checked = self.relationships.total
+    rel_integrity = (checked - self.relationships.broken) / checked if checked else 1.0
+    raw = 0.5 * validity + 0.25 * completeness + 0.25 * rel_integrity
+    return round(100 * raw)
+</code></pre>
+<p>The three sub-scores are:</p>
+<table><tr><th>Sub-score</th><th>Formula</th><th>Weight</th><th>Meaning</th></tr><tr><td>Validity</td><td>`valid_artifacts / total_artifacts`</td><td>0.5</td><td>Fraction of recognized artifacts that pass schema validation</td></tr><tr><td>Completeness</td><td>`filled_recommended_slots / total_recommended_slots`</td><td>0.25</td><td>Fraction of recommended (not required) sections that are present</td></tr><tr><td>Rel Integrity</td><td>`(total_refs - broken_refs) / total_refs`</td><td>0.25</td><td>Fraction of cross-artifact references that resolve uniquely</td></tr></table>
+<p>When a denominator is zero (no artifacts, no recommended sections, no references), the sub-score defaults to 1.0 — an empty corpus is not penalized for missing what it has never attempted to have.</p>
+<h3>Validity</h3>
+<p>An artifact is valid when <code>rac.core.validation.validate(product)</code> produces no issues with severity <code>"error"</code>. Validation is spec-dispatched: each <code>ArtifactSpec</code> (requirement, decision, roadmap, prompt, design) defines its own required sections, expected metadata fields, and structural rules. Unknown-type artifacts (no schema matched) are neither valid nor invalid — they are skipped, consistent with the portfolio semantics that unknown is a valid outcome.</p>
+<p>Source: <code>rac/services/portfolio.py:220-234</code></p>
+<pre><code class="language-python"># Validation (overrides applied, ADR-053)
+issues = apply_overrides(validate(product), artifact_type, overrides)
+if has_errors(issues):
+    invalid_count += 1
+    error_codes = [i.code for i in issues if i.severity == &quot;error&quot;]
+    attention.append(
+        AttentionItem(
+            path=str(path),
+            identifier=identifier,
+            severity=&quot;error&quot;,
+            code=ATTENTION_INVALID,
+            message=f&quot;Validation errors: {&#x27;, &#x27;.join(error_codes)}&quot;,
+        )
+    )
+else:
+    valid_count += 1
+</code></pre>
+<p>Severity overrides from <code>.rac/config.yaml</code> (ADR-053) are applied before the valid/invalid determination, so a rule downgraded from error to warning does not count against validity.</p>
+<h3>Completeness</h3>
+<p>Completeness counts only <em>recommended</em> sections, not required ones. Required section failures are already captured in validity (they produce validation errors), and counting them again in completeness would double-penalize the same defect in the health score.</p>
+<p>Source: <code>rac/services/portfolio.py:239-254</code></p>
+<pre><code class="language-python">slots = len(spec.recommended)
+recommended_slots += slots
+_, missing_rec = missing_sections(product, spec)
+filled = slots - len(missing_rec)
+filled_slots += filled
+if missing_rec:
+    names = &quot;, &quot;.join(s.title() for s in missing_rec)
+    attention.append(
+        AttentionItem(
+            path=str(path),
+            identifier=identifier,
+            severity=&quot;warning&quot;,
+            code=ATTENTION_MISSING_RECOMMENDED,
+            message=f&quot;Missing recommended sections: {names}&quot;,
+        )
+    )
+</code></pre>
+<p>Each artifact type's <code>ArtifactSpec</code> declares its <code>recommended</code> sections (e.g., a Decision might recommend "Success Measures", "Alternatives Considered", "Implementation Notes"). The <code>missing_sections()</code> function from <code>rac.core.classification</code> performs section-matching against the parsed <code>Product</code>.</p>
+<h3>Relationship Integrity</h3>
+<p>Relationship integrity is the fraction of explicit cross-artifact references that resolve uniquely to another artifact. The relationship summary counts total references, valid (resolved) references, and broken references (target not found, ambiguous, or self-references).</p>
+<p>Source: <code>rac/services/portfolio.py:259-275</code></p>
+<pre><code class="language-python">rel_summary = summary_from_corpus(entries)
+relationships_ok = validation_from_corpus(directory, entries, recursive=recursive).ok
+for issue in rel_summary.issues:
+    source = issue.source_path or &quot;&quot;
+    label = (issue.relationship or &quot;&quot;).replace(&quot;_&quot;, &quot; &quot;).title()
+    phrase = _REL_ISSUE_PHRASE.get(issue.code, &quot;has an unresolved reference&quot;)
+    attention.append(
+        AttentionItem(
+            path=source,
+            identifier=path_to_identifier.get(source, source),
+            severity=&quot;warning&quot;,
+            code=ATTENTION_BROKEN_RELATIONSHIP,
+            message=f&quot;{label} {phrase}: {issue.target}&quot;,
+        )
+    )
+</code></pre>
+<p>Broken reference issue codes are defined in <code>rac/services/relationships.py:325-340</code>:</p>
+<pre><code class="language-python">ISSUE_DUPLICATE_IDENTIFIER = &quot;duplicate-artifact-identifier&quot;
+ISSUE_TARGET_NOT_FOUND = &quot;relationship-target-not-found&quot;
+ISSUE_TARGET_AMBIGUOUS = &quot;relationship-target-ambiguous&quot;
+ISSUE_SELF_REFERENCE = &quot;relationship-self-reference&quot;
+ISSUE_EDGE_UNSUPPORTED = &quot;relationship-edge-unsupported&quot;
+ISSUE_TARGET_SUPERSEDED = &quot;relationship-target-superseded&quot;
+ISSUE_TARGET_TYPE_MISMATCH = &quot;relationship-target-type-mismatch&quot;
+ISSUE_RELATIONSHIP_CYCLE = &quot;relationship-cycle&quot;
+</code></pre>
+<h2>PortfolioSummary and AttentionItem</h2>
+<p>The <code>PortfolioSummary</code> dataclass is the repository-level intelligence result. Its <code>to_dict()</code> method produces a stable JSON contract (ADR-007) with additive, schema_version-gated fields.</p>
+<p>Source: <code>rac/services/portfolio.py:79-168</code></p>
+<pre><code class="language-python">@dataclass
+class PortfolioSummary:
+    &quot;&quot;&quot;Repository-level intelligence result (v0.7.3).&quot;&quot;&quot;
+    directory: str
+    recursive: bool
+    by_type: dict[str, int]  # {type: count} incl. unknown
+    valid_artifacts: int
+    invalid_artifacts: int
+    recommended_slots: int
+    filled_slots: int
+    relationships: RelationshipSummary
+    attention: list[AttentionItem] = field(default_factory=list)
+    unknown_paths: list[str] = field(default_factory=list)  # v0.7.9
+    relationships_ok: bool = True  # v0.16.0
+
+    @property
+    def total_artifacts(self) -&gt; int:
+        return sum(self.by_type.values())
+
+    @property
+    def completeness(self) -&gt; float:
+        if self.recommended_slots == 0:
+            return 1.0
+        return round(self.filled_slots / self.recommended_slots, 4)
+
+    @property
+    def health_score(self) -&gt; int:
+        # ... (formula shown above)
+</code></pre>
+<p>The <code>AttentionItem</code> dataclass is a single actionable finding surfaced by <code>rac portfolio</code>:</p>
+<p>Source: <code>rac/services/portfolio.py:59-76</code></p>
+<pre><code class="language-python">@dataclass
+class AttentionItem:
+    &quot;&quot;&quot;One actionable finding surfaced by ``rac portfolio``.&quot;&quot;&quot;
+    path: str
+    identifier: str  # artifact identifier or filename stem
+    severity: str  # &quot;error&quot; | &quot;warning&quot;
+    code: str
+    message: str
+</code></pre>
+<p>The three stable attention codes (part of the JSON contract, ADR-007):</p>
+<pre><code class="language-python">ATTENTION_INVALID = &quot;invalid-artifact&quot;
+ATTENTION_MISSING_RECOMMENDED = &quot;missing-recommended-sections&quot;
+ATTENTION_BROKEN_RELATIONSHIP = &quot;broken-relationship&quot;
+</code></pre>
+<p>Attention items are sorted deterministically: errors before warnings, then by path, then by code.</p>
+<p>Source: <code>rac/services/portfolio.py:278-279</code></p>
+<pre><code class="language-python">_SEV_ORDER = {&quot;error&quot;: 0, &quot;warning&quot;: 1}
+attention.sort(key=lambda a: (_SEV_ORDER.get(a.severity, 2), a.path, a.code))
+</code></pre>
+<h2>The Gate: Unified Enforcement</h2>
+<p><code>rac gate</code> is the single enforcement entry point. It runs validation, relationship integrity, and review over a corpus, then classifies every finding as <em>blocking</em> or <em>advisory</em> under the corpus enforcement policy. One command, one exit code, one SARIF document — the PR gate carries the whole RAC contract as a single required check instead of three separate uploads.</p>
+<p>Source: <code>rac/services/gate.py:1-21</code></p>
+<h3>EnforcementPolicy</h3>
+<p>The policy is a frozen dataclass with three disjoint sets of finding codes. The <code>classify()</code> method resolves a finding's effective class with a fixed precedence order.</p>
+<p>Source: <code>rac/services/gate.py:53-85</code></p>
+<pre><code class="language-python">@dataclass(frozen=True)
+class EnforcementPolicy:
+    &quot;&quot;&quot;A corpus enforcement policy: finding codes mapped to a class (ADR-049).&quot;&quot;&quot;
+    blocking: frozenset[str] = frozenset()
+    advisory: frozenset[str] = frozenset()
+    off: frozenset[str] = frozenset()
+
+    def classify(self, code: str, default: str) -&gt; str | None:
+        &quot;&quot;&quot;The effective enforcement class for ``code``, or ``None`` if suppressed.&quot;&quot;&quot;
+        if code in self.off:
+            return None
+        if code in self.blocking:
+            return ENFORCEMENT_BLOCKING
+        if code in self.advisory:
+            return ENFORCEMENT_ADVISORY
+        return default
+
+EMPTY_POLICY = EnforcementPolicy()
+</code></pre>
+<p>Policy precedence: <strong>off</strong> (suppress) > <strong>blocking</strong> > <strong>advisory</strong> > <strong>default</strong>. A code in more than one set is harmless — precedence makes the result deterministic regardless of declaration order. The <code>EMPTY_POLICY</code> means every finding keeps its default class.</p>
+<p>The policy is loaded from <code>.rac/config.yaml</code>:</p>
+<pre><code class="language-yaml">enforcement:
+  blocking:
+    - relationship-target-not-found
+    - relationship-target-ambiguous
+  advisory:
+    - relationship-target-superseded
+  off:
+    - stale-corpus
+</code></pre>
+<p>Source: <code>rac/services/init.py:193-238</code> — <code>load_enforcement_policy()</code> walks upward from the directory to find the nearest <code>.rac/config.yaml</code>, parses the <code>enforcement:</code> section, and returns an <code>EnforcementPolicy</code>.</p>
+<h3>GateFinding and GateReport</h3>
+<p>Each finding is normalized across the three underlying services into a <code>GateFinding</code>:</p>
+<p>Source: <code>rac/services/gate.py:88-115</code></p>
+<pre><code class="language-python">@dataclass(frozen=True)
+class GateFinding:
+    &quot;&quot;&quot;One enforced finding, normalised across the three underlying services.&quot;&quot;&quot;
+    source: str  # SOURCE_VALIDATE | SOURCE_RELATIONSHIPS | SOURCE_REVIEW
+    code: str
+    severity: str  # &quot;error&quot; | &quot;warning&quot; | &quot;info&quot;
+    enforcement: str  # ENFORCEMENT_BLOCKING | ENFORCEMENT_ADVISORY
+    path: str
+    line: int | None
+    message: str
+</code></pre>
+<p>The <code>GateReport</code> aggregates all findings:</p>
+<p>Source: <code>rac/services/gate.py:118-152</code></p>
+<pre><code class="language-python">@dataclass
+class GateReport:
+    directory: str
+    recursive: bool
+    findings: list[GateFinding] = field(default_factory=list)
+
+    @property
+    def blocking(self) -&gt; list[GateFinding]:
+        return [f for f in self.findings if f.enforcement == ENFORCEMENT_BLOCKING]
+
+    @property
+    def advisory(self) -&gt; list[GateFinding]:
+        return [f for f in self.findings if f.enforcement == ENFORCEMENT_ADVISORY]
+
+    @property
+    def ok(self) -&gt; bool:
+        &quot;&quot;&quot;True when nothing is blocking — advisory findings never fail the gate.&quot;&quot;&quot;
+        return not self.blocking
+</code></pre>
+<h3>Default Enforcement Classifications</h3>
+<p>With no policy (<code>EMPTY_POLICY</code>), the gate uses per-source defaults chosen so the gate is <code>ok</code> exactly when validate, relationships, and review all pass — preserving the v0.21.13 behavior the policy refines.</p>
+<p><strong>Validate defaults</strong> (source: <code>rac/services/gate.py:161</code>):</p>
+<ul><li><code>"error"</code> severity → <code>ENFORCEMENT_BLOCKING</code></li><li>All other severities (warnings, OKF info) → <code>ENFORCEMENT_ADVISORY</code></li></ul>
+<pre><code class="language-python">_VALIDATE_DEFAULT = {&quot;error&quot;: ENFORCEMENT_BLOCKING}
+</code></pre>
+<p><strong>Relationships defaults</strong> (source: <code>rac/services/gate.py:289</code>):</p>
+<ul><li><em>Every</em> relationship finding → <code>ENFORCEMENT_BLOCKING</code> (any relationship issue fails <code>--validate</code> today)</li></ul>
+<pre><code class="language-python">add(SOURCE_RELATIONSHIPS, code, severity, path, line, message, ENFORCEMENT_BLOCKING)
+</code></pre>
+<p><strong>Review defaults</strong> (source: <code>rac/services/gate.py:295-300</code>):</p>
+<ul><li>Priority 1-2 findings (invalid artifacts, broken relationships) → <code>ENFORCEMENT_BLOCKING</code></li><li>Priority 3+ findings (unknown artifacts, missing recommended) → <code>ENFORCEMENT_ADVISORY</code></li></ul>
+<pre><code class="language-python">default = (
+    ENFORCEMENT_BLOCKING
+    if review_issue.priority &lt;= PRIORITY_BROKEN_RELATIONSHIP
+    else ENFORCEMENT_ADVISORY
+)
+</code></pre>
+<p>The constants are defined in <code>rac/services/review.py:38-43</code>:</p>
+<pre><code class="language-python">PRIORITY_INVALID_ARTIFACT = 1
+PRIORITY_BROKEN_RELATIONSHIP = 2
+PRIORITY_UNKNOWN_ARTIFACT = 3
+PRIORITY_MISSING_RECOMMENDED = 4
+PRIORITY_STALE_CORPUS = 5
+</code></pre>
+<h3>build_gate(): The Single Corpus Walk</h3>
+<p>The <code>build_gate()</code> function is the entry point that orchestrates everything. Since v0.21.19, it uses a single corpus walk.</p>
+<p>Source: <code>rac/services/gate.py:213-303</code></p>
+<pre><code class="language-python">def build_gate(
+    directory: str,
+    recursive: bool = True,
+    policy: EnforcementPolicy | None = None,
+) -&gt; GateReport:
+    &quot;&quot;&quot;Run validation, relationships, and review and enforce the corpus policy.&quot;&quot;&quot;
+    if policy is None:
+        policy = load_enforcement_policy(directory)
+
+    # One walk feeds every analysis (v0.21.19)
+    entries = list(walk_corpus(directory, recursive=recursive))
+    overrides = load_overrides(directory)
+
+    validation = validate_corpus(directory, entries, recursive=recursive, overrides=overrides)
+    relationships = validation_from_corpus(directory, entries, recursive=recursive)
+    portfolio = portfolio_from_corpus(directory, entries, recursive=recursive)
+    review = review_from_portfolio(directory, portfolio, recursive=recursive)
+
+    findings: list[GateFinding] = []
+
+    def add(source, code, severity, path, line, message, default):
+        enforcement = policy.classify(code, default)
+        if enforcement is None:
+            return  # suppressed by an ``off`` policy entry
+        findings.append(GateFinding(...))
+
+    # Validate findings
+    for code, severity, path, line, message in _validate_findings(validation):
+        add(SOURCE_VALIDATE, code, severity, path, line, message,
+            _VALIDATE_DEFAULT.get(severity, ENFORCEMENT_ADVISORY))
+
+    # Relationship findings
+    for rel_issue in relationships.issues:
+        code, severity, path, line, message = _relationship_finding(rel_issue)
+        add(SOURCE_RELATIONSHIPS, code, severity, path, line, message, ENFORCEMENT_BLOCKING)
+
+    # Review findings
+    for review_issue in review.issues:
+        code, severity, path, line, message = _review_finding(review_issue)
+        default = (ENFORCEMENT_BLOCKING if review_issue.priority &lt;= PRIORITY_BROKEN_RELATIONSHIP
+                   else ENFORCEMENT_ADVISORY)
+        add(SOURCE_REVIEW, code, severity, path, line, message, default)
+
+    findings.sort(key=lambda f: (f.path, f.line or 0, f.source, f.code, f.message))
+    return GateReport(directory=directory, recursive=recursive, findings=findings)
+</code></pre>
+<p>Findings are sorted deterministically by <code>(path, line, source, code, message)</code> so the report, JSON, and SARIF are byte-stable (ADR-002).</p>
+<h2>SARIF 2.1.0 Output</h2>
+<p>The gate produces a single SARIF document via <code>render_gate_sarif()</code> so the PR gate uploads one SARIF under one Code Scanning category instead of three separate uploads.</p>
+<p>Source: <code>rac/output/sarif.py:156-167</code></p>
+<pre><code class="language-python">def render_gate_sarif(report: GateReport) -&gt; str:
+    &quot;&quot;&quot;Render a `rac gate` report as a single SARIF 2.1.0 document (v0.21.14).&quot;&quot;&quot;
+    results = [_result(f.code, f.severity, f.message, f.path, f.line) for f in report.findings]
+    return _document(results)
+</code></pre>
+<p>The <code>_document()</code> function (source: <code>rac/output/sarif.py:170-200</code>) sorts results by <code>(uri, line, ruleId, message)</code>, collects unique rule IDs, and produces a SARIF 2.1.0 JSON document with the <code>rac</code> driver name and package version.</p>
+<p>SARIF level mapping (source: <code>rac/output/sarif.py:43</code>):</p>
+<pre><code class="language-python">_LEVEL = {&quot;error&quot;: &quot;error&quot;, &quot;warning&quot;: &quot;warning&quot;, &quot;info&quot;: &quot;note&quot;}
+</code></pre>
+<p>The finding's intrinsic <code>severity</code> drives the SARIF annotation level; the enforcement class (<code>blocking</code>/<code>advisory</code>) drives the gate's exit code, not the SARIF level. Advisory findings still appear in SARIF at their natural severity.</p>
+<h2>Review: Prioritized Findings</h2>
+<p><code>rac review</code> aggregates repository intelligence into a prioritized, actionable report. It composes <code>build_portfolio_summary</code> — it implements no analysis of its own (ADR-015: consumers render, never analyze).</p>
+<p>Source: <code>rac/services/review.py:79-107</code></p>
+<pre><code class="language-python">@dataclass
+class ReviewIssue:
+    &quot;&quot;&quot;One prioritized finding with its deterministic next step.&quot;&quot;&quot;
+    priority: int  # 1 (highest impact) – 4
+    severity: str  # &quot;error&quot; | &quot;warning&quot; | &quot;info&quot;
+    path: str
+    identifier: str
+    code: str
+    message: str
+    action: str  # a runnable command or concrete edit
+    impact: str  # why it matters (v0.8.11; additive JSON field, ADR-007)
+</code></pre>
+<p>Review priority mapping (source: <code>rac/services/review.py:53-57</code>):</p>
+<pre><code class="language-python">_ATTENTION_PRIORITY = {
+    ATTENTION_INVALID: PRIORITY_INVALID_ARTIFACT,        # 1
+    ATTENTION_BROKEN_RELATIONSHIP: PRIORITY_BROKEN_RELATIONSHIP,  # 2
+    ATTENTION_MISSING_RECOMMENDED: PRIORITY_MISSING_RECOMMENDED,  # 4
+}
+</code></pre>
+<p>The <code>ReviewReport.ok</code> property returns <code>True</code> only when no priority 1-2 findings exist:</p>
+<p>Source: <code>rac/services/review.py:125-131</code></p>
+<pre><code class="language-python">@property
+def ok(self) -&gt; bool:
+    &quot;&quot;&quot;Priority 1-2 findings fail the review; priority 3-4 findings are advisory.&quot;&quot;&quot;
+    return not any(i.priority &lt;= PRIORITY_BROKEN_RELATIONSHIP for i in self.issues)
+</code></pre>
+<p>Each review issue carries a deterministic <code>action</code> — a runnable command:</p>
+<ul><li>Invalid artifact: <code>Run: rac validate {path}</code></li><li>Broken relationship: <code>Run: rac relationships {directory} --validate</code></li><li>Missing recommended: <code>Run: rac improve {path} --template</code></li><li>Unknown artifact: <code>Run: rac inspect {path} (see rac schema --list)</code></li></ul>
+<p>The <code>impact</code> field provides a Core-owned "why it matters" sentence so every consumer (JSON, CLI, Explorer) reads the same explanation.</p>
+<p>Source: <code>rac/services/review.py:64-76</code></p>
+<pre><code class="language-python">_IMPACT = {
+    ATTENTION_INVALID: &quot;The artifact fails its schema, so tooling and validation cannot trust it.&quot;,
+    ATTENTION_BROKEN_RELATIONSHIP: (
+        &quot;A declared reference does not resolve, leaving traceability incomplete.&quot;
+    ),
+    ATTENTION_MISSING_RECOMMENDED: (
+        &quot;Recommended sections are empty, weakening the artifact&#x27;s completeness.&quot;
+    ),
+    REVIEW_UNKNOWN_ARTIFACT: &quot;No schema matched, so required structure cannot be checked.&quot;,
+    REVIEW_STALE_CORPUS: (
+        &quot;The write habit has stalled; product knowledge stops reflecting the work.&quot;
+    ),
+}
+</code></pre>
+<h2>Doctor: Corpus Health Diagnostic</h2>
+<p><code>rac doctor</code> provides a single front door for corpus health. It runs validation and relationship integrity in one pass (reusing existing services), plus adds two diagnostics no other command provides: high-fan-out hub detection and heuristic injection-style content flagging.</p>
+<p>Source: <code>rac/services/doctor.py:168-189</code></p>
+<pre><code class="language-python">def diagnose(
+    directory: str, recursive: bool = True, hub_threshold: int = DEFAULT_HUB_THRESHOLD
+) -&gt; DoctorReport:
+    &quot;&quot;&quot;Run validation, relationship integrity, and the two new checks in one pass.&quot;&quot;&quot;
+    cache = CorpusCache()
+    entries = cache.collect(directory, recursive=recursive)
+    findings: list[DoctorFinding] = []
+    findings.extend(_validation_findings(directory, recursive, cache))
+    findings.extend(_relationship_findings(directory, recursive, cache))
+    findings.extend(_degree_findings(entries, hub_threshold))
+    findings.extend(_injection_findings(entries))
+    findings.extend(_unlinked_reference_findings(directory, entries, recursive))
+    findings.sort(key=lambda f: (_SEVERITY_RANK[f.severity], f.path, f.code, f.problem))
+    return DoctorReport(directory=directory, hub_threshold=hub_threshold, findings=findings)
+</code></pre>
+<h3>Hub Detection</h3>
+<p>A high-fan-out hub is a node whose inbound-plus-outbound resolved-edge degree exceeds a configurable threshold. The default is 20.</p>
+<p>Source: <code>rac/services/doctor.py:54</code></p>
+<pre><code class="language-python">DEFAULT_HUB_THRESHOLD = 20
+</code></pre>
+<p>The degree computation (source: <code>rac/services/doctor.py:261-312</code>):</p>
+<pre><code class="language-python">def _degree_findings(entries: list[CorpusEntry], hub_threshold: int) -&gt; list[DoctorFinding]:
+    known_paths = {str(e.path) for e in entries if spec_for(e.artifact_type) is not None}
+    counts = inbound_counts_from_corpus(entries)
+    inbound: dict[str, int] = {p: counts.get(p, 0) for p in known_paths}
+    outbound: dict[str, int] = {p: 0 for p in known_paths}
+    for rel in relationships_from_corpus(entries):
+        if rel.resolved_path is None:
+            continue
+        if rel.source_path in outbound:
+            outbound[rel.source_path] += 1
+
+    for path in known_paths:
+        degree = inbound[path] + outbound[path]
+        if inbound[path] == 0:
+            findings.append(DoctorFinding(..., code=CODE_ORPHANED_ARTIFACT, ...))
+        if degree &gt; hub_threshold:
+            findings.append(DoctorFinding(..., code=CODE_HIGH_FAN_OUT_HUB, ...))
+</code></pre>
+<p>Orphan detection (inbound degree = 0) matches the portfolio's "never a resolved target" count exactly — a test pins this so the signal cannot drift.</p>
+<h3>Injection Heuristics</h3>
+<p>The injection detector scans artifact text for six narrow idiom patterns that suggest prompt-injection-style content. It is a reviewable WARNING only — never an auto-edit, hard-fail, or safety claim (ADR-065).</p>
+<p>Source: <code>rac/services/doctor.py:73-113</code></p>
+<pre><code class="language-python">_INJECTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (&quot;instruction-override&quot;, re.compile(
+        r&quot;\b(ignore|disregard|forget|override|bypass)\b.{0,40}\b&quot;
+        r&quot;(previous|prior|above|earlier|preceding|all|the system|your)\b.{0,20}&quot;
+        r&quot;(instruction|instructions|prompt|directive|directives|rule|rules|context)&quot;,
+        re.IGNORECASE)),
+    (&quot;role-reassignment&quot;, re.compile(
+        r&quot;\byou are now\b|\bfrom now on,?\s+you\s+(are|will|must|should|shall)\b|&quot;
+        r&quot;\bpretend to be\b|\bact as if you\s+(are|were)\b&quot;, re.IGNORECASE)),
+    (&quot;ai-impersonation&quot;, re.compile(r&quot;\bas an ai(\s+language)?\s+model\b&quot;, re.IGNORECASE)),
+    (&quot;chat-role-injection&quot;, re.compile(
+        r&quot;^\s*(system|assistant|developer|tool)\s*:&quot;, re.IGNORECASE | re.MULTILINE)),
+    (&quot;conceal-from-user&quot;, re.compile(
+        r&quot;\b(do not|don&#x27;t|never|without)\b.{0,30}&quot;
+        r&quot;(tell|telling|inform|informing|mention|mentioning|reveal|revealing|notify)\b.{0,20}&quot;
+        r&quot;\b(the user|them|anyone)\b&quot;, re.IGNORECASE)),
+    (&quot;decision-steering&quot;, re.compile(
+        r&quot;\b(ignore|disregard|override|bypass|violate)\b.{0,40}&quot;
+        r&quot;\b(recorded\s+)?(decision|decisions|adr|requirement|policy)\b&quot;, re.IGNORECASE)),
+)
+</code></pre>
+<p>Doctor finding codes (stable, part of the JSON contract, ADR-007):</p>
+<pre><code class="language-python">CODE_INVALID_ARTIFACT = &quot;invalid-artifact&quot;
+CODE_ORPHANED_ARTIFACT = &quot;orphaned-artifact&quot;
+CODE_HIGH_FAN_OUT_HUB = &quot;high-fan-out-hub&quot;
+CODE_INJECTION_CONTENT = &quot;injection-style-content&quot;
+CODE_UNLINKED_REFERENCE = &quot;unlinked-reference&quot;
+</code></pre>
+<h2>Validation Service</h2>
+<p><code>rac validate <directory></code> walks a directory and validates every recognized artifact. Unknown-type files are reported as <code>skipped</code>, not failed.</p>
+<p>Source: <code>rac/services/validate.py:204-221</code></p>
+<pre><code class="language-python">def validate_directory(
+    directory: str, recursive: bool = True, *, cache: CorpusCache | None = None
+) -&gt; DirectoryValidation:
+    entries = (
+        cache.collect(directory, recursive=recursive)
+        if cache is not None
+        else list(walk_corpus(directory, recursive=recursive))
+    )
+    overrides = load_overrides(directory)
+    return validate_corpus(directory, entries, recursive=recursive, overrides=overrides)
+</code></pre>
+<p>The <code>DirectoryValidation.ok</code> property is <code>True</code> only when <code>invalid == 0</code> and (if computed) the OKF v0.1 conformance report passes (ADR-048).</p>
+<p>Source: <code>rac/services/validate.py:83-88</code></p>
+<pre><code class="language-python">@property
+def ok(self) -&gt; bool:
+    return self.invalid == 0 and (self.okf is None or self.okf.ok)
+</code></pre>
+<p>File validation statuses (stable, part of the JSON contract, ADR-007):</p>
+<pre><code class="language-python">STATUS_VALID = &quot;valid&quot;
+STATUS_INVALID = &quot;invalid&quot;
+STATUS_SKIPPED = &quot;skipped&quot;
+</code></pre>
+<h2>Relationship Service</h2>
+<p>The relationship service extracts cross-artifact references from Markdown sections like <code>## Related Decisions</code>, <code>## Supersedes</code>, etc. It is pure and deterministic — it parses section text only and never resolves, validates, or graphs references at the metadata stage (v0.7.0 is metadata only).</p>
+<p>Source: <code>rac/services/relationships.py:39-61</code></p>
+<pre><code class="language-python">RELATED_SECTIONS: tuple[str, ...] = (
+    &quot;related requirements&quot;,
+    &quot;related decisions&quot;,
+    &quot;related roadmaps&quot;,
+    &quot;related prompts&quot;,
+    &quot;related designs&quot;,
+)
+EXTERNAL_SECTIONS: tuple[str, ...] = (&quot;related tickets&quot;, &quot;verified by&quot;)
+RELATIONSHIP_SECTIONS: tuple[str, ...] = RELATED_SECTIONS + (&quot;supersedes&quot;,) + EXTERNAL_SECTIONS
+</code></pre>
+<p>Relationship intrinsic severity mapping (source: <code>rac/services/relationships.py:350-359</code>):</p>
+<pre><code class="language-python">RELATIONSHIP_SEVERITY: dict[str, str] = {
+    ISSUE_TARGET_NOT_FOUND: &quot;error&quot;,
+    ISSUE_TARGET_AMBIGUOUS: &quot;error&quot;,
+    ISSUE_TARGET_TYPE_MISMATCH: &quot;error&quot;,
+    ISSUE_RELATIONSHIP_CYCLE: &quot;error&quot;,
+    ISSUE_DUPLICATE_IDENTIFIER: &quot;error&quot;,
+    ISSUE_TARGET_SUPERSEDED: &quot;warning&quot;,
+    ISSUE_SELF_REFERENCE: &quot;warning&quot;,
+    ISSUE_EDGE_UNSUPPORTED: &quot;warning&quot;,
+}
+</code></pre>
+<p>Referential integrity and graph-shape breakages are errors; advisory consistency findings (self-reference, unsupported edge, retired-target reference) are warnings. This is the single source of truth — the SARIF renderer and gate enforcement layer both read it, so they can never disagree.</p>
+<p>The relationship validation (<code>_validate()</code>) runs five checks in sequence (source: <code>rac/services/relationships.py:630-743</code>):</p>
+<ol><li><strong>Duplicate identifiers</strong> — repo-level, emitted first, sorted by identifier</li><li><strong>Edge-legality</strong> — relationship sections an artifact's type does not declare</li><li><strong>Range</strong> — resolved target whose type is not in the edge's declared range (ADR-055)</li><li><strong>Status-consistency</strong> — live artifact references a retired target, except via supersedes (ADR-051)</li><li><strong>Acyclicity</strong> — cycles in directional, acyclic edge kinds (Tarjan's SCC algorithm, <code>rac/services/relationships.py:571-612</code>)</li></ol>
+<p>Followed by reference resolution (target-not-found, ambiguous, self-reference).</p>
+<h2>The Single Corpus Walk Architecture (v0.21.19)</h2>
+<p>Before v0.21.19, <code>rac gate</code> called <code>validate_directory()</code>, <code>validate_relationships()</code>, and <code>build_review()</code> — each of which walked the corpus independently. The v0.21.19 optimization uses <code>*_from_corpus()</code> snapshot seams:</p>
+<div class="mermaid">
+flowchart TD
+    Walk[&quot;walk_corpus(directory) — single tree walk&quot;]
+    Cache[&quot;CorpusCache.collect() — one parse per artifact (WS8)&quot;]
+    Walk --&gt; Cache
+
+    Validate[&quot;validate_corpus(entries) — schema validation&quot;]
+    Relate[&quot;validation_from_corpus(entries) — relationship validation&quot;]
+    Portfo[&quot;portfolio_from_corpus(entries) — health scoring&quot;]
+    Review[&quot;review_from_portfolio(portfolio) — prioritized findings&quot;]
+
+    Cache --&gt; Validate
+    Cache --&gt; Relate
+    Cache --&gt; Portfo
+    Portfo --&gt; Review
+
+    Gate[&quot;build_gate() — policy classification + sort&quot;]
+    Validate --&gt; Gate
+    Relate --&gt; Gate
+    Review --&gt; Gate
+
+    Sarif[&quot;render_gate_sarif(report) — single SARIF upload&quot;]
+    Gate --&gt; Sarif
+
+</div>
+<p>The <code>*_from_corpus()</code> pattern is a seam that accepts a pre-walked <code>list[CorpusEntry]</code> and produces the same result as the directory entry point. The result is byte-identical — only corpus acquisition changed (ADR-023).</p>
+<h2>Init: Policy and Overrides Loading</h2>
+<p>The <code>.rac/config.yaml</code> file is the central configuration for the repository. <code>load_enforcement_policy()</code> and <code>load_overrides()</code> walk upward from the starting directory to find the nearest config file.</p>
+<p>Source: <code>rac/services/init.py:169-190</code> — <code>load_overrides()</code> reads the <code>validation:</code> section for severity overrides (rules and types).</p>
+<p>Source: <code>rac/services/init.py:193-238</code> — <code>load_enforcement_policy()</code> reads the <code>enforcement:</code> section for finding code classifications. A YAML 1.1 gotcha is handled: the bare key <code>off</code> resolves to <code>False</code> in YAML 1.1, so the loader accepts both <code>"off"</code> and <code>False</code> as the suppression key.</p>
+<pre><code class="language-python"># YAML 1.1 resolves the bare key ``off`` to ``False``
+off_value = section[&quot;off&quot;] if &quot;off&quot; in section else section.get(False)
+off = _parse_code_list(config_path, off_value, &quot;enforcement.off&quot;)
+</code></pre>
+<h2>Profiles: Enterprise Policy Bundling</h2>
+<p>Built-in init profiles provide named configuration bundles. The <code>enterprise</code> profile includes explicit enforcement policy blocking all relationship-integrity findings:</p>
+<p>Source: <code>rac/services/profiles.py:39-52</code></p>
+<pre><code class="language-python">_ENTERPRISE_CONFIG = &quot;&quot;&quot;\
+enforcement:
+  blocking:
+    - relationship-target-not-found
+    - relationship-target-ambiguous
+    - relationship-self-reference
+    - relationship-target-type-mismatch
+    - relationship-target-superseded
+    - relationship-cycle
+    - relationship-edge-unsupported
+    - duplicate-artifact-identifier
+&quot;&quot;&quot;
+</code></pre>
+<p>Two profiles exist: <code>default</code> (just MCP wiring) and <code>enterprise</code> (MCP wiring + explicit enforcement). A profile is creation-time configuration only — it never writes authored prose (ADR-024, ADR-044, ADR-085).</p>
+<h2>Portal HTML Output</h2>
+<p>The portal renders the corpus export into a self-contained HTML viewer. The vendored shell (<code>rac/templates/portal/lore-portal-shell.html</code>) has a single data seam that the export JSON is injected into.</p>
+<p>Source: <code>rac/output/portal.py:73-80</code></p>
+<pre><code class="language-python">def render_export_html(export: CorpusExport) -&gt; str:
+    shell = _load_shell()
+    if shell.count(_SEAM) != 1:
+        raise PortalSeamMissing()
+    payload = _escape_for_script(render_export_json(export))
+    populated = f&#x27;&lt;script type=&quot;application/json&quot; id=&quot;lore-export&quot;&gt;{payload}&lt;/script&gt;&#x27;
+    return shell.replace(_SEAM, populated)
+</code></pre>
+<p>The JSON payload is made <code><script></code>-safe by escaping <code></</code> to <code><\\/</code> and <code><!--</code> to <code><\\u0021--</code>, preventing premature <code></script></code> closure and HTML comment injection.</p>
+<h2>Supporting Services</h2>
+<h3>Inspect (<code>rac/services/inspect.py</code>)</h3>
+<p>Classifies Markdown documents and reports their structure. For directories, aggregates type counts. For single files, reports type, confidence, present/missing sections, and relationship metadata.</p>
+<h3>Improve (<code>rac/services/improve.py</code>)</h3>
+<p>Deterministic, schema-driven guidance for missing sections. <code>supports_improve(spec)</code> gates which types are improvable (all expected sections must have guidance). Produces templates but never generates content — no AI, no rewriting.</p>
+<h3>Coverage (<code>rac/services/coverage.py</code>)</h3>
+<p>Traceability coverage gaps: unscheduled (requirement with no roadmap), unapplied (decision with no requirement/roadmap), unscoped (roadmap with no requirement). Advisory only — never a build failure.</p>
+<h3>Compare (<code>rac/services/compare.py</code>)</h3>
+<p>Repository state comparison: base vs head produces artifact changes, validation delta, relationship delta, and stats delta. Used by watchkeeper for cross-revision analysis.</p>
+<h3>Revisions (<code>rac/services/revisions.py</code>)</h3>
+<p>Git revision materialization via <code>git archive</code> — turns a revision name into a temporary directory holding the corpus subpath. Used by watchkeeper to compare working tree against any historical commit. Deliberately uses <code>git archive</code> (no worktree registration, safe under concurrent CI).</p>
+<h3>Links (<code>rac/services/links.py</code>)</h3>
+<p>Mentioned-but-unlinked reference detection. Finds body mentions of other corpus artifacts that lack <code>## Related</code> edges. Returns advisory suggestions — suggest, never apply (ADR-082).</p>
+<h3>Intent (<code>rac/services/intent.py</code>)</h3>
+<p>Deterministic intent analysis of repository comparisons. Detects specificity regressions, ambiguity introduced, constraint weakened/removed, acceptance criteria removed, success measures removed, relationship impact, and unlinked scope. Pure function of two repository states — no semantic scoring.</p>
+<h3>Recency (<code>rac/services/recency.py</code>)</h3>
+<p>Git-derived artifact recency: <code>last_committed</code> and <code>first_committed</code> timestamps from <code>git log</code>. Also provides <code>artifact_provenance()</code> with status history reconstructed from git. The second narrow git touchpoint in RAC (alongside revisions) — read-only, offline, no <code>.git</code> mutation.</p>
+<h2>Gate Enforcement Decision Flow</h2>
+<div class="mermaid">
+flowchart TD
+    Start[&quot;rac gate &lt;directory&gt;&quot;] --&gt; Walk[&quot;walk_corpus() — single tree walk&quot;]
+    Walk --&gt; Val[&quot;validate_corpus()&quot;]
+    Walk --&gt; Rel[&quot;validation_from_corpus()&quot;]
+    Walk --&gt; Port[&quot;portfolio_from_corpus()&quot;]
+    Port --&gt; Rev[&quot;review_from_portfolio()&quot;]
+
+    Val --&gt; Find[&quot;Classify each finding&quot;]
+    Rel --&gt; Find
+    Rev --&gt; Find
+
+    Find --&gt; Policy[&quot;load_enforcement_policy() from .rac/config.yaml&quot;]
+    Policy --&gt; Classify[&quot;policy.classify(code, default)&quot;]
+
+    Classify --&gt; Off{code in off?}
+    Off --&gt;|Yes| Drop[&quot;Drop finding (suppressed)&quot;]
+    Off --&gt;|No| Block{code in blocking?}
+    Block --&gt;|Yes| BClass[&quot;ENFORCEMENT_BLOCKING&quot;]
+    Block --&gt;|No| Adv{code in advisory?}
+    Adv --&gt;|Yes| AClass[&quot;ENFORCEMENT_ADVISORY&quot;]
+    Adv --&gt;|No| Default[&quot;Use source default&quot;]
+
+    BClass --&gt; Collect
+    AClass --&gt; Collect
+    Default --&gt; Collect
+    Drop --&gt; Collect
+
+    Collect[&quot;Collect GateFinding, sort by (path,line,source,code,message)&quot;]
+    Collect --&gt; Report[&quot;GateReport(ok = no blocking)&quot;]
+    Report --&gt; Exit{&quot;ok?&quot;}
+    Exit --&gt;|Yes| Zero[&quot;Exit 0 — gate passes&quot;]
+    Exit --&gt;|No| One[&quot;Exit 1 — gate blocked&quot;]
+
+    Report --&gt; Sarif[&quot;render_gate_sarif() — single SARIF upload&quot;]
+
+</div>
+<h2>Default Enforcement Summary Table</h2>
+<table><tr><th>Source</th><th>Default Enforcement</th><th>Rationale</th></tr><tr><td>Validate: error severity</td><td>Blocking</td><td>Structural errors set the invalid status</td></tr><tr><td>Validate: warning/info</td><td>Advisory</td><td>Non-blocking findings</td></tr><tr><td>Relationships: all issues</td><td>Blocking</td><td>Any relationship issue fails `--validate` today</td></tr><tr><td>Review: priority 1-2</td><td>Blocking</td><td>Invalid artifacts and broken relationships fail review</td></tr><tr><td>Review: priority 3+</td><td>Advisory</td><td>Unknown artifacts and missing recommended are advisory</td></tr></table>
+<h2>Exit Code Contract</h2>
+<p>The gate exits non-zero when any finding is classified as blocking. Warnings, advisories, and suppressed findings never change the exit code. This is the single signal the PR gate consumes.</p>
+<p>Source: <code>rac/services/gate.py:139-141</code></p>
+<pre><code class="language-python">@property
+def ok(self) -&gt; bool:
+    &quot;&quot;&quot;True when nothing is blocking — advisory findings never fail the gate.&quot;&quot;&quot;
+    return not self.blocking
+</code></pre>
+<h2>Aha: The Policy Is the Product</h2>
+<p>The most important design decision in the gate system is that enforcement is <em>governed, not hardcoded</em>. Before ADR-049/ADR-063, the blocking/advisory classification was embedded in the gate service code. Now it lives in <code>.rac/config.yaml</code>, committed alongside the corpus it governs.</p>
+<p>This means:</p>
+<ul><li>A team can audit their enforcement posture as a diff in a PR</li><li>An enterprise can mandate strict relationship integrity without code changes</li><li>A solo developer can suppress noise (like <code>stale-corpus</code>) without forking</li><li>The <code>EMPTY_POLICY</code> default preserves backward compatibility — no policy means the same blocking/advisory behavior as before</li><li>The precedence order (off > blocking > advisory > default) means codes can safely appear in multiple sets without ambiguity</li></ul>
+<p>The gate service composes existing deterministic services, applies a pure policy pass, and sorts findings by a stable key. The same corpus state yields a byte-identical report. This is RAC's ADR-002 determinism guarantee applied to enforcement.</p>
+<h2>Cross-References</h2>
+<ul><li><a href="02-rac-core.md">02-rac-core.md</a> — RAC Core architecture overview, CLI, services layer</li><li><a href="07-knowledge-graph.md">07-knowledge-graph.md</a> — Artifact relationships, traversal, hub detection</li><li><a href="09-data-flow.md">09-data-flow.md</a> — Request lifecycle including gate and SARIF output</li><li><a href="10-error-handling.md">10-error-handling.md</a> — Exit codes, error types, refusal handling</li></ul>
+<p><a href="14-coverage-traceability.md">Next: 14-coverage-traceability.md</a></p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

@@ -176,6 +176,33 @@ pub struct LocalLlmProvider {
 // This avoids the "invalid JSON from local models" problem
 ```
 
+## ProviderChain: Fallback with Error Classification
+
+```mermaid
+flowchart TD
+    ChainStart["ProviderChain.complete()"]
+    Primary["Try Primary Provider"]
+    Success{Request\nsuccessful?}
+    Return["Return result"]
+    Classify{Error type?}
+    Failover[429 Rate Limit\n503 Unavailable\n502 Bad Gateway\n401 Auth error]
+    NoFailover[Context window exceeded\nInvalid request format\nModel not found]
+    NextProvider["Try Next Provider\nin chain"]
+    AllFailed["All providers failed\nreturn AllProvidersFailed"]
+    CircuitBreaker["Circuit breaker active?\nSkip this provider"]
+
+    ChainStart --> Primary
+    Primary --> CircuitBreaker
+    CircuitBreaker -->|Yes| NextProvider
+    CircuitBreaker -->|No| Success
+    Success -->|Yes| Return
+    Success -->|No| Classify
+    Classify -->|Failover error| Failover --> NextProvider
+    Classify -->|Non-failover| NoFailover --> Return
+    NextProvider -->|More providers| Primary
+    NextProvider -->|No more| AllFailed
+```
+
 ## ProviderChain — Fallback Routing
 
 ```rust

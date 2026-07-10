@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Skills System and Agent Rules Projection — Deep Dive -- src.Wayfinder</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.Wayfinder/docs</span>
+    <div class="nav-actions">
+      <a href="09-data-flow.html" class="nav-breadcrumb">Data Flow End-to-End — Request Lifecycle</a><a href="10-error-handling.html" class="nav-breadcrumb">Error Handling — Exit Codes, Error Types, and Recovery</a><a href="11-explorer-tui.html" class="nav-breadcrumb">11 - Explorer TUI</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="11-explorer-tui.html" class="nav-btn" title="Previous: 11 - Explorer TUI">← prev</a>
+      <a href="13-portfolio-gate.html" class="nav-btn nav-btn-next" title="Next: 13-portfolio-gate — Portfolio Health Scoring and Gate Enforcement Deep Dive">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>12-skills-agent-rules — RAC Skills System & Agent Rules Projection</h1>
+<p>RAC ships two complementary surfaces for AI agents: a <strong>bundled skill system</strong> that teaches agents how to use the RAC CLI, and an <strong>agent rules projection</strong> that distills live corpus decisions into managed blocks inside the agent's own context files. Together, they close the loop: skills tell the agent <em>how</em> to operate RAC, and agent rules tell the agent <em>what</em> the team has already decided.</p>
+<p>Source: <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Wayfinder/rac-core/src/rac/</code></p>
+<p><strong>Aha: The skills and agent rules share the same <code>importlib.resources</code> loading pattern as templates, creating a uniform packaging contract.</strong> Skills ship under <code>rac.skills/<name>/SKILL.md</code>, templates ship under <code>rac.templates/<type>.md</code>, and hooks ship under <code>rac.hooks/<style></code>. All three use the same <code>importlib.resources.files(...).joinpath(...)</code> loading mechanism, meaning installation works from an installed wheel without the dogfood repository, AI access, or network connectivity (ADR-021). This is a deliberate design choice: RAC is self-contained.</p>
+<p><strong>Aha: The agent rules digest is a sha256 over the <em>canonical JSON</em> serialization of entries, not over the rendered Markdown block.</strong> This means the same corpus state produces the same digest regardless of which target file the block is rendered into (AGENTS.md vs CLAUDE.md vs .cursor/rules). The digest depends only on corpus content, not on formatting. Two generations of the same corpus are byte-identical (ADR-002), so <code>--check</code> can compare digests without re-hashing file content.</p>
+<h2>Bundled Skills System</h2>
+<h3>Registry: 5 Bundled Skills</h3>
+<p>Source: <code>rac-core/src/rac/core/skills.py:35-56</code></p>
+<p>The skills registry is a static tuple of <code>SkillSpec</code> dataclass instances, each carrying a <code>name</code> and one-line <code>description</code>. The registry order is deterministic and defines the install order.</p>
+<pre><code class="language-python">@dataclass(frozen=True)
+class SkillSpec:
+    &quot;&quot;&quot;One bundled skill: its name and a one-line description.&quot;&quot;&quot;
+    name: str
+    description: str
+
+BUNDLED_SKILLS = (
+    SkillSpec(
+        name=&quot;rac-artifacts&quot;,
+        description=&quot;Author and maintain Lore (RAC) Markdown artifacts with the rac CLI.&quot;,
+    ),
+    SkillSpec(
+        name=&quot;rac-review&quot;,
+        description=&quot;Review a Lore (RAC) corpus and work findings worst-first.&quot;,
+    ),
+    SkillSpec(
+        name=&quot;rac-ingest&quot;,
+        description=&quot;Convert legacy documents into valid, linked Lore (RAC) artifacts.&quot;,
+    ),
+    SkillSpec(
+        name=&quot;rac-import&quot;,
+        description=&quot;Reformat one document into one valid Lore (RAC) artifact, with human review.&quot;,
+    ),
+    SkillSpec(
+        name=&quot;rac-capture&quot;,
+        description=&quot;Capture a new decision or requirement into a valid Lore (RAC) artifact.&quot;,
+    ),
+)
+</code></pre>
+<p>Each skill has a corresponding directory under <code>rac.skills/</code> containing a <code>SKILL.md</code> file:</p>
+<pre><code class="language-">rac/skills/
+  rac-artifacts/SKILL.md
+  rac-review/SKILL.md
+  rac-ingest/SKILL.md
+  rac-import/SKILL.md
+  rac-capture/SKILL.md
+</code></pre>
+<p>The skills cover the full RAC lifecycle:</p>
+<table><tr><th>Skill</th><th>Purpose</th><th>Lifecycle Phase</th></tr><tr><td>`rac-artifacts`</td><td>Author and maintain RAC Markdown artifacts</td><td>Creation & maintenance</td></tr><tr><td>`rac-review`</td><td>Review corpus, work findings worst-first</td><td>Quality assurance</td></tr><tr><td>`rac-ingest`</td><td>Convert legacy documents (DOCX/PDF) into linked RAC artifacts</td><td>Migration</td></tr><tr><td>`rac-import`</td><td>Reformat one document into one valid RAC artifact with human review</td><td>Migration</td></tr><tr><td>`rac-capture`</td><td>Capture a new decision or requirement into a valid RAC artifact</td><td>Creation</td></tr></table>
+<h3>Loading via <code>importlib.resources</code></h3>
+<p>Source: <code>rac-core/src/rac/core/skills.py:89-103</code></p>
+<pre><code class="language-python">def load_skill(skill_name: str) -&gt; bytes:
+    &quot;&quot;&quot;Return the packaged ``SKILL.md`` content for ``skill_name``.
+
+    Bytes, not text: the installed file must be byte-identical to the
+    packaged resource (REQ-007). Raises :class:`SkillNotFound` for
+    unregistered names and :class:`SkillResourceMissing` when the packaged
+    resource is absent.
+    &quot;&quot;&quot;
+    if skill_name not in available_skills():
+        raise SkillNotFound(skill_name)
+    resource = resources.files(&quot;rac.skills&quot;).joinpath(skill_name, &quot;SKILL.md&quot;)
+    try:
+        return resource.read_bytes()
+    except FileNotFoundError as exc:
+        raise SkillResourceMissing(skill_name) from exc
+</code></pre>
+<p>The return type is <code>bytes</code> (not <code>str</code>) because <strong>REQ-007</strong> mandates byte-identical installation: the file written to disk must match the packaged resource exactly. This is enforced by <code>dest.write_bytes(contents[name])</code> in the install service.</p>
+<h3>Two Failure Modes</h3>
+<p>The skill system deliberately separates two failure modes, mirroring the template system in <code>rac.core.templates</code>:</p>
+<table><tr><th>Exception</th><th>Trigger</th><th>Severity</th><th>Exit Code</th><th>Meaning</th></tr><tr><td>`SkillNotFound`</td><td>Unregistered skill name</td><td>Caller error</td><td>Exit 2</td><td>Usage error — skill name not in registry</td></tr><tr><td>`SkillResourceMissing`</td><td>Registered skill, missing resource file</td><td>Operational</td><td>Exit 1</td><td>Broken RAC installation — registry entry exists but package file is absent</td></tr></table>
+<p>Source: <code>rac-core/src/rac/core/skills.py:59-76</code></p>
+<pre><code class="language-python">class SkillNotFound(RACError):
+    &quot;&quot;&quot;The requested skill is not in the bundled registry (usage error).&quot;&quot;&quot;
+
+    def __init__(self, skill_name: str):
+        self.skill_name = skill_name
+        super().__init__(
+            f&quot;unknown skill: {skill_name} (available: {&#x27;, &#x27;.join(available_skills())})&quot;
+        )
+
+
+class SkillResourceMissing(RACError):
+    &quot;&quot;&quot;A registered skill&#x27;s packaged resource is absent (operational error).&quot;&quot;&quot;
+
+    def __init__(self, skill_name: str):
+        self.skill_name = skill_name
+        super().__init__(
+            f&quot;packaged skill missing: {skill_name}; the RAC installation appears to be broken&quot;
+        )
+</code></pre>
+<p>The error message for <code>SkillNotFound</code> helpfully lists available skills — a usability feature for the CLI. The <code>SkillResourceMissing</code> message tells the user the installation is broken, pointing them toward re-installation.</p>
+<p>This mirrors the template system exactly (<code>TemplateNotFound</code> vs <code>TemplateResourceMissing</code> in <code>rac.core.templates:24-43</code>), establishing a consistent pattern across all three resource types: skills, templates, and hooks. See <a href="10-error-handling.md">10-error-handling.md</a> for the full exit code contract.</p>
+<h3>Skill Installation Service</h3>
+<p>Source: <code>rac-core/src/rac/services/skill.py:78-115</code></p>
+<pre><code class="language-python">def install_skills(target_dir: str, skill_name: str | None = None) -&gt; SkillInstallation:
+    &quot;&quot;&quot;Write bundled skills into ``target_dir``&#x27;s Claude Code skill path.
+
+    With ``skill_name`` ``None`` every bundled skill is installed,
+    all-or-nothing: every target path is checked first, and if any exists the
+    whole installation is refused with nothing written. With a name exactly
+    that skill is installed. Parent directories are created as needed; an
+    existing skill file is never overwritten.
+    &quot;&quot;&quot;
+</code></pre>
+<p>The installation follows a <strong>load-first, check-second, write-third</strong> pattern that guarantees all-or-nothing semantics:</p>
+<ol><li><strong>Load phase</strong>: Every resource is loaded first (validates the installation cheaply)</li><li><strong>Check phase</strong>: Every target path is checked for existence</li><li><strong>Write phase</strong>: Only if all checks pass are files written</li></ol>
+<p>If any target file already exists, <code>SkillFileExists</code> is raised with all existing paths reported and nothing written. RAC never overwrites existing skill files — the user must manually remove them first.</p>
+<p>Target layout: <code><target_dir>/.claude/skills/<skill-name>/SKILL.md</code> (the Claude Code project-level discovery path).</p>
+<pre><code class="language-python">destinations = {
+    name: Path(target_dir) / &quot;.claude&quot; / &quot;skills&quot; / name / &quot;SKILL.md&quot; for name in names
+}
+</code></pre>
+<p>The <code>SkillInstallation</code> result carries a stable JSON contract (ADR-007):</p>
+<pre><code class="language-python">@dataclass
+class SkillInstallation:
+    &quot;&quot;&quot;Result of a `rac skill install` run (stable JSON contract, ADR-007).&quot;&quot;&quot;
+    skills: list[InstalledSkill]
+
+    def to_dict(self) -&gt; dict:
+        return {
+            &quot;schema_version&quot;: &quot;1&quot;,
+            &quot;installed&quot;: True,
+            &quot;skills&quot;: [skill.to_dict() for skill in self.skills],
+        }
+</code></pre>
+<h2>Agent Rules Projection</h2>
+<p>The agent rules projection (<code>rac export --agent-rules [--check]</code>) distills the live corpus into a small, stable "managed block" embedded in per-client agent-context files. Governed by <strong>ADR-067</strong>.</p>
+<h3>Core Design Principles (ADR-067)</h3>
+<ol><li><strong>Distilled, not whole corpus</strong>: One pointer line per live decision (identifier + title, optional category) — the "what did we already decide / what is ruled out" digest. Decision bodies are never inlined; the agent reaches the <code>lore</code> MCP tools for ground truth.</li></ol>
+<ol><li><strong>"Live" is structural</strong>: A decision is live when its <code>## Status</code> is <em>Accepted</em> and it is not retired (Superseded/Deprecated). Retired states come from the type spec (<code>spec.retired_status</code>), so the rule is spec-driven, never a hard-coded set.</li></ol>
+<ol><li><strong>Drift-guarded</strong>: The block embeds a provenance digest (sha256 over the canonical projection). <code>--check</code> re-derives the digest from the live corpus and fails when a committed file's embedded digest differs or is absent.</li></ol>
+<h3>Liveness Detection</h3>
+<p>Source: <code>rac-core/src/rac/services/agent_rules.py:186-209</code></p>
+<pre><code class="language-python">def _is_live_decision(entry_product: Product) -&gt; bool:
+    &quot;&quot;&quot;True when a decision is Accepted and not retired (Superseded/Deprecated).
+
+    Spec-driven retirement (ADR-051): retired states come from the decision
+    spec, so the rule honours every retired status the type declares rather than
+    a hard-coded pair. Structural only — no semantics.
+    &quot;&quot;&quot;
+    status = _first_status_line(entry_product)
+    if status != _LIVE_STATUS:
+        return False
+    spec = spec_for(_DECISION_TYPE)
+    retired = {s.casefold() for s in (spec.retired_status if spec else ())}
+    return status not in retired
+
+
+def is_live_decision(product: Product) -&gt; bool:
+    &quot;&quot;&quot;Public liveness predicate — Accepted and not retired (ADR-067, ADR-051).&quot;&quot;&quot;
+    return _is_live_decision(product)
+</code></pre>
+<p>The liveness check is the single source of truth shared between the agent-rules projection and the live decision query (<code>find_decisions</code>), so the two surfaces can never disagree on what is settled. Status reading is structural: it reads the first non-empty line of <code>## Status</code> and does a casefolded string match against <code>"accepted"</code>. No semantic judgment enters the engine.</p>
+<h3>Managed Block Markers</h3>
+<p>Source: <code>rac-core/src/rac/services/agent_rules.py:61-63</code></p>
+<pre><code class="language-python">_BEGIN_PREFIX = &quot;&lt;!-- BEGIN RAC MANAGED BLOCK (digest: &quot;
+_BEGIN_SUFFIX = &quot;) --&gt;&quot;
+_END_MARKER = &quot;&lt;!-- END RAC MANAGED BLOCK --&gt;&quot;
+</code></pre>
+<p>HTML comments are used because they survive Markdown rendering — the block stays invisible in a rendered CLAUDE.md while remaining machine-locatable. The BEGIN marker carries the provenance digest so <code>--check</code> can read it without re-deriving the file's own content hash.</p>
+<p>A rendered block looks like:</p>
+<pre><code class="language-markdown">&lt;!-- BEGIN RAC MANAGED BLOCK (digest: a1b2c3d4e5f6...) --&gt;
+&lt;!-- Managed by `rac export --agent-rules`. Edit decisions in rac/, not here;
+ content outside this block is preserved. --&gt;
+## Settled decisions (RAC)
+
+These decisions are already accepted. Do not re-open or contradict them;
+ ask the `lore` MCP tools (`get_artifact`, `search_artifacts`) for the
+ full text before proposing a change that touches one.
+
+- **DEC-001** — Use PostgreSQL over SQLite for production
+- **DEC-003** — API versioning via URL path _(architecture)_
+&lt;!-- END RAC MANAGED BLOCK --&gt;
+</code></pre>
+<h3>Four Target Files</h3>
+<p>Source: <code>rac-core/src/rac/services/agent_rules.py:91-96</code></p>
+<pre><code class="language-python">TARGETS: tuple[AgentRulesTarget, ...] = (
+    AgentRulesTarget(&quot;agents&quot;, &quot;AGENTS.md&quot;),
+    AgentRulesTarget(&quot;claude&quot;, &quot;CLAUDE.md&quot;),
+    AgentRulesTarget(&quot;copilot&quot;, &quot;.github/copilot-instructions.md&quot;),
+    AgentRulesTarget(&quot;cursor&quot;, &quot;.cursor/rules&quot;),
+)
+</code></pre>
+<table><tr><th>Client Selector</th><th>Target Path</th><th>Format</th></tr><tr><td>`agents`</td><td>`AGENTS.md`</td><td>Markdown</td></tr><tr><td>`claude`</td><td>`CLAUDE.md`</td><td>Markdown</td></tr><tr><td>`copilot`</td><td>`.github/copilot-instructions.md`</td><td>Markdown</td></tr><tr><td>`cursor`</td><td>`.cursor/rules`</td><td>Plain rules file</td></tr></table>
+<p>The order is deterministic (by selector), so output never depends on argument order. <code>targets_for(clients)</code> resolves <code>--client</code> selectors to targets; unknown selectors are caught by <code>unknown_clients()</code> and turned into usage errors.</p>
+<h3>Drift-Guarded Mechanism: <code>--check</code> vs Generate</h3>
+<p>Source: <code>rac-core/src/rac/services/agent_rules.py:283-296</code></p>
+<pre><code class="language-python">def embedded_digest(file_text: str) -&gt; str | None:
+    &quot;&quot;&quot;The digest carried in a file&#x27;s BEGIN marker, or ``None`` when no block.
+
+    Reads only the marker, never re-hashes the file — the cheap comparison the
+    ``--check`` drift gate relies on.
+    &quot;&quot;&quot;
+    start = file_text.find(_BEGIN_PREFIX)
+    if start == -1:
+        return None
+    after = start + len(_BEGIN_PREFIX)
+    end = file_text.find(_BEGIN_SUFFIX, after)
+    if end == -1:
+        return None
+    return file_text[after:end].strip() or None
+</code></pre>
+<p>The <code>--check</code> mode never writes. It reads the digest from the file's BEGIN marker, derives the fresh projection digest from the live corpus, and compares the two. This is a cheap string comparison — no file re-hashing.</p>
+<p><strong>Generate mode</strong> (<code>generate_agent_rules</code>): Writes the managed block if the embedded digest differs from the fresh projection. Skips writes when the file is already in sync (idempotent, byte-stable).</p>
+<p><strong>Check mode</strong> (<code>check_agent_rules</code>): Only compares. Returns <code>result.drifted = True</code> when any target is stale or missing — the caller exits non-zero to fail CI.</p>
+<h3>File Result States</h3>
+<p>Source: <code>rac-core/src/rac/services/agent_rules.py:329-333</code></p>
+<pre><code class="language-python">STATE_WRITTEN = &quot;written&quot;  # the file did not exist; created with the block
+STATE_UPDATED = &quot;updated&quot;  # the file existed; its managed block changed
+STATE_IN_SYNC = &quot;in-sync&quot;  # the file&#x27;s embedded digest already matches
+STATE_STALE = &quot;stale&quot;  # (--check) embedded digest differs from the corpus
+STATE_MISSING = &quot;missing&quot;  # (--check) the file or its managed block is absent
+</code></pre>
+<table><tr><th>State</th><th>Generate</th><th>Check</th><th>Meaning</th></tr><tr><td>`written`</td><td>File created</td><td>N/A</td><td>Target did not exist; block written</td></tr><tr><td>`updated`</td><td>Block replaced</td><td>N/A</td><td>Target existed; embedded digest differed</td></tr><tr><td>`in-sync`</td><td>No write</td><td>Pass</td><td>Embedded digest matches live projection</td></tr><tr><td>`stale`</td><td>N/A</td><td>Fail</td><td>Embedded digest differs from live corpus</td></tr><tr><td>`missing`</td><td>N/A</td><td>Fail</td><td>Target file or managed block absent</td></tr></table>
+<p><code>AgentRulesFileResult</code> carries per-file outcomes in deterministic order; <code>AgentRulesResult</code> carries the overall run result with <code>drifted</code> property for the CI gate.</p>
+<h3><code>merge_managed_block</code>: Preserving User Content</h3>
+<p>Source: <code>rac-core/src/rac/services/agent_rules.py:299-323</code></p>
+<pre><code class="language-python">def merge_managed_block(existing: str | None, block: str) -&gt; str:
+    &quot;&quot;&quot;Splice ``block`` into ``existing``, preserving everything outside the markers.
+
+    When the file already has a managed block, only that span is replaced — the
+    user&#x27;s own prose before and after is kept byte-for-byte. When there is no
+    block, the new one is appended after the existing content (or stands alone in
+    a fresh file). The result always ends with a single trailing newline.
+    &quot;&quot;&quot;
+</code></pre>
+<p>The merge algorithm:</p>
+<ol><li><strong>Empty or missing existing</strong>: Return the block with a trailing newline.</li><li><strong>Existing block found</strong>: Replace only the span between BEGIN and END markers. Content before BEGIN and after END is preserved byte-for-byte.</li><li><strong>No existing block</strong>: Append the block after existing content, separated by a blank line.</li></ol>
+<p>This ensures that user-written instructions in CLAUDE.md (like "always use TypeScript" or "never use eval") outside the managed block remain untouched.</p>
+<h3>Canonical Payload and Digest</h3>
+<p>Source: <code>rac-core/src/rac/services/agent_rules.py:212-223</code></p>
+<pre><code class="language-python">def _canonical_payload(entries: list[AgentRulesEntry]) -&gt; str:
+    &quot;&quot;&quot;Canonical, formatting-independent serialization the digest hashes.
+
+    ``sort_keys`` + ``separators`` pin byte-for-byte stability; the entries are
+    already ordered by identifier, so the digest depends only on corpus content.
+    &quot;&quot;&quot;
+    return json.dumps(
+        [entry.to_dict() for entry in entries],
+        sort_keys=True,
+        separators=(&quot;,&quot;, &quot;:&quot;),
+        ensure_ascii=False,
+    )
+</code></pre>
+<p>The digest is <code>sha256(canonical_payload).hexdigest()</code> — compact JSON with no whitespace, sorted keys, and <code>ensure_ascii=False</code>. This guarantees that the same corpus state produces the same digest bytes, regardless of rendering target or environment.</p>
+<h2>OKF (Open Knowledge Format) Integration</h2>
+<p>The agent rules projection and OKF bundle export are complementary outputs from the same corpus. OKF is the full export format; agent rules are the lightweight distilled view for AI agents.</p>
+<h3>Type Mapping</h3>
+<p>Source: <code>rac-core/src/rac/core/okf.py:15-21</code></p>
+<pre><code class="language-python">OKF_TYPE = {
+    &quot;requirement&quot;: &quot;Requirement&quot;,
+    &quot;decision&quot;: &quot;ADR&quot;,
+    &quot;design&quot;: &quot;Design&quot;,
+    &quot;roadmap&quot;: &quot;Roadmap&quot;,
+    &quot;prompt&quot;: &quot;Prompt&quot;,
+}
+</code></pre>
+<p>Five enumerated RAC types map one-to-one to OKF types. A registered RAC type absent from this mapping is an OKF conformance error, never a silent drop from the bundle.</p>
+<h3>Reserved Filenames</h3>
+<p>Source: <code>rac-core/src/rac/core/okf.py:28</code></p>
+<pre><code class="language-python">RESERVED_FILENAMES = (&quot;index.md&quot;, &quot;log.md&quot;)
+</code></pre>
+<p>OKF reserves <code>index.md</code> for progressive disclosure and <code>log.md</code> for chronological history. A typed artifact at one of these paths collides with the generated bundle file (conformance error); an untyped document at these paths is a legitimate reserved entry point and is left alone (ADR-010).</p>
+<h3>OKF Conformance Gate</h3>
+<p>Source: <code>rac-core/src/rac/services/okf_conformance.py:79-127</code></p>
+<p>The write-time conformance check (<code>check_okf_conformance</code>) runs over an already-walked corpus and produces two finding codes:</p>
+<ul><li><strong><code>okf-unmapped-type</code></strong>: A typed RAC artifact whose <code>type</code> has no OKF mapping. Guards future type additions — a new type without an OKF mapping fails here instead of being silently excluded from the bundle.</li><li><strong><code>okf-reserved-filename-collision</code></strong>: A typed artifact whose filename is <code>index.md</code> or <code>log.md</code>, colliding with generated bundle entry points.</li></ul>
+<p>Severity overrides (ADR-053) may downgrade findings to warning or suppress them entirely during onboarding, so a team can incrementally achieve conformance.</p>
+<h3>OKF Bundle Structure</h3>
+<p>Source: <code>rac-core/src/rac/output/okf.py:150-171</code></p>
+<pre><code class="language-python">def render_okf_bundle(export: CorpusExport, recency: RecencyReport, root: str) -&gt; dict[str, str]:
+    &quot;&quot;&quot;Project a corpus export as an OKF bundle (``{relative path: contents}``).
+
+    One file per typed artifact at its path relative to ``root`` (the exported
+    corpus directory), plus ``index.md`` and ``log.md`` at the bundle root. Pure
+    and deterministic given the same ``export`` and ``recency``.
+    &quot;&quot;&quot;
+</code></pre>
+<p>The OKF bundle is a <code>{relative path: file contents}</code> mapping:</p>
+<pre><code class="language-">bundle/
+  index.md          # Generated progressive disclosure index
+  log.md            # Generated chronological history (git-derived dates)
+  decisions/DEC-001.md   # Projected artifact with OKF front matter
+  requirements/REQ-001.md
+  ...
+</code></pre>
+<p>Each artifact file gets OKF-reserved front matter (<code>type</code>, <code>id</code>), optionally <code>created</code>/<code>updated</code> from git (ADR-045), <code>tags</code> from source frontmatter, the body (with frontmatter stripped), and a derived <code># Citations</code> section from resolved relationships.</p>
+<p>The bundle is deterministic (ADR-002): artifacts in sorted-path order, citations ordered explicitly, <code>log.md</code> grouped by commit date (newest first) then path.</p>
+<h2>Skill/Hook Installation Parallelism</h2>
+<p>The skill installation and hook installation services share the same architectural pattern, establishing a uniform resource-loading posture across RAC.</p>
+<table><tr><th>Aspect</th><th>Skills</th><th>Hooks</th><th>Templates</th></tr><tr><td>Package path</td><td>`rac.skills/<name>/SKILL.md`</td><td>`rac.hooks/<style>`</td><td>`rac.templates/<type>.md`</td></tr><tr><td>Load function</td><td>`load_skill(name)` → `bytes`</td><td>`load_hook(style)` → `bytes`</td><td>`load_template(type)` → `str`</td></tr><tr><td>Not-found error</td><td>`SkillNotFound` (exit 2)</td><td>`HookNotFound` (exit 2)</td><td>`TemplateNotFound` (exit 2)</td></tr><tr><td>Missing-resource error</td><td>`SkillResourceMissing`</td><td>`HookResourceMissing`</td><td>`TemplateResourceMissing`</td></tr><tr><td>Exists error</td><td>`SkillFileExists`</td><td>`HookFileExists`</td><td>N/A (templates render to stdout)</td></tr><tr><td>Load mechanism</td><td>`importlib.resources`</td><td>`importlib.resources`</td><td>`importlib.resources`</td></tr><tr><td>Never overwrites</td><td>Yes</td><td>Yes</td><td>N/A</td></tr></table>
+<p>This parallelism is a deliberate ADR-021 design: all three resource types use the same <code>importlib.resources.files(...).joinpath(...).read_bytes()</code> loading, the same "check before write" posture, and the same "never overwrite" rule. The hook service additionally sets the executable bit via <code>stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH</code> (see <code>rac-core/src/rac/services/hook.py:87</code>).</p>
+<h2>System Architecture Diagram</h2>
+<div class="mermaid">
+flowchart TD
+    subgraph Resources[&quot;Packaged Resources (importlib.resources)&quot;]
+        SKILLS[&quot;rac.skills/&lt;name&gt;/SKILL.md&quot;]
+        HOOKS[&quot;rac.hooks/&lt;style&gt;&quot;]
+        TMPLS[&quot;rac.templates/&lt;type&gt;.md&quot;]
+    end
+
+    subgraph Loading[&quot;Loading Layer&quot;]
+        LS[&quot;load_skill() → bytes (REQ-007)&quot;]
+        LH[&quot;load_hook() → bytes&quot;]
+        LT[&quot;load_template() → str&quot;]
+    end
+
+    subgraph InstallServices[&quot;Install Services&quot;]
+        SIS[&quot;install_skills() → SkillInstallation&quot;]
+        SIH[&quot;install_hook() → InstalledHook&quot;]
+    end
+
+    subgraph AgentRules[&quot;Agent Rules Projection (ADR-067)&quot;]
+        BARP[&quot;build_agent_rules_block()&quot;]
+        CORPUS[&quot;walk_corpus()&quot;]
+        FILTER[&quot;is_live_decision(): Accepted &amp;&amp; !retired&quot;]
+        DIGEST[&quot;sha256(canonical_json)&quot;]
+        RENDER[&quot;render_managed_block()&quot;]
+        MERGE[&quot;merge_managed_block()&quot;]
+        GEN[&quot;generate_agent_rules()&quot;]
+        CHK[&quot;check_agent_rules()&quot;]
+    end
+
+    subgraph Targets[&quot;Agent Context Files&quot;]
+        AGENTS[&quot;AGENTS.md&quot;]
+        CLAUDE[&quot;CLAUDE.md&quot;]
+        COPILOT[&quot;.github/copilot-instructions.md&quot;]
+        CURSOR[&quot;.cursor/rules&quot;]
+    end
+
+    subgraph OKF[&quot;OKF Export (ADR-048)&quot;]
+        MAP[&quot;OKF_TYPE mapping&quot;]
+        CONV[&quot;check_okf_conformance()&quot;]
+        BUNDLE[&quot;render_okf_bundle()&quot;]
+    end
+
+    SKILLS --&gt; LS --&gt; SIS
+    HOOKS --&gt; LH --&gt; SIH
+    TMPLS --&gt; LT
+
+    CORPUS --&gt; FILTER --&gt; BARP --&gt; DIGEST --&gt; RENDER --&gt; MERGE --&gt; GEN
+    CORPUS --&gt; FILTER --&gt; BARP --&gt; DIGEST --&gt; MERGE --&gt; CHK
+
+    GEN --&gt; AGENTS
+    GEN --&gt; CLAUDE
+    GEN --&gt; COPILOT
+    GEN --&gt; CURSOR
+
+    CORPUS --&gt; MAP --&gt; CONV
+    CORPUS --&gt; BUNDLE
+
+</div>
+<h2>Agent Rules Generation and Check Flow</h2>
+<div class="mermaid">
+sequenceDiagram
+    participant CLI as rac CLI
+    participant AR as agent_rules.py
+    participant WC as walk_corpus
+    participant SPEC as spec_for
+    participant FS as Filesystem
+
+    CLI-&gt;&gt;AR: generate_agent_rules(dir, root, clients)
+    AR-&gt;&gt;WC: walk_corpus(dir, recursive)
+    WC--&gt;&gt;AR: list[CorpusEntry]
+
+    loop For each CorpusEntry
+        AR-&gt;&gt;AR: artifact_type == &quot;decision&quot;?
+        AR-&gt;&gt;AR: _is_live_decision(product)
+        AR-&gt;&gt;SPEC: spec_for(&quot;decision&quot;).retired_status
+        SPEC--&gt;&gt;AR: set of retired statuses
+        AR-&gt;&gt;AR: status == &quot;accepted&quot; &amp;&amp; not in retired?
+        AR-&gt;&gt;AR: AgentRulesEntry(id, title, category)
+    end
+
+    AR-&gt;&gt;AR: entries.sort(by identifier)
+    AR-&gt;&gt;AR: _canonical_payload(entries) → JSON
+    AR-&gt;&gt;AR: sha256(canonical_payload) → digest
+    AR-&gt;&gt;AR: render_managed_block(projection) → block text
+
+    loop For each target (agents, claude, copilot, cursor)
+        AR-&gt;&gt;FS: read existing file (if any)
+        FS--&gt;&gt;AR: file_text or None
+        AR-&gt;&gt;AR: embedded_digest(existing) == digest?
+        alt in-sync
+            AR-&gt;&gt;AR: result = STATE_IN_SYNC (skip write)
+        else write/update
+            AR-&gt;&gt;AR: merge_managed_block(existing, block)
+            AR-&gt;&gt;FS: write_text(merged)
+            AR-&gt;&gt;AR: result = WRITTEN or UPDATED
+        end
+    end
+
+    AR--&gt;&gt;CLI: AgentRulesResult(mode, digest, files[])
+
+</div>
+<h2>Key Cross-References</h2>
+<ul><li><strong><a href="00-overview.md">00-overview.md</a></strong> — Wayfinder/RAC architecture at a glance, all 7 sub-projects</li><li><strong><a href="01-architecture.md">01-architecture.md</a></strong> — Layers, modules, Product AST, artifact types</li><li><strong><a href="02-rac-core.md">02-rac-core.md</a></strong> — CLI, services, validation, relationships, watchkeeper (agent_rules listed in Services layer)</li><li><strong><a href="09-data-flow.md">09-data-flow.md</a></strong> — Full request lifecycle, export pipeline, OKF bundle generation</li><li><strong><a href="10-error-handling.md">10-error-handling.md</a></strong> — Exit code contract (exit 0/1/2), error types, <code>SkillNotFound</code> maps to exit 2</li></ul>
+<h2>Aha Moments</h2>
+<p><strong>The agent rules block is a read-only projection, not a source of truth.</strong> When an AI agent sees a settled decision in its CLAUDE.md, the actual ground truth lives in the RAC corpus. The block is a distilled pointer — the agent is instructed to use the <code>lore</code> MCP tools (<code>get_artifact</code>, <code>search_artifacts</code>) for full text before proposing changes. This keeps the context file small while maintaining access to the full decision record.</p>
+<p><strong>Drift detection uses the projection digest, not a file hash.</strong> If the corpus hasn't changed, the digest hasn't changed, regardless of what else might have been edited in CLAUDE.md. This means <code>--check</code> only fails when the corpus has evolved and the agent context file hasn't been updated — not when the user edited their own instructions outside the managed block. The merge algorithm preserves user content byte-for-byte, so drift only captures corpus-corpus divergence.</p>
+<p><strong>The retirement set is spec-driven, not hard-coded.</strong> Instead of writing <code>retired = {"superseded", "deprecated"}</code>, the code asks <code>spec_for("decision").retired_status</code>. This means if a new artifact type declares its own retired statuses, the same liveness predicate works automatically. The same relationship validation already uses this pattern (ADR-051), so there is one source of truth for what "retired" means per type.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

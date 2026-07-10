@@ -135,6 +135,74 @@
 <h1>Voice Pipeline: STT → Agent → TTS</h1>
 <p>Complete source-level documentation of Moltis voice capabilities: 11 STT providers, 6 TTS providers, auto-speak modes, TTS directives with SSML support, and the full voice pipeline from audio input to speech output.</p>
 <p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/crates/voice/src/</code></p>
+<h2>Voice Pipeline Architecture</h2>
+<div class="mermaid">
+flowchart TD
+    AudioIn[&quot;Audio Input\nmp3/opus/wav/webm&quot;]
+    subgraph &quot;STT (11 Providers)&quot;
+        STT[&quot;SttProvider trait\ntranscribe(TranscribeRequest) → Transcript&quot;]
+        W[&quot;Whisper (API)&quot;] &amp; WC[&quot;Whisper CLI&quot;] &amp; WL[&quot;Whisper Local&quot;]
+        DG[&quot;Deepgram&quot;] &amp; EL[&quot;ElevenLabs&quot;] &amp; GL[&quot;Google&quot;]
+        GR[&quot;Groq&quot;] &amp; MS[&quot;Mistral&quot;] &amp; SO[&quot;Sherpa-ONNX&quot;]
+        VX[&quot;Voxtral Local&quot;] &amp; OC[&quot;OpenAI-compat&quot;]
+    end
+    Transcript[&quot;Transcript{text, language, confidence, words}&quot;]
+    Agent[&quot;Agent Loop\nprocesses text response&quot;]
+    subgraph &quot;TTS (6 Providers)&quot;
+        TTS[&quot;TtsProvider trait\nsynthesize(SynthesizeRequest) → AudioOutput&quot;]
+        ELS[&quot;ElevenLabs\nRachel, Flash v2.5&quot;] &amp; OAI[&quot;OpenAI\nalloy, tts-1&quot;]
+        GLS[&quot;Google\nen-US-Neural2-F&quot;] &amp; CQ[&quot;Coqui\nlocal&quot;]
+        PR[&quot;Piper\nlocal&quot;] &amp; MK[&quot;Mock\ntest&quot;]
+    end
+    Directives[&quot;TtsDirectives\nSSML, pauses, emphasis&quot;]
+    AudioOut[&quot;Audio Output\nmp3/opus/wav/aac/pcm/webm&quot;]
+    Channels[&quot;Channel Outbound\nTelegram voice, WhatsApp audio&quot;]
+
+    AudioIn --&gt; STT
+    W --&gt; STT &amp; WC --&gt; STT &amp; WL --&gt; STT &amp; DG --&gt; STT &amp; EL --&gt; STT &amp; GL --&gt; STT
+    GR --&gt; STT &amp; MS --&gt; STT &amp; SO --&gt; STT &amp; VX --&gt; STT &amp; OC --&gt; STT
+    STT --&gt; Transcript
+    Transcript --&gt; Agent
+    Agent --&gt; TTS
+    ELS --&gt; TTS &amp; OAI --&gt; TTS &amp; GLS --&gt; TTS &amp; CQ --&gt; TTS &amp; PR --&gt; TTS &amp; MK --&gt; TTS
+    TTS --&gt; Directives
+    Directives --&gt; AudioOut
+    AudioOut --&gt; Channels
+
+</div>
+<h2>STT Provider Selection Flow</h2>
+<div class="mermaid">
+flowchart TD
+    VoiceReq[&quot;Voice request received&quot;]
+    Config[&quot;VoiceConfig.stt.provider&quot;]
+    Auto{Provider set?}
+    Env[&quot;Check env vars\nWHISPER_API_KEY, DEEPGRAM_API_KEY, etc.&quot;]
+    Available[&quot;List available providers\n(has API key or binary)&quot;]
+    Select[&quot;Select first configured provider&quot;]
+    Transcribe[&quot;transcribe(TranscribeRequest)&quot;]
+    Result[&quot;Transcript{text, confidence, words}&quot;]
+
+    VoiceReq --&gt; Config
+    Config --&gt; Auto
+    Auto --&gt;|Yes| Transcribe
+    Auto --&gt;|No| Env
+    Env --&gt; Available
+    Available --&gt; Select
+    Select --&gt; Transcribe
+    Transcribe --&gt; Result
+
+</div>
+<h2>Aha: ElevenLabs Uses Flash v2.5 Model for ~75ms Latency</h2>
+<p>The default TTS model is <code>eleven_flash_v2_5</code> (not the higher-quality <code>eleven_multilingual_v2</code>). This is a deliberate latency optimization — Flash v2.5 targets ~75ms first-byte latency, making voice conversations feel real-time. The default voice is Rachel (<code>21m00Tcm4TlvDq8ikWAM</code>), a well-known ElevenLabs voice. See <code>crates/voice/src/tts/elevenlabs.rs:30-68</code>.</p>
+<h2>Aha: Whisper CLI Spawns a Binary — No Library Dependency</h2>
+<p>The <code>WhisperCliStt</code> provider writes audio to a temp file, spawns the <code>whisper</code> binary with <code>--output-format json</code>, and parses the JSON output. This means Moltis doesn't need to link against <code>whisper.cpp</code> — it just needs the binary on PATH. The tradeoff is process overhead vs. the FFI complexity of <code>WhisperLocalStt</code> which uses direct <code>whisper.cpp</code> library bindings. See <code>crates/voice/src/stt/whisper_cli.rs</code>.</p>
+<h2>Aha: Opus Format Is Telegram's Voice Note Format</h2>
+<p>The <code>AudioFormat::Opus</code> variant (<code>.ogg</code> MIME type) exists specifically for Telegram voice notes. Telegram accepts and sends voice messages in Opus format, so Moltis uses Opus for the Telegram channel STT/TTS pipeline to avoid unnecessary transcoding.</p>
+<h2>Aha: TTS Auto-Mode Has Four Levels Including Tagged-Only</h2>
+<p>The <code>TtsAutoMode</code> enum has four variants: <code>Always</code> (speak everything), <code>Off</code> (never auto-speak, default), <code>Inbound</code> (only speak when user sent voice input), and <code>Tagged</code> (only speak responses containing <code>[[tts]]</code> markup). The <code>Tagged</code> mode is particularly clever — the agent can selectively mark certain responses for speech while keeping others text-only. This gives users fine-grained control over when the agent speaks, without requiring explicit per-message commands.</p>
+<h2>Aha: STT Provider Auto-Select Checks Environment Variables</h2>
+<p>When <code>VoiceConfig.stt.provider</code> is <code>None</code>, the system checks environment variables (<code>WHISPER_API_KEY</code>, <code>DEEPGRAM_API_KEY</code>, etc.) to find the first configured provider. This means users can enable voice simply by setting an API key — no config file edit needed. The auto-detection respects priority order, preferring cloud providers over local ones when both are available.</p>
+<hr>
 <h2>Configuration</h2>
 <p><strong>Source:</strong> <code>config.rs</code></p>
 <pre><code class="language-rust">pub struct VoiceConfig {

@@ -6,6 +6,85 @@ Comprehensive source-level documentation of the Swift-Rust FFI bridges, gateway 
 
 ---
 
+## Tool Registration Flow
+
+```mermaid
+sequenceDiagram
+    participant Startup as Gateway Startup
+    participant TC as ToolRegistry
+    participant Voice as voice_call tool
+    participant Exec as exec tool
+    participant Browser as browser tool
+    participant Memory as memory_search/save tools
+    participant MCP as MCP tools
+    participant Skills as Skill tools
+    participant Policy as ToolPolicy
+
+    Startup->>TC: ToolRegistry::new()
+    Startup->>Exec: register exec tool
+    Startup->>Browser: register browser tool
+    Startup->>Voice: register_voice_call_tool()
+    Voice->>TC: register(VoiceCallTool)
+    Startup->>Memory: install_agent_scoped_memory_tools()
+    Memory->>TC: register(memory_search, memory_save, memory_forget)
+    Startup->>MCP: register MCP tools
+    MCP->>TC: register(mcp__<server>__<tool>)
+    Startup->>Skills: load skills
+    Skills->>TC: register(skill tools)
+    TC->>Policy: apply_tool_filters(registry, policy)
+    Policy-->>TC: Filtered registry
+```
+
+## Sandbox Image Build Lifecycle
+
+```mermaid
+sequenceDiagram
+    participant Startup as prepare_core()
+    participant Router as SandboxRouter
+    participant Deferred as DeferredState
+    participant Build as prebuild_image()
+    participant Broadcast as broadcast()
+    participant GC as Garbage Collection
+
+    Startup->>Router: build_sandbox_router(config)
+    Startup->>Router: spawn_sandbox_background_tasks()
+    Router->>Router: should_prebuild_sandbox_image()?
+    alt packages to install
+        Router->>Router: building_flag = true
+        Router->>Broadcast: sandbox.image.build: starting
+        Router->>Build: prebuild_image(base_image, packages)
+        alt success
+            Build-->>Broadcast: sandbox.image.build: complete
+        else failure
+            Build-->>Broadcast: sandbox.image.build: error
+        end
+        Router->>Router: building_flag = false
+    end
+    Router->>GC: cleanup leftover containers
+```
+
+## Aha: Voice Call Tool Requires Gateway External URL
+
+The `register_voice_call_tool()` function creates a `VoiceCallTool` with the gateway's `effective_external_url()` as the webhook base. This means the telephony provider (e.g., Twilio) calls back to the gateway's public URL when a call is answered or hangs up. Without a properly configured external URL, voice calls can't receive webhook callbacks. See `gateway/src/server/prepare_core/tool_registration.rs:1-16`.
+
+## Aha: Sandbox Image Pre-Build Broadcasts Progress to UI
+
+When packages need to be installed in the sandbox image, the build runs as a background `tokio::spawn` task and broadcasts progress events to all connected WebSocket clients. Clients see `sandbox.image.build: starting`, then either `complete` or `error`. The `building_flag` atomic boolean prevents concurrent builds. This means the UI can show real-time build progress without polling.
+
+## Aha: Stale File Reconciliation Skips When Counts Match
+
+The memory sync algorithm has an optimization: if the DB file count matches the discovered file count AND nothing was updated, it skips the full stale-file reconciliation. This avoids iterating the entire file list on every sync when nothing has changed. See `memory/src/manager.rs:156-176`.
+
+## Aha: MCP Tools Use Double-Underscore Namespacing
+
+MCP (Model Context Protocol) tools are registered with the naming convention `mcp__<server>__<tool>`. This means if you connect an MCP server called "filesystem", its tools become `mcp__filesystem__read_file`, `mcp__filesystem__write_file`, etc. The double-underscore separator is chosen to avoid conflicts with native tool names (which use single words like `exec`, `calc`, `browser`). See `gateway/src/server/prepare_core/tool_registration.rs`.
+
+## Aha: Skills Must Be Explicitly Loaded Before Use
+
+The guideline `TOOL_GUIDELINES` in `prompt/builder.rs` states: "Skills are not callable unless loaded with `read_skill`." This means skills exist as definitions in the workspace but are NOT automatically available to the agent. The agent must explicitly call `read_skill` to load a skill's instructions into context before it can use that skill. This prevents context-window bloat from loading all skills upfront and gives the agent control over which skills to activate.
+
+---
+
 ## Swift-Rust FFI Bridges
 
 **Source:** `crates/swift-bridge/src/`

@@ -46,6 +46,47 @@ flowchart TD
     end
 ```
 
+## Policy Engine: Decision Flow
+
+```mermaid
+flowchart TD
+    ToolCall["Tool Call Request\nname, args, context"]
+    Global["1. Global Policy\nAdmin-defined allow/deny"]
+    IsGlobalDenied{Denied by\nglobal?}
+    Provider["2. Provider Policy\nPer-LLM-provider restrictions"]
+    IsProviderDenied{Denied by\nprovider?}
+    Agent["3. Agent Policy\nPer-agent preset restrictions"]
+    IsAgentDenied{Denied by\nagent?}
+    Group["4. Group Policy\nGroup-level restrictions"]
+    IsGroupDenied{Denied by\ngroup?}
+    Sender["5. Sender Policy\nPer-user restrictions"]
+    IsSenderDenied{Denied by\nsender?}
+    Sandbox["6. Sandbox Limits\nResource constraints\ntimeout, memory, network"]
+    IsSandboxDenied{Denied by\nsandbox?}
+    ExecTool["Execute Tool\nselected sandbox backend"]
+    Denied["DENIED\nreturn error to agent"]
+
+    ToolCall --> Global
+    Global --> IsGlobalDenied
+    IsGlobalDenied -->|Yes| Denied
+    IsGlobalDenied -->|No| Provider
+    Provider --> IsProviderDenied
+    IsProviderDenied -->|Yes| Denied
+    IsProviderDenied -->|No| Agent
+    Agent --> IsAgentDenied
+    IsAgentDenied -->|Yes| Denied
+    IsAgentDenied -->|No| Group
+    Group --> IsGroupDenied
+    IsGroupDenied -->|Yes| Denied
+    IsGroupDenied -->|No| Sender
+    Sender --> IsSenderDenied
+    IsSenderDenied -->|Yes| Denied
+    IsSenderDenied -->|No| Sandbox
+    Sandbox --> IsSandboxDenied
+    IsSandboxDenied -->|Yes| Denied
+    IsSandboxDenied -->|No| ExecTool
+```
+
 ## The 6-Layer Policy Engine
 
 ```rust

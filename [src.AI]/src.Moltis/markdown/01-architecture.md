@@ -1,6 +1,6 @@
 # Architecture: Workspace Structure and Crate Map
 
-Moltis is a Rust workspace with 68 crates, an iOS Swift app, a macOS Swift app, and a courier server app. The workspace is organized into modular crates that can be audited independently.
+Moltis is a Rust workspace with 64 crates, an iOS Swift app, a macOS Swift app, and a courier server app. The workspace is organized into modular crates that can be audited independently.
 
 **Source:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/`
 
@@ -252,6 +252,81 @@ apps/courier/
 
 **Source:** `apps/courier/`.
 
+## Layered Architecture
+
+```mermaid
+flowchart TD
+    subgraph "Client Layer"
+        iOS["iOS App (Swift)"]
+        macOS["macOS App (Swift)"]
+        Web["Web Client (WS)"]
+        CLI["CLI (moltis-ctl)"]
+    end
+
+    subgraph "Transport Layer"
+        HTTPD["moltis-httpd\nAxum HTTP/WS server"]
+        FFI["swift-bridge\nFFI bridges"]
+    end
+
+    subgraph "Gateway Layer"
+        Methods["MethodRegistry\ndispatch + auth"]
+        SessionReg["Session Registry"]
+        ChannelStore["Channel Store"]
+        Services["GatewayServices"]
+    end
+
+    subgraph "Domain Layer"
+        Agents["moltis-agents\nAgent loop, streaming"]
+        Chat["moltis-chat\nChat engine"]
+        Tools["moltis-tools\nTool execution, sandbox"]
+        Providers["moltis-providers\nLLM backends"]
+        Channels["moltis-channels\n9 channel plugins"]
+        Voice["moltis-voice\nSTT + TTS"]
+        Memory["moltis-memory\nRAG, SQLite FTS"]
+        MCP["moltis-mcp\nMCP bridge"]
+    end
+
+    subgraph "Infrastructure Layer"
+        Auth["moltis-auth\nWebAuthn, API keys"]
+        Config["moltis-config\nTOML config"]
+        Vault["moltis-vault\nSecret storage"]
+        Cron["moltis-cron\nScheduled tasks"]
+        Projects["moltis-projects\nProject management"]
+    end
+
+    iOS --> FFI
+    macOS --> FFI
+    Web --> HTTPD
+    CLI --> HTTPD
+    FFI --> Methods
+    HTTPD --> Methods
+    Methods --> SessionReg & ChannelStore & Services
+    SessionReg --> Agents
+    ChannelStore --> Channels
+    Services --> Tools & Providers & Voice & Memory & MCP
+    Agents --> Chat & Tools & Providers
+    Channels --> SessionReg
+    Auth --> Methods
+    Config --> Services
+    Vault --> Auth
+```
+
 ## Next
 
 Continue to [02-gateway](02-gateway.md) for the HTTP/WS server, RPC, and MCP support.
+
+## Aha: HTTP Transport Is Separated from Domain Logic
+
+The gateway crate (`moltis-gateway`) holds ALL domain logic (methods, sessions, channels, MCP, voice orchestration) but ZERO HTTP routes. The HTTP/WS server lives in `moltis-httpd` (Axum routes + WebSocket upgrade). The `prepare_gateway_core()` function returns a `PreparedGatewayCore` that is completely transport-agnostic. This means the same gateway logic powers the server binary, the macOS app (via swift-bridge FFI), and any future transport layer. See `gateway/src/lib.rs:1-12` — the doc comment explicitly states this separation.
+
+## Aha: Feature Flags Gate Entire Channel Integrations
+
+Many crates use `#[cfg(feature = "...")]` to conditionally compile channel integrations. `#[cfg(feature = "msteams")]` gates MS Teams tools. `#[cfg(feature = "telephony")]` gates voice call tools. `#[cfg(feature = "mdns")]` gates mDNS discovery. `#[cfg(feature = "push-notifications")]` gates push notification support. This means a single build of Moltis can include or exclude entire subsystems based on feature flags — reducing binary size and attack surface.
+
+## Aha: Courier Is the Single Entry Point for All Transports
+
+The `apps/courier/src/main.rs` binary is the ONLY executable in the workspace. It calls `prepare_gateway_core()` to build the transport-agnostic core, then starts `moltis-httpd` for HTTP/WS. The iOS and macOS apps don't have their own binaries — they link against the swift-bridge crate which internally calls the same gateway functions via FFI. This means there's exactly one code path for every operation, whether it comes from a WebSocket, an FFI call, or the CLI. No duplicated logic between "server mode" and "desktop mode."
+
+## Aha: Crate Sizes Correlate with Feature-Flag Coverage
+
+The LOC counts in the architecture table (gateway 37.4K, tools 37.0K, providers 18.9K) include all feature-gated code. A minimal build of Moltis with no optional channels or providers would be significantly smaller. The `moltis-tools` crate alone is 37K LOC because it contains 30+ tool implementations, each with their own schema, execution logic, and sandbox routing — but most users only enable a subset at runtime.

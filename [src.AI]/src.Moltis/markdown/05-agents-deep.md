@@ -4,6 +4,87 @@ Complete source-level documentation of Moltis voice capabilities: 11 STT provide
 
 **Source:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/crates/voice/src/`
 
+## Voice Pipeline Architecture
+
+```mermaid
+flowchart TD
+    AudioIn["Audio Input\nmp3/opus/wav/webm"]
+    subgraph "STT (11 Providers)"
+        STT["SttProvider trait\ntranscribe(TranscribeRequest) → Transcript"]
+        W["Whisper (API)"] & WC["Whisper CLI"] & WL["Whisper Local"]
+        DG["Deepgram"] & EL["ElevenLabs"] & GL["Google"]
+        GR["Groq"] & MS["Mistral"] & SO["Sherpa-ONNX"]
+        VX["Voxtral Local"] & OC["OpenAI-compat"]
+    end
+    Transcript["Transcript{text, language, confidence, words}"]
+    Agent["Agent Loop\nprocesses text response"]
+    subgraph "TTS (6 Providers)"
+        TTS["TtsProvider trait\nsynthesize(SynthesizeRequest) → AudioOutput"]
+        ELS["ElevenLabs\nRachel, Flash v2.5"] & OAI["OpenAI\nalloy, tts-1"]
+        GLS["Google\nen-US-Neural2-F"] & CQ["Coqui\nlocal"]
+        PR["Piper\nlocal"] & MK["Mock\ntest"]
+    end
+    Directives["TtsDirectives\nSSML, pauses, emphasis"]
+    AudioOut["Audio Output\nmp3/opus/wav/aac/pcm/webm"]
+    Channels["Channel Outbound\nTelegram voice, WhatsApp audio"]
+
+    AudioIn --> STT
+    W --> STT & WC --> STT & WL --> STT & DG --> STT & EL --> STT & GL --> STT
+    GR --> STT & MS --> STT & SO --> STT & VX --> STT & OC --> STT
+    STT --> Transcript
+    Transcript --> Agent
+    Agent --> TTS
+    ELS --> TTS & OAI --> TTS & GLS --> TTS & CQ --> TTS & PR --> TTS & MK --> TTS
+    TTS --> Directives
+    Directives --> AudioOut
+    AudioOut --> Channels
+```
+
+## STT Provider Selection Flow
+
+```mermaid
+flowchart TD
+    VoiceReq["Voice request received"]
+    Config["VoiceConfig.stt.provider"]
+    Auto{Provider set?}
+    Env["Check env vars\nWHISPER_API_KEY, DEEPGRAM_API_KEY, etc."]
+    Available["List available providers\n(has API key or binary)"]
+    Select["Select first configured provider"]
+    Transcribe["transcribe(TranscribeRequest)"]
+    Result["Transcript{text, confidence, words}"]
+
+    VoiceReq --> Config
+    Config --> Auto
+    Auto -->|Yes| Transcribe
+    Auto -->|No| Env
+    Env --> Available
+    Available --> Select
+    Select --> Transcribe
+    Transcribe --> Result
+```
+
+## Aha: ElevenLabs Uses Flash v2.5 Model for ~75ms Latency
+
+The default TTS model is `eleven_flash_v2_5` (not the higher-quality `eleven_multilingual_v2`). This is a deliberate latency optimization — Flash v2.5 targets ~75ms first-byte latency, making voice conversations feel real-time. The default voice is Rachel (`21m00Tcm4TlvDq8ikWAM`), a well-known ElevenLabs voice. See `crates/voice/src/tts/elevenlabs.rs:30-68`.
+
+## Aha: Whisper CLI Spawns a Binary — No Library Dependency
+
+The `WhisperCliStt` provider writes audio to a temp file, spawns the `whisper` binary with `--output-format json`, and parses the JSON output. This means Moltis doesn't need to link against `whisper.cpp` — it just needs the binary on PATH. The tradeoff is process overhead vs. the FFI complexity of `WhisperLocalStt` which uses direct `whisper.cpp` library bindings. See `crates/voice/src/stt/whisper_cli.rs`.
+
+## Aha: Opus Format Is Telegram's Voice Note Format
+
+The `AudioFormat::Opus` variant (`.ogg` MIME type) exists specifically for Telegram voice notes. Telegram accepts and sends voice messages in Opus format, so Moltis uses Opus for the Telegram channel STT/TTS pipeline to avoid unnecessary transcoding.
+
+## Aha: TTS Auto-Mode Has Four Levels Including Tagged-Only
+
+The `TtsAutoMode` enum has four variants: `Always` (speak everything), `Off` (never auto-speak, default), `Inbound` (only speak when user sent voice input), and `Tagged` (only speak responses containing `[[tts]]` markup). The `Tagged` mode is particularly clever — the agent can selectively mark certain responses for speech while keeping others text-only. This gives users fine-grained control over when the agent speaks, without requiring explicit per-message commands.
+
+## Aha: STT Provider Auto-Select Checks Environment Variables
+
+When `VoiceConfig.stt.provider` is `None`, the system checks environment variables (`WHISPER_API_KEY`, `DEEPGRAM_API_KEY`, etc.) to find the first configured provider. This means users can enable voice simply by setting an API key — no config file edit needed. The auto-detection respects priority order, preferring cloud providers over local ones when both are available.
+
+---
+
 ## Configuration
 
 **Source:** `config.rs`

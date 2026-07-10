@@ -1,12 +1,49 @@
 ---
-title: Moltis — Multi-Channel AI Agent Platform with 68+ Rust Crates
+title: Moltis -- Multi-Channel AI Agent Platform with 64+ Rust Crates
 ---
 
 # Moltis — Multi-Channel AI Agent Platform
 
-**Moltis is a self-hosted AI agent platform that connects LLMs to 9 messaging channels through a 68-crate Rust workspace.** The architecture centers on four pillars: a **Gateway** (central hub: method dispatch, session registry, webhook verification, provisioning), an **Agent Loop** (streaming LLM → tool execution → result → repeat, with retry, compaction, and loop detection), **Channel Plugins** (each channel implements `ChannelPlugin` with optional sub-traits for config, auth, inbound/outbound messaging, webhook verification), and a **Provider Registry** (10+ LLM backends behind a unified `LlmProvider` trait with automatic model discovery and capability detection). Additional systems handle 11 STT + 6 TTS providers for voice calls, a multi-layered tool sandbox (global → provider → agent → group → sender → sandbox), WASM plugin execution, RAG memory, and native iOS/macOS apps via Swift FFI bridges.
+**Moltis is a self-hosted AI agent platform that connects LLMs to 9 messaging channels through a 68-crate Rust workspace plus 3 apps (courier server, iOS, macOS).** The architecture centers on four pillars: a **Gateway** (central hub: method dispatch, session registry, webhook verification, provisioning), an **Agent Loop** (streaming LLM → tool execution → result → repeat, with retry, compaction, and loop detection), **Channel Plugins** (each channel implements `ChannelPlugin` with optional sub-traits for config, auth, inbound/outbound messaging, webhook verification), and a **Provider Registry** (10+ LLM backends behind a unified `LlmProvider` trait with automatic model discovery and capability detection). Additional systems handle 11 STT + 6 TTS providers for voice calls, a multi-layered tool sandbox (global → provider → agent → group → sender → sandbox), WASM plugin execution, RAG memory, and native iOS/macOS apps via Swift FFI bridges.
 
-Source: `crates/` — 1,038 Rust files, 68 crates
+Source: `crates/` -- 68 crates + 3 apps, 1,038 Rust files
+
+## Crate Dependency Tree
+
+```mermaid
+flowchart LR
+    Courier["apps/courier\nCLI entry point"]
+    Gateway["moltis-gateway\nHTTP/WS, RPC, MCP,\nmethods dispatch"]
+    HTTPD["moltis-httpd\nAxum server"]
+    Agents["moltis-agents\nAgent loop, streaming,\nprompt assembly"]
+    Chat["moltis-chat\nChat engine"]
+    Tools["moltis-tools\nTool execution,\nsandboxing"]
+    Providers["moltis-providers\n10+ LLM backends"]
+    Channels["moltis-channels\nChannelPlugin trait"]
+    Memory["moltis-memory\nSQLite FTS + vector"]
+    Voice["moltis-voice\n11 STT + 6 TTS"]
+    Auth["moltis-auth\nWebAuthn, API keys"]
+    Config["moltis-config\nTOML config loading"]
+    SwiftBridge["moltis-swift-bridge\nRust-Swift FFI"]
+    iOS["iOS App (Swift)"]
+    macOS["macOS App (Swift)"]
+
+    Courier --> Gateway
+    Gateway --> HTTPD
+    Gateway --> Agents
+    Gateway --> Channels
+    Gateway --> Auth
+    Gateway --> Config
+    Agents --> Chat
+    Agents --> Tools
+    Agents --> Providers
+    Chat --> Memory
+    Tools --> Voice
+    Channels --> Telegram & WhatsApp & Discord & Slack & Signal & Matrix & Nostr & MSTeams & Telephony
+    iOS --> SwiftBridge
+    macOS --> SwiftBridge
+    SwiftBridge --> Gateway
+```
 
 ## The Architecture
 
@@ -112,7 +149,7 @@ pub trait ChannelPlugin: Send + Sync {
 
 Each channel implements only the sub-traits it needs. The registry checks trait bounds at registration time.
 
-### 3. Lazy Tool Mode — 3× Iteration Budget
+### 3. Lazy Tool Mode — 3x Iteration Budget
 
 ```rust
 // agents/src/runner/streaming.rs:111-115
@@ -138,6 +175,20 @@ pub type SteerInbox = Arc<tokio::sync::Mutex<Vec<String>>>;
 ```
 
 Users can send `/steer <instruction>` mid-conversation. The agent loop drains the inbox between iterations and injects the text as a system notice.
+
+## Channel Inbound Comparison
+
+| Channel | Inbound Mode | Auth Method | Secret Fields |
+|---------|-------------|-------------|---------------|
+| Telegram | Polling/Webhook | Bot token | `token` |
+| WhatsApp | GatewayLoop | QR pairing | None |
+| Discord | GatewayLoop | Bot token | `token` |
+| Slack | SocketMode/Webhook | Bot token + signing secret | `bot_token`, `app_token`, `signing_secret` |
+| Signal | GatewayLoop | CLI pairing | None |
+| Matrix | GatewayLoop | Access token/password | `access_token`, `password` |
+| Nostr | GatewayLoop | Secret key | `secret_key` |
+| MS Teams | Webhook | App password | `app_password`, `webhook_secret` |
+| Telephony | Webhook | Auth token | `auth_token` |
 
 ## Next
 

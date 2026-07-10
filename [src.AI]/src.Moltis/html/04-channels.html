@@ -136,6 +136,76 @@
 <p>This document explains how Moltis connects to WhatsApp, Telegram, Slack, Discord, Signal, Matrix, MS Teams, Nostr, and CalDAV — the ChannelPlugin trait, inbound modes, outbound delivery, webhook verification, and the event sink that connects channels to the agent loop.</p>
 <p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/crates/channels/src/</code></p>
 <hr>
+<h2>Channel Plugin Architecture</h2>
+<div class="mermaid">
+flowchart TD
+    subgraph &quot;ChannelPlugin Trait&quot;
+        CP[&quot;dyn ChannelPlugin&quot;]
+        CP --&gt; CT[&quot;channel_type()&quot;]
+        CP --&gt; RA[&quot;register_account()&quot;]
+        CP --&gt; SA[&quot;start_account()&quot;]
+        CP --&gt; ST[&quot;stop_account()&quot;]
+        CP --&gt; OB[&quot;outbound()&quot;]
+        CP --&gt; STATUS[&quot;status()&quot;]
+        CP --&gt; PROBE[&quot;probe()&quot;]
+        CP --&gt; OTP[&quot;supports_otp()&quot;]
+        CP --&gt; PAIR[&quot;supports_pairing()&quot;]
+    end
+
+    subgraph &quot;ChannelOutbound&quot;
+        CO[&quot;dyn ChannelOutbound&quot;]
+        CO --&gt; SM[&quot;send_message()&quot;]
+        CO --&gt; SMe[&quot;send_media()&quot;]
+        CO --&gt; SL[&quot;send_location()&quot;]
+        CO --&gt; SD[&quot;send_document()&quot;]
+    end
+
+    subgraph &quot;ChannelStreamOutbound&quot;
+        CSO[&quot;dyn ChannelStreamOutbound&quot;]
+        CSO --&gt; StartS[&quot;start_stream()&quot;]
+        CSO --&gt; Chunk[&quot;send_stream_chunk()&quot;]
+        CSO --&gt; EndS[&quot;end_stream()&quot;]
+    end
+
+    CP -.-&gt; CO
+    CP -.-&gt; CSO
+
+</div>
+<h2>Inbound Message Flow: From Channel to Agent</h2>
+<div class="mermaid">
+sequenceDiagram
+    participant User
+    participant Channel as ChannelPlugin
+    participant Sink as event_sink
+    participant GW as Gateway
+    participant LC as LiveChatService
+    participant RWT as run_with_tools()
+    participant Loop as Agent Loop
+    participant Outbound as ChannelOutbound
+
+    User-&gt;&gt;Channel: message/audio/image
+    Channel-&gt;&gt;Channel: access::check()
+    Channel-&gt;&gt;Channel: classify_chat()
+    Channel-&gt;&gt;Channel: build ChannelEvent
+    Channel-&gt;&gt;Sink: emit(ChannelEvent)
+    Sink-&gt;&gt;GW: channel handler
+    GW-&gt;&gt;LC: send(session_key, content)
+    LC-&gt;&gt;RWT: run_with_tools()
+    RWT-&gt;&gt;Loop: run_agent_loop_streaming()
+    Loop-&gt;&gt;Loop: LLM + tool iterations
+    Loop-&gt;&gt;Outbound: deliver_channel_replies()
+    Outbound-&gt;&gt;User: send_message/send_stream_chunk
+
+</div>
+<h2>Aha: WhatsApp Has No API Key — Authentication Is via QR Pairing</h2>
+<p>Unlike Telegram (bot token), Discord (bot token), or Slack (bot token + signing secret), WhatsApp requires zero API keys. Authentication is via QR code pairing using the Linked Devices protocol. The <code>whatsapp_rust</code> library handles the multi-device handshake, and session state persists across restarts via a <code>sled</code> database at <code><data_dir>/whatsapp/<account_id>/</code>. The <code>secret_fields()</code> method returns <code>[]</code> for WhatsApp — there are no secrets to configure. When the connection establishes, <code>auto_approve_owner_jid()</code> automatically adds the owner's phone number to the allowlist.</p>
+<h2>Aha: Slack Supports Both Socket Mode and Events API</h2>
+<p>Slack can receive messages via two completely different mechanisms. <strong>Socket Mode</strong> opens a WebSocket to Slack (requires app token + bot token) — no public endpoint needed. <strong>Events API</strong> receives HTTP POST webhooks at a public URL — requires HMAC-SHA256 signature verification. The webhook handler verifies <code>X-Slack-Signature: v0=<hex-hmac></code> against <code>X-Slack-Request-Timestamp</code> using <code>Hmac<Sha256></code> with base string <code>v0:{timestamp}:{body}</code>. See <code>crates/slack/src/webhook.rs:93-120</code>.</p>
+<h2>Aha: ChannelType's FromStr Accepts Multiple Aliases per Platform</h2>
+<p>The <code>FromStr</code> impl for <code>ChannelType</code> (<code>plugin.rs:112-128</code>) accepts multiple string aliases per platform. <code>msteams</code> can be written as <code>"msteams"</code>, <code>"microsoft_teams"</code>, <code>"microsoft-teams"</code>, or <code>"teams"</code>. Matrix accepts both <code>"matrix"</code> and <code>"element"</code>. Telephony accepts <code>"telephony"</code>, <code>"phone"</code>, or <code>"call"</code>. This user-friendliness means config files and CLI arguments can use whichever naming convention the user prefers — no need to look up the canonical enum name.</p>
+<h2>Aha: Channel Capabilities Are Declarative, Not Implicit</h2>
+<p>The <code>ChannelCapabilities</code> struct (<code>plugin.rs</code>) exposes 9 boolean flags (<code>supports_voice</code>, <code>supports_documents</code>, <code>supports_images</code>, <code>supports_video</code>, <code>supports_threading</code>, <code>supports_reactions</code>, <code>supports_otp</code>, <code>supports_interactive_buttons</code>, plus <code>max_message_length</code> and <code>max_file_size_bytes</code>). Each channel declares its capabilities at registration time — the gateway doesn't probe or infer them. This means the UI can dynamically show/hide features (e.g., "send voice message" button) based on the active channel's capabilities, and the agent loop knows whether streaming responses are possible before sending the first token.</p>
+<hr>
 <h2>Channel Event Flow</h2>
 <pre><code class="language-">User sends message on WhatsApp
     ↓

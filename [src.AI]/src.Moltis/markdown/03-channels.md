@@ -141,6 +141,33 @@ impl FromStr for ChannelType {
 }
 ```
 
+## Channel Registration and Event Routing
+
+```mermaid
+sequenceDiagram
+    participant Startup as Gateway Startup
+    participant Registry as ChannelRegistry
+    participant Telegram as Telegram Plugin
+    participant WhatsApp as WhatsApp Plugin
+    participant Discord as Discord Plugin
+    participant Slack as Slack Plugin
+    participant Outbound as RegistryOutboundRouter
+    participant Sink as event_sink
+
+    Startup->>Registry: ChannelRegistry::new()
+    Startup->>Telegram: TelegramPlugin::new(config)
+    Telegram->>Registry: register(telegram_plugin)
+    Startup->>WhatsApp: WhatsAppPlugin::new(config)
+    WhatsApp->>Registry: register(whatsapp_plugin)
+    Startup->>Discord: DiscordPlugin::new(config)
+    Discord->>Registry: register(discord_plugin)
+    Startup->>Slack: SlackPlugin::new(config)
+    Slack->>Registry: register(slack_plugin)
+    Registry->>Outbound: Build outbound router
+    Startup->>Sink: Set event sink on all plugins
+    Sink-->>Startup: All channels connected
+```
+
 ## Channel Registry
 
 ```rust

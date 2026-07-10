@@ -6,6 +6,87 @@ This document explains how Moltis secures API keys, sandboxes tool execution, ha
 
 ---
 
+## Authentication Flow
+
+```mermaid
+flowchart TD
+    Client["Client Connection"]
+    ProxyHeaders["has_proxy_headers()"]
+    Local["is_local_connection()"]
+    AuthMode{Auth Mode}
+    Token["MOLTIS_TOKEN\nBearer token"]
+    Password["MOLTIS_PASSWORD\nHashed comparison"]
+    WebAuthn["WebAuthn/Passkey\nChallenge-response"]
+    APIKey["API Keys\nscoped access"]
+    Scopes["Scope Check\noperator.read/write/admin"]
+    Authorized["Authorized"]
+    Denied["Denied — ErrorShape"]
+
+    Client --> ProxyHeaders
+    ProxyHeaders --> Local
+    Local -->|localhost, no proxy| Authorized
+    Local -->|proxied/remote| AuthMode
+    AuthMode -->|Token| Token --> Scopes
+    AuthMode -->|Password| Password --> Scopes
+    AuthMode -->|WebAuthn| WebAuthn --> Scopes
+    Scopes -->|role + scopes match| Authorized
+    Scopes -->|missing scope| Denied
+```
+
+## Sandbox Router: Backend Selection
+
+```mermaid
+flowchart TD
+    Config["SandboxConfig"]
+    Primary["Primary Backend\nfrom config.mode"]
+    Router["SandboxRouter::new(config)"]
+    Vercel{VERCEL_TOKEN\nset?}
+    Daytona{DAYTONA_API_KEY\nset?}
+    Firecracker{firecracker binary\navailable? (Linux)}
+    Register["router.register_backend()"]
+    Final["SandboxRouter with multiple backends"]
+    Exec["execute(command, opts)"]
+    Resolve["resolve_backend(session_key)"]
+    Backend["Selected backend"]
+
+    Config --> Primary
+    Primary --> Router
+    Vercel -->|Yes| Register
+    Daytona -->|Yes| Register
+    Firecracker -->|Yes| Register
+    Register --> Final
+    Final --> Exec
+    Exec --> Resolve
+    Resolve --> Backend
+```
+
+## Aha: Sandbox Routers Register Cloud Backends Only When Credentials Exist
+
+The sandbox router doesn't just use the configured primary backend. It probes for additional backends at startup: if `VERCEL_TOKEN` is non-empty, it registers the Vercel backend. If `DAYTONA_API_KEY` is non-empty, it registers Daytona. On Linux, if the `firecracker` binary is available, it registers Firecracker. This means the same Moltis binary can dynamically gain sandbox backends based on the deployment environment — no config changes needed. See `gateway/src/server/prepare_core/sandbox.rs:30-71`.
+
+## Aha: exec Tool Blocks stdin and Truncates Output at 200KB
+
+The `exec` tool sets `stdin = Stdio::null()` — child processes cannot read from stdin, preventing injection attacks where a tool might try to read sensitive data from the terminal. Output is truncated at 200KB with a `[output truncated]` suffix, preventing memory exhaustion from tools that produce massive output. See `tools/src/exec.rs`.
+
+## Aha: Unsafe Code Is Isolated to FFI Boundaries Only
+
+Moltis has exactly three locations with `unsafe` code:
+1. `memory/embeddings_local.rs` — llama-cpp-2 FFI wrappers (~50 lines)
+2. `swift-bridge/callbacks.rs` — C callback pointers (~20 lines)
+3. `swift-bridge/ffi_*.rs` — C string handling (~100 lines)
+
+The core agent loop, tool execution, channel handling, and all business logic contain **zero unsafe code**. This is a deliberate Rust safety boundary — all FFI is quarantined to specific modules with `#[allow(unsafe_code)]`.
+
+## Aha: MOLTIS_TOKEN Takes Precedence Over MOLTIS_PASSWORD
+
+The `resolve_auth()` function (`crates/auth/src/`) checks `MOLTIS_TOKEN` first. If both `MOLTIS_TOKEN` and `MOLTIS_PASSWORD` are set, token-based auth wins and the password is ignored. This prevents accidental downgrade from bearer-token auth (stronger, suitable for API access) to password auth (weaker, suitable for web UI) when both are configured.
+
+## Aha: Network Filter Gates Outbound Access from Sandboxed Tools
+
+The `network-filter` crate (`crates/network-filter/`) controls which hosts sandboxed code and plugins can reach. It uses a deny-by-default approach with an explicit allowlist of hostnames. This means a WASM plugin or containerized exec call cannot reach arbitrary internal network addresses — only hosts explicitly permitted by the filter configuration. Combined with the sandbox's stdin nullification and output truncation, this forms the third layer of the tool sandbox defense-in-depth.
+
+---
+
 ## Authentication
 
 **Source:** `crates/auth/src/`

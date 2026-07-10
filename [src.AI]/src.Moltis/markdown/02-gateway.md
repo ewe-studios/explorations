@@ -1,245 +1,148 @@
-# Configuration: Loading, Validation, and Schema
+# Gateway: Central Hub Architecture
 
-The config crate handles all configuration loading, validation, environment substitution, and schema definitions. It's the backbone of Moltis configuration.
+**The Gateway is Moltis's central dispatch engine.** It does not implement domain logic directly — instead, it holds a flat `MethodRegistry` of `method_name → async fn` handlers, and every domain concept (agents, voice, channels, MCP) registers its handlers at startup. This means adding a new channel requires zero gateway changes.
 
-**Source:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/crates/config/src/`
+**Source:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/crates/gateway/src/`
 
-## Module Structure
+## Gateway Method Dispatch Architecture
 
+```mermaid
+flowchart TD
+    Client["Client (WS/HTTP)"]
+    HTTPD["moltis-httpd\nAxum routes + WS upgrade"]
+    Auth["auth.rs\nToken/Password/WebAuthn"]
+    Dispatch["dispatch.rs\nMethodRegistry.dispatch()"]
+    Authorize["authorize_method()\nrole + scope check"]
+    Handler["handler(ctx) → MethodResult"]
+    State["GatewayState\nsessions, nodes, services"]
+
+    Client -->|"WebSocket frame|JSON-RPC"| HTTPD
+    HTTPD --> Auth
+    Auth -->|"MethodContext\n{request_id, method, params,\nclient_role, client_scopes}"| Dispatch
+    Dispatch --> Authorize
+    Authorize -->|"None = OK|Some(error) = reject"| Dispatch
+    Dispatch -->|"handler(ctx)"| Handler
+    Handler -->|"Ok(payload) | Err(ErrorShape)"| Dispatch
+    Dispatch --> Response["ResponseFrame\n{ok, id, payload/error}"]
+    Response --> Client
+    Dispatch -.-> State
 ```
-crates/config/src/
-├── lib.rs              ← Re-exports all public API
-├── loader/
-│   ├── config_io.rs    ← File I/O, discovery, save/load
-│   └── workspace.rs    ← Workspace markdown loading
-├── loader.rs           ← Loader entry point, port generation
-├── env_subst.rs        ← ${ENV_VAR} substitution
-├── validate.rs         ← Validation with diagnostics
-├── schema.rs           ← All config structs (MoltisConfig, etc.)
-├── defaults.rs         ← Default values
-├── migrate.rs          ← Legacy config migration
-├── provider_env.rs     ← Provider environment variables
-├── template.rs         ← Template rendering
-├── version.rs          ← Version constant
-├── error.rs            ← Error types
-├── agent_defs.rs       ← Agent definition types
-└── container_mounts.rs ← Container mount configuration
+
+## Gateway Startup Flow
+
+```mermaid
+sequenceDiagram
+    participant Main as main.rs
+    participant Prep as prepare_core.rs
+    participant Config as moltis_config
+    participant Auth as moltis_auth
+    participant Reg as MethodRegistry
+    participant Svc as GatewayServices
+    participant State as GatewayState
+    participant HTTPD as moltis-httpd
+
+    Main->>Prep: prepare_gateway_core()
+    Prep->>Config: discover_and_load()
+    Prep->>Auth: resolve_auth(MOLTIS_TOKEN, MOLTIS_PASSWORD)
+    Prep->>Svc: init channels, memory, code_index, cron, MCP
+    Prep->>Reg: register_defaults()
+    Prep->>State: GatewayState::new(auth, services)
+    Prep-->>Main: PreparedGatewayCore
+    Main->>HTTPD: start_server(core, config)
+    HTTPD->>HTTPD: bind(0.0.0.0:port)
+    HTTPD->>HTTPD: spawn WS accept loop
+    HTTPD-->>Main: server running
 ```
 
-## Config Discovery
+## Method Registry: Scope-Based Authorization
 
-**Source:** `loader.rs`
+**Source:** `methods/dispatch.rs:321-383`
 
-### Config File Names
+The gateway uses scope-based authorization with five method categories:
+
+| Category | Scope Required | Examples |
+|----------|---------------|----------|
+| `NODE_METHODS` | role = "node" | `node.invoke.result`, `node.event` |
+| `APPROVAL_METHODS` | `operator.approvals` | `exec.approval.request`, `exec.approval.resolve` |
+| `PAIRING_METHODS` | `operator.pairing` | `node.pair.request`, `node.pair.approve` |
+| `READ_METHODS` | `operator.read` or `operator.write` | `health`, `sessions.list`, `models.list` |
+| `WRITE_METHODS` | `operator.write` | `chat.send`, `agents.create`, `channels.add` |
 
 ```rust
-// loader.rs:19
-const CONFIG_FILENAMES: &[&str] = &["moltis.toml", "moltis.yaml", "moltis.yml", "moltis.json"];
-```
-
-Files are searched in order: `./` (project-local) then `~/.config/moltis/` (user-global).
-
-### Directory Overrides
-
-Three static overrides with `Mutex<Option<PathBuf>>`:
-
-```rust
-// loader.rs:22-29
-static CONFIG_DIR_OVERRIDE: Mutex<Option<PathBuf>> = Mutex::new(None);
-static DATA_DIR_OVERRIDE: Mutex<Option<PathBuf>> = Mutex::new(None);
-static SHARE_DIR_OVERRIDE: Mutex<Option<PathBuf>> = Mutex::new(None);
-```
-
-Set via `set_config_dir()`, `set_data_dir()`, `set_share_dir()` — used by CLI args and tests.
-
-### Share Directory Resolution
-
-```rust
-// loader.rs:90-100
-pub fn share_dir() -> Option<PathBuf> {
-    // 1. Programmatic override via set_share_dir()
-    // 2. MOLTIS_SHARE_DIR env var
-    // 3. /usr/share/moltis/ (Linux system packages) - only if exists
-    // 4. data_dir()/share/ (~/.moltis/share/) - only if exists
-    // 5. None (fall back to embedded assets)
+// methods/dispatch.rs:321-383
+pub fn authorize_method(method: &str, role: &str, scopes: &[String]) -> Option<ErrorShape> {
+    // 1. NODE_METHODS: only "node" role can call
+    if is_in(method, NODE_METHODS) {
+        if role == "node" { return None; }
+        return Some(ErrorShape::new(FORBIDDEN, format!("unauthorized role: {role}")));
+    }
+    // 2. Non-operator roles rejected
+    if role == "node" || role != "operator" {
+        return Some(ErrorShape::new(FORBIDDEN, format!("unauthorized role: {role}")));
+    }
+    // 3. Admin scope bypasses everything
+    if has(scopes, s::ADMIN) { return None; }
+    // 4. Category-specific scope checks
+    if is_in(method, APPROVAL_METHODS) && !has(scopes, s::APPROVALS) { ... }
+    if is_in(method, PAIRING_METHODS) && !has(scopes, s::PAIRING) { ... }
+    if is_in(method, READ_METHODS) && !(has(scopes, s::READ) || has(scopes, s::WRITE)) { ... }
+    if is_in(method, WRITE_METHODS) && !has(scopes, s::WRITE) { ... }
+    // 5. Default: require admin
+    Some(ErrorShape::new(UNAUTHORIZED, "missing scope: operator.admin"))
 }
 ```
 
-### Random Port Generation
+## Method Registration
+
+**Source:** `methods/dispatch.rs:454-461`
+
+The method registry auto-registers handlers from sub-modules at construction:
 
 ```rust
-// loader.rs:11-17
-fn generate_random_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .and_then(|listener| listener.local_addr())
-        .map(|addr| addr.port())
-        .unwrap_or(18789)  // Fallback default
+fn register_defaults(&mut self) {
+    super::gateway::register(self);      // health, status, system-presence
+    super::node::register(self);         // node.list, node.describe, node.invoke
+    super::pairing::register(self);      // node.pair.*, device.pair.*
+    super::services::register(self);     // services.* methods
+    super::subscribe::register(self);    // subscribe, unsubscribe
+    super::channel_mux::register(self);  // channel.join, channel.leave
 }
 ```
 
-Binds to port 0 to get an OS-assigned available port. Fallback is `18789`.
+Additional methods are registered by service initialization (agents, voice, MCP, channels, etc.) through `state.method_registry.register()`.
 
-## MoltisConfig Schema
+**Source:** `methods/gateway.rs:1-208` — registers `health`, `status`, `system-presence`, `system-event`, `system.describe`, `last-heartbeat`, `set-heartbeats`.
 
-**Source:** `schema.rs`
+## Aha: Gateway is a Flat Method Dispatch, Not a Router
 
-The main config struct re-exports ~60 types:
+The Gateway does NOT have nested routes like `/api/v1/agents/create`. Instead, it holds a flat `MethodRegistry` — `method_name → async fn(Request) → Response`. When a Telegram webhook fires, the HTTPD layer routes it to `methods.handle()`, which calls `registry.dispatch(ctx)`. Every domain concept (agents, voice, channels, MCP) registers handlers into this flat registry at startup. Adding a new channel requires implementing `ChannelPlugin` and registering its webhook handler — zero gateway code changes. This is the "service bus" pattern: the gateway is dumb routing, domain logic lives in feature crates.
 
-```rust
-// lib.rs:49-60
-pub use schema::{
-    AgentIdentity, AgentMemoryWriteMode, AgentPreset, AgentRuntimeLimitSource,
-    AgentRuntimeLimits, AgentsConfig, AuthConfig, CacheRetention, CalDavAccountConfig,
-    CalDavConfig, ChannelToolPolicyOverride, ChannelsConfig, ChatConfig, CodeIndexTomlConfig,
-    CompactionConfig, CompactionMode, GeoLocation, GroupToolPolicy, HeartbeatConfig,
-    HomeAssistantAccountConfig, HomeAssistantConfig, MemoryBackend, MemoryCitationsMode,
-    MemoryProvider, MemoryScope, MemorySearchMergeStrategy, MemoryStyle, MessageQueueMode,
-    ModePreset, ModesConfig, MoltisConfig, NgrokConfig, PresetMemoryConfig, PresetToolPolicy,
-    PromptMemoryMode, ResolvedIdentity, SessionAccessPolicyConfig, SessionExportMode, Timezone,
-    ToolMode, ToolPolicyConfig, ToolRegistryMode, UserProfile, UserProfileWriteMode,
-    VoiceConfig, VoiceElevenLabsConfig, VoiceOpenAiConfig, VoiceSttConfig, VoiceSttProvider,
-    VoiceTtsConfig, VoiceTtsProvider, VoiceWhisperConfig, VoiceWhisperLocalConfig, WireApi,
-    parse_byte_size,
-};
-```
+## Aha: `system.describe` for Protocol Schema Discovery
 
-### Key Config Types
+The gateway exposes `system.describe` (in `methods/gateway.rs:151-176`) which returns the protocol version, all registered method names, and all known event types. This is a schema discovery endpoint — clients can call it once on connect to know exactly what methods they can invoke, without needing out-of-band documentation. The method names are collected from `reg.method_names()` which iterates the live registry keys.
 
-#### AuthConfig
+## Aha: Localhost Connections Skip Auth Entirely
 
-```rust
-pub struct AuthConfig {
-    pub password: Option<String>,
-    pub token: Option<String>,
-    pub webauthn_enabled: bool,
-    pub api_keys: Vec<ApiKeyConfig>,
-}
-```
+In `methods/dispatch.rs`, the `is_local_connection()` check comes BEFORE any token or password validation. If the request originates from localhost (127.0.0.1 or ::1) AND there are no proxy headers (X-Forwarded-For, etc.), auth is completely bypassed. This means a local development setup requires zero credentials — just run the binary and connect. But the moment a reverse proxy sits in front, proxy headers are detected and auth becomes mandatory. See `crates/auth/src/locality.rs`.
 
-#### ChannelsConfig
+## Aha: Five Scope-Based Authorization Categories
 
-```rust
-pub struct ChannelsConfig {
-    pub offered: Vec<ChannelName>,  // Which channels to activate
-    pub telegram: Option<TelegramConfig>,
-    pub discord: Option<DiscordConfig>,
-    pub slack: Option<SlackConfig>,
-    pub signal: Option<SignalConfig>,
-    pub whatsapp: Option<WhatsAppConfig>,
-    pub matrix: Option<MatrixConfig>,
-    pub msteams: Option<MSTeamsConfig>,
-    pub nostr: Option<NostrConfig>,
-    pub caldav: Option<CalDavConfig>,
-}
-```
+The authorization system in `authorize_method()` (`methods/dispatch.rs:321-383`) uses five distinct method categories with different scope requirements: `NODE_METHODS` require role="node", `APPROVAL_METHODS` require `operator.approvals` scope, `PAIRING_METHODS` require `operator.pairing`, `READ_METHODS` accept either `operator.read` or `operator.write`, and `WRITE_METHODS` require `operator.write`. The admin scope bypasses all checks. This means you can grant granular access — e.g., a monitoring user gets only `operator.read` to call `health` and `sessions.list` but cannot send messages.
 
-#### ToolPolicyConfig
+## Key Gateway Modules
 
-```rust
-pub struct ToolPolicyConfig {
-    pub registry_mode: ToolRegistryMode,  // Eager, Lazy
-    pub agent_max_iterations: usize,
-    pub agent_max_auto_continues: usize,
-    pub agent_auto_continue_min_tool_calls: usize,
-    pub tool_result_compaction_ratio: f64,
-    pub preemptive_overflow_ratio: f64,
-    pub compaction_min_iterations: usize,
-    pub agent_loop_detector_window: usize,
-    pub agent_loop_detector_strip_tools_on_second_fire: bool,
-    pub max_tool_result_bytes: usize,
-}
-```
-
-#### VoiceConfig
-
-```rust
-pub struct VoiceConfig {
-    pub stt: VoiceSttConfig,   // Speech-to-text
-    pub tts: VoiceTtsConfig,   // Text-to-speech
-}
-
-pub struct VoiceSttConfig {
-    pub provider: VoiceSttProvider,  // whisper, whisper_local, openai
-    pub whisper: VoiceWhisperConfig,
-    pub whisper_local: VoiceWhisperLocalConfig,
-}
-
-pub struct VoiceTtsConfig {
-    pub provider: VoiceTtsProvider,  // elevenlabs, openai
-    pub elevenlabs: VoiceElevenLabsConfig,
-    pub openai: VoiceOpenAiConfig,
-}
-```
-
-### Memory Configuration
-
-```rust
-pub struct MemoryConfig {
-    pub backend: MemoryBackend,           // sqlite, postgres
-    pub provider: MemoryProvider,         // built-in, external
-    pub style: MemoryStyle,               // citation, summary
-    pub citations_mode: MemoryCitationsMode,
-    pub search_merge_strategy: MemorySearchMergeStrategy,
-    pub scope: MemoryScope,
-}
-```
-
-### Compaction Configuration
-
-```rust
-pub struct CompactionConfig {
-    pub mode: CompactionMode,    // summary, preserve
-    pub retention: CacheRetention,
-}
-```
-
-## Environment Substitution
-
-**Source:** `env_subst.rs`
-
-Supports `${ENV_VAR}` substitution in all string values:
-
-```rust
-// Any string value like "${OPENAI_API_KEY}" gets substituted
-// from the environment at load time
-```
-
-## Validation
-
-**Source:** `validate.rs`
-
-```rust
-pub enum Severity { Error, Warning, Info }
-
-pub struct Diagnostic {
-    pub severity: Severity,
-    pub message: String,
-    pub path: String,  // Config path like "channels.telegram"
-}
-
-pub struct ValidationResult {
-    pub diagnostics: Vec<Diagnostic>,
-}
-```
-
-## Provider Environment Variables
-
-**Source:** `provider_env.rs`
-
-```rust
-pub fn generic_provider_env_source_for_provider(name: &str) -> &str;
-pub fn generic_provider_api_key_from_env(name: &str) -> Option<String>;
-pub fn normalize_provider_name(name: &str) -> String;
-```
-
-Handles provider-specific environment variable resolution.
-
-## Migration
-
-**Source:** `migrate.rs`
-
-Handles legacy config format migration to current schema.
+| Module | Purpose | Source |
+|--------|---------|--------|
+| `methods/dispatch.rs` | MethodRegistry, authorization, dispatch | `crates/gateway/src/methods/dispatch.rs` |
+| `methods/gateway.rs` | health, status, system-presence, system.describe | `crates/gateway/src/methods/gateway.rs` |
+| `channel_store.rs` | Per-channel state management | `crates/gateway/src/channel_store.rs` |
+| `session.rs` | Session registry and lifecycle | `crates/gateway/src/session/` |
+| `nodes.rs` | Multi-node coordination | `crates/gateway/src/nodes.rs` |
+| `mcp_service.rs` | MCP server/client bridge | `crates/gateway/src/mcp_service.rs` |
+| `channel_webhook_middleware.rs` | Dedup, rate-limit, verify | `crates/gateway/src/channel_webhook_middleware.rs` |
+| `broadcast.rs` | WebSocket event broadcasting | `crates/gateway/src/broadcast.rs` |
+| `state.rs` | GatewayState — all shared state | `crates/gateway/src/state.rs` |
 
 ## Next
 
-Continue to [04-channels](04-channels.md) for channel implementations.
+Continue to [03-gateway-deep](03-gateway-deep.md) for the full gateway internals: 129 files, 55.6K LoC.

@@ -6,6 +6,87 @@ This document explains how the iOS and macOS Swift apps connect to the Rust back
 
 ---
 
+## macOS App Startup Sequence
+
+```mermaid
+sequenceDiagram
+    participant App as MoltisApp.swift init()
+    participant Settings as AppSettings
+    participant LogStore as LogStore
+    participant MoltisClient as MoltisClient (Swift)
+    participant Rust as swift-bridge crate
+    participant ChatStore as ChatStore
+    participant AuditStore as NetworkAuditStore
+    participant UI as ContentView/OnboardingView
+
+    App->>Settings: AppSettings()
+    App->>LogStore: LogStore()
+    App->>MoltisClient: installLogCallback(logStore)
+    MoltisClient->>Rust: LOG_CALLBACK = rustLogCallbackHandler
+    App->>ChatStore: ChatStore(settings, providerStore, logStore)
+    App->>MoltisClient: installSessionEventCallback(chatStore)
+    MoltisClient->>Rust: SESSION_EVENT_CALLBACK = rustSessionEventCallbackHandler
+    App->>AuditStore: NetworkAuditStore()
+    App->>MoltisClient: installNetworkAuditCallback(store)
+    MoltisClient->>Rust: NETWORK_AUDIT_CALLBACK = rustNetworkAuditCallbackHandler
+    App->>App: Set StateObjects
+    App->>UI: OnboardingView or ContentView
+    UI->>ChatStore: loadVersion(), loadIdentity()
+    ChatStore->>Rust: ffi_get_version(), ffi_get_identity()
+    Rust-->>ChatStore: JSON response
+```
+
+## FFI Function Execution Pattern
+
+```mermaid
+flowchart TD
+    Swift["Swift: MoltisClient.chat()"]
+    Bridge["Swift bridge function\nString return from C function"]
+    CFunc["C function: fn chat() → *const c_char"]
+    Parse["Parse C strings\nCStr::from_ptr()"]
+    Runtime["Get tokio runtime\nfrom STATE global"]
+    BlockOn["runtime.block_on(async { chat_impl() })"]
+    ChatImpl["chat_impl(session_key, message)\nprovider resolution, streaming"]
+    Serialize["serde_json::to_string(&result)"]
+    CString["CString::new(json).into_raw()\nCaller must free"]
+    SwiftDecode["Swift: JSONDecoder.decode(BridgeChatPayload)"]
+    UpdateUI["DispatchQueue.main.async\nUpdate ChatStore"]
+
+    Swift --> Bridge
+    Bridge --> CFunc
+    CFunc --> Parse
+    Parse --> Runtime
+    Runtime --> BlockOn
+    BlockOn --> ChatImpl
+    ChatImpl --> Serialize
+    Serialize --> CString
+    CString --> Bridge
+    Bridge --> SwiftDecode
+    SwiftDecode --> UpdateUI
+```
+
+## Aha: Log Bridge Must Be Installed Before ANY FFI Calls
+
+The macOS app installs the Rust→Swift log bridge (`installLogCallback`) before creating the `ChatStore`, `ProviderStore`, or any other component. This is critical because Rust `tracing` logs from initialization (config loading, provider setup, channel startup) would be lost if the log bridge isn't installed first. The Swift side copies the C string synchronously in the callback and then dispatches to the main queue asynchronously — preventing the Rust side from blocking on log delivery.
+
+## Aha: OnceLock Callbacks Are Set Once, Never Changed
+
+All three callbacks (log, session event, network audit) use `OnceLock` for storage. This means they can only be set once per process lifetime — there's no `uninstall` or `replace` mechanism. The design assumption is that the app lifecycle is: install callbacks at startup, use them until the app terminates. If a callback is never installed, events are silently dropped (the `if let Some(callback) = X.get()` pattern).
+
+## Aha: FFI Functions Return Raw C Strings — Caller Must Free
+
+Every FFI function returns `*const c_char` created by `CString::new(json).unwrap().into_raw()`. The `into_raw()` call transfers ownership of the CString's memory to Swift — Rust will NOT free it. The Swift side must call `CString.from(ptr)` which copies the string, then free the original via a corresponding `free_c_string()` FFI function (or the memory leaks). This is the classic "caller frees" pattern in C interop.
+
+## Aha: FFI Functions Use block_on to Bridge Async Rust to Sync Swift
+
+Every FFI function follows the same pattern: parse C strings with `CStr::from_ptr()`, get the tokio runtime from the global `STATE`, then call `runtime.block_on(async { ... })`. This means Swift calls are synchronous (blocking the caller) while the Rust side runs full async operations. The runtime is created once at startup and stored in a `OnceLock` — all FFI functions share it. This avoids the complexity of running a separate event loop per FFI call.
+
+## Aha: Peek Returns Agent State Without Blocking
+
+The `peek()` FFI function (`ffi_sessions.rs`) returns the current agent state — active status, thinking text, and in-progress tool calls — without waiting for the agent to finish. This powers the macOS app's "thinking indicator" in the title bar. The `BridgePeekResult` struct includes `active: Bool`, `thinkingText: String?`, and an array of `BridgePeekToolCall` with `id`, `name`, and `startedAt`. Users can see what the agent is doing at a glance without opening the full chat window.
+
+---
+
 ## FFI Bridge Architecture
 
 ```

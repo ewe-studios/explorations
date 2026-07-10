@@ -22,7 +22,11 @@ src.DesignSkills/
 ├── build.py
 ├── markdown/
 │   ├── README.md
-│   └── 00-overview.md
+│   ├── 00-overview.md
+│   ├── 01-taste-skill.md
+│   ├── 02-gemini-extension.md
+│   ├── 03-lumenshaders.md
+│   └── 04-cross-cutting.md
 └── html/
 ```
 
@@ -32,4 +36,7 @@ src.DesignSkills/
 |---|----------|--------|
 | 0 | README.md | DONE |
 | 1 | 00-overview.md | DONE |
-| 2 | HTML generation | DONE |
+| 2 | 01-taste-skill.md | DONE |
+| 3 | 02-gemini-extension.md | DONE |
+| 4 | 03-lumenshaders.md | DONE |
+| 5 | HTML generation | DONE |

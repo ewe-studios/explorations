@@ -136,6 +136,71 @@
 <p>This document explains how Moltis secures API keys, sandboxes tool execution, handles unsafe code, and protects against injection attacks.</p>
 <p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/crates/</code></p>
 <hr>
+<h2>Authentication Flow</h2>
+<div class="mermaid">
+flowchart TD
+    Client[&quot;Client Connection&quot;]
+    ProxyHeaders[&quot;has_proxy_headers()&quot;]
+    Local[&quot;is_local_connection()&quot;]
+    AuthMode{Auth Mode}
+    Token[&quot;MOLTIS_TOKEN\nBearer token&quot;]
+    Password[&quot;MOLTIS_PASSWORD\nHashed comparison&quot;]
+    WebAuthn[&quot;WebAuthn/Passkey\nChallenge-response&quot;]
+    APIKey[&quot;API Keys\nscoped access&quot;]
+    Scopes[&quot;Scope Check\noperator.read/write/admin&quot;]
+    Authorized[&quot;Authorized&quot;]
+    Denied[&quot;Denied — ErrorShape&quot;]
+
+    Client --&gt; ProxyHeaders
+    ProxyHeaders --&gt; Local
+    Local --&gt;|localhost, no proxy| Authorized
+    Local --&gt;|proxied/remote| AuthMode
+    AuthMode --&gt;|Token| Token --&gt; Scopes
+    AuthMode --&gt;|Password| Password --&gt; Scopes
+    AuthMode --&gt;|WebAuthn| WebAuthn --&gt; Scopes
+    Scopes --&gt;|role + scopes match| Authorized
+    Scopes --&gt;|missing scope| Denied
+
+</div>
+<h2>Sandbox Router: Backend Selection</h2>
+<div class="mermaid">
+flowchart TD
+    Config[&quot;SandboxConfig&quot;]
+    Primary[&quot;Primary Backend\nfrom config.mode&quot;]
+    Router[&quot;SandboxRouter::new(config)&quot;]
+    Vercel{VERCEL_TOKEN\nset?}
+    Daytona{DAYTONA_API_KEY\nset?}
+    Firecracker{firecracker binary\navailable? (Linux)}
+    Register[&quot;router.register_backend()&quot;]
+    Final[&quot;SandboxRouter with multiple backends&quot;]
+    Exec[&quot;execute(command, opts)&quot;]
+    Resolve[&quot;resolve_backend(session_key)&quot;]
+    Backend[&quot;Selected backend&quot;]
+
+    Config --&gt; Primary
+    Primary --&gt; Router
+    Vercel --&gt;|Yes| Register
+    Daytona --&gt;|Yes| Register
+    Firecracker --&gt;|Yes| Register
+    Register --&gt; Final
+    Final --&gt; Exec
+    Exec --&gt; Resolve
+    Resolve --&gt; Backend
+
+</div>
+<h2>Aha: Sandbox Routers Register Cloud Backends Only When Credentials Exist</h2>
+<p>The sandbox router doesn't just use the configured primary backend. It probes for additional backends at startup: if <code>VERCEL_TOKEN</code> is non-empty, it registers the Vercel backend. If <code>DAYTONA_API_KEY</code> is non-empty, it registers Daytona. On Linux, if the <code>firecracker</code> binary is available, it registers Firecracker. This means the same Moltis binary can dynamically gain sandbox backends based on the deployment environment — no config changes needed. See <code>gateway/src/server/prepare_core/sandbox.rs:30-71</code>.</p>
+<h2>Aha: exec Tool Blocks stdin and Truncates Output at 200KB</h2>
+<p>The <code>exec</code> tool sets <code>stdin = Stdio::null()</code> — child processes cannot read from stdin, preventing injection attacks where a tool might try to read sensitive data from the terminal. Output is truncated at 200KB with a <code>[output truncated]</code> suffix, preventing memory exhaustion from tools that produce massive output. See <code>tools/src/exec.rs</code>.</p>
+<h2>Aha: Unsafe Code Is Isolated to FFI Boundaries Only</h2>
+<p>Moltis has exactly three locations with <code>unsafe</code> code:</p>
+<ol><li><code>memory/embeddings_local.rs</code> — llama-cpp-2 FFI wrappers (~50 lines)</li><li><code>swift-bridge/callbacks.rs</code> — C callback pointers (~20 lines)</li><li><code>swift-bridge/ffi_*.rs</code> — C string handling (~100 lines)</li></ol>
+<p>The core agent loop, tool execution, channel handling, and all business logic contain <strong>zero unsafe code</strong>. This is a deliberate Rust safety boundary — all FFI is quarantined to specific modules with <code>#[allow(unsafe_code)]</code>.</p>
+<h2>Aha: MOLTIS_TOKEN Takes Precedence Over MOLTIS_PASSWORD</h2>
+<p>The <code>resolve_auth()</code> function (<code>crates/auth/src/</code>) checks <code>MOLTIS_TOKEN</code> first. If both <code>MOLTIS_TOKEN</code> and <code>MOLTIS_PASSWORD</code> are set, token-based auth wins and the password is ignored. This prevents accidental downgrade from bearer-token auth (stronger, suitable for API access) to password auth (weaker, suitable for web UI) when both are configured.</p>
+<h2>Aha: Network Filter Gates Outbound Access from Sandboxed Tools</h2>
+<p>The <code>network-filter</code> crate (<code>crates/network-filter/</code>) controls which hosts sandboxed code and plugins can reach. It uses a deny-by-default approach with an explicit allowlist of hostnames. This means a WASM plugin or containerized exec call cannot reach arbitrary internal network addresses — only hosts explicitly permitted by the filter configuration. Combined with the sandbox's stdin nullification and output truncation, this forms the third layer of the tool sandbox defense-in-depth.</p>
+<hr>
 <h2>Authentication</h2>
 <p><strong>Source:</strong> <code>crates/auth/src/</code></p>
 <h3>Auth Resolution</h3>

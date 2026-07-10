@@ -136,6 +136,79 @@
 <p>This document explains how Moltis manages long-term memory: file watching, chunking, embedding generation, hybrid search (FTS5 + vector similarity), and memory tools exposed to the agent.</p>
 <p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/crates/memory/src/</code></p>
 <hr>
+<h2>Memory Ingestion Pipeline</h2>
+<div class="mermaid">
+flowchart TD
+    Files[&quot;Markdown Files on Disk\nworkspace/*.md, notes/, etc.&quot;]
+    Watcher[&quot;FileWatcher\ninotify/polling&quot;]
+    Sync[&quot;MemoryManager.sync()\nwalkdir + change detection&quot;]
+    FastPath{mtime + size\nunchanged?}
+    Read[&quot;tokio::fs::read_to_string()&quot;]
+    Hash[&quot;sha256_hex(content)&quot;]
+    HashCheck{content hash\nunchanged?}
+    Chunk[&quot;chunk_content()\nvia moltis_splitter\nby heading, max chars&quot;]
+    Cache[&quot;Embedding Cache Lookup\nget_cached_embedding()&quot;]
+    Miss{Cache miss?}
+    Embed[&quot;embedder.embed_batch(miss_texts)&quot;]
+    Store[&quot;store.upsert_chunks()\nSQLite transaction&quot;]
+    FTS[&quot;FTS5 index update\nchunks_fts virtual table&quot;]
+
+    Files --&gt; Watcher
+    Watcher --&gt; Sync
+    Sync --&gt; FastPath
+    FastPath --&gt;|Yes| Skip[&quot;Skip — file unchanged&quot;]
+    FastPath --&gt;|No| Read
+    Read --&gt; Hash
+    Hash --&gt; HashCheck
+    HashCheck --&gt;|Yes| UpdateMtime[&quot;Update mtime only&quot;]
+    HashCheck --&gt;|No| Chunk
+    Chunk --&gt; Cache
+    Cache --&gt; Miss
+    Miss --&gt;|Yes| Embed
+    Miss --&gt;|No| Store
+    Embed --&gt; Store
+    Store --&gt; FTS
+
+</div>
+<h2>Hybrid Search: FTS5 + Vector + RRF Merge</h2>
+<div class="mermaid">
+flowchart TD
+    Query[&quot;User Query&quot;]
+    EmbedQuery[&quot;Generate query embedding\nembedder.embed(query)&quot;]
+    Fetch[&quot;Over-fetch: limit × 3&quot;]
+    Vector[&quot;Vector Search\ncosine similarity\non embedding BLOBs&quot;]
+    Keyword[&quot;FTS5 Keyword Search\nMATCH query on chunks_fts&quot;]
+    Merge{&quot;Merge Strategy?&quot;}
+    Linear[&quot;Linear Weighted Merge\nvector_score * v_weight +\nkeyword_score * k_weight&quot;]
+    RRF[&quot;Reciprocal Rank Fusion\nΣ weight / (rrf_k + rank + 1)\nrrf_k = limit * 2&quot;]
+    Sort[&quot;Sort by combined score\ndescending&quot;]
+    Take[&quot;Take top-K results&quot;]
+    FillText[&quot;Fill in chunk text\nif not already present&quot;]
+    Results[&quot;SearchResult{chunk_id, path, score, text}&quot;]
+
+    Query --&gt; EmbedQuery
+    EmbedQuery --&gt; Fetch
+    Fetch --&gt; Vector &amp; Keyword
+    Vector --&gt; Merge
+    Keyword --&gt; Merge
+    Merge --&gt;|Linear| Linear --&gt; Sort
+    Merge --&gt;|RRF| RRF --&gt; Sort
+    Sort --&gt; Take
+    Take --&gt; FillText
+    FillText --&gt; Results
+
+</div>
+<h2>Aha: Content Hash Fast Path — mtime and Size Before Read</h2>
+<p>The sync algorithm has a two-level fast path. First, it checks if <code>mtime</code> and <code>size</code> are unchanged — if so, it skips reading the file entirely. Second, if mtime changed but the SHA-256 content hash is the same (e.g., file was touched but not modified), it only updates the mtime record without re-chunking or re-embedding. This means touching files doesn't trigger expensive re-indexing. See <code>memory/src/manager.rs:229-254</code>.</p>
+<h2>Aha: Embedding Cache Prevents Redundant API Calls</h2>
+<p>Moltis caches embeddings by <code>(provider_key, model, chunk_hash)</code> tuples. When a file's content hash is the same as a previously indexed chunk, the embedding is looked up from the cache instead of calling the embedding API. The cache has a 50,000-row LRU eviction limit. This means if you re-index the same content with a different embedding provider, the old embeddings are reused until the cache fills up. See <code>manager.rs:294-338</code> and <code>CACHE_MAX_ROWS = 50_000</code>.</p>
+<h2>Aha: RRF Merging Avoids Score Magnitude Problems</h2>
+<p>The memory system offers two merge strategies: <code>Linear</code> (weighted sum of raw scores) and <code>Rrf</code> (Reciprocal Rank Fusion). RRF is rank-based and score-magnitude-agnostic — it avoids the problem where vector cosine similarity (0.0-1.0) and FTS5 BM25 scores (potentially large numbers) have incompatible scales. The RRF formula is <code>score = Σ weight / (rrf_k + rank + 1)</code> where <code>rrf_k = limit * 2</code>. When one result set has wildly different score magnitudes, RRF produces more stable rankings than linear weighting. See <code>search.rs:177-218</code>.</p>
+<h2>Aha: FTS5 Query Sanitization Prevents Syntax Errors from Numbers</h2>
+<p>The <code>sanitize_fts5_query()</code> function (<code>store_sqlite.rs</code>) strips non-alphanumeric characters from query tokens and wraps each in quotes. This prevents a query like "version 37.759" from producing <code>"fts5: syntax error near '.'"</code> — the dots in version numbers, IP addresses, or decimal values would otherwise break FTS5's query parser. Each cleaned token becomes a phrase search <code>"token"</code> so partial matches still work.</p>
+<h2>Aha: Stale File Reconciliation Skips When Counts Match</h2>
+<p>The memory sync algorithm has an optimization: if the DB file count matches the discovered file count AND nothing was updated, it skips the full stale-file reconciliation. This avoids iterating the entire file list on every sync when nothing has changed. See <code>memory/src/manager.rs:156-176</code>.</p>
+<hr>
 <h2>Memory Flow</h2>
 <pre><code class="language-">Files on disk (workspace/*.md, notes/, etc.)
     ↓

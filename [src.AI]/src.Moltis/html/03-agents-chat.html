@@ -124,9 +124,9 @@
   <nav class="nav">
     <span class="nav-brand">~/src.Moltis/docs</span>
     <div class="nav-actions">
-      <a href="01-gateway.html" class="nav-breadcrumb">Moltis Gateway — Central Hub: Method Dispatch, Session Registry, Channel Lifecycle</a><a href="02-agent-loop.html" class="nav-breadcrumb">Moltis Agent Loop — Streaming LLM Execution with Tools, Retry, and Loop Detection</a><a href="02-gateway.html" class="nav-breadcrumb">Configuration: Loading, Validation, and Schema</a>
+      <a href="01-gateway.html" class="nav-breadcrumb">Moltis Gateway — Central Hub: Method Dispatch, Session Registry, Channel Lifecycle</a><a href="02-agent-loop.html" class="nav-breadcrumb">Moltis Agent Loop — Streaming LLM Execution with Tools, Retry, and Loop Detection</a><a href="02-gateway.html" class="nav-breadcrumb">Gateway: Central Hub Architecture</a>
       <a href="index.html" class="nav-btn" title="Back to index">index</a>
-      <a href="02-gateway.html" class="nav-btn" title="Previous: Configuration: Loading, Validation, and Schema">← prev</a>
+      <a href="02-gateway.html" class="nav-btn" title="Previous: Gateway: Central Hub Architecture">← prev</a>
       <a href="03-channels.html" class="nav-btn nav-btn-next" title="Next: Moltis Channels — ChannelPlugin Trait, Webhook Middleware, Per-Channel Implementations">next →</a>
       <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
     </div>
@@ -135,6 +135,96 @@
 <h1>Agents and Chat: How a Message Flows Through the System</h1>
 <p>This document explains the complete flow of a user message through Moltis: from the channel event, through prompt building, provider chain failover, streaming response, tool execution, and back to the user.</p>
 <p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Moltis/moltis/crates/</code></p>
+<hr>
+<h2>System Architecture: Channel to Agent Loop</h2>
+<div class="mermaid">
+flowchart TD
+    User[&quot;User on WhatsApp/Telegram/Discord&quot;]
+    Channel[&quot;ChannelPlugin\nwhatsapp/signal/discord&quot;]
+    Sink[&quot;event_sink.emit()\nChannelEvent::Message&quot;]
+    GW[&quot;Gateway channel handler\nchannel_events.rs&quot;]
+    LiveChat[&quot;LiveChatService::send()\nchat.rs&quot;]
+    RunTools[&quot;run_with_tools()\nrun_with_tools.rs&quot;]
+    Limits[&quot;Runtime limits resolution\ntimeout, max_iterations&quot;]
+    Tools[&quot;Filtered tool registry\napply_runtime_tool_filters&quot;]
+    Memory[&quot;Memory prefetch\nmanager.search(query, limit)&quot;]
+    Prompt[&quot;System prompt assembly\nprompt/builder.rs&quot;]
+    Sandbox[&quot;Sandbox resolution\nsandbox router&quot;]
+    Loop[&quot;run_agent_loop_streaming()\nrunner/streaming.rs&quot;]
+    Provider[&quot;LLM provider stream\nanthropic/openai/ollama&quot;]
+    ToolExec[&quot;Concurrent tool execution\nfutures::join_all&quot;]
+    PostProcess[&quot;Post-processing\ncompact, TTS, deliver&quot;]
+    Reply[&quot;Channel outbound delivery\nsend_message / send_stream_chunk&quot;]
+
+    User --&gt; Channel
+    Channel --&gt; Sink
+    Sink --&gt; GW
+    GW --&gt; LiveChat
+    LiveChat --&gt; RunTools
+    RunTools --&gt; Limits
+    Limits --&gt; Tools
+    Tools --&gt; Memory
+    Memory --&gt; Prompt
+    Prompt --&gt; Sandbox
+    Sandbox --&gt; Loop
+    Loop --&gt; Provider
+    Provider --&gt; ToolExec
+    ToolExec --&gt; Loop
+    Loop --&gt; PostProcess
+    PostProcess --&gt; Reply
+    Reply --&gt; User
+
+</div>
+<h2>Agent Loop State Machine</h2>
+<div class="mermaid">
+stateDiagram-v2
+    [*] --&gt; ResolveLimits
+    ResolveLimits --&gt; BuildTools
+    BuildTools --&gt; MemoryPrefetch
+    MemoryPrefetch --&gt; BuildPrompt
+    BuildPrompt --&gt; SandboxResolve
+    SandboxResolve --&gt; StartEventForwarder
+    StartEventForwarder --&gt; AgentIteration
+
+    state AgentIteration {
+        [*] --&gt; EnforceBudget
+        EnforceBudget --&gt; BeforeLLMCall
+        BeforeLLMCall --&gt; StreamFromLLM
+        StreamFromLLM --&gt; ParseToolCalls
+        ParseToolCalls --&gt; HasTools?
+
+        HasTools? --&gt; Yes: Execute Concurrent
+        HasTools? --&gt; No: Check AutoContinue
+
+        Yes: Execute Concurrent --&gt; BeforeToolCall
+        BeforeToolCall --&gt; ToolExecute
+        ToolExecute --&gt; ProcessResults
+        ProcessResults --&gt; NextIteration
+
+        Check AutoContinue --&gt; HasContinues?
+        HasContinues? --&gt; Yes: Add nudge
+        HasContinues? --&gt; No: Return Final
+        Yes: Add nudge --&gt; NextIteration
+        NextIteration --&gt; [*]
+        No: Return Final --&gt; [*]
+    }
+
+    AgentIteration --&gt; Compact
+    Compact --&gt; TTS
+    TTS --&gt; Deliver
+    Deliver --&gt; [*]
+
+</div>
+<h2>Aha: Datetime Goes in User Message, Not System Prompt</h2>
+<p>The datetime is prepended to the <strong>user message</strong>, not the system prompt. This is deliberate — putting it in the system prompt would shift the position between turns and break the KV cache prefix matching. By keeping the system prompt stable across turns, Moltis maximizes KV cache hits for the system prompt tokens, reducing API costs and latency. See <code>agents/src/prompt/builder.rs:230-243</code> — <code>prepend_datetime_to_user_content()</code>.</p>
+<h2>Aha: Tool Arguments Are Tracked Across Events for Persistence</h2>
+<p>The event forwarder tracks tool arguments in a <code>tool_args_map</code> during <code>ToolCallStart</code> events and uses them during <code>ToolCallEnd</code> to persist the complete tool call + result pair in the session store. This means the UI can show full tool call details (name + args + result) even though the events arrive separately. The alternative — sending the full payload in each event — would duplicate data across WebSocket messages. See <code>chat/src/run_with_tools.rs:272-400+</code>.</p>
+<h2>Aha: <code>/sh</code> Command Forcing on First Iteration</h2>
+<p>If the user sends <code>/sh some_command</code> and the LLM doesn't call any tools, the agent loop has a fallback at <code>streaming.rs:353-357</code>: it creates an implicit <code>exec</code> tool call with the command from the <code>/sh</code> prefix. This only fires on iteration 1 when total_tool_calls == 0. It ensures shell commands always execute even if the model ignores the tool schema.</p>
+<h2>Aha: Memory Prefetch Has a 10-Character Minimum Threshold</h2>
+<p>The memory prefetch in <code>run_with_tools.rs</code> only triggers for queries ≥ 10 characters that don't start with <code>/</code>. This is a cost optimization: greetings like "hi" or commands like "/help" are extremely unlikely to match any stored memory, so the embedding API call (typically $0.0001-0.001 per request) is saved. Only substantive user messages trigger the prefetch.</p>
+<h2>Aha: All Tool Calls Run Concurrently via join_all</h2>
+<p>When the LLM returns multiple tool calls in a single response, Moltis executes ALL of them concurrently using <code>futures::future::join_all(tool_futures)</code>. There's no sequential ordering — if the model calls <code>exec("ls")</code>, <code>exec("pwd")</code>, and <code>glob("*.rs")</code> simultaneously, all three run in parallel. Results are processed in the original declaration order for deterministic message ordering. This means tool calls should be designed to be independent — if one tool's output affects another's input, the LLM must split them across iterations.</p>
 <hr>
 <h2>The Complete Message Flow</h2>
 <p>When a user sends a message (e.g., on WhatsApp), here's exactly what happens:</p>

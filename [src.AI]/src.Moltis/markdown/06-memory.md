@@ -6,6 +6,92 @@ This document explains how Moltis manages long-term memory: file watching, chunk
 
 ---
 
+## Memory Ingestion Pipeline
+
+```mermaid
+flowchart TD
+    Files["Markdown Files on Disk\nworkspace/*.md, notes/, etc."]
+    Watcher["FileWatcher\ninotify/polling"]
+    Sync["MemoryManager.sync()\nwalkdir + change detection"]
+    FastPath{mtime + size\nunchanged?}
+    Read["tokio::fs::read_to_string()"]
+    Hash["sha256_hex(content)"]
+    HashCheck{content hash\nunchanged?}
+    Chunk["chunk_content()\nvia moltis_splitter\nby heading, max chars"]
+    Cache["Embedding Cache Lookup\nget_cached_embedding()"]
+    Miss{Cache miss?}
+    Embed["embedder.embed_batch(miss_texts)"]
+    Store["store.upsert_chunks()\nSQLite transaction"]
+    FTS["FTS5 index update\nchunks_fts virtual table"]
+
+    Files --> Watcher
+    Watcher --> Sync
+    Sync --> FastPath
+    FastPath -->|Yes| Skip["Skip — file unchanged"]
+    FastPath -->|No| Read
+    Read --> Hash
+    Hash --> HashCheck
+    HashCheck -->|Yes| UpdateMtime["Update mtime only"]
+    HashCheck -->|No| Chunk
+    Chunk --> Cache
+    Cache --> Miss
+    Miss -->|Yes| Embed
+    Miss -->|No| Store
+    Embed --> Store
+    Store --> FTS
+```
+
+## Hybrid Search: FTS5 + Vector + RRF Merge
+
+```mermaid
+flowchart TD
+    Query["User Query"]
+    EmbedQuery["Generate query embedding\nembedder.embed(query)"]
+    Fetch["Over-fetch: limit × 3"]
+    Vector["Vector Search\ncosine similarity\non embedding BLOBs"]
+    Keyword["FTS5 Keyword Search\nMATCH query on chunks_fts"]
+    Merge{"Merge Strategy?"}
+    Linear["Linear Weighted Merge\nvector_score * v_weight +\nkeyword_score * k_weight"]
+    RRF["Reciprocal Rank Fusion\nΣ weight / (rrf_k + rank + 1)\nrrf_k = limit * 2"]
+    Sort["Sort by combined score\ndescending"]
+    Take["Take top-K results"]
+    FillText["Fill in chunk text\nif not already present"]
+    Results["SearchResult{chunk_id, path, score, text}"]
+
+    Query --> EmbedQuery
+    EmbedQuery --> Fetch
+    Fetch --> Vector & Keyword
+    Vector --> Merge
+    Keyword --> Merge
+    Merge -->|Linear| Linear --> Sort
+    Merge -->|RRF| RRF --> Sort
+    Sort --> Take
+    Take --> FillText
+    FillText --> Results
+```
+
+## Aha: Content Hash Fast Path — mtime and Size Before Read
+
+The sync algorithm has a two-level fast path. First, it checks if `mtime` and `size` are unchanged — if so, it skips reading the file entirely. Second, if mtime changed but the SHA-256 content hash is the same (e.g., file was touched but not modified), it only updates the mtime record without re-chunking or re-embedding. This means touching files doesn't trigger expensive re-indexing. See `memory/src/manager.rs:229-254`.
+
+## Aha: Embedding Cache Prevents Redundant API Calls
+
+Moltis caches embeddings by `(provider_key, model, chunk_hash)` tuples. When a file's content hash is the same as a previously indexed chunk, the embedding is looked up from the cache instead of calling the embedding API. The cache has a 50,000-row LRU eviction limit. This means if you re-index the same content with a different embedding provider, the old embeddings are reused until the cache fills up. See `manager.rs:294-338` and `CACHE_MAX_ROWS = 50_000`.
+
+## Aha: RRF Merging Avoids Score Magnitude Problems
+
+The memory system offers two merge strategies: `Linear` (weighted sum of raw scores) and `Rrf` (Reciprocal Rank Fusion). RRF is rank-based and score-magnitude-agnostic — it avoids the problem where vector cosine similarity (0.0-1.0) and FTS5 BM25 scores (potentially large numbers) have incompatible scales. The RRF formula is `score = Σ weight / (rrf_k + rank + 1)` where `rrf_k = limit * 2`. When one result set has wildly different score magnitudes, RRF produces more stable rankings than linear weighting. See `search.rs:177-218`.
+
+## Aha: FTS5 Query Sanitization Prevents Syntax Errors from Numbers
+
+The `sanitize_fts5_query()` function (`store_sqlite.rs`) strips non-alphanumeric characters from query tokens and wraps each in quotes. This prevents a query like "version 37.759" from producing `"fts5: syntax error near '.'"` — the dots in version numbers, IP addresses, or decimal values would otherwise break FTS5's query parser. Each cleaned token becomes a phrase search `"token"` so partial matches still work.
+
+## Aha: Stale File Reconciliation Skips When Counts Match
+
+The memory sync algorithm has an optimization: if the DB file count matches the discovered file count AND nothing was updated, it skips the full stale-file reconciliation. This avoids iterating the entire file list on every sync when nothing has changed. See `memory/src/manager.rs:156-176`.
+
+---
+
 ## Memory Flow
 
 ```
