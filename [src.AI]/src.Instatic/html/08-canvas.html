@@ -133,32 +133,100 @@
   </nav>
   <article class="prose">
 <h1>Canvas Deep Dive: Rendering, DnD, Composition, Breakpoint Frames</h1>
-<p>The visual editor canvas is the core of Instatic's editing experience. It renders pages live, supports drag-and-drop reordering, inline editing, and breakpoint-aware previews.</p>
+<p>The visual editor canvas is the core of Instatic's editing experience. It renders pages live, supports drag-and-drop reordering, inline editing, and breakpoint-aware previews. The canvas uses the same bottom-up walk as the publisher but produces React components instead of HTML strings.</p>
 <p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Instatic/Instatic/src/admin/pages/site/canvas/</code></p>
+<h2>Canvas Architecture</h2>
+<div class="mermaid">
+flowchart TD
+    STORE[&quot;Editor Store&lt;br/&gt;Zustand + Mutative&lt;br/&gt;14 slices&quot;] --&gt; CANVAS
+    
+    subgraph CANVAS[&quot;Canvas System&quot;]
+        SURFACE[&quot;CanvasLiveSurface&lt;br/&gt;Main canvas component&lt;br/&gt;DnD provider, iframe host&quot;]
+        TREE[&quot;CanvasComposedTree&lt;br/&gt;Walks page tree&lt;br/&gt;Renders React component tree&quot;]
+        COMP[&quot;canvasComposition&lt;br/&gt;Resolves modules, builds React tree&lt;br/&gt;Same bottom-up as renderNode&quot;]
+        FRAME[&quot;BreakpointFrame&lt;br/&gt;Viewport-sized iframe&lt;br/&gt;Per-breakpoint preview&quot;]
+    end
+    
+    SURFACE --&gt; TREE
+    TREE --&gt; COMP
+    
+    subgraph DND[&quot;Drag and Drop&quot;]
+        DNDKIT[&quot;@dnd-kit/core&lt;br/&gt;Draggable, Droppable, DndContext&quot;]
+        DNDTS[&quot;canvasDnd.ts&lt;br/&gt;Drop zones, visual feedback&lt;br/&gt;Store mutations on drop&quot;]
+    end
+    
+    SURFACE --&gt; DNDKIT
+    DNDKIT --&gt; DNDTS
+    DNDTS --&gt; STORE
+    
+    subgraph GEOM[&quot;DOM Geometry&quot;]
+        DOMGEO[&quot;canvasDomGeometry&lt;br/&gt;Positions, sizes, selection outlines&quot;]
+        DOMREADY[&quot;canvasDomReadyReplay&lt;br/&gt;DOM ready state tracking&quot;]
+    end
+    
+    SURFACE --&gt; DOMGEO
+    SURFACE --&gt; DOMREADY
+    
+    subgraph UI[&quot;Canvas UI Components&quot;]
+        INSERT[&quot;CanvasInsertModuleButton&lt;br/&gt;Module insertion&quot;]
+        CONTEXT[&quot;CanvasLayerContextMenu&lt;br/&gt;Right-click menu&quot;]
+        MODE[&quot;CanvasModeToggle&lt;br/&gt;Edit vs preview mode&quot;]
+        SELECTOR[&quot;CanvasContextSelector&lt;br/&gt;Page/context switching&quot;]
+    end
+    
+    SURFACE --&gt; UI
+
+</div>
+<h2>Canvas Rendering Pipeline</h2>
+<div class="mermaid">
+flowchart TD
+    USER[&quot;User selects page&quot;] --&gt; FRAME[&quot;BreakpointFrame&lt;br/&gt;creates iframe at viewport size&quot;]
+    FRAME --&gt; SURFACE[&quot;CanvasLiveSurface&lt;br/&gt;renders in iframe&quot;]
+    SURFACE --&gt; WALK[&quot;CanvasComposedTree&lt;br/&gt;walks page tree&quot;]
+    
+    WALK --&gt; NODE[&quot;For each node:&quot;]
+    NODE --&gt; MOD{&quot;resolve moduleId&quot;}
+    MOD --&gt; VC[&quot;base.visual-component-ref&lt;br/&gt;→ inline VC tree as React components&quot;]
+    MOD --&gt; LP[&quot;base.loop&lt;br/&gt;→ iterate data, render variants&quot;]
+    MOD --&gt; STD[&quot;Standard module&lt;br/&gt;→ module&#x27;s React preview component&quot;]
+    
+    VC --&gt; CHILDREN[&quot;render children recursively&quot;]
+    LP --&gt; CHILDREN
+    STD --&gt; CHILDREN
+    
+    CHILDREN --&gt; DND[&quot;@dnd-kit wrappers&lt;br/&gt;draggable, droppable&quot;]
+    DND --&gt; INLINE[&quot;Inline edit overlays&lt;br/&gt;double-click text to edit&quot;]
+    INLINE --&gt; STYLES[&quot;canvasClassCss&lt;br/&gt;selection highlights, hover outlines&quot;]
+    STYLES --&gt; IFRAME[&quot;iframe content&lt;br/&gt;mirrors published output&lt;br/&gt;+ editor annotations&quot;]
+
+</div>
+<p><strong>Aha:</strong> The canvas renders pages using the <strong>same rendering pipeline</strong> as the publisher, but in preview mode. This means what you see in the canvas is exactly what gets published — no separate preview renderer. The canvas uses <code>canvasComposition.ts</code> which follows the same bottom-up walk as <code>renderNode.ts</code>, but produces React components instead of HTML strings. Both share the same module registry and <code>escapeProps</code> logic — the only divergence is the output format (React tree vs HTML string) and the editor-only annotations (<code>uid</code> attributes, selection outlines).</p>
+<p><strong>Aha:</strong> The canvas uses an <strong>iframe</strong> not just for style isolation, but for viewport-accurate layout. The <code>BreakpointFrame</code> component creates an iframe at the exact breakpoint dimensions (375px mobile, 768px tablet, 1440px desktop), so the layout inside the iframe matches what visitors see. CSS media queries fire correctly inside the iframe because its viewport is the iframe's width, not the full editor window.</p>
 <h2>File Map</h2>
 <table><tr><th>File</th><th>Purpose</th></tr><tr><td>`CanvasLiveSurface.tsx`</td><td>Main canvas surface with live rendering</td></tr><tr><td>`CanvasComposedTree.tsx`</td><td>Composed tree rendering (modules + VCs)</td></tr><tr><td>`canvasComposition.ts`</td><td>Composition logic for rendering nodes</td></tr><tr><td>`canvasNodeClassName.ts`</td><td>Class name resolution for canvas nodes</td></tr><tr><td>`canvasDnd.ts`</td><td>Drag-and-drop integration (@dnd-kit/core)</td></tr><tr><td>`canvasDomGeometry.ts`</td><td>DOM geometry calculations</td></tr><tr><td>`canvasDomReadyReplay.ts`</td><td>DOM ready state replay</td></tr><tr><td>`canvasFormPreview.ts`</td><td>Form preview in canvas</td></tr><tr><td>`BreakpointFrame.tsx`</td><td>Breakpoint-aware rendering frame</td></tr><tr><td>`BreakpointSelectionOverlay.tsx`</td><td>Breakpoint selection overlay</td></tr><tr><td>`CanvasContextSelector.tsx`</td><td>Context selection UI</td></tr><tr><td>`CanvasContexts.ts`</td><td>React contexts for canvas</td></tr><tr><td>`CanvasInsertModuleButton.tsx`</td><td>Module insertion button</td></tr><tr><td>`CanvasLayerContextMenu.tsx`</td><td>Layer context menu</td></tr><tr><td>`CanvasModeToggle.tsx`</td><td>Mode toggle (edit/preview)</td></tr><tr><td>`canvasClassCss.ts`</td><td>Canvas-specific CSS class handling</td></tr></table>
 <h2>CanvasLiveSurface</h2>
 <p>The <code>CanvasLiveSurface</code> is the main canvas component:</p>
-<ul><li>Renders the page tree as a live preview</li><li>Supports inline editing (click text to edit)</li><li>Handles drag-and-drop for reordering nodes</li><li>Manages breakpoint frames for responsive preview</li><li>Integrates with the editor store for state</li></ul>
+<ul><li>Renders the page tree as a live preview inside an iframe</li><li>Supports inline editing (click text to edit)</li><li>Handles drag-and-drop for reordering nodes via <code>@dnd-kit/core</code></li><li>Manages breakpoint frames for responsive preview</li><li>Integrates with the editor store for state</li></ul>
 <h2>CanvasComposedTree</h2>
 <p>The <code>CanvasComposedTree</code> renders the composed tree:</p>
-<ul><li>Walks the page tree node by node</li><li>For each node, renders the corresponding module preview</li><li>Handles Visual Component refs by inlining the VC tree</li><li>Handles loops by rendering the current iteration</li></ul>
+<ul><li>Walks the page tree node by node</li><li>For each node, resolves the module definition from the registry</li><li>Renders the corresponding module's React preview component</li><li>Handles Visual Component refs by inlining the VC tree as React components</li><li>Handles loops by rendering the current iteration</li><li>Wraps each node in <code>@dnd-kit</code> draggable/droppable components</li></ul>
 <h2>Canvas Composition</h2>
 <p>The <code>canvasComposition</code> module handles:</p>
-<ul><li>Resolving module definitions for each node</li><li>Building the React component tree from the page tree</li><li>Handling specialized node types (VC refs, loops)</li><li>Passing render configuration to modules</li></ul>
+<ul><li>Resolving module definitions for each node from the registry</li><li>Building the React component tree from the page tree</li><li>Handling specialized node types (VC refs, loops)</li><li>Passing render configuration to modules</li><li>Same bottom-up walk as publisher's <code>renderNode.ts</code></li></ul>
+<p><strong>Source:</strong> <code>src/admin/pages/site/canvas/canvasComposition.ts</code></p>
 <h2>Drag and Drop</h2>
 <p>The <code>canvasDnd</code> module integrates with <code>@dnd-kit/core</code>:</p>
-<ul><li>Defines drop zones for each node</li><li>Handles drag start, drag over, and drop events</li><li>Updates the page tree via the editor store</li><li>Manages visual feedback during drag operations</li></ul>
+<ul><li>Defines drop zones for each node</li><li>Handles drag start, drag over, and drop events</li><li>Updates the page tree via the editor store on drop</li><li>Manages visual feedback during drag operations (drop indicators, hover states)</li><li>Computes insertion position from pointer geometry</li></ul>
+<p><strong>Source:</strong> <code>src/admin/pages/site/canvas/canvasDnd.ts</code></p>
 <h2>DOM Geometry</h2>
 <p>The <code>canvasDomGeometry</code> module handles:</p>
-<ul><li>Calculating node positions and sizes</li><li>Handling viewport scaling</li><li>Managing selection outlines</li><li>Computing insertion indicators</li></ul>
+<ul><li>Calculating node positions and sizes within the iframe</li><li>Handling viewport scaling (zoom in/out)</li><li>Managing selection outlines (accurate bounding box of selected element)</li><li>Computing insertion indicators (where a dragged node will land)</li></ul>
 <h2>Breakpoint Frames</h2>
 <p>The <code>BreakpointFrame</code> component:</p>
-<ul><li>Renders the page at a specific viewport size</li><li>Shows breakpoint boundaries</li><li>Allows switching between breakpoints</li><li>Maintains layout consistency across breakpoints</li></ul>
-<p><strong>Aha:</strong> The canvas renders pages using the <strong>same rendering pipeline</strong> as the publisher, but in preview mode. This means what you see in the canvas is exactly what gets published — no separate preview renderer. The canvas uses <code>canvasComposition.ts</code> which follows the same bottom-up walk as <code>renderNode.ts</code>, but produces React components instead of HTML strings.</p>
+<ul><li>Renders the page at a specific viewport size (375px, 768px, 1440px)</li><li>Shows breakpoint boundaries</li><li>Allows switching between breakpoints</li><li>Maintains layout consistency across breakpoints</li></ul>
 <h2>DOM Ready Replay</h2>
 <p>The <code>canvasDomReadyReplay</code> module:</p>
-<ul><li>Tracks DOM ready state during page load</li><li>Replays DOM mutations for accurate preview</li><li>Handles timing-dependent modules (animations, lazy loading)</li></ul>
+<ul><li>Tracks DOM ready state during page load inside the iframe</li><li>Replays DOM mutations for accurate preview</li><li>Handles timing-dependent modules (animations, lazy loading)</li></ul>
 <h2>Canvas Contexts</h2>
 <p>The <code>CanvasContexts.ts</code> file defines React contexts for:</p>
 <ul><li>Current page reference</li><li>Editor store access</li><li>Breakpoint context</li><li>Selection context</li><li>Mode context (edit vs preview)</li></ul>

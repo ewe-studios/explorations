@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Instatic Security — CSRF Defense, Capability-Based Access, Rate Limiting -- src.Instatic</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.Instatic/docs</span>
+    <div class="nav-actions">
+      <a href="19-visual-components.html" class="nav-breadcrumb">Instatic Visual Components — Slot System, VC Definitions, Inline Trees</a><a href="20-framework-css.html" class="nav-breadcrumb">Instatic Framework CSS — Fluid Typography, Token System, Generated Utilities</a><a href="21-forms-system.html" class="nav-breadcrumb">Instatic Forms System — Native CMS Forms, Challenge-Response, Rate Limiting</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="21-forms-system.html" class="nav-btn" title="Previous: Instatic Forms System — Native CMS Forms, Challenge-Response, Rate Limiting">← prev</a>
+      <a href="23-site-import-export.html" class="nav-btn nav-btn-next" title="Next: Instatic Site Import/Export — HTML Import, Asset Rewriting, CMS Transfer">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Instatic Security — Origin-Based CSRF, Capabilities, Rate Limiting</h1>
+<p><strong>Instatic's security model is built on three pillars: origin-based CSRF defense (no tokens required), fine-grained capability-based access control (38 capabilities), and token-bucket rate limiting.</strong> The system uses configured public origins for CSRF validation rather than trusting <code>X-Forwarded-Host</code> headers, and capabilities are defined in a single <code>CORE_CAPABILITIES</code> array that flows to both client and server with zero parallel lists.</p>
+<p>Source: <code>server/auth/security.ts</code>, <code>src/core/capabilities.ts</code>, <code>server/auth/auth.ts</code>, <code>server/forms/rateLimit.ts</code></p>
+<h2>CSRF Defense — Origin Validation</h2>
+<div class="mermaid">
+flowchart TD
+    Request[&quot;Incoming HTTP Request&quot;] --&gt; MethodCheck{&quot;isStateChangingMethod?&lt;br/&gt;POST/PUT/PATCH/DELETE&quot;}
+
+    MethodCheck --&gt;|&quot;GET/HEAD&quot;| Pass[&quot;Pass — CSRF check only applies to mutating methods&quot;]
+
+    MethodCheck --&gt;|&quot;mutating&quot;| OriginCheck{&quot;originAllowed(req)&quot;}
+
+    OriginCheck --&gt;|&quot;matches configured origin&quot;| Allow[&quot;Allow request&quot;]
+    OriginCheck --&gt;|&quot;matches dev allowlist&quot;| Allow
+    OriginCheck --&gt;|&quot;no match&quot;| Block[&quot;403 Forbidden&lt;br/&gt;Form submissions must come from this site&quot;]
+
+    Allow --&gt; IpAttribution[&quot;clientIp(req)&lt;br/&gt;Trusted proxy chain → real IP&quot;]
+
+</div>
+<p><strong>Source:</strong> <code>server/auth/security.ts</code> (lines 48-55, 58-60, 68-72).</p>
+<h3>Origin Configuration</h3>
+<pre><code class="language-typescript">// server/auth/security.ts:49
+export const DEV_ORIGIN_ALLOWLIST: string[] = [
+  &#x27;http://localhost:5173&#x27;,
+  &#x27;http://127.0.0.1:5173&#x27;,
+  &#x27;http://localhost:5174&#x27;,
+  &#x27;http://127.0.0.1:5174&#x27;,
+  process.env.VITE_ALLOWED_ORIGIN ?? &#x27;&#x27;,
+].filter(Boolean)
+</code></pre>
+<p><strong>Aha:</strong> CSRF defense is entirely origin-based — no CSRF tokens, no SameSite cookie tricks. The system derives the canonical origin from <code>PUBLIC_ORIGIN</code> / <code>RENDER_EXTERNAL_URL</code> / <code>RAILWAY_PUBLIC_DOMAIN</code> environment variables at boot. Forwarded headers (<code>X-Forwarded-Host</code> / <code>X-Forwarded-Proto</code>) are NOT consulted for CSRF — a TLS-terminating edge proxy is handled by configuring the public origin, not by trusting the proxy to relay the host/scheme. This means a misconfigured proxy can't spoof origins to bypass CSRF.</p>
+<h3>Client IP Attribution</h3>
+<pre><code class="language-typescript">// server/auth/security.ts
+// clientIp walks X-Forwarded-For right-to-left and returns the
+// nearest untrusted hop ONLY when the socket peer is a trusted proxy
+function clientIp(req: Request): string | null
+</code></pre>
+<p>The <code>stampSocketIp</code> function is called at the <code>Bun.serve</code> boundary to prevent spoofing:</p>
+<pre><code class="language-typescript">// server/index.ts:79
+stampSocketIp(req, server.requestIP(req)?.address ?? null)
+</code></pre>
+<p>This ensures <code>clientIp(req)</code> always has a reliable socket peer fallback when no proxy is involved.</p>
+<h2>Capability-Based Access Control</h2>
+<p>Instatic uses a fine-grained capability system with <strong>38 distinct capabilities</strong>:</p>
+<div class="mermaid">
+classDiagram
+    class CapabilitySystem {
+        +CORE_CAPABILITIES: readonly string[]
+        +assertCapability(req, capability)
+        +hasCapability(user, capability): boolean
+    }
+
+    class Dashboard {
+        dashboard.read
+    }
+
+    class Site {
+        site.read
+        site.structure.edit
+        site.content.edit
+        site.style.edit
+    }
+
+    class Pages {
+        pages.edit
+        pages.publish
+    }
+
+    class Content {
+        content.create
+        content.edit.own
+        content.edit.any
+        content.publish.own
+        content.publish.any
+        content.manage
+    }
+
+    class Media {
+        media.read
+        media.write
+        media.replace
+        media.delete
+    }
+
+    class AI {
+        ai.chat
+        ai.tools.write
+        ai.providers.manage
+        ai.audit.read
+    }
+
+    class Data {
+        data.custom.tables.read
+        data.custom.tables.manage
+        data.system.tables.read
+        data.system.tables.manage
+        data.rows.move
+        data.export
+        data.import
+    }
+
+    CapabilitySystem --&gt; Dashboard
+    CapabilitySystem --&gt; Site
+    CapabilitySystem --&gt; Pages
+    CapabilitySystem --&gt; Content
+    CapabilitySystem --&gt; Media
+    CapabilitySystem --&gt; AI
+    CapabilitySystem --&gt; Data
+
+</div>
+<p><strong>Source:</strong> <code>src/core/capabilities.ts</code> (27 capabilities), <code>server/auth/capabilities.ts</code> (server-side enforcement).</p>
+<h3>Site Editing Split</h3>
+<p>The site-editing capabilities are split three ways:</p>
+<table><tr><th>Capability</th><th>Who It's For</th><th>What It Allows</th></tr><tr><td>`site.structure.edit`</td><td>Designers</td><td>Add/remove/move/duplicate/rename nodes; manage pages, VCs, classes</td></tr><tr><td>`site.content.edit`</td><td>Content editors</td><td>Modify text, images, links on existing nodes</td></tr><tr><td>`site.style.edit`</td><td>Designers</td><td>CSS classes, style overrides, breakpoints, framework tokens</td></tr></table>
+<p><strong>Aha:</strong> The <code>CORE_CAPABILITIES</code> array is the SINGLE source of truth. Both client and server import from it — there is NO parallel list. Adding a string to this array flows everywhere automatically. The <code>capability-picker-coverage.test.ts</code> gate enforces that every entry also has picker metadata (label/description/group) so the admin UI never shows an orphaned capability.</p>
+<h3>Owner Capability Reset</h3>
+<pre><code class="language-typescript">// server/index.ts:22
+await syncSystemRoles(db)
+</code></pre>
+<p>The Owner role's capabilities are force-reset to <code>CORE_CAPABILITIES</code> on every boot. This ensures existing installations don't strand owners on a stale grant list when new capabilities are added in code.</p>
+<p><strong>Source:</strong> <code>server/repositories/roles.ts</code> (<code>syncSystemRoles</code>).</p>
+<h2>Session Management</h2>
+<pre><code class="language-">server/auth/auth.ts        — Session cookie creation/verification
+server/auth/session.ts     — Session handling
+</code></pre>
+<p>Sessions use:</p>
+<ul><li><strong>Secure cookie</strong> — <code>Secure</code> flag set when <code>publicOriginIsHttps</code> is true</li><li><strong>HttpOnly</strong> — Not accessible to JavaScript</li><li><strong>SameSite</strong> — Strict for CSRF defense</li><li><strong>Path-scoped</strong> — Admin session cookie scoped to <code>Path=/admin</code> to keep it off the public site</li></ul>
+<p><strong>Aha:</strong> The admin session cookie is scoped to <code>Path=/admin</code> specifically so it's NOT carried to public page requests. This means the AI endpoint at <code>/admin/api/ai/*</code> gets the cookie (authenticated), but a published page at <code>/about</code> does not (public). Without this scoping, every public page request would carry the admin cookie, bloating request sizes and potentially leaking session info to CDN logs.</p>
+<h2>Rate Limiting</h2>
+<p>Token bucket rate limiting is used across:</p>
+<table><tr><th>Area</th><th>Limiters</th></tr><tr><td>**Forms**</td><td>Per-IP challenge, per-form challenge, per-form submit, per-IP submit</td></tr><tr><td>**Login**</td><td>Per-IP login attempts</td></tr><tr><td>**AI**</td><td>Per-conversation token tracking</td></tr></table>
+<pre><code class="language-typescript">// server/forms/rateLimit.ts
+interface RateLimitDecision {
+  ok: boolean
+  retryAfterMs?: number
+}
+</code></pre>
+<h2>Upload Security</h2>
+<pre><code class="language-typescript">// server/static.ts
+// INERT_UPLOAD_MIMES — non-executable MIME types
+// hardenUploadResponse — adds nosniff + attachment headers
+</code></pre>
+<p>Uploads are hardened with:</p>
+<ul><li><strong>Content-Type derived from extension</strong> — server-chosen extensions only</li><li><code>X-Content-Type-Options: nosniff</code> — prevents MIME sniffing</li><li><code>Content-Disposition: attachment</code> — for non-inert MIMEs, prevents browser rendering</li><li><strong>Plugin asset CORS</strong> — plugin bundles under <code>/uploads/plugins/</code> get <code>Access-Control-Allow-Origin: *</code> with <code>Cross-Origin-Resource-Policy: cross-origin</code> for sandboxed iframe loading</li></ul>
+<p><strong>Source:</strong> <code>server/static.ts</code> (<code>hardenUploadResponse</code>, <code>INERT_UPLOAD_MES</code>), <code>server/router.ts</code> (<code>tryServeUpload</code>, lines 362-395).</p>
+<h2>RichText Sanitization</h2>
+<pre><code class="language-">server/richtextSanitizer.ts  — DOMPurify server-side sanitization
+src/core/sanitize.ts         — DOMPurify at publisher boundary
+src/core/html-sanitize/      — HTML sanitization utilities
+src/core/css-sanitize/       — CSS sanitization
+</code></pre>
+<p>The richtext sanitizer runs at the server level, sanitizing all rich text content before it enters the database.</p>
+<p><strong>Aha:</strong> The richtext sanitizer is loaded at boot (<code>await import('./richtextSanitizer')</code> in <code>server/index.ts</code>) before any routes are registered. This means every request passes through the sanitized environment. The sanitizer uses DOMPurify with a server-compatible configuration (jsdom-based), ensuring that even if a plugin or API endpoint tries to inject malicious HTML, it's sanitized before storage.</p>
+<h2>Cross-References</h2>
+<ul><li><a href="02-server.md">Server</a> — Route handlers, CORS headers</li><li><a href="04-plugin-system.md">Plugin System</a> — Plugin capability permissions</li><li><a href="16-admin-spa.md">Admin SPA</a> — Admin authentication flow</li></ul>
+<h2>Next</h2>
+<p>→ <a href="22-site-import-export.md">Site Import/Export</a> — Full site export/import, templates, CMS transfer.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

@@ -1,15 +1,16 @@
-# Server: Hand-Written Router and Handlers
+# Server: Hand-Written 19-Route Dispatcher and Handlers
 
-Instatic's server is built on `Bun.serve` with a hand-written router — no Express, Hono, or Fastify. This document covers the 19-route routing table, handler pattern, CMS handlers, repositories, and the database adapter.
+Instatic's server is built on `Bun.serve` with a hand-written 19-route table — no Express, Hono, or Fastify. Routes are an ordered array of `RouteHandler` functions tried top-to-bottom; first non-null `Response` wins. This document covers the routing table, handler pattern, CMS handlers, public router, repositories, and database adapter.
 
-**Source:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Instatic/Instatic/server/`
+**Source:** `/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Instatic/Instatic/server/router.ts` (44 route entries across dispatcher and handlers)
 
 ## Server Entrypoint
 
 ```typescript
 // server/index.ts
-// Boots Bun.serve with the handleServerRequest dispatcher
+// Boots Bun.serve({ fetch: handleServerRequest, idleTimeout: 0 })
 // Sets up DbClient (Postgres or SQLite), static dirs, uploads
+// idleTimeout: 0 — AI streams pause 10+ seconds between tool calls
 ```
 
 The entrypoint creates the `ServerRuntime` object containing the DB client, static directory, uploads directory, and `DATABASE_URL`, then passes it to the request dispatcher.
@@ -42,7 +43,7 @@ interface ServerRuntime {
 }
 ```
 
-## The 15-Route Table
+## The 19-Route Table
 
 Routes are tried in strict order. The first match wins:
 
@@ -51,16 +52,16 @@ Routes are tried in strict order. The first match wins:
 | 1 | `tryServeHealth` | `/health` | Health check: `{ status: 'ok', ts: ... }` |
 | 2 | `tryServeAi` | `/admin/api/ai/*` | AI chat streams, credentials, models |
 | 3 | `tryServeCmsApi` | `/admin/api/cms/*` | CMS CRUD operations |
-| 4 | `tryServeLoopRuntimeAsset` | `/_instatic/loop/*` | Loop runtime assets |
-| 5 | `tryServeLoop` | `/_instatic/loop/runtime/*` | Loop runtime execution |
-| 6 | `tryServeHoleRuntimeAsset` | `/_instatic/hole/runtime/*` | Hole runtime assets |
+| 4 | `tryServeLoopRuntimeAsset` | `/_instatic/loop/runtime/*` | Loop runtime JS assets |
+| 5 | `tryServeLoop` | `/_instatic/loop/*` | Loop runtime execution |
+| 6 | `tryServeHoleRuntimeAsset` | `/_instatic/hole/runtime/*` | Hole runtime JS asset |
 | 7 | `tryServeHole` | `/_instatic/hole/<nodeId>` | Lazy-fetch dynamic content |
-| 8 | `tryServeModuleJsAsset` | `/_instatic/module/*.js` | Module JS assets |
-| 9 | `tryServePublicForm` | Form submissions | Native CMS form handling |
-| 10 | `tryServeRuntimeAsset` | `/_instatic/runtime/*` | Runtime assets |
-| 11 | `tryServeRuntimePackageNamespace` | `/_instatic/runtime/packages/*` | Per-site runtime packages |
-| 12 | `tryServeSiteCssNamespace` | `/_instatic/css/*` | Per-page CSS bundles |
-| 13 | `tryServeMediaRedirect` | Media redirects | Media file serving |
+| 8 | `tryServeModuleJsAsset` | `/_instatic/module-js/*` | Per-module published JS |
+| 9 | `tryServePublicForm` | `/_instatic/form/*` | Native CMS form handling |
+| 10 | `tryServeRuntimeAsset` | `/_instatic/assets/*` | Runtime JS/CSS assets (disk-first, DB fallback) |
+| 11 | `tryServeRuntimePackageNamespace` | `/_instatic/runtime/cache/*` | Per-site `bun install` dependency cache |
+| 12 | `tryServeSiteCssNamespace` | `/_instatic/css/*` | Per-page CSS bundles (hash-named) |
+| 13 | `tryServeMediaRedirect` | `/_instatic/media/*` | Signed redirect for plugin storage adapters |
 | 14 | `tryServeStaticAsset` | Published static HTML | Layer A: baked HTML files |
 | 15 | `tryServeUpload` | `/uploads/*` | Uploaded media files |
 | 16 | `tryServeAdminApp` | `/admin/*` | Admin SPA (React app) |
@@ -69,6 +70,36 @@ Routes are tried in strict order. The first match wins:
 | 19 | `tryServeNotFoundPage` | Any unmatched | 404 page |
 
 **Source:** `server/router.ts` lines 62-85.
+
+### Route Dispatch Flow
+
+```mermaid
+flowchart TD
+    REQ["HTTP Request<br/>Bun.serve fetch handler"] --> URL["new URL(req.url)<br/>extract pathname"]
+    URL --> LOOP["for route of routes"]
+    LOOP --> TRY["route(req, runtime, url, pathname)"]
+    TRY --> NULL{"response !== null?"}
+    NULL -->|"yes"| RETURN["return response"]
+    NULL -->|"no"| NEXT["next route"]
+    NEXT --> LOOP
+    LOOP -->|"exhausted"| 404["jsonResponse 404"]
+    
+    subgraph "Route Categories"
+        SYS["System: health, admin SPA, uploads"]
+        AI["AI: /admin/api/ai/*"]
+        CMS["CMS: /admin/api/cms/*"]
+        RUNTIME["Runtime: /_instatic/*"]
+        PUBLIC["Public: /*, static HTML, 404"]
+    end
+    
+    REQ -.-> SYS
+    REQ -.-> AI
+    REQ -.-> CMS
+    REQ -.-> RUNTIME
+    REQ -.-> PUBLIC
+```
+
+**Aha:** Prefix-namespaced handlers (`/_instatic/css/`, `/_instatic/runtime/cache/`, `/_instatic/media/`) absorb their entire namespace and emit a 404 themselves rather than falling through. This prevents unknown paths under a known prefix from accidentally matching a later route — for example, `/_instatic/css/anything.css` with a stale hash returns 404 inside the handler instead of falling through to `tryServePublicRoute` which would render the homepage. This is a security property: it stops URL probing from rendering unintended content.
 
 ### Route Handler Example
 
@@ -84,12 +115,30 @@ The pattern is simple: check the path, return `null` if not matching, return a `
 
 ## CMS Handlers
 
-The CMS handler (`server/handlers/cms/index.ts`) dispatches to specific handlers:
+The CMS handler (`server/handlers/cms/index.ts`) dispatches to specific handlers based on the path segment after `/admin/api/cms/`:
 
-```typescript
-// server/handlers/cms/handleCmsRequest
-// /admin/api/cms/* → specific handler based on path segment
+```mermaid
+flowchart TD
+    CMS["handleCmsRequest<br/>/admin/api/cms/*"] --> AUTH{"auth check<br/>session cookie"}
+    AUTH -->|"missing"| 401["401 Unauthorized"]
+    AUTH -->|"ok"| PATH["extract path segment"]
+    
+    PATH --> USERS["/users/*<br/>user CRUD, roles"]
+    PATH --> PLUGINS["/plugins/*<br/>install, enable, settings"]
+    PATH --> MEDIA["/media/*<br/>upload, variants, folders"]
+    PATH --> CONTENT["/tables/* /rows/*<br/>data_tables CRUD"]
+    PATH --> PAGES["/pages/*<br/>page CRUD, versions"]
+    PATH --> COMPONENTS["/components/*<br/>VC CRUD"]
+    PATH --> EXPORT["/export/*<br/>site export"]
+    PATH --> IMPORT["/import/*<br/>site import preview/exec"]
+    PATH --> DASHBOARD["/dashboard/*<br/>activity, stats"]
+    PATH --> AUDIT["/audit/*<br/>change log"]
+    PATH --> DIFF["/page-diff/* /site-diff/*<br/>version comparison"]
+    PATH --> SETUP["/setup/*<br/>initial setup wizard"]
+    PATH --> AI2["/ai-agent/*<br/>agent config, tools"]
 ```
+
+**Source:** `server/handlers/cms/index.ts`.
 
 ### Key Handler Modules
 
@@ -156,10 +205,39 @@ server/repositories/
 
 The static serving module handles:
 - Admin SPA serving (`serveAdminApp`) — falls back to `index.html` for client-side routing
-- Upload serving with hardened responses (`hardenUploadResponse`)
-- General static file serving (`serveStaticFile`)
+- Upload serving with hardened responses (`hardenUploadResponse`) — sets `Content-Disposition: inline` only for safe MIME types
+- General static file serving (`serveStaticFile`) — serves Vite build output from `dist/`
+
+**Aha:** `tryServeStaticAsset` deliberately skips `/` and `/index.html` so `serveAdminApp` keeps ownership of the admin HTML pipeline (login skeleton + boot-API kickoff + authenticated preload). This prevents the generic static handler from intercepting admin HTML requests.
 
 **Source:** `server/static.ts`.
+
+## Public Router
+
+The public page rendering pipeline (`server/publish/publicRouter.ts`) handles unmatched routes:
+
+```typescript
+// server/publish/publicRouter.ts
+// renderPublicResolution — resolves route → page → LRU/disk/hole
+// renderNotFoundResponse — renders 404 from site's 404 page or fallback
+```
+
+The public router:
+1. Resolves the URL path to a route in the page tree
+2. Checks Layer A (static disk artifact) first
+3. Falls back to Layer B (LRU cache) or Layer C (live render with holes)
+4. Returns 404 if no route matches
+
+## Database Adapter
+
+```typescript
+// server/db/client.ts
+// DbClient interface — ANSI SQL, dialect-naive
+// Postgres via Bun.sql, SQLite via bun:sqlite
+// Template-literal SQL with $1 vs ? handled by DbClient
+```
+
+**Source:** `server/db/`, `server/repositories/`.
 
 ## HTTP Response Helpers
 

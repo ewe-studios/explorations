@@ -124,10 +124,10 @@
   <nav class="nav">
     <span class="nav-brand">~/src.Instatic/docs</span>
     <div class="nav-actions">
-      <a href="08-deployment.html" class="nav-breadcrumb">Deployment: Docker, Database, TLS, and HA</a><a href="09-cross-cutting.html" class="nav-breadcrumb">Cross-Cutting Patterns</a><a href="10-ai-agent.html" class="nav-breadcrumb">AI Agent Deep Dive: Site Agent, Executor, Tools, Streaming</a>
+      <a href="09-cross-cutting.html" class="nav-breadcrumb">Cross-Cutting Patterns</a><a href="10-ai-agent.html" class="nav-breadcrumb">AI Agent Deep Dive: Site Agent, Executor, Tools, Streaming</a><a href="11-content-model.html" class="nav-breadcrumb">Instatic Content Model — Data Tables, Rows, Versions, and TypeBox</a>
       <a href="index.html" class="nav-btn" title="Back to index">index</a>
-      <a href="10-ai-agent.html" class="nav-btn" title="Previous: AI Agent Deep Dive: Site Agent, Executor, Tools, Streaming">← prev</a>
-      <a href="README.html" class="nav-btn nav-btn-next" title="Next: Instatic — Self-Hosted CMS with Visual Editor">next →</a>
+      <a href="11-content-model.html" class="nav-btn" title="Previous: Instatic Content Model — Data Tables, Rows, Versions, and TypeBox">← prev</a>
+      <a href="13-editor-store.html" class="nav-btn nav-btn-next" title="Next: Instatic Editor Store — 14-Slice Zustand Architecture with Mutative Undo">next →</a>
       <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
     </div>
   </nav>
@@ -135,13 +135,78 @@
 <h1>Loops, Forms, Media, Templates, and Site Import</h1>
 <p>This document covers the remaining core CMS subsystems: loops (data iteration), forms (native CMS forms), media (storage and variants), templates (site templates), and site import/export.</p>
 <p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Instatic/Instatic/</code></p>
+<h2>Loops Architecture</h2>
+<div class="mermaid">
+flowchart TD
+    subgraph DEFINITION[&quot;Loop Definition (Editor)&quot;]
+        LOOP_MOD[&quot;base.loop module&lt;br/&gt;src/modules/base/loop/&quot;]
+        SRC[&quot;Loop source config&lt;br/&gt;data table, API, etc.&quot;]
+        VARIANTS[&quot;Loop children&lt;br/&gt;variant templates&quot;]
+    end
+    
+    subgraph PUBLISH[&quot;Publish Time&quot;]
+        PREFETCH[&quot;loopPrefetch.ts&lt;br/&gt;prefetchLoopData()&quot;]
+        RENDER[&quot;renderLoop.ts&lt;br/&gt;renderLoop()&quot;]
+        PUBLISHER[&quot;publisher&lt;br/&gt;bakes loop output or emits hole&quot;]
+    end
+    
+    subgraph RUNTIME[&quot;Request Time (Layer C)&quot;]
+        HANDLER[&quot;loop.ts handler&lt;br/&gt;tryServeLoop&quot;]
+        RT_ASSET[&quot;loopRuntime.ts&lt;br/&gt;client-side JS&quot;]
+    end
+    
+    LOOP_MOD --&gt; SRC
+    LOOP_MOD --&gt; VARIANTS
+    SRC --&gt; PREFETCH
+    VARIANTS --&gt; RENDER
+    PREFETCH --&gt; RENDER
+    RENDER --&gt; PUBLISHER
+    PUBLISHER --&gt;|&quot;dynamic source&quot;| HANDLER
+    HANDLER --&gt; RT_ASSET
+
+</div>
+<h2>Loop Lifecycle</h2>
+<div class="mermaid">
+sequenceDiagram
+    participant Editor as Editor (User configures loop)
+    participant Publish as Publish Pipeline
+    participant Prefetch as loopPrefetch.ts
+    participant Render as renderLoop.ts
+    participant DB as Database
+    participant Visitor as Visitor
+    
+    Editor-&gt;&gt;Editor: Configure loop source + variants
+    Editor-&gt;&gt;Publish: publishPage() called
+    
+    Publish-&gt;&gt;Prefetch: prefetchLoopData()
+    Prefetch-&gt;&gt;DB: Fetch data rows from source table
+    DB--&gt;&gt;Prefetch: LoopFetchResult (items, hasMore, pageNumber)
+    Prefetch--&gt;&gt;Publish: Pre-warmed loop data
+    
+    Publish-&gt;&gt;Render: renderLoop(nodeId, config, acc, renderNode)
+    Render-&gt;&gt;Render: Look up pre-fetched data by nodeId
+    Render-&gt;&gt;Render: For each item: render variant at i % variants.length
+    Render--&gt;&gt;Publish: Loop HTML with data-instatic-loop attributes
+    
+    alt Static source (publish-time data)
+        Publish-&gt;&gt;Publish: Bake to disk (Layer A)
+    else Request-dependent source
+        Publish-&gt;&gt;Publish: Emit &lt;instatic-hole&gt; (Layer C)
+        Visitor-&gt;&gt;Publish: GET /_instatic/loop/runtime/...
+        Publish-&gt;&gt;Render: Re-render loop with request params
+        Render--&gt;&gt;Visitor: Loop HTML fragment
+    end
+
+</div>
+<p><strong>Aha:</strong> Each loop iteration renders against a FRESH child <code>RenderConfig</code> whose <code>templateContext.entryStack</code> is a new array <code>[...baseStack, item]</code> — there is no in-place push/pop on a shared array, so a VC ref (or nested loop) rendered inside the body sees an immutable per-iteration snapshot rather than a live, mutating list. This prevents a subtle class of bugs where nested loops or VC refs see the wrong iteration's data.</p>
+<p><strong>Aha:</strong> The loop renderer round-robins variants: iteration <code>i</code> uses <code>variants[i % variants.length]</code>. This means if you have 3 variant cards and 10 data items, the pattern repeats as A-B-C-A-B-C-A-B-C-A. This is how you create visually interesting layouts from uniform data without writing custom layout code.</p>
 <h2>Loops</h2>
 <p>Loops iterate over data sources to produce repeating content structures:</p>
 <h3>Core Loop Files</h3>
 <table><tr><th>File</th><th>Purpose</th></tr><tr><td>`src/core/loops/`</td><td>Loop definitions and schema</td></tr><tr><td>`src/core/loops/registry.ts`</td><td>Loop source registry</td></tr><tr><td>`src/core/publisher/renderLoop.ts`</td><td>Loop rendering in publisher</td></tr><tr><td>`server/handlers/cms/loop.ts`</td><td>Loop runtime handler</td></tr><tr><td>`server/publish/loopRuntime.ts`</td><td>Loop runtime asset</td></tr><tr><td>`server/publish/loopPrefetch.ts`</td><td>Loop data prefetch</td></tr></table>
 <h3>Loop Rendering</h3>
 <pre><code class="language-typescript">// src/core/publisher/renderLoop.ts
-// renderLoop(nodeId, config, acc, renderNode)
+// renderLoop(node, config, acc, renderNode)
 // Iterates loop source, round-robins child variants
 </code></pre>
 <p>The loop renderer:</p>
@@ -159,12 +224,36 @@
 <ul><li>Dynamic loop rendering at request time</li><li>"Load more" pagination for infinite-mode loops</li><li>Loop endpoint routing (<code>/_instatic/loop/*</code>)</li></ul>
 <h2>Forms</h2>
 <p>Native CMS forms allow site visitors to submit data:</p>
+<h3>Form Processing Pipeline</h3>
+<div class="mermaid">
+flowchart TD
+    FORM[&quot;HTML &lt;form&gt; on published page&quot;] --&gt; SUBMIT[&quot;Visitor submits to /_instatic/form/...&quot;]
+    SUBMIT --&gt; HANDLER[&quot;handlePublicFormRequest()&lt;br/&gt;server/forms/handler.ts&quot;]
+    HANDLER --&gt; VALIDATE{&quot;Validate against&lt;br/&gt;form schema&quot;}
+    VALIDATE --&gt;|&quot;invalid&quot;| ERROR[&quot;Return error response&quot;]
+    VALIDATE --&gt;|&quot;valid&quot;| STORE[&quot;Store in data_rows table&quot;]
+    STORE --&gt; RESPOND[&quot;Return success/confirmation&quot;]
+    RESPOND --&gt; EMAIL[&quot;Optional: email notification&lt;br/&gt;via plugin&quot;]
+
+</div>
 <h3>Form Files</h3>
 <table><tr><th>File</th><th>Purpose</th></tr><tr><td>`src/core/forms/`</td><td>Form definitions and schema</td></tr><tr><td>`server/forms/handler.ts`</td><td>Form submission handler</td></tr><tr><td>`server/handlers/cms/` → `tryServePublicForm`</td><td>Form endpoint in router</td></tr></table>
 <h3>Form Processing</h3>
 <ol><li>Visitor submits form to public endpoint</li><li>Handler validates against form schema</li><li>Data is stored in the appropriate data table</li><li>Confirmation is returned to visitor</li></ol>
 <h2>Media</h2>
 <p>Media management handles uploads, variants, and storage:</p>
+<h3>Media Pipeline</h3>
+<div class="mermaid">
+flowchart TD
+    UPLOAD[&quot;User uploads file&lt;br/&gt;via admin media panel&quot;] --&gt; INIT[&quot;mediaUpload.ts&lt;br/&gt;initiate upload&quot;]
+    INIT --&gt; DISPATCH[&quot;mediaUploadDispatch.ts&lt;br/&gt;dispatch to worker&quot;]
+    DISPATCH --&gt; WORKER[&quot;imageVariantWorker.ts&lt;br/&gt;sharp + blurhash&quot;]
+    WORKER --&gt; VARIANTS[&quot;Generate variants&lt;br/&gt;webp, jpeg, avif at multiple sizes&quot;]
+    VARIANTS --&gt; STORE[&quot;Store variants on filesystem&lt;br/&gt;or plugin storage adapter&quot;]
+    STORE --&gt; INDEX[&quot;Index in media_assets table&lt;br/&gt;with variants_json&quot;]
+    INDEX --&gt; PUBLISH[&quot;Publisher uses variants&lt;br/&gt;for &lt;picture&gt;/&lt;srcset&gt; markup&quot;]
+
+</div>
 <h3>Media Files</h3>
 <table><tr><th>File</th><th>Purpose</th></tr><tr><td>`server/handlers/cms/media.ts`</td><td>Media CRUD</td></tr><tr><td>`server/handlers/cms/mediaUpload.ts`</td><td>Upload initiation</td></tr><tr><td>`server/handlers/cms/mediaUploadDispatch.ts`</td><td>Upload dispatch</td></tr><tr><td>`server/handlers/cms/mediaUploadExecutor.ts`</td><td>Upload execution</td></tr><tr><td>`server/handlers/cms/mediaVariants.ts`</td><td>Variant management</td></tr><tr><td>`server/handlers/cms/mediaStorageAdmin.ts`</td><td>Storage admin</td></tr><tr><td>`server/handlers/cms/mediaStorageReader.ts`</td><td>Storage reading</td></tr><tr><td>`server/handlers/cms/mediaStorageMigration.ts`</td><td>Storage migration</td></tr><tr><td>`server/handlers/cms/mediaFolders.ts`</td><td>Folder management</td></tr><tr><td>`server/handlers/cms/imageVariantProtocol.ts`</td><td>Variant protocol</td></tr><tr><td>`server/handlers/cms/imageVariantWorkerHost.ts`</td><td>Variant worker host</td></tr><tr><td>`server/handlers/cms/imageVariantWorker.ts`</td><td>Variant worker</td></tr><tr><td>`server/handlers/cms/svgSanitize.ts`</td><td>SVG sanitization</td></tr><tr><td>`src/core/media/`</td><td>Media core</td></tr><tr><td>`src/core/fonts/`</td><td>Font management</td></tr></table>
 <h3>Image Variants</h3>
@@ -221,22 +310,21 @@ server/handlers/cms/importPreview.ts
 </code></pre>
 <p>Audit logging:</p>
 <ul><li>Records all CMS operations</li><li>Tracks changes to content</li><li>Provides change history</li></ul>
-<h2>Page Diff</h2>
-<pre><code class="language-">server/handlers/cms/pageDiff.ts
+<h2>Page Diff / Site Diff</h2>
+<pre><code class="language-">server/handlers/cms/pageDiff.ts   — Compare two page versions
+server/handlers/cms/siteDiff.ts   — Compare entire site states
 </code></pre>
-<p>Page diffing:</p>
-<ul><li>Compares two page versions</li><li>Shows content changes</li><li>Supports visual diff</li></ul>
-<h2>Site Diff</h2>
-<pre><code class="language-">server/handlers/cms/siteDiff.ts
-</code></pre>
-<p>Site diffing:</p>
-<ul><li>Compares entire site states</li><li>Shows structural changes</li><li>Supports bulk change review</li></ul>
+<p>Page diff shows content changes between versions. Site diff shows structural changes across the entire site, supporting bulk change review.</p>
 <h2>Runtime Assets</h2>
 <pre><code class="language-">src/core/site-runtime/
 src/core/site-runtime-schema/
 </code></pre>
 <p>Site runtime:</p>
 <ul><li>Runtime scripts injected into published pages</li><li>Schema for runtime configuration</li><li>Used for holes, loops, and other dynamic features</li></ul>
+<h2>Aha Moments</h2>
+<ol><li><strong>Loop prefetch prevents I/O during render</strong> — <code>prefetchLoopData()</code> runs before <code>publishPage()</code> so the loop renderer never blocks on a database query. This makes the render phase purely CPU-bound, which is critical for consistent publish times.</li></ol>
+<ol><li><strong>Form submissions become data_rows</strong> — There's no separate "form submissions" table. Form submissions are stored as <code>data_rows</code> in the appropriate collection, which means they appear in the content explorer, can be looped over, and can be exported like any other content.</li></ol>
+<ol><li><strong>Image variant generation is worker-isolated</strong> — The sharp + blurhash processing runs in a dedicated off-main-thread worker, so a large image upload never blocks the main server thread. If variant generation fails, the original image is still available.</li></ol>
 <h2>Next</h2>
 <p>Continue to <a href="14-cross-cutting.md">14-cross-cutting</a> for banned dependencies, patterns, testing, and benchmarks.</p>
   </article>

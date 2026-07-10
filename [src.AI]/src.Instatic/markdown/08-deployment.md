@@ -18,6 +18,38 @@ Instatic is designed for self-hosting. This document covers Docker deployment, d
 
 **Source:** `Dockerfile`.
 
+### Deployment Architecture
+
+```mermaid
+flowchart TD
+    subgraph PROXY["Reverse Proxy"]
+        CADDY["Caddy<br/>Auto TLS, ACME<br/>compose.tls.yml"]
+    end
+
+    subgraph APP["Instatic (Bun Process)"]
+        SERVER["server/index.ts<br/>Bun.serve"]
+    end
+
+    subgraph DB["Database"]
+        POSTGRES["Postgres<br/>DATABASE_URL=postgresql://...<br/>Multi-instance HA"]
+        SQLITE["SQLite<br/>DATABASE_URL=file:./data.db<br/>Single-instance"]
+    end
+
+    subgraph STORAGE["Media Storage"]
+        LOCAL["Local Disk<br/>uploadsDir"]
+        S3["Plugin Adapters<br/>S3, Cloudinary, etc."]
+    end
+
+    CLIENT["Browser"] --> CADDY
+    CADDY --> SERVER
+    SERVER --> POSTGRES
+    SERVER --> SQLITE
+    SERVER --> LOCAL
+    SERVER --> S3
+```
+
+**Source:** `compose.prod.yml`, `compose.sqlite.yml`, `compose.tls.yml`, `Caddyfile`, `server/index.ts`.
+
 ### Docker Compose
 
 Multiple compose configurations for different scenarios:

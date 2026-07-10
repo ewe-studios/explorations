@@ -129,17 +129,39 @@ These 29 tools execute in the EDITOR's browser context, not the server. The serv
 
 ## Dual-Endpoint Bridge
 
+```mermaid
+sequenceDiagram
+    participant Editor as Editor (Browser)
+    participant Server as Bun Server
+    participant Driver as HTTP Driver<br/>(Anthropic/OpenAI/Ollama)
+    participant Provider as LLM Provider API
+
+    Editor->>Server: POST /admin/api/ai/chat/site
+    Server->>Driver: stream(req)
+    Driver->>Provider: POST /v1/messages (or endpoint)
+    Provider-->>Driver: SSE stream
+
+    loop Multi-turn tool loop
+        Driver->>Driver: translate SSE → AiStreamEvent
+        alt text delta
+            Driver-->>Server: yield text event
+            Server-->>Editor: NDJSON text delta
+        else tool call
+            Driver-->>Server: yield toolRequest event
+            Server-->>Editor: NDJSON toolRequest
+            Editor->>Editor: Execute tool in browser
+            Editor->>Server: POST /admin/api/ai/tool-result
+            Server->>Driver: inject tool result into messages
+            Driver->>Provider: POST next turn with tool results
+            Provider-->>Driver: SSE stream (next turn)
+        end
+    end
+
+    Driver-->>Server: yield done event
+    Server-->>Editor: NDJSON done
 ```
-Server                          Editor
-  |                                |
-  |── NDJSON stream ─────────────→|  (text deltas, toolRequests)
-  |                                |
-  |                          [Browser executes tool]
-  |                                |
-  |←─ POST /admin/api/ai/tool-result ──|  (tool results)
-  |                                |
-  |── continue stream ───────────→|
-```
+
+**Source:** `server/ai/drivers/http/toolLoop.ts` (shared loop), `server/ai/handlers/toolResult.ts` (result bridge), `server/ai/runtime/transport.ts` (NDJSON streaming).
 
 **Aha:** `idleTimeout: 0` on `Bun.serve` because AI streams can pause 10+ seconds between tool calls (the LLM is thinking, the tool is executing). Without this, Bun would close the connection.
 

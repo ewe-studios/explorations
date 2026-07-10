@@ -4,6 +4,7 @@ language: TypeScript
 version: 0.0.6 (pre-release)
 runtime: Bun
 explored_at: 2026-07-03
+updated_at: 2026-07-10
 license: MIT
 ---
 
@@ -17,7 +18,7 @@ license: MIT
 - **Runtime:** Bun (server + tooling)
 - **License:** MIT
 - **Package Manager:** Bun (bun.lock, bunfig.toml)
-- **Source scale:** 301 core files, 752 admin files, 66 plugin files, 70+ CMS handlers
+- **Source scale:** 1,750+ TypeScript files, 301 core files, 752 admin files, 66 plugin files, 70+ CMS handlers
 
 ## What src.Instatic Is
 
@@ -31,6 +32,8 @@ Key differentiators:
 - **TypeBox-only validation** — zod is banned repo-wide
 - **In-house routing** — react-router-dom is banned, custom router at src/admin/lib/routing/
 - **NodeTree<TNode>** — single tree primitive for pages, visual components, slot fills
+- **Fine-grained capabilities** — 38 distinct capabilities for role-based access control
+- **Fluid CSS framework** — viewport-interpolated typography and spacing scales
 
 ## Documentation Goal
 
@@ -50,6 +53,9 @@ A reader should understand:
 12. The content model: data_tables + data_rows, NodeTree, TypeBox
 13. Loops, forms, media, templates, site import/export
 14. Development setup: Bun, Vite, React Compiler, Playwright E2E
+15. CSS framework: fluid typography, token system, generated utilities, three-layer bundle
+16. Security: CSRF defense, capabilities, rate limiting, session management
+17. Forms: challenge-response anti-spam, native CMS handling
 
 ## Documentation Structure
 
@@ -57,27 +63,37 @@ A reader should understand:
 src.Instatic/
 ├── spec.md
 ├── markdown/
-│   ├── README.md                  ← Index / table of contents
-│   ├── 00-overview.md             ← What Instatic is, pre-release status, stack overview
-│   ├── 01-architecture.md         ← One process, two workers, 19-route dispatcher, database
-│   ├── 02-server.md               ← Hand-written router, handlers, repositories
-│   ├── 03-publisher.md            ← Three-layer publishing pipeline
-│   ├── 04-publisher-deep.md       ← render.ts, renderNode.ts, dynamicDetection deep dive
-│   ├── 05-plugin-system.md        ← QuickJS-WASM sandbox, capabilities, lifecycle
-│   ├── 06-plugin-deep.md          ← Host, VM, protocol, bootstrap, RPC deep dive
-│   ├── 07-visual-editor.md        ← Canvas, panels, store, React Compiler
-│   ├── 08-canvas.md               ← Canvas rendering, dnd, composition, breakpoint frames
-│   ├── 09-ai-runtime.md           ← HTTP-only drivers, multi-turn tool loop, no SDKs
-│   ├── 10-ai-agent.md             ← Site agent, executor, tools, streaming
-│   ├── 11-content-model.md        ← data_tables, data_rows, NodeTree, TypeBox
-│   ├── 12-loops-forms.md          ← Loops, forms, media, templates, site import
-│   ├── 13-deployment.md           ← Docker, Postgres/SQLite, TLS, HA
-│   └── 14-cross-cutting.md        ← Banned deps, patterns, testing, benchmarks
-├── html/                          ← Generated HTML
+│   ├── README.md                    ← Index / table of contents
+│   ├── 00-overview.md               ← What Instatic is, pre-release status, stack overview
+│   ├── 01-architecture.md           ← One process, two workers, NodeTree, mutations, module engine
+│   ├── 02-server.md                 ← Hand-written router, 19 routes, handlers, repositories
+│   ├── 03-publisher.md              ← Three-layer publishing pipeline
+│   ├── 04-publisher-deep.md         ← render.ts, renderNode.ts, dynamicDetection deep dive
+│   ├── 04-plugin-system.md          ← QuickJS-WASM sandbox, 23 capabilities, Bun.Worker isolation
+│   ├── 05-visual-editor.md          ← Canvas, panels, store, React Compiler
+│   ├── 06-ai-runtime.md             ← HTTP-only drivers, multi-turn tool loop, no SDKs
+│   ├── 06-plugin-deep.md            ← Host, VM, protocol, bootstrap, RPC deep dive
+│   ├── 07-content-model.md          ← data_tables, data_rows, NodeTree, TypeBox
+│   ├── 08-canvas.md                 ← Canvas rendering, dnd, composition, breakpoint frames
+│   ├── 08-deployment.md             ← Docker, Postgres/SQLite, TLS, HA
+│   ├── 09-cross-cutting.md          ← Banned deps, patterns, testing, benchmarks
+│   ├── 10-ai-agent.md               ← Site agent, executor, tools, streaming
+│   ├── 11-content-model.md          ← Deep dive: data model, NodeTree, TypeBox, sanitization
+│   ├── 12-loops-forms.md            ← Loops, forms, media, templates, site import
+│   ├── 13-editor-store.md           ← 14-slice Zustand, patch-based undo, Mutative
+│   ├── 14-module-system.md          ← 18 base blocks, pure render, TypeBox schemas
+│   ├── 15-media-pipeline.md         ← Upload, variants, storage adapters, responsive images
+│   ├── 16-admin-spa.md              ← Admin shell, workspaces, navigation, Spotlight
+│   ├── 19-visual-components.md      ← VC definitions, slot outlets, sync, parameters
+│   ├── 20-framework-css.md          ← Fluid typography, token system, generated utilities
+│   ├── 21-forms-system.md           ← Challenge-response anti-spam, native CMS forms
+│   ├── 22-security-auth.md          ← CSRF defense, capabilities, rate limiting
+│   └── 23-site-import-export.md     ← HTML import pipeline, asset rewriting, CMS transfer
+├── html/                            ← Generated HTML
 │   ├── index.html
 │   ├── styles.css
 │   └── *.html
-└── build.py                       ← Copied from shared build script
+└── build.py                         ← Copied from shared build script
 ```
 
 ## Tasks
@@ -100,13 +116,25 @@ src.Instatic/
 | 14 | 08-canvas.md | DONE |
 | 15 | 10-ai-agent.md | DONE |
 | 16 | 12-loops-forms.md | DONE |
-| 17 | HTML regeneration | DONE |
-| 18 | Grandfather review | DONE |
+| 17 | 11-content-model.md | DONE |
+| 18 | 13-editor-store.md | DONE |
+| 19 | 14-module-system.md | DONE |
+| 20 | 15-media-pipeline.md | DONE |
+| 21 | 16-admin-spa.md | DONE |
+| 22 | 19-visual-components.md | DONE |
+| 23 | 20-framework-css.md | DONE |
+| 24 | 21-forms-system.md | DONE |
+| 25 | 22-security-auth.md | DONE |
+| 26 | 23-site-import-export.md | DONE |
+| 27 | Mermaid diagrams (min 2 per doc) | DONE |
+| 28 | Aha moments (min 1 per doc) | DONE |
+| 29 | HTML regeneration | TODO |
+| 30 | Grandfather review | TODO |
 
 ## Build System
 
 ```bash
-cd "[src.AI]/src.Instatic/src.Instatic"
+cd "[src.AI]/src.Instatic/"
 python3 build.py src.Instatic
 ```
 
@@ -122,6 +150,9 @@ A developer reading these docs can:
 - Add a plugin with proper sandboxing
 - Extend the publisher or router
 - Deploy with Postgres or SQLite
+- Understand the CSS framework and fluid design tokens
+- Implement secure forms with challenge-response anti-spam
+- Import/export entire sites
 
 ## Resume Point
 

@@ -28,6 +28,69 @@ This document provides complete source-level coverage of every file in `src/core
 | `utils.ts` | `escapeHtml`, `isSafeUrl`, `sanitiseCssValue` | ~80 |
 | `index.ts` | Barrel export | ~20 |
 
+## Publisher Architecture
+
+```mermaid
+flowchart TD
+    PAGE["Page (NodeTree<PageNode>)<br/>+ SiteDocument"] --> PUBLISH["publishPage()<br/>render.ts"]
+    
+    PUBLISH --> HEAD["buildHead()<br/>title, meta, CSP, CSS"]
+    PUBLISH --> BODY["buildBody()<br/>renderNode(rootNodeId)"]
+    
+    BODY --> RENDER["renderNode()<br/>bottom-up tree walk"]
+    
+    RENDER --> SPECIAL{"moduleId?"}
+    SPECIAL -->|"base.visual-component-ref"| VC["renderVisualComponentRef()<br/>inline VC tree, pass acc"]
+    SPECIAL -->|"base.loop"| LOOP["renderLoop()<br/>iterate data, round-robin variants"]
+    SPECIAL -->|other| STD["renderStandardNode()<br/>16-step render pipeline"]
+    
+    VC --> RENDER
+    LOOP --> RENDER
+    STD --> CSS["CssCollector.add(moduleId, css)"]
+    
+    CSS --> COLLECT["collectClassCSS()<br/>tree-shake user classes"]
+    COLLECT --> BUNDLE["buildPublishedSiteCssBundle()<br/>reset + framework + module + user"]
+    BUNDLE --> DOC["<!DOCTYPE html> document"]
+```
+
+## renderNode Bottom-Up Pipeline
+
+```mermaid
+flowchart TD
+    ENTRY["renderNode(nodeId, config, acc)"] --> HIDDEN{"node.hidden?"}
+    HIDDEN -->|"yes"| PRUNE["return ''<br/>pruned before any renderer"]
+    HIDDEN -->|"no"| CHECK{"moduleId?"}
+    
+    CHECK -->|"base.visual-component-ref"| RENDER_VC["renderVisualComponentRef()"]
+    CHECK -->|"base.loop"| RENDER_LOOP["renderLoop()"]
+    CHECK -->|other| STD["renderStandardNode()"]
+    
+    subgraph "Standard Node Pipeline"
+        STD --> STEP1["resolvePageRefProps()<br/>cms:page:<id> → public URL"]
+        STEP1 --> STEP2["Render children<br/>recursive renderNode() calls"]
+        STEP2 --> STEP3["resolveEffectiveProps()<br/>page-tree resolution"]
+        STEP3 --> STEP4["resolveDynamicProps()<br/>request-dependent bindings"]
+        STEP4 --> STEP5["attachResolvedMediaByKey()<br/>multi-media props"]
+        STEP5 --> STEP6["resolveAutoSizes()<br/>linear width model for <img sizes>"]
+        STEP6 --> STEP7["escapeProps()<br/>Constraint #211: schema-type dispatch"]
+        STEP7 --> STEP8["validateNodeProps()<br/>module schema validation"]
+        STEP8 --> STEP9["module.render(props, childrenHTML)<br/>pure function, Constraint #179"]
+        STEP9 --> STEP10["acc.cssMap.set(moduleId, css)<br/>deduped CSS collection"]
+        STEP10 --> STEP11["collect JS from module<br/>if module emits runtime JS"]
+        STEP11 --> STEP12["injectNodeClassIds()<br/>injectNodeId()<br/>injectNodeInlineStyles()"]
+        STEP12 --> STEP13["sanitizeRichtext() via DOMPurify"]
+        STEP13 --> STEP14["Track infinite loop in acc.infiniteLoopIds"]
+        STEP14 --> STEP15{"node in dynamicNodeIds?"}
+        STEP15 -->|"yes"| HOLE["emit <instatic-hole><br/>add to acc.holeNodeIds"]
+        STEP15 -->|"no"| OUTPUT["return output.html"]
+    end
+    
+    RENDER_VC --> OUTPUT2["return rendered HTML"]
+    RENDER_LOOP --> OUTPUT2
+    HOLE --> OUTPUT2
+    OUTPUT --> OUTPUT2
+```
+
 ---
 
 ## renderConfig.ts: The Two Shapes

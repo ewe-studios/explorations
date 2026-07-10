@@ -132,6 +132,8 @@ Pages are `data_rows` with `body` (pageTree type). Components are `data_rows` wi
 4. **CSS Modules only. No Tailwind.** Enforced by `noTailwindUtilities.test.ts`. Colors use CSS custom properties exclusively; no hardcoded hex/RGB in admin/ui CSS.
 5. **Patch-based undo.** Zustand + Mutative middleware tracks patches, not snapshots. Undo is O(change), not O(site).
 
+**Aha:** The entire system is built around **eliminating indirection**. There's no ORM (raw SQL in repositories), no router framework (19-line array), no AI SDK (raw fetch), no CSS framework (custom tokens). Each decision removes a layer between the developer and the actual behavior. This makes the codebase readable: you can trace any request from `Bun.serve` to response without crossing an abstraction boundary you didn't write.
+
 ## Next
 
 → [Core Engine](01-architecture.md) — NodeTree, mutations, page tree, visual components, module engine.

@@ -127,96 +127,167 @@
       <a href="08-canvas.html" class="nav-breadcrumb">Canvas Deep Dive: Rendering, DnD, Composition, Breakpoint Frames</a><a href="08-deployment.html" class="nav-breadcrumb">Deployment: Docker, Database, TLS, and HA</a><a href="09-cross-cutting.html" class="nav-breadcrumb">Cross-Cutting Patterns</a>
       <a href="index.html" class="nav-btn" title="Back to index">index</a>
       <a href="09-cross-cutting.html" class="nav-btn" title="Previous: Cross-Cutting Patterns">← prev</a>
-      <a href="12-loops-forms.html" class="nav-btn nav-btn-next" title="Next: Loops, Forms, Media, Templates, and Site Import">next →</a>
+      <a href="11-content-model.html" class="nav-btn nav-btn-next" title="Next: Instatic Content Model — Data Tables, Rows, Versions, and TypeBox">next →</a>
       <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
     </div>
   </nav>
   <article class="prose">
 <h1>AI Agent Deep Dive: Site Agent, Executor, Tools, Streaming</h1>
-<p>Instatic includes a built-in AI agent that can edit pages, manage content, and interact with the CMS from within the visual editor. The agent uses HTTP-only communication with AI providers (no SDKs) and has a rich tool set.</p>
+<p>Instatic includes a built-in AI agent that can edit pages, manage content, and interact with the CMS from within the visual editor. The agent uses HTTP-only communication with AI providers (no SDKs) and has a rich tool set of 35 tools (6 server-side read + 29 browser-bridged write).</p>
 <p><strong>Source:</strong> <code>/home/darkvoid/Boxxed/@formulas/src.rust/src.AI/src.Instatic/Instatic/src/admin/pages/site/agent/</code></p>
 <h2>File Map</h2>
-<table><tr><th>File</th><th>Purpose</th></tr><tr><td>`agentApi.ts`</td><td>AI API communication layer</td></tr><tr><td>`agentConfig.ts`</td><td>Agent configuration</td></tr><tr><td>`agentSlice.ts`</td><td>Redux Toolkit slice for agent state</td></tr><tr><td>`agentSliceTypes.ts`</td><td>Agent state type definitions</td></tr><tr><td>`agentSliceConfig.site.ts`</td><td>Site-specific agent config</td></tr><tr><td>`executor.ts`</td><td>Tool execution orchestrator</td></tr><tr><td>`types.ts`</td><td>Agent type definitions</td></tr><tr><td>`streamEvents.ts`</td><td>Streaming event handling</td></tr><tr><td>`ndjsonStream.ts`</td><td>NDJSON stream parsing</td></tr><tr><td>`tokenRunners.ts`</td><td>Token counting and management</td></tr><tr><td>`pageContext.ts`</td><td>Page context for agent</td></tr><tr><td>`siteAgentSnapshot.ts`</td><td>Site snapshot for agent context</td></tr><tr><td>`renderEvidence.ts`</td><td>Evidence rendering</td></tr><tr><td>`renderSnapshotTool.ts`</td><td>Snapshot rendering tool</td></tr><tr><td>`storeRef.ts`</td><td>Store reference for agent</td></tr><tr><td>`markdown.ts`</td><td>Markdown utilities</td></tr><tr><td>`index.ts`</td><td>Agent barrel export</td></tr></table>
+<table><tr><th>File</th><th>Purpose</th></tr><tr><td>`agentApi.ts`</td><td>AI API communication layer — POST to `/admin/api/ai/chat/site`</td></tr><tr><td>`agentConfig.ts`</td><td>Agent configuration — model, temperature, max tokens</td></tr><tr><td>`agentSlice.ts`</td><td>Redux Toolkit slice for agent state</td></tr><tr><td>`agentSliceTypes.ts`</td><td>Agent state type definitions</td></tr><tr><td>`agentSliceConfig.site.ts`</td><td>Site-specific agent config — system prompt prefix</td></tr><tr><td>`executor.ts`</td><td>Tool execution orchestrator — validates, executes, returns results</td></tr><tr><td>`types.ts`</td><td>Agent type definitions — ToolDefinition, ToolCall, etc.</td></tr><tr><td>`streamEvents.ts`</td><td>Streaming event handling — text deltas, tool calls, completion</td></tr><tr><td>`ndjsonStream.ts`</td><td>NDJSON stream parsing — handles partial chunks, cancellation</td></tr><tr><td>`tokenRunners.ts`</td><td>Token counting and management — input/output/cost tracking</td></tr><tr><td>`pageContext.ts`</td><td>Page context for agent — current page tree, module registry</td></tr><tr><td>`siteAgentSnapshot.ts`</td><td>Site snapshot for agent context — full site state</td></tr><tr><td>`renderEvidence.ts`</td><td>Evidence rendering — visual diffs of agent changes</td></tr><tr><td>`renderSnapshotTool.ts`</td><td>Snapshot rendering tool — captures page state for AI</td></tr><tr><td>`storeRef.ts`</td><td>Store reference for agent — access editor store</td></tr><tr><td>`markdown.ts`</td><td>Markdown utilities for agent communication</td></tr><tr><td>`codeAssetTools.ts`</td><td>Code asset CRUD tools — read/write/patch code files</td></tr><tr><td>`documentTools.ts`</td><td>Document CRUD tools — CMS document manipulation</td></tr><tr><td>`index.ts`</td><td>Agent barrel export</td></tr></table>
+<h2>Agent State Machine</h2>
+<div class="mermaid">
+stateDiagram-v2
+    [*] --&gt; Idle
+    Idle --&gt; Thinking: User sends message
+    Thinking --&gt; Streaming: LLM starts responding
+    Streaming --&gt; ToolExecuting: toolRequest via NDJSON
+    ToolExecuting --&gt; ResultPosting: Browser executes tool
+    ResultPosting --&gt; Streaming: POST /tool-result
+    Streaming --&gt; Complete: No more tool calls
+    Complete --&gt; Idle
+    Thinking --&gt; Error: LLM API error
+    ToolExecuting --&gt; Error: Tool execution failed
+    ResultPosting --&gt; Error: POST failed
+    Error --&gt; Idle: Retry or cancel
+    Idle --&gt; Cancelled: User cancels
+    Streaming --&gt; Cancelled: User cancels
+    Thinking --&gt; Cancelled: User cancels
+
+</div>
+<p><strong>Aha:</strong> The agent uses a <strong>split system prompt</strong> design: a static prefix (module catalog, token families, page metadata) built once at session start, and a dynamic suffix (current page context, runtime agent state) rebuilt at each turn. This avoids re-sending the entire module catalog (which can be 10K+ tokens) on every LLM call, dramatically reducing token costs. The static prefix is ~80% of the prompt but is only paid once.</p>
+<p><strong>Aha:</strong> The browser-bridged tool execution is what makes this architecture unique. Instead of the server executing all tools (which would require giving the LLM direct access to the editor state), the server sends <code>toolRequest</code> events via NDJSON, the browser executes the tool against the live editor store, and POSTs results back to <code>/admin/api/ai/tool-result</code>. This means the AI operates on the <strong>exact same state</strong> the user sees — no server-side copy of the page tree needed.</p>
 <h2>Agent Architecture</h2>
 <div class="mermaid">
 flowchart TD
-    UI[&quot;Editor UI
-    User sends message&quot;] --&gt; SLICE[&quot;agentSlice
-    Redux state management&quot;]
-    SLICE --&gt; EXECUTOR[&quot;executor.ts
-    Tool execution orchestrator&quot;]
-    EXECUTOR --&gt; API[&quot;agentApi.ts
-    HTTP communication&quot;]
-    API --&gt; PROVIDER[&quot;AI Provider
-    HTTP/SSE stream&quot;]
-    PROVIDER --&gt; STREAM[&quot;ndjsonStream.ts
-    Parse NDJSON stream&quot;]
-    STREAM --&gt; EVENTS[&quot;streamEvents.ts
-    Process stream events&quot;]
-    EVENTS --&gt; TOOLS[&quot;Available Tools&quot;]
-    TOOLS --&gt; CODE[&quot;codeAssetTools.ts
-    Code asset manipulation&quot;]
-    TOOLS --&gt; DOC[&quot;documentTools.ts
-    Document manipulation&quot;]
-    TOOLS --&gt; SNAPSHOT[&quot;renderSnapshotTool.ts
-    Page snapshot rendering&quot;]
-    TOOLS --&gt; EVIDENCE[&quot;renderEvidence.ts
-    Change evidence rendering&quot;]
+    UI[&quot;Editor UI&lt;br/&gt;Agent Panel component&quot;] --&gt; MSG[&quot;User sends message&quot;]
+    MSG --&gt; SLICE[&quot;agentSlice&lt;br/&gt;Redux state: &#x27;thinking&#x27;&quot;]
+    SLICE --&gt; API[&quot;agentApi.ts&lt;br/&gt;POST /admin/api/ai/chat/site&quot;]
+    API --&gt; SERVER[&quot;Server AI handler&lt;br/&gt;server/ai/handlers/&quot;]
+    SERVER --&gt; DRIVER[&quot;HTTP Driver&lt;br/&gt;Anthropic/OpenAI/Ollama/OpenRouter&quot;]
+    DRIVER --&gt; TOOLLOOP[&quot;Shared Tool Loop&lt;br/&gt;toolLoop.ts&quot;]
+    TOOLLOOP --&gt; STREAM[&quot;NDJSON stream back to editor&quot;]
+    
+    STREAM --&gt; PARSE[&quot;ndjsonStream.ts&lt;br/&gt;parse events&quot;]
+    PARSE --&gt; TEXT[&quot;Text delta → display&quot;]
+    PARSE --&gt; TOOL_REQ[&quot;toolRequest event&quot;]
+    
+    TOOL_REQ --&gt; EXEC[&quot;executor.ts&lt;br/&gt;validate tool call&quot;]
+    EXEC --&gt; TOOL[&quot;Execute tool&lt;br/&gt;against editor store&quot;]
+    TOOL --&gt; POST[&quot;POST /admin/api/ai/tool-result&lt;br/&gt;with result&quot;]
+    POST --&gt; SERVER
+    SERVER --&gt; TOOLLOOP
+    
+    TEXT --&gt; DONE[&quot;Agent completes&lt;br/&gt;→ &#x27;complete&#x27; state&quot;]
+
+</div>
+<h2>NDJSON Streaming Pipeline</h2>
+<div class="mermaid">
+sequenceDiagram
+    participant User as User
+    participant Panel as Agent Panel
+    participant API as agentApi.ts
+    participant Server as Server AI Handler
+    participant Driver as HTTP Driver
+    participant Loop as Shared Tool Loop
+    participant Executor as executor.ts
+
+    User-&gt;&gt;Panel: Type message, press Enter
+    Panel-&gt;&gt;Panel: State: &#x27;thinking&#x27;
+    Panel-&gt;&gt;API: POST /admin/api/ai/chat/site
+    API-&gt;&gt;Server: HTTP request with conversation
+    Server-&gt;&gt;Driver: Route to correct provider
+    Driver-&gt;&gt;Loop: runToolLoop(adapter, messages, tools)
+    
+    Loop-&gt;&gt;Driver: Build request body, send HTTP
+    Driver--&gt;&gt;Loop: SSE stream from provider
+    Loop-&gt;&gt;Loop: Translate SSE → AiStreamEvent
+    
+    alt Text content
+        Loop--&gt;&gt;API: text delta event
+        API--&gt;&gt;Panel: Append to message
+        Panel--&gt;&gt;User: Display streaming text
+    else Tool call
+        Loop--&gt;&gt;API: toolRequest event
+        API--&gt;&gt;Panel: toolRequest in NDJSON
+        Panel-&gt;&gt;Executor: Execute tool in browser
+        Executor-&gt;&gt;Executor: Call tool against editor store
+        Executor-&gt;&gt;API: POST /admin/api/ai/tool-result
+        API-&gt;&gt;Server: Tool result
+        Server-&gt;&gt;Loop: Inject tool result into messages
+        Loop-&gt;&gt;Loop: Continue tool loop
+    end
+    
+    Loop--&gt;&gt;API: Completion event (no more tool calls)
+    API--&gt;&gt;Panel: State: &#x27;complete&#x27;
+    Panel--&gt;&gt;User: Message complete
 
 </div>
 <h2>Agent State</h2>
 <p>The <code>agentSlice</code> manages the agent's state via Redux Toolkit:</p>
-<ul><li>Conversation history</li><li>Current agent status (idle, thinking, executing tool)</li><li>Token usage tracking</li><li>Configuration</li></ul>
+<ul><li>Conversation history</li><li>Current agent status (idle, thinking, streaming, executing-tool, complete, error, cancelled)</li><li>Token usage tracking (input, output, total, cost estimate)</li><li>Configuration (model, temperature, max tokens)</li></ul>
+<p><strong>Source:</strong> <code>src/admin/pages/site/agent/agentSlice.ts</code>, <code>agentSliceTypes.ts</code>.</p>
 <h2>Agent API</h2>
 <p>The <code>agentApi</code> communicates with the server's AI endpoint:</p>
 <pre><code class="language-">POST /admin/api/ai/chat/site
 </code></pre>
-<p>This uses the same HTTP-only approach as the server-side AI handlers — no provider SDKs on the client either.</p>
+<p>This uses the same HTTP-only approach as the server-side AI handlers — no provider SDKs on the client either. The response is an NDJSON stream that the <code>ndjsonStream</code> module parses.</p>
 <h2>NDJSON Streaming</h2>
 <p>The <code>ndjsonStream</code> module parses Newline-Delimited JSON streams from the server:</p>
-<ul><li>Handles partial chunks</li><li>Parses complete JSON objects</li><li>Handles stream errors</li><li>Supports cancellation</li></ul>
+<ul><li>Handles partial chunks (JSON objects split across chunk boundaries)</li><li>Parses complete JSON objects</li><li>Handles stream errors (malformed JSON, network errors)</li><li>Supports cancellation (AbortController)</li></ul>
+<p><strong>Source:</strong> <code>src/admin/pages/site/agent/ndjsonStream.ts</code>.</p>
 <h2>Executor</h2>
 <p>The <code>executor</code> orchestrates tool execution:</p>
-<ol><li>Agent requests tool execution</li><li>Executor validates the tool call</li><li>Executor executes the tool</li><li>Executor returns result to agent</li><li>Agent continues with result</li></ol>
+<ol><li>Agent requests tool execution via <code>toolRequest</code> NDJSON event</li><li>Executor validates the tool call against available tools</li><li>Executor executes the tool against the live editor store</li><li>Executor returns result to server via POST <code>/admin/api/ai/tool-result</code></li><li>Server injects result into conversation, LLM continues</li></ol>
+<p><strong>Source:</strong> <code>src/admin/pages/site/agent/executor.ts</code>.</p>
 <h2>Available Tools</h2>
+<h3>Server-Side Tools (6 read-only)</h3>
+<table><tr><th>Tool</th><th>What It Returns</th></tr><tr><td>`describeAgentModules`</td><td>All registered block modules with schemas</td></tr><tr><td>`describeAgentTokens`</td><td>CSS custom properties, font families, color tokens</td></tr><tr><td>`listPages`</td><td>All pages in the site</td></tr><tr><td>`listComponents`</td><td>All visual components</td></tr><tr><td>`getPageTree`</td><td>Full page tree as JSON</td></tr><tr><td>`getDataTableSchema`</td><td>Schema for a content data table</td></tr></table>
+<h3>Browser-Bridged Tools (29 write-capable)</h3>
+<p>These execute in the browser against the editor store:</p>
+<table><tr><th>Category</th><th>Tools</th></tr><tr><td>**Node CRUD**</td><td>`insertNode`, `replaceNodeHtml`, `deleteNode`, `updateNodeProps`, `moveNode`, `renameNode`, `duplicateNode`</td></tr><tr><td>**CSS**</td><td>`applyCss` (upserts), `assignClass`, `removeClass`</td></tr><tr><td>**Pages**</td><td>`addPage`, `deletePage`, `renamePage`, `duplicatePage`, `setPageTemplate`, `clearPageTemplate`</td></tr><tr><td>**Tokens**</td><td>`setColorTokens`, `setFontTokens`, `setTypeScale`, `setSpacingScale`</td></tr><tr><td>**Code**</td><td>`list_code_assets`, `read_code_asset`, `write_code_asset`, `patch_code_asset`, `inspect_code_runtime`</td></tr><tr><td>**Read**</td><td>`read_document`, `open_document`</td></tr><tr><td>**Debug**</td><td>`render_snapshot`, `getNodeHtml`</td></tr></table>
 <h3>Code Asset Tools</h3>
-<pre><code class="language-">codeAssetTools.ts
-</code></pre>
-<p>Manipulates code assets:</p>
-<ul><li>Read/write code files</li><li>Create new code assets</li><li>Delete code assets</li></ul>
+<p>Code asset tools manipulate code assets:</p>
+<ul><li>Read/write code files</li><li>Create new code assets</li><li>Delete code assets</li><li>Patch existing code assets</li><li>Inspect code runtime state</li></ul>
+<p><strong>Source:</strong> <code>src/admin/pages/site/agent/codeAssetTools.ts</code>.</p>
 <h3>Document Tools</h3>
-<pre><code class="language-">documentTools.ts
-</code></pre>
-<p>Manipulates CMS documents:</p>
+<p>Document tools manipulate CMS documents:</p>
 <ul><li>Read documents</li><li>Update documents</li><li>Create documents</li><li>Delete documents</li></ul>
+<p><strong>Source:</strong> <code>src/admin/pages/site/agent/documentTools.ts</code>.</p>
 <h3>Render Snapshot Tool</h3>
-<pre><code class="language-">renderSnapshotTool.ts
-</code></pre>
 <p>Captures page snapshots for the agent to reference:</p>
 <ul><li>Renders current page state</li><li>Captures visual evidence</li><li>Provides context for agent decisions</li></ul>
+<p><strong>Source:</strong> <code>src/admin/pages/site/agent/renderSnapshotTool.ts</code>.</p>
 <h3>Render Evidence</h3>
-<pre><code class="language-">renderEvidence.ts
-</code></pre>
 <p>Renders evidence of agent actions:</p>
 <ul><li>Shows what changed</li><li>Provides visual diffs</li><li>Supports undo visualization</li></ul>
+<p><strong>Source:</strong> <code>src/admin/pages/site/agent/renderEvidence.ts</code>.</p>
 <h2>Token Management</h2>
 <p>The <code>tokenRunners</code> module tracks token usage:</p>
-<ul><li>Counts input tokens</li><li>Counts output tokens</li><li>Tracks token budget</li><li>Provides cost estimates</li></ul>
+<ul><li>Counts input tokens (messages sent to LLM)</li><li>Counts output tokens (tokens received from LLM)</li><li>Tracks token budget per conversation</li><li>Provides cost estimates based on model pricing</li></ul>
+<p><strong>Source:</strong> <code>src/admin/pages/site/agent/tokenRunners.ts</code>.</p>
 <h2>Page Context</h2>
 <p>The <code>pageContext</code> module provides the agent with page context:</p>
-<ul><li>Current page tree</li><li>Module registry</li><li>Available templates</li><li>Site configuration</li></ul>
+<ul><li>Current page tree (NodeTree<PageNode>)</li><li>Module registry (all available blocks)</li><li>Available templates</li><li>Site configuration</li></ul>
+<p><strong>Source:</strong> <code>src/admin/pages/site/agent/pageContext.ts</code>.</p>
 <h2>Site Agent Snapshot</h2>
 <p>The <code>siteAgentSnapshot</code> module creates a snapshot of the site for agent context:</p>
 <ul><li>Page structure</li><li>Content data</li><li>Module definitions</li><li>Settings</li></ul>
+<p><strong>Source:</strong> <code>src/admin/pages/site/agent/siteAgentSnapshot.ts</code>.</p>
 <h2>Streaming Events</h2>
 <p>The <code>streamEvents</code> module processes streaming events from the agent:</p>
-<ul><li>Text chunks</li><li>Tool calls</li><li>Tool results</li><li>Completion signals</li><li>Error signals</li></ul>
+<ul><li>Text chunks (incremental text display)</li><li>Tool calls (tool execution requests)</li><li>Tool results (execution outcomes)</li><li>Completion signals (agent finished)</li><li>Error signals (API failures, tool errors)</li></ul>
+<p><strong>Source:</strong> <code>src/admin/pages/site/agent/streamEvents.ts</code>.</p>
 <h2>Store Reference</h2>
 <p>The <code>storeRef</code> module provides the agent with access to the editor store:</p>
 <ul><li>Read current state</li><li>Dispatch actions</li><li>Subscribe to changes</li></ul>
+<p><strong>Source:</strong> <code>src/admin/pages/site/agent/storeRef.ts</code>.</p>
 <h2>Markdown Utilities</h2>
 <p>The <code>markdown</code> module provides markdown parsing and rendering utilities for the agent:</p>
 <ul><li>Parse markdown to structured data</li><li>Render structured data to markdown</li><li>Handle code blocks, lists, tables</li></ul>
+<p><strong>Source:</strong> <code>src/admin/pages/site/agent/markdown.ts</code>.</p>
 <h2>Next</h2>
 <p>Continue to <a href="12-loops-forms.md">12-loops-forms</a> for loops, forms, media, templates, and site import.</p>
   </article>

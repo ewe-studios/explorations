@@ -71,10 +71,29 @@ If a recipe returns a partial, it must wrap it in `rawReturn(...)` or Mutative e
 
 The editor uses Zustand with Mutative for state management:
 
-```typescript
-// Zustand + Mutative (zustand-mutative)
-// Patch-based undo history uses Mutative create({ enablePatches })
+```mermaid
+flowchart TD
+    subgraph EDITOR["Visual Editor Store (Zustand + Mutative)"]
+        S1["siteSlice<br/>SiteDocument, pages, breakpoints"]
+        S2["selectionSlice<br/>selectedNodeId, hoveredNodeId"]
+        S3["canvasSlice<br/>zoom, pan, activeBreakpoint"]
+        S4["uiSlice<br/>panel visibility, insert picker"]
+        S5["styleRuleSlice<br/>class + ambient CSS CRUD"]
+        S6["agentSlice<br/>AI agent state + streaming"]
+        S7["filesSlice<br/>SiteFile CRUD"]
+        S8["clipboardSlice<br/>copy/cut/paste subtrees"]
+    end
+
+    subgraph ACTIONS["Mutations"]
+        M1["draft mutations<br/>set((s) => { s.x = ... })"]
+        M2["patch-based undo/redo<br/>Mutative enablePatches"]
+        M3["React Compiler<br/>auto-memoizes, no useMemo"]
+    end
+
+    EDITOR --> ACTIONS
 ```
+
+**Source:** `src/admin/pages/site/store/store.ts` (combined store creation), `src/admin/pages/site/store/slices/` (14 slices).
 
 This enables:
 - **Undo/Redo** — Mutative patches record every state change, enabling precise undo without snapshot overhead

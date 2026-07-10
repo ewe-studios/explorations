@@ -224,16 +224,39 @@ async function* runToolLoop(
 <table><tr><th>Category</th><th>Tools</th></tr><tr><td>**Node CRUD**</td><td>`insertNode`, `replaceNodeHtml`, `deleteNode`, `updateNodeProps`, `moveNode`, `renameNode`, `duplicateNode`</td></tr><tr><td>**CSS**</td><td>`applyCss` (upserts — reapplying a selector changes the existing rule), `assignClass`, `removeClass`</td></tr><tr><td>**Pages**</td><td>`addPage`, `deletePage`, `renamePage`, `duplicatePage`, `setPageTemplate`, `clearPageTemplate`</td></tr><tr><td>**Tokens**</td><td>`setColorTokens`, `setFontTokens`, `setTypeScale`, `setSpacingScale`</td></tr><tr><td>**Code**</td><td>`list_code_assets`, `read_code_asset`, `write_code_asset`, `patch_code_asset`, `inspect_code_runtime`</td></tr><tr><td>**Read**</td><td>`read_document`, `open_document`</td></tr><tr><td>**Debug**</td><td>`render_snapshot`, `getNodeHtml`</td></tr></table>
 <p><strong>Aha:</strong> <code>insertNode</code> and <code>replaceNodeHtml</code> accept semantic HTML strings. The browser executor calls <code>importHtml</code> to convert HTML → <code>PageNode</code> fragments. CSS is imported the same way humans paste CSS: <code><style></code> blocks in the payload, <code>class=</code> attributes on elements, or the dedicated <code>applyCss</code> tool for standalone CSS editing. The AI writes HTML, not JSON.</p>
 <h2>Dual-Endpoint Bridge</h2>
-<pre><code class="language-">Server                          Editor
-  |                                |
-  |── NDJSON stream ─────────────→|  (text deltas, toolRequests)
-  |                                |
-  |                          [Browser executes tool]
-  |                                |
-  |←─ POST /admin/api/ai/tool-result ──|  (tool results)
-  |                                |
-  |── continue stream ───────────→|
-</code></pre>
+<div class="mermaid">
+sequenceDiagram
+    participant Editor as Editor (Browser)
+    participant Server as Bun Server
+    participant Driver as HTTP Driver&lt;br/&gt;(Anthropic/OpenAI/Ollama)
+    participant Provider as LLM Provider API
+
+    Editor-&gt;&gt;Server: POST /admin/api/ai/chat/site
+    Server-&gt;&gt;Driver: stream(req)
+    Driver-&gt;&gt;Provider: POST /v1/messages (or endpoint)
+    Provider--&gt;&gt;Driver: SSE stream
+
+    loop Multi-turn tool loop
+        Driver-&gt;&gt;Driver: translate SSE → AiStreamEvent
+        alt text delta
+            Driver--&gt;&gt;Server: yield text event
+            Server--&gt;&gt;Editor: NDJSON text delta
+        else tool call
+            Driver--&gt;&gt;Server: yield toolRequest event
+            Server--&gt;&gt;Editor: NDJSON toolRequest
+            Editor-&gt;&gt;Editor: Execute tool in browser
+            Editor-&gt;&gt;Server: POST /admin/api/ai/tool-result
+            Server-&gt;&gt;Driver: inject tool result into messages
+            Driver-&gt;&gt;Provider: POST next turn with tool results
+            Provider--&gt;&gt;Driver: SSE stream (next turn)
+        end
+    end
+
+    Driver--&gt;&gt;Server: yield done event
+    Server--&gt;&gt;Editor: NDJSON done
+
+</div>
+<p><strong>Source:</strong> <code>server/ai/drivers/http/toolLoop.ts</code> (shared loop), <code>server/ai/handlers/toolResult.ts</code> (result bridge), <code>server/ai/runtime/transport.ts</code> (NDJSON streaming).</p>
 <p><strong>Aha:</strong> <code>idleTimeout: 0</code> on <code>Bun.serve</code> because AI streams can pause 10+ seconds between tool calls (the LLM is thinking, the tool is executing). Without this, Bun would close the connection.</p>
 <h2>System Prompt — Split Design</h2>
 <p>The system prompt has a static prefix (module catalog, token families, page metadata — built once at session start) and a dynamic suffix (current page context, runtime agent state — rebuilt at the start of each turn). This avoids re-sending the entire module catalog on every LLM call.</p>

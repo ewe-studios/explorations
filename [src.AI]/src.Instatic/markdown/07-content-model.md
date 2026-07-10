@@ -27,10 +27,43 @@ flowchart TD
 
 ## NodeTree: The Universal Tree Primitive
 
-```typescript
-// src/core/page-tree/treeSchema.ts
-// NodeTree<TNode> — the single shape for all tree-of-nodes
+```mermaid
+classDiagram
+    class NodeTree~TNode~ {
+        +Record~string, TNode~ nodes
+        +string rootNodeId
+    }
+
+    class PageNode {
+        +string|nullable parentId
+        +string[] childrenIds
+        +Record~BreakpointId, Partial~PageNode~~ breakpointOverrides
+        +DynamicBinding[] dynamicBindings
+        +string[] classIds
+        +Record~string, string~ inlineStyles
+        +boolean hidden
+        +boolean locked
+    }
+
+    class VCNode {
+        +string|nullable parentId
+        +string[] childrenIds
+        +string moduleId
+        +Record~string, unknown~ props
+    }
+
+    class SlotNode {
+        +string slotName
+        +string|nullable parentId
+        +string[] childrenIds
+    }
+
+    NodeTree <|-- PageNodeTree : NodeTree~PageNode~
+    NodeTree <|-- VCTree : NodeTree~VCNode~
+    NodeTree <|-- SlotTree : NodeTree~SlotNode~
 ```
+
+**Source:** `src/core/page-tree/treeSchema.ts`, `src/core/page-tree/pageNode.ts`, `src/core/visualComponents/`.
 
 Every tree of nodes uses the same shape:
 

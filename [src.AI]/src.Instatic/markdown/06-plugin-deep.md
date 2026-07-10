@@ -173,8 +173,39 @@ The plugin protocol defines how the host and VM communicate:
 
 ## Crash Recovery
 
-```
-host/crashRecovery.ts
+```mermaid
+sequenceDiagram
+    participant Host as Plugin Host<br/>(host/registry.ts)
+    participant Pool as Worker Pool<br/>(host/workerPool.ts)
+    participant Worker as Bun.Worker
+    participant VM as QuickJS VM<br/>(quickjs/vm.ts)
+    participant Recovery as Crash Recovery<br/>(host/crashRecovery.ts)
+
+    Host->>Pool: activatePlugin(id)
+    Pool->>Worker: create Bun.Worker
+    Worker->>VM: createPluginVm({source, env})
+    VM-->>Host: VM ready, exported hooks
+
+    loop Plugin lifecycle
+        Host->>VM: runLifecycle('install')
+        VM-->>Host: success
+    end
+
+    Note over VM: VM crashes<br/>(uncaught exception,<br/>memory limit exceeded)
+    VM--x>Pool: Worker exit/error
+    Pool->>Recovery: recordCrash(pluginId)
+    Recovery->>Recovery: check crash budget
+
+    alt budget remaining
+        Recovery->>Pool: respawn worker
+        Pool->>Worker: create Bun.Worker
+        Worker->>VM: createPluginVm(...)
+        VM-->>Host: VM respawned
+        Recovery->>Recovery: decrement budget
+    else budget exhausted
+        Recovery->>Host: disablePlugin(pluginId)
+        Note over Host: Plugin disabled<br/>logged, no more dispatch
+    end
 ```
 
 Each plugin VM has a crash budget. When a VM crashes:
@@ -182,6 +213,8 @@ Each plugin VM has a crash budget. When a VM crashes:
 2. If budget remains, the VM is respawned
 3. Budget is decremented
 4. If budget exhausted, the plugin is disabled
+
+**Source:** `server/plugins/host/crashRecovery.ts`, `server/plugins/host/workerPool.ts`.
 
 ## Worker Pool
 

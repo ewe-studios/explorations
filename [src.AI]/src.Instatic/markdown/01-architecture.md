@@ -4,7 +4,7 @@ title: Instatic Core Engine — NodeTree, Publisher, Module Engine, Plugin SDK
 
 # Instatic Core Engine — NodeTree, Publisher, Module Engine
 
-**The `src/core/` directory (36 subdirectories) contains all host-independent logic.** It defines the universal tree type (`NodeTree<T>`), the 3-layer publishing pipeline (disk → LRU → server islands), the module block system (18 built-in blocks + registry), the Plugin SDK (23 capabilities, QuickJS sandbox), visual components (VCs with slot outlets), the CSS framework (fluid typography, token generation), and data validation (TypeBox throughout). None of these modules import from `server/` or `src/admin/` — they are pure engine code.
+**The `src/core/` directory (36 subdirectories) contains all host-independent logic.** It defines the universal tree type (`NodeTree<T>`), the 3-layer publishing pipeline (disk → LRU → server islands), the module block system (15 built-in blocks + registry), the Plugin SDK (23 capabilities, QuickJS sandbox), visual components (VCs with slot outlets), the CSS framework (fluid typography, token generation), and data validation (TypeBox throughout). None of these modules import from `server/` or `src/admin/` — they are pure engine code.
 
 Source: `src/core/` — 36 subdirectories
 
@@ -19,6 +19,32 @@ type NodeTree<TNode> = {
 ```
 
 **Aha:** The flat map + root ID pattern means node lookup is O(1) regardless of tree depth. There's no recursive `children` array — parent-child relationships are maintained via `parentId` on each node. This makes mutations simple: `deleteNode` removes the node from the flat map and updates the parent's child list; `moveNode` changes the `parentId` — no tree rebalancing, no deep cloning.
+
+### PageNode
+
+**Aha:** The flat map + root ID pattern means node lookup is O(1) regardless of tree depth. There's no recursive `children` array — parent-child relationships are maintained via `parentId` on each node. This makes mutations simple: `deleteNode` removes the node from the flat map and updates the parent's child list; `moveNode` changes the `parentId` — no tree rebalancing, no deep cloning.
+
+### NodeTree Mutation Flow
+
+```mermaid
+sequenceDiagram
+    participant UI as Editor UI
+    participant Store as Editor Store<br/>(Zustand + Mutative)
+    participant Mut as mutateActiveTree
+    participant MutFn as Mutation fn<br/>(insertNode/deleteNode/etc)
+    participant Tree as NodeTree<PageNode>
+
+    UI->>Store: set((s) => { ... })
+    Store->>Mut: mutateActiveTree(fn)
+    Mut->>Mut: Branch: page mode or VC mode?
+    Mut->>MutFn: call fn(tree, ...args)
+    MutFn->>Tree: pure fn: new tree
+    MutFn-->>Mut: return new NodeTree<TNode>
+    Mut-->>Store: updated store
+    Store-->>UI: selective re-render
+```
+
+**Source:** `src/admin/pages/site/store/` (`mutateActiveTree`), `src/core/page-tree/mutations.ts` (11 pure mutation functions).
 
 ### PageNode
 
