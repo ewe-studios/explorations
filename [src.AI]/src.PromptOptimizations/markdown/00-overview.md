@@ -4,7 +4,7 @@ title: Ponytail — Lazy Senior Dev AI Agent Skill
 
 # Ponytail — Lazy Senior Dev AI Agent Skill
 
-**Ponytail is an AI agent skill that reduces code output by 54% (up to 94%) without sacrificing safety.** It's not a code minifier or a "write shorter" prompt — it's a carefully engineered persona that teaches AI agents the judgment of a senior developer. It operates through a **Ladder of Sophistication**: 5 rungs from native HTML up to full frameworks, each with explicit proof-you-need-it criteria. Measured on 12 real feature tasks against a FastAPI + React codebase (Haiku 4.5, n=4), ponytail was the ONLY arm that cut every metric (LOC -54%, tokens -22%, cost -20%, time -27%) while maintaining 100% safety. The competitive arms either increased token usage (caveman terse-prose: +7% tokens) or sacrificed safety (YAGNI one-liner: 95% safe).
+**Ponytail is an AI agent skill that reduces code output by 54% (up to 94%) without sacrificing safety.** It's not a code minifier or a "write shorter" prompt — it's a carefully engineered persona that teaches AI agents the judgment of a senior developer. It operates through a **Ladder of Sophistication**: 5 rungs from native HTML up to full frameworks, each with explicit proof-you-need-it criteria. Measured on 22 real feature tasks against a FastAPI + React codebase (Haiku 4.5, n=4), ponytail was the ONLY arm that cut every metric (LOC -54%, tokens -22%, cost -20%, time -27%) while maintaining 100% safety. The competitive arms either increased token usage (caveman terse-prose: +7% tokens) or sacrificed safety (YAGNI one-liner: 95% safe).
 
 Source: `ponytail/` — `skills/ponytail/SKILL.md`, `benchmarks/`, MIT
 
@@ -31,6 +31,42 @@ flowchart TD
     Safety --> S6["Keep existing tests passing"]
 ```
 
+### Agent Session Lifecycle
+
+The diagram below shows how ponytail activates, tracks mode, and emits instructions across a session:
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Agent as AI Agent (Claude/Codex/etc)
+    participant Hook as ponytail hooks
+    participant Skill as skills/ponytail/SKILL.md
+    participant Flag as .ponytail-active
+
+    User->>Agent: Start session
+    Agent->>Hook: SessionStart event
+    Hook->>Hook: getDefaultMode() — env → config → 'full'
+    Hook->>Flag: setMode(mode)
+    Hook->>Skill: filterSkillBodyForMode(body, mode)
+    Skill-->>Hook: filtered instructions
+    Hook-->>Agent: emit ruleset as hidden context
+    Agent->>User: Ready
+    
+    User->>Agent: /ponytail ultra
+    Agent->>Hook: UserPromptSubmit event
+    Hook->>Hook: parse prompt, detect /ponytail
+    Hook->>Flag: setMode('ultra')
+    Hook-->>Agent: "PONYTAIL MODE CHANGED"
+    
+    User->>Agent: "add a feature"
+    Agent->>Skill: reads current instructions
+    Agent->>User: minimal code (ladder)
+    
+    User->>Agent: "stop ponytail"
+    Agent->>Hook: isDeactivationCommand()
+    Hook->>Flag: clearMode()
+```
+
 ### What It Replaces
 
 ```html
@@ -43,9 +79,24 @@ flowchart TD
 <input type="date">
 ```
 
+### AGENTS.md — The Universal Adapter
+
+AGENTS.md is the always-on compact rule text at the repo root. It's only 27 lines but it's the most important file in the repo — the hooks, skills, and MCP server are just amplifiers for agents that support richer integration.
+
+```javascript
+// AGENTS.md:1-6 — The 27-line universal adapter
+# Ponytail, lazy senior dev mode
+
+You are a lazy senior developer. Lazy means efficient, not careless. The best code is the code never written.
+
+Before writing any code, stop at the first rung that holds:
+```
+
+**Aha:** AGENTS.md is only 27 lines but it's the most important file in the repo. It's the universal adapter: every agent that reads project-level instructions (Cursor, Windsurf, Cline, Kiro, CodeWhale, Antigravity, Copilot editor) gets ponytail just by existing at the repo root. The 27 lines contain the entire philosophy — the hooks, skills, and MCP server are just amplifiers for agents that support richer integration.
+
 ## The 5-Rung Ladder of Sophistication
 
-**Aha:** The ladder is a decision tree, not a rule. Every rung has "proof you need to skip" — the agent must articulate WHY the simpler solution doesn't work before leveling up. This forces deliberation that the LLM otherwise skips.
+**Aha:** The ladder isn't a preference — it's a hard constraint embedded as hidden system context that fires EVERY response. Earlier attempts to make it a "soft suggestion" failed because LLMs default to over-building when given room to deliberate. By making the ladder the first thing the model reads (before the user's prompt even appears), ponytail preempts the deliberation cost entirely.
 
 ### Rung 1: Native HTML
 
@@ -103,6 +154,74 @@ Must pass ALL three gates:
 
 **Aha:** Safety rules make ponytail fundamentally different from "write shorter code" prompts. The YAGNI+one-liner competitive arm achieved nearly as good LOC reduction (67%) but dropped safety to 95% — it removed validation in edge cases. Ponytail's rules are explicit, numbered, and tested against adversarial audit.
 
+## Mode Intensity System
+
+Ponytail supports five modes, each with different behavior:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Full: session start (default)
+    Full --> Lite: /ponytail lite
+    Full --> Ultra: /ponytail ultra
+    Full --> Review: /ponytail-review
+    Full --> Off: "stop ponytail" / "normal mode"
+
+    Lite --> Full: /ponytail full
+    Lite --> Ultra: /ponytail ultra
+    Lite --> Off: "stop ponytail"
+
+    Ultra --> Full: /ponytail full
+    Ultra --> Lite: /ponytail lite
+    Ultra --> Off: "stop ponytail"
+
+    Review --> Off: "stop ponytail-review"
+
+    Off --> Full: session restart (resets to default)
+    Off --> Lite: /ponytail lite
+    Off --> Ultra: /ponytail ultra
+    Off --> Review: /ponytail-review
+
+    note right of Full
+        Default mode. Ladder enforced.
+        Stdlib and native first.
+        Shortest diff, shortest explanation.
+    end note
+
+    note right of Lite
+        Build what's asked, but name
+        the lazier alternative in one line.
+        User picks.
+    end note
+
+    note right of Ultra
+        YAGNI extremist. Deletion before
+        addition. Ship one-liner, challenge
+        the rest of the requirement.
+    end note
+
+    note right of Review
+        Over-engineering review only.
+        Tags: delete, stdlib, native,
+        yagni, shrink. Scores net lines.
+    end note
+
+    note right of Off
+        No instructions emitted.
+        Flag file cleared.
+        Session reverts to raw behavior.
+    end note
+```
+
+| Mode | Intensity | Use Case |
+|------|-----------|----------|
+| **lite** | Low | You want the build as requested, but want to know what could be simpler |
+| **full** | Medium (default) | The ladder enforced — stdlib and native platform first |
+| **ultra** | High | YAGNI extremist — deletion before addition, challenge requirements |
+| **review** | Specialized | Code review for over-engineering only, not correctness/security |
+| **off** | None | Disable ponytail entirely |
+
+**Aha:** The `review` mode is the only mode that doesn't participate in the lite/full/ultra intensity ladder. It's served by a separate skill file (`skills/ponytail-review/SKILL.md`) and uses a completely different format: `L<line>: <tag> <what>. <replacement>.` with tags like `delete:`, `stdlib:`, `native:`, `yagni:`, `shrink:`. The review skill ends with `net: -<N> lines possible` as its only metric. If there's nothing to cut, it says `Lean already. Ship.` This is ponytail as a diagnostic tool, not an instruction set.
+
 ## Benchmarks — Agentic Measurements
 
 | Arm | LOC | Tokens | Cost | Time | Safety |
@@ -112,15 +231,74 @@ Must pass ALL three gates:
 | Caveman (terse prose control) | 80% | 107% | 103% | 102% | 100% |
 | "YAGNI + one-liners" prompt | 67% | 86% | 79% | 70% | 95% |
 
+### Benchmark Measurement Pipeline
+
+Each cell in the benchmark table represents a full agentic session. The pipeline below shows how measurements flow across arms:
+
+```mermaid
+flowchart LR
+    Tasks[tasks.py: 22 tasks] --> Runner[run.py orchestrator]
+    Runner --> Seed[seed workspace]
+    Seed --> Arm{arm type?}
+    Arm -->|baseline| NoSkill[no skill, raw prompt]
+    Arm -->|ponytail| Plugin[--plugin-dir cache]
+    Arm -->|caveman| PluginCaveman[--plugin-dir caveman]
+    Arm -->|yagni-oneliner| Append[--append-system-prompt]
+    
+    NoSkill --> Claude[claude CLI --bypassPermissions]
+    Plugin --> Claude
+    PluginCaveman --> Claude
+    Append --> Claude
+    
+    Claude --> WS[workspace output]
+    WS --> Stats[code_stats / git_diff_stats]
+    WS --> Judge[LLM judge: judge.py + complete.py]
+    Stats --> Agg[aggregate: median LOC, cost, time]
+    Judge --> Agg
+    Agg --> Results[results.json + summary]
+```
+
 ### Methodology
 
 ```
 - Headless Claude Code sessions
 - Target: tiangolo/full-stack-fastapi-template (real FastAPI + React repo)
-- 12 feature tickets (date picker, color picker, form validation, etc.)
+- 34 tasks across 4 tiers: 7 deterministic (good/bad refs), 3 open-ended, 12 fixture (real repo), 12 vibe ("build me X")
 - n=4 runs per task per arm (Haiku 4.5)
 - Scored on git diff: lines added + changed
 - Safety: adversarial audit of generated code
+```
+
+**Aha:** The benchmark doesn't measure "prompt foo quality" — it measures real agentic behavior. Each cell is a full Claude Code session with real file I/O, real git diffs, and real permission grants. The `--selftest` gate runs before any API spend: every scorer must correctly pass the "good" reference and catch the "bad" reference, or the runner refuses to spend. This is the difference between measuring what the model says and measuring what the model does.
+
+Key design decisions in the benchmark runner:
+
+```python
+# benchmarks/agentic/run.py:63 — 5-minute timeout per cell, tree-kill on hang
+CELL_TIMEOUT = 300  # seconds per cell; a hung agent is force-killed (process tree) so the pool can't freeze
+```
+
+```python
+# benchmarks/agentic/run.py:69-71 — NO_RUN: measures code production, not execution
+NO_RUN = ("Write the implementation (include tests if you normally would for a change like this). "
+          "Do not run a dev server, install dependencies, run a database, or open a browser to verify -- "
+          "just write the code and stop.")
+```
+
+```python
+# benchmarks/agentic/run.py:79 — Code extensions measured (not comments/tests)
+CODE_EXT = {".py", ".js", ".ts", ".jsx", ".tsx", ".html", ".css", ".go", ".rs", ".java", ".rb", ".sh"}
+```
+
+```python
+# benchmarks/agentic/tasks.py:8-13 — Task structure with good/bad references for selftest
+Task fields:
+  prompt : instruction to the agent (safety implicit)
+  file   : entry file the scorer reads
+  seed   : {filename: starter content} written before the agent runs
+  axis   : dimension good/bad differ on for --selftest -- "safe" (default) or "correct"
+  score  : (workdir) -> {correct, safe, reason}
+  good/bad : reference implementations for the selftest
 ```
 
 **Aha:** Caveman increases token usage despite reducing LOC. The model spends MORE thinking tokens deliberating "how do I write this tersely?" — trading one cost for another. Ponytail is the only arm that reduces ALL metrics because the ladder provides a structured decision process the model can follow mechanically rather than deliberating each time.

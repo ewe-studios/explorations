@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Ponytail Architecture: Hooks, Config Resolution, Runtime State -- src.PromptOptimizations</title>
+  <title>Ponytail Architecture: Hooks, Config Resolution, Runtime State, MCP, and Skill Filtering -- src.PromptOptimizations</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
   <script>
@@ -127,191 +127,389 @@
       <a href="00-overview.html" class="nav-breadcrumb">Ponytail — Lazy Senior Dev AI Agent Skill</a>
       <a href="index.html" class="nav-btn" title="Back to index">index</a>
       <a href="00-overview.html" class="nav-btn" title="Previous: Ponytail — Lazy Senior Dev AI Agent Skill">← prev</a>
-      <a href="02-benchmarks.html" class="nav-btn nav-btn-next" title="Next: Ponytail Benchmarks">next →</a>
+      <a href="02-benchmarks.html" class="nav-btn nav-btn-next" title="Next: Ponytail Benchmarks: Agentic Measurement Pipeline, Correctness, Robustness, and LLM Judges">next →</a>
       <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
     </div>
   </nav>
   <article class="prose">
-<h1>Ponytail Architecture: Hooks, Config Resolution, Runtime State</h1>
-<p>Ponytail runs as a set of Node.js hooks that inject instructions into AI agent sessions. Five hook files, one config resolver, one runtime state manager.</p>
-<p>Source: <code>hooks/</code> — 5 files, <code>ponytail-mcp/</code> — 2 files, <code>pi-extension/</code> — 1 file.</p>
-<h2>Hook Architecture</h2>
-<p>Ponytail uses three Claude Code hook events:</p>
-<table><tr><th>Hook</th><th>File</th><th>When</th><th>Purpose</th></tr><tr><td>SessionStart</td><td>`ponytail-activate.js`</td><td>Session begins</td><td>Write mode flag, emit instructions</td></tr><tr><td>UserPromptSubmit</td><td>`ponytail-mode-tracker.js`</td><td>Each user message</td><td>Detect /ponytail commands, update mode</td></tr><tr><td>(statusline)</td><td>`ponytail-statusline.sh/ps1`</td><td>CLI prompt</td><td>Show [PONYTAIL] badge</td></tr></table>
-<h3>SessionStart Hook</h3>
-<p>Source: <code>hooks/ponytail-activate.js</code> — 80 lines.</p>
-<pre><code class="language-javascript">const mode = getDefaultMode()  // Resolve: env → config file → &#x27;full&#x27;
+<h1>Ponytail Architecture: Hooks, Config Resolution, Runtime State, MCP, and Skill Filtering</h1>
+<p>Ponytail runs as a set of Node.js hooks that inject instructions into AI agent sessions. Five hook files, one config resolver, one runtime state manager, an MCP server for agents supporting the Model Context Protocol, and a skill-filtering engine that selects intensity-level instructions. The entire system activates on SessionStart and tracks mode changes on every user prompt.</p>
+<p>Source: <code>hooks/</code> — 5 files, <code>ponytail-mcp/</code> — 2 files, <code>skills/</code> — 2 SKILL.md files, <code>pi-extension/</code> — 1 file.</p>
+<h2>System Architecture</h2>
+<p>The diagram below shows how ponytail's components connect to each other and to the agents that consume them:</p>
+<div class="mermaid">
+flowchart TD
+    subgraph Agents
+        CC[Claude Code]
+        CX[Codex CLI]
+        CP[Copilot CLI]
+        GM[Gemini CLI]
+        OC[OpenCode]
+        Pi[Pi Agent]
+        MCP[Any MCP Host]
+    end
 
+    subgraph &quot;ponytail/ Source&quot;
+        AGENTS[AGENTS.md&lt;br/&gt;27-line universal adapter]
+        SKILL[skills/ponytail/SKILL.md&lt;br/&gt;intensity rules + examples]
+        SKILL_REV[skills/ponytail-review/SKILL.md&lt;br/&gt;over-engineering review]
+    end
+
+    subgraph &quot;Hooks Layer&quot;
+        ACT[ponytail-activate.js&lt;br/&gt;SessionStart]
+        MT[ponytail-mode-tracker.js&lt;br/&gt;UserPromptSubmit]
+        CFG[ponytail-config.js&lt;br/&gt;env → file → default]
+        INSTR[ponytail-instructions.js&lt;br/&gt;skill body filterer]
+        RT[ponytail-runtime.js&lt;br/&gt;.ponytail-active flag]
+        SL[ponytail-statusline.sh/ps1&lt;br/&gt;CLI badge]
+    end
+
+    subgraph &quot;MCP Server&quot;
+        MCP_IDX[ponytail-mcp/index.js&lt;br/&gt;McpServer + StdioServerTransport]
+        MCP_INS[ponytail-mcp/instructions.js&lt;br/&gt;pure instruction builder]
+    end
+
+    subgraph &quot;State&quot;
+        FLAG[.ponytail-active&lt;br/&gt;mode string file]
+        SJSON[~/.claude/settings.json&lt;br/&gt;statusline config]
+    end
+
+    CC --&gt;|&quot;SessionStart + UserPromptSubmit&quot;| ACT
+    CC --&gt;|&quot;SessionStart + UserPromptSubmit&quot;| MT
+    CX --&gt;|&quot;PLUGIN_DATA env&quot;| RT
+    CP --&gt;|&quot;COPILOT_PLUGIN_DATA env&quot;| RT
+
+    ACT --&gt; CFG
+    ACT --&gt; INSTR
+    MT --&gt; CFG
+    MT --&gt; RT
+    CFG --&gt; RT
+    INSTR --&gt;|&quot;read&quot;| SKILL
+    INSTR --&gt; SKILL_REV
+    RT --&gt; FLAG
+
+    MCP --&gt; MCP_IDX
+    MCP_IDX --&gt; MCP_INS
+    MCP_INS --&gt; INSTR
+    MCP_INS --&gt; CFG
+
+    AGENTS -.-&gt;|&quot;universal adapter&quot;| CC
+    AGENTS -.-&gt;|&quot;universal adapter&quot;| CX
+    AGENTS -.-&gt;|&quot;universal adapter&quot;| CP
+    AGENTS -.-&gt;|&quot;universal adapter&quot;| GM
+    AGENTS -.-&gt;|&quot;universal adapter&quot;| OC
+    AGENTS -.-&gt;|&quot;universal adapter&quot;| Pi
+
+    SL --&gt;|&quot;reads&quot;| FLAG
+
+</div>
+<h2>Hook Architecture</h2>
+<p>Ponytail uses two Claude Code hook events plus a statusline script:</p>
+<table><tr><th>Hook</th><th>File</th><th>Event</th><th>Purpose</th></tr><tr><td>Activate</td><td>`hooks/ponytail-activate.js`</td><td>SessionStart</td><td>Resolve mode, write flag, emit instructions</td></tr><tr><td>Mode Tracker</td><td>`hooks/ponytail-mode-tracker.js`</td><td>UserPromptSubmit</td><td>Detect `/ponytail` commands, update mode</td></tr><tr><td>Statusline</td><td>`hooks/ponytail-statusline.sh` / `.ps1`</td><td>CLI prompt render</td><td>Show `[PONYTAIL]` or `[PONYTAIL:ULTRA]` badge</td></tr></table>
+<h3>Hook Execution Flow</h3>
+<p>Each session start triggers a deterministic sequence:</p>
+<div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant User
+    participant Agent as AI Agent
+    participant Act as ponytail-activate.js
+    participant Cfg as ponytail-config.js
+    participant Instr as ponytail-instructions.js
+    participant Rt as ponytail-runtime.js
+    participant Flag as .ponytail-active
+    participant SL as statusline.sh
+
+    User-&gt;&gt;Agent: Start session
+    Agent-&gt;&gt;Act: SessionStart event fires
+    Act-&gt;&gt;Cfg: getDefaultMode()
+    Cfg-&gt;&gt;Cfg: PONYTAIL_DEFAULT_MODE?
+    Cfg-&gt;&gt;Cfg: ~/.config/ponytail/config.json?
+    Cfg--&gt;&gt;Act: mode (off|lite|full|ultra|review)
+
+    alt mode == &quot;off&quot;
+        Act-&gt;&gt;Rt: clearMode()
+        Rt-&gt;&gt;Flag: rm .ponytail-active
+        Act--&gt;&gt;Agent: exit(0) — no instructions emitted
+    else mode != &quot;off&quot;
+        Act-&gt;&gt;Rt: setMode(mode)
+        Rt-&gt;&gt;Flag: write mode string
+        Act-&gt;&gt;Instr: getPonytailInstructions(mode)
+        Instr-&gt;&gt;Instr: read skills/ponytail/SKILL.md
+        Instr-&gt;&gt;Instr: filterSkillBodyForMode(body, mode)
+        Instr--&gt;&gt;Act: filtered instructions
+        Act-&gt;&gt;Act: detect missing statusline config
+        Act--&gt;&gt;Agent: emit instructions as hidden context
+        Agent-&gt;&gt;User: &quot;Ready&quot; with [PONYTAIL] badge
+    end
+
+    User-&gt;&gt;Agent: /ponytail ultra
+    Agent-&gt;&gt;Act2 as ponytail-mode-tracker.js&lt;br/&gt;UserPromptSubmit
+    Act2-&gt;&gt;Act2: parse stdin JSON, detect /ponytail
+    Act2-&gt;&gt;Rt: setMode(&quot;ultra&quot;)
+    Rt-&gt;&gt;Flag: write &quot;ultra&quot;
+    Act2--&gt;&gt;Agent: &quot;PONYTAIL MODE CHANGED — level: ultra&quot;
+
+</div>
+<h3>SessionStart Hook</h3>
+<p>Source: <code>hooks/ponytail-activate.js</code> — 91 lines.</p>
+<pre><code class="language-javascript">// ponytail-activate.js:1-6 — SessionStart activation hook
+//
+// Runs on every session start:
+//   1. Writes flag file at $CLAUDE_CONFIG_DIR/.ponytail-active (defaults to ~/.claude; statusline reads this)
+//   2. Emits ponytail ruleset as hidden SessionStart context
+//   3. Detects missing statusline config and emits setup nudge
+</code></pre>
+<p>The hook resolves the default mode, writes the flag file, builds the instruction set, and detects whether the statusline is configured:</p>
+<pre><code class="language-javascript">// ponytail-activate.js:27-32 — &quot;off&quot; mode skips activation entirely
 if (mode === &#x27;off&#x27;) {
-  clearMode()
-  writeHookOutput(&#x27;SessionStart&#x27;, &#x27;off&#x27;, &#x27;OK&#x27;)
-  process.exit(0)
+  clearMode();
+  const hookOutput = (isCodex || isCopilot) ? &#x27;&#x27; : &#x27;OK&#x27;;
+  writeHookOutput(&#x27;SessionStart&#x27;, &#x27;off&#x27;, hookOutput);
+  process.exit(0);
 }
 
-// 1. Write flag file at $CLAUDE_CONFIG_DIR/.ponytail-active
-setMode(mode)
+// ponytail-activate.js:42-85 — emit instructions, detect missing statusline
+let output = getPonytailInstructions(mode);
 
-// 2. Emit ponytail instructions (filtered to active mode)
-let output = getPonytailInstructions(mode)
-
-// 3. Detect missing statusline config → nudge user
+// 3. Detect missing statusline config — nudge Claude to help set it up
+if (!isCodex &amp;&amp; !isCopilot) try {
+  // ... reads ~/.claude/settings.json, checks statusLine key
+  // emits a setup nudge with exact JSON snippet to add
+}
 </code></pre>
 <h3>UserPromptSubmit Hook</h3>
-<p>Source: <code>hooks/ponytail-mode-tracker.js</code> — 60 lines.</p>
-<p>Reads stdin as JSON, detects <code>/ponytail lite|full|ultra|off</code> commands, writes new mode to flag file.</p>
-<pre><code class="language-javascript">process.stdin.on(&#x27;data&#x27;, chunk =&gt; { input += chunk })
-process.stdin.on(&#x27;end&#x27;, () =&gt; {
-  const data = JSON.parse(input.replace(/^﻿/, &#x27;&#x27;))
-  const prompt = (data.prompt || &#x27;&#x27;).trim().toLowerCase()
+<p>Source: <code>hooks/ponytail-mode-tracker.js</code> — 55 lines.</p>
+<p>Reads stdin as JSON, detects <code>/ponytail lite|full|ultra|off</code> commands, writes the new mode to the flag file, and detects deactivation phrases:</p>
+<pre><code class="language-javascript">// ponytail-mode-tracker.js:17-44 — parse /ponytail commands from user input
+if (/^[/@$]ponytail/.test(prompt)) {
+  const parts = prompt.split(/\s+/);
+  const cmd = parts[0].replace(/^[@$]/, &#x27;/&#x27;);
+  const arg = parts[1] || &#x27;&#x27;;
 
-  if (/^[/@$]ponytail/.test(prompt)) {
-    const parts = prompt.split(/\s+/)
-    const arg = parts[1] || &#x27;&#x27;
-    // Set mode based on arg
-    if (mode &amp;&amp; mode !== &#x27;off&#x27;) setMode(mode)
-    else if (mode === &#x27;off&#x27;) clearMode()
+  let mode = null;
+  if (cmd === &#x27;/ponytail-review&#x27; || cmd === &#x27;/ponytail:ponytail-review&#x27;) {
+    mode = &#x27;review&#x27;;
+  } else if (cmd === &#x27;/ponytail&#x27; || cmd === &#x27;/ponytail:ponytail&#x27;) {
+    if (arg === &#x27;lite&#x27;) mode = &#x27;lite&#x27;;
+    else if (arg === &#x27;full&#x27;) mode = &#x27;full&#x27;;
+    else if (arg === &#x27;ultra&#x27;) mode = &#x27;ultra&#x27;;
+    else if (arg === &#x27;off&#x27;) mode = &#x27;off&#x27;;
+    else mode = getDefaultMode();
   }
-})
+  // ... setMode(mode) or clearMode()
+}
+
+// ponytail-mode-tracker.js:48-51 — deactivation detection
+if (isDeactivationCommand(prompt)) {
+  clearMode();
+  writeHookOutput(&#x27;UserPromptSubmit&#x27;, &#x27;off&#x27;, &#x27;PONYTAIL MODE OFF&#x27;);
+}
 </code></pre>
+<p><strong>Aha:</strong> The command parser accepts three prefix characters (<code>/</code>, <code>@</code>, <code>$</code>) — the regex <code>/^[/@$]ponytail/</code> catches <code>/ponytail</code>, <code>@ponytail</code>, and <code>$ponytail</code> equally. This covers Claude Code's slash-command syntax, Pi's <code>@</code> prefix, and any agent that uses <code>$</code> for commands. The prefix is then normalized to <code>/</code> internally so the rest of the logic is agent-agnostic.</p>
 <h2>Config Resolution</h2>
-<p>Source: <code>hooks/ponytail-config.js</code> — 100+ lines.</p>
+<p>Source: <code>hooks/ponytail-config.js</code> — 122 lines.</p>
 <p>Resolution order (highest to lowest priority):</p>
-<pre><code class="language-javascript">function getDefaultMode() {
-  // 1. Environment variable
-  const envMode = process.env.PONYTAIL_DEFAULT_MODE
+<div class="mermaid">
+flowchart TD
+    Start[getDefaultMode called] --&gt; Env{PONYTAIL_DEFAULT_MODE set?}
+    Env --&gt;|yes, valid| ReturnEnv[return env value]
+    Env --&gt;|no or invalid| File{~/.config/ponytail/config.json exists?}
+    File --&gt;|yes, valid defaultMode| ReturnFile[return config value]
+    File --&gt;|no or missing| Default[return &quot;full&quot;]
+
+    ReturnEnv --&gt; End((mode))
+    ReturnFile --&gt; End
+    Default --&gt; End
+
+    subgraph &quot;Config File Locations (checked in order)&quot;
+        L1[$XDG_CONFIG_HOME/ponytail/config.json]
+        L2[~/.config/ponytail/config.json — macOS/Linux fallback]
+        L3[%APPDATA%/ponytail/config.json — Windows]
+    end
+
+    File -.-&gt; L1
+    File -.-&gt; L2
+    File -.-&gt; L3
+
+    subgraph &quot;Valid Modes&quot;
+        M1[off]
+        M2[lite]
+        M3[full]
+        M4[ultra]
+        M5[review]
+    end
+
+    Env -.-&gt;|VALID_MODES| M1
+    Env -.-&gt;|VALID_MODES| M2
+    Env -.-&gt;|VALID_MODES| M3
+    Env -.-&gt;|VALID_MODES| M4
+    Env -.-&gt;|VALID_MODES| M5
+
+</div>
+
+<pre><code class="language-javascript">// ponytail-config.js:16-18 — mode definitions
+const DEFAULT_MODE = &#x27;full&#x27;;
+const VALID_MODES = [&#x27;off&#x27;, &#x27;lite&#x27;, &#x27;full&#x27;, &#x27;ultra&#x27;, &#x27;review&#x27;];
+const RUNTIME_MODES = [&#x27;off&#x27;, &#x27;lite&#x27;, &#x27;full&#x27;, &#x27;ultra&#x27;];
+</code></pre>
+<p><strong>Aha:</strong> There are two mode sets: <code>VALID_MODES</code> (5 modes, used for config files) and <code>RUNTIME_MODES</code> (4 modes, used for active sessions). The <code>review</code> mode is valid in config but not a runtime intensity — it's an independent skill served via <code>/ponytail-review</code> that doesn't participate in the lite/full/ultra ladder. This separation prevents a user from accidentally setting <code>defaultMode: "review"</code> in config and getting a no-op.</p>
+<pre><code class="language-javascript">// ponytail-config.js:76-96 — getDefaultMode
+function getDefaultMode() {
+  // 1. Environment variable (highest priority)
+  const envMode = process.env.PONYTAIL_DEFAULT_MODE;
   if (envMode &amp;&amp; VALID_MODES.includes(envMode.toLowerCase())) {
-    return envMode.toLowerCase()
+    return envMode.toLowerCase();
   }
 
-  // 2. Config file (~/.config/ponytail/config.json)
+  // 2. Config file
   try {
-    const config = JSON.parse(fs.readFileSync(getConfigPath(), &#x27;utf8&#x27;))
+    const configPath = getConfigPath();
+    const config = JSON.parse(fs.readFileSync(configPath, &#x27;utf8&#x27;));
     if (config.defaultMode &amp;&amp; VALID_MODES.includes(config.defaultMode.toLowerCase())) {
-      return config.defaultMode.toLowerCase()
+      return config.defaultMode.toLowerCase();
     }
-  } catch (e) { /* fall through */ }
+  } catch (e) { /* Config file doesn&#x27;t exist or is invalid — fall through */ }
 
-  // 3. Default: &#x27;full&#x27;
-  return DEFAULT_MODE
+  // 3. Default
+  return DEFAULT_MODE; // &#x27;full&#x27;
 }
 </code></pre>
 <h3>Config Directory Resolution</h3>
-<pre><code class="language-javascript">function getConfigDir() {
+<p>Cross-platform config directory resolution:</p>
+<pre><code class="language-javascript">// ponytail-config.js:54-65 — getConfigDir
+function getConfigDir() {
   if (process.env.XDG_CONFIG_HOME) {
-    return path.join(process.env.XDG_CONFIG_HOME, &#x27;ponytail&#x27;)
+    return path.join(process.env.XDG_CONFIG_HOME, &#x27;ponytail&#x27;);
   }
   if (process.platform === &#x27;win32&#x27;) {
-    return path.join(process.env.APPDATA || path.join(os.homedir(), &#x27;AppData&#x27;, &#x27;Roaming&#x27;), &#x27;ponytail&#x27;)
+    return path.join(
+      process.env.APPDATA || path.join(os.homedir(), &#x27;AppData&#x27;, &#x27;Roaming&#x27;),
+      &#x27;ponytail&#x27;
+    );
   }
-  return path.join(os.homedir(), &#x27;.config&#x27;, &#x27;ponytail&#x27;)
+  return path.join(os.homedir(), &#x27;.config&#x27;, &#x27;ponytail&#x27;);
 }
 </code></pre>
 <h3>Deactivation Detection</h3>
-<pre><code class="language-javascript">function isDeactivationCommand(text) {
-  const t = String(text || &#x27;&#x27;).trim().toLowerCase().replace(/[.!?\s]+$/, &#x27;&#x27;)
-  return t === &#x27;stop ponytail&#x27; || t === &#x27;normal mode&#x27;
+<pre><code class="language-javascript">// ponytail-config.js:40-43 — exact-match deactivation
+function isDeactivationCommand(text) {
+  const t = String(text || &#x27;&#x27;).trim().toLowerCase().replace(/[.!?\s]+$/, &#x27;&#x27;);
+  return t === &#x27;stop ponytail&#x27; || t === &#x27;normal mode&#x27;;
 }
 </code></pre>
-<p>Aha: The deactivation check requires the <strong>entire message</strong> to be the command (ignoring case and trailing punctuation). Earlier versions matched the phrase anywhere in the message, which turned ponytail off mid-task for ordinary requests like "add a normal mode toggle".</p>
+<p><strong>Aha:</strong> The deactivation check requires the <strong>entire message</strong> to be the command (ignoring case and trailing punctuation). Earlier versions matched the phrase anywhere in the message, which turned ponytail off mid-task for ordinary requests like "add a normal mode toggle". The regex <code>/[.!?\s]+$/</code> strips trailing punctuation so "stop ponytail." and "stop ponytail" both work, but "can you stop ponytail from simplifying this" does not match.</p>
 <h3>Shell Safety Check</h3>
-<pre><code class="language-javascript">function isShellSafe(p) {
-  return typeof p === &#x27;string&#x27; &amp;&amp; /^[A-Za-z0-9 _.\-:/\\~]+$/.test(p)
+<pre><code class="language-javascript">// ponytail-config.js:50-52 — allowlist-based shell safety
+function isShellSafe(p) {
+  return typeof p === &#x27;string&#x27; &amp;&amp; /^[A-Za-z0-9 _.\-:/\\~]+$/.test(p);
 }
 </code></pre>
-<p>Validates that the plugin install path contains only safe characters before embedding it in a shell command for the statusline setup nudge.</p>
+<p><strong>Aha:</strong> Instead of escaping shell metacharacters (which is fragile across bash, zsh, and PowerShell), ponytail uses an allowlist: only alphanumeric characters plus space, underscore, dot, hyphen, colon, backslash, and tilde are permitted. If the plugin install path contains any other character (quotes, <code>&</code>, <code>$</code>, backtick, <code>;</code>), the statusline setup nudge falls back to manual configuration. An allowlist beats escaping every shell's metacharacters — a hostile clone path falls back to manual setup instead of being misinterpreted.</p>
 <h2>Runtime State</h2>
-<p>Source: <code>hooks/ponytail-runtime.js</code> — 50 lines.</p>
-<pre><code class="language-javascript">const STATE_FILE = &#x27;.ponytail-active&#x27;
-const isCopilot = Boolean(process.env.COPILOT_PLUGIN_DATA)
-const isCodex = !isCopilot &amp;&amp; Boolean(process.env.PLUGIN_DATA)
+<p>Source: <code>hooks/ponytail-runtime.js</code> — 51 lines.</p>
+<p>Mode is stored as a single string in <code>.ponytail-active</code> in the agent's config directory:</p>
+<pre><code class="language-javascript">// ponytail-runtime.js:5-13 — agent-specific state directory
+const STATE_FILE = &#x27;.ponytail-active&#x27;;
+const isCopilot = Boolean(process.env.COPILOT_PLUGIN_DATA);
+const isCodex = !isCopilot &amp;&amp; Boolean(process.env.PLUGIN_DATA);
 
-let stateDir = getClaudeDir()
-if (isCodex) stateDir = process.env.PLUGIN_DATA
-if (isCopilot) stateDir = process.env.COPILOT_PLUGIN_DATA
+let stateDir = getClaudeDir();
+if (isCodex) stateDir = process.env.PLUGIN_DATA;
+if (isCopilot) stateDir = process.env.COPILOT_PLUGIN_DATA;
 
-const statePath = path.join(stateDir, STATE_FILE)
-
-function setMode(mode) {
-  fs.mkdirSync(path.dirname(statePath), { recursive: true })
-  fs.writeFileSync(statePath, mode)
-}
-
-function clearMode() {
-  try { fs.unlinkSync(statePath) } catch (e) {}
-}
+const statePath = path.join(stateDir, STATE_FILE);
 </code></pre>
-<p>Mode is stored as a single string in a file (<code>.ponytail-active</code>) in the agent's config directory. Different agents use different directories:</p>
-<table><tr><th>Agent</th><th>State Directory</th></tr><tr><td>Claude Code</td><td>`~/.claude/` (or `$CLAUDE_CONFIG_DIR`)</td></tr><tr><td>Codex CLI</td><td>`$PLUGIN_DATA`</td></tr><tr><td>Copilot CLI</td><td>`$COPILOT_PLUGIN_DATA`</td></tr></table>
-<h3>Agent-Specific Output</h3>
-<pre><code class="language-javascript">function writeHookOutput(event, mode, context = &#x27;&#x27;) {
+<table><tr><th>Agent</th><th>State Directory</th><th>Output Format</th></tr><tr><td>Claude Code</td><td>`~/.claude/` (or `$CLAUDE_CONFIG_DIR`)</td><td>Raw text on stdout</td></tr><tr><td>Codex CLI</td><td>`$PLUGIN_DATA`</td><td>JSON: `{ systemMessage: "PONYTAIL:FULL", hookSpecificOutput: {...} }`</td></tr><tr><td>Copilot CLI</td><td>`$COPILOT_PLUGIN_DATA`</td><td>JSON: `{ additionalContext: "..." }` (SessionStart only)</td></tr></table>
+<pre><code class="language-javascript">// ponytail-runtime.js:24-43 — agent-specific output writer
+function writeHookOutput(event, mode, context = &#x27;&#x27;) {
   if (isCopilot) {
-    // Copilot reads additionalContext on SessionStart
+    // Copilot reads additionalContext on SessionStart; ignores output elsewhere.
     process.stdout.write(JSON.stringify(
-      event === &#x27;SessionStart&#x27; &amp;&amp; context ? { additionalContext: context } : {}))
-    return
+      event === &#x27;SessionStart&#x27; &amp;&amp; context ? { additionalContext: context } : {}));
+    return;
   }
   if (isCodex) {
-    const output = { systemMessage: `PONYTAIL:${mode.toUpperCase()}` }
-    if (context) output.hookSpecificOutput = { hookEventName: event, additionalContext: context }
-    process.stdout.write(JSON.stringify(output))
-    return
+    const output = { systemMessage: `PONYTAIL:${mode.toUpperCase()}` };
+    if (context) {
+      output.hookSpecificOutput = {
+        hookEventName: event,
+        additionalContext: context,
+      };
+    }
+    process.stdout.write(JSON.stringify(output));
+    return;
   }
-  // Claude Code: raw text
-  process.stdout.write(context)
+  process.stdout.write(context); // Claude Code: raw text
 }
 </code></pre>
-<p>Each agent has a different expected output format. Copilot wants <code>{ additionalContext: "..." }</code>, Codex wants <code>{ systemMessage: "PONYTAIL:FULL" }</code>, Claude Code wants raw text.</p>
-<h2>Instruction Building</h2>
-<p>Source: <code>hooks/ponytail-instructions.js</code> — 150+ lines.</p>
-<pre><code class="language-javascript">function getPonytailInstructions(mode) {
-  const configuredMode = normalizePersistedMode(mode) || DEFAULT_MODE
+<p><strong>Aha:</strong> Each agent has a completely different expected output format. Copilot wants <code>{ additionalContext: "..." }</code>, Codex wants <code>{ systemMessage: "PONYTAIL:FULL" }</code>, and Claude Code wants raw text. The <code>writeHookOutput</code> function is the single point of divergence — everything else (config resolution, instruction building, state management) is agent-agnostic. This is the adapter pattern: one core, three output formats.</p>
+<h2>Instruction Building & Skill Filtering</h2>
+<p>Source: <code>hooks/ponytail-instructions.js</code> — 92 lines.</p>
+<p>The instruction builder reads the SKILL.md file, strips frontmatter, and filters the body to keep only mode-specific rows and examples that match the active intensity:</p>
+<pre><code class="language-javascript">// ponytail-instructions.js:8 — independent modes bypass the skill filter
+const INDEPENDENT_MODES = new Set([&#x27;review&#x27;]);
+
+// ponytail-instructions.js:71-86 — getPonytailInstructions
+function getPonytailInstructions(mode) {
+  const configuredMode = normalizePersistedMode(mode) || DEFAULT_MODE;
 
   if (INDEPENDENT_MODES.has(configuredMode)) {
     // &#x27;review&#x27; mode uses a separate skill file
-    return `PONYTAIL MODE ACTIVE — level: ${configuredMode}. Behavior defined by /ponytail-${configuredMode} skill.`
+    return &#x27;PONYTAIL MODE ACTIVE — level: &#x27; + configuredMode + &#x27;. Behavior defined by /ponytail-&#x27; + configuredMode + &#x27; skill.&#x27;;
   }
 
-  // Try to read the skill file (SKILL.md) and filter for the active mode
+  const effectiveMode = normalizeMode(configuredMode) || DEFAULT_MODE;
+
   try {
-    const skillBody = fs.readFileSync(SKILL_PATH, &#x27;utf8&#x27;)
-    return filterSkillBodyForMode(skillBody, mode)
-  } catch {
-    return getFallbackInstructions(mode)  // Hardcoded fallback
+    return &#x27;PONYTAIL MODE ACTIVE — level: &#x27; + effectiveMode + &#x27;\n\n&#x27; +
+      filterSkillBodyForMode(fs.readFileSync(SKILL_PATH, &#x27;utf8&#x27;), effectiveMode);
+  } catch (e) {
+    return getFallbackInstructions(effectiveMode);
   }
 }
 </code></pre>
 <h3>Skill File Filtering</h3>
-<pre><code class="language-javascript">function filterSkillBodyForMode(body, mode) {
-  const effectiveMode = normalizeMode(mode) || DEFAULT_MODE
-  const withoutFrontmatter = String(body || &#x27;&#x27;).replace(/^---[\s\S]*?---\s*/, &#x27;&#x27;)
+<pre><code class="language-javascript">// ponytail-instructions.js:11-37 — filterSkillBodyForMode
+function filterSkillBodyForMode(body, mode) {
+  const effectiveMode = normalizeMode(mode) || DEFAULT_MODE;
+  const withoutFrontmatter = String(body || &#x27;&#x27;).replace(/^---[\s\S]*?---\s*/, &#x27;&#x27;);
 
+  // Only the intensity table rows and worked examples are mode-specific, and
+  // both are keyed by a mode name (lite/full/ultra). A bullet whose label is
+  // not a mode — e.g. &quot;No unrequested abstractions: ...&quot; — is a normal rule
+  // and must be kept verbatim.
   return withoutFrontmatter
     .split(/\r?\n/)
     .filter((line) =&gt; {
-      // Table rows: only keep the row matching the active mode
-      const tableLabel = line.match(/^\|\s*\*\*(.+?)\*\*\s*\|/)
+      const tableLabel = line.match(/^\|\s*\*\*(.+?)\*\*\s*\|/);
       if (tableLabel) {
-        const labelMode = normalizeMode(tableLabel[1].trim())
-        if (labelMode) return labelMode === effectiveMode
+        const labelMode = normalizeMode(tableLabel[1].trim());
+        if (labelMode) return labelMode === effectiveMode;
       }
-      // Example sections: only keep the example matching the active mode
-      const exampleLabel = line.match(/^-\s*([^:]+):\s*/)
+
+      const exampleLabel = line.match(/^-\s*([^:]+):\s*/);
       if (exampleLabel) {
-        const labelMode = normalizeMode(exampleLabel[1].trim())
-        if (labelMode) return labelMode === effectiveMode
+        const labelMode = normalizeMode(exampleLabel[1].trim());
+        if (labelMode) return labelMode === effectiveMode;
       }
-      // All other lines (general rules) are kept
-      return true
+
+      return true; // All other lines (general rules) are kept
     })
-    .join(&#x27;\n&#x27;)
+    .join(&#x27;\n&#x27;);
 }
 </code></pre>
-<p>Aha: The skill file (SKILL.md) contains mode-specific intensity tables and worked examples. The filter removes frontmatter, then keeps only the table row and example section that match the active mode. Non-mode-specific rules (like "No unrequested abstractions") are kept verbatim for all modes.</p>
+<p><strong>Aha:</strong> The skill file (SKILL.md) contains mode-specific intensity tables and worked examples. The filter removes frontmatter, then keeps only the table row and example section matching the active mode. Non-mode-specific rules (like "No unrequested abstractions") are kept verbatim for all modes. The filter is a single pass over the file's lines — no AST parsing, no markdown parsing, just two regexes. It works because the skill file's structure is self-describing: table rows start with <code>| <strong>lite</strong> |</code> and example bullets start with <code>- lite:</code>, so the filter can identify mode-keyed content by pattern alone.</p>
 <h3>Fallback Instructions</h3>
-<p>When the skill file is unavailable, hardcoded instructions are emitted:</p>
-<pre><code class="language-">PONYTAIL MODE ACTIVE — level: full
+<p>When the skill file is unavailable (deleted, moved, or unreadable), hardcoded fallback instructions are emitted:</p>
+<pre><code class="language-">// ponytail-instructions.js:39-69 — getFallbackInstructions
+PONYTAIL MODE ACTIVE — level: full
 
 You are a lazy senior developer. Lazy means efficient, not careless.
+The best code is the code never written.
+
+## Persistence
+ACTIVE EVERY RESPONSE. No drift back to over-building...
 
 ## The ladder
 1. Does this need to be built at all? (YAGNI)
@@ -320,19 +518,102 @@ You are a lazy senior developer. Lazy means efficient, not careless.
 4. Does an already-installed dependency solve it? Use it.
 5. Can this be one line? Make it one line.
 6. Only then: write the minimum code that works.
+
+## Rules
+No abstractions that were not requested. No avoidable dependencies...
 </code></pre>
 <h2>MCP Server</h2>
-<p>Source: <code>ponytail-mcp/</code> — 2 files.</p>
-<p>Provides ponytail as an MCP (Model Context Protocol) server for agents that support MCP.</p>
-<pre><code class="language-javascript">// ponytail-mcp/index.js
-// Exposes /ponytail commands as MCP tools
-// ponytail-mcp/instructions.js — MCP-specific instruction formatting
+<p>Source: <code>ponytail-mcp/index.js</code> — 48 lines, <code>ponytail-mcp/instructions.js</code> — 26 lines.</p>
+<p>The MCP server exposes ponytail as both a <strong>prompt</strong> (user-invoked) and a <strong>tool</strong> (for hosts that pull context via tools):</p>
+<pre><code class="language-javascript">// ponytail-mcp/index.js:12-29 — MCP prompt registration
+const server = new McpServer({ name: &quot;ponytail&quot;, version: &quot;0.1.0&quot; });
+
+server.registerPrompt(
+  &quot;ponytail&quot;,
+  {
+    title: &quot;Ponytail mode&quot;,
+    description: &quot;Lazy senior dev instructions: YAGNI, stdlib first, the smallest correct change.&quot;,
+    argsSchema: { mode: modeArg },
+  },
+  ({ mode }) =&gt; ({
+    messages: [{ role: &quot;user&quot;, content: { type: &quot;text&quot;, text: buildInstructions(mode) } }],
+  }),
+);
+
+// ponytail-mcp/index.js:31-46 — MCP tool registration
+server.registerTool(
+  &quot;ponytail_instructions&quot;,
+  {
+    title: &quot;Ponytail instructions&quot;,
+    description: &quot;Return the Ponytail ruleset for the given intensity (lite, full, or ultra).&quot;,
+    inputSchema: { mode: modeArg },
+    outputSchema: { mode: z.string(), instructions: z.string() },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+  ({ mode }) =&gt; {
+    const resolvedMode = resolveMode(mode);
+    const instructions = buildInstructions(resolvedMode);
+    return { content: [{ type: &quot;text&quot;, text: instructions }], structuredContent: { mode: resolvedMode, instructions } };
+  },
+);
 </code></pre>
-<h2>Pi Extension</h2>
-<p>Source: <code>pi-extension/index.js</code> — Pi plugin integration.</p>
-<p>Registers ponytail as a Pi extension with skills directory.</p>
+<p>The MCP instruction builder (<code>ponytail-mcp/instructions.js</code>) is a thin wrapper that reuses the same hooks-based instruction builder, ensuring every host emits identical rules:</p>
+<pre><code class="language-javascript">// ponytail-mcp/instructions.js:1-26 — pure instruction selection, no MCP/SDK imports
+const { getPonytailInstructions } = require(&quot;../hooks/ponytail-instructions.js&quot;);
+const { getDefaultMode, normalizeMode } = require(&quot;../hooks/ponytail-config.js&quot;);
+
+export const MODES = [&quot;lite&quot;, &quot;full&quot;, &quot;ultra&quot;]; // &quot;off&quot; and &quot;review&quot; aren&#x27;t served
+
+export function resolveMode(requested) {
+  const asked = normalizeMode(requested);
+  if (asked &amp;&amp; asked !== &quot;off&quot;) return asked;
+  const fallback = normalizeMode(getDefaultMode());
+  return fallback &amp;&amp; fallback !== &quot;off&quot; ? fallback : &quot;full&quot;;
+}
+
+export function buildInstructions(requested) {
+  return getPonytailInstructions(resolveMode(requested));
+}
+</code></pre>
+<p><strong>Aha:</strong> The MCP instruction builder has zero MCP/SDK imports — it uses <code>createRequire</code> to import the CommonJS hooks files from an ESM context. This keeps the instruction selection logic unit-testable on its own. The comment in the source says it explicitly: "Pure instruction selection for the Ponytail MCP server. No MCP/SDK imports, so this stays unit-testable on its own."</p>
+<h2>Statusline Integration</h2>
+<p>Source: <code>hooks/ponytail-statusline.sh</code> — 12 lines, <code>hooks/ponytail-statusline.ps1</code> — 12 lines.</p>
+<p>The statusline script reads the <code>.ponytail-active</code> flag and emits a colored badge:</p>
+<pre><code class="language-bash">#!/usr/bin/env bash
+# ponytail-statusline.sh:1-12
+flag=&quot;${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.ponytail-active&quot;
+[ -f &quot;$flag&quot; ] || exit 0
+
+mode=$(head -n1 &quot;$flag&quot; | tr -d &#x27;[:space:]&#x27;)
+
+if [ -z &quot;$mode&quot; ] || [ &quot;$mode&quot; = &quot;full&quot; ]; then
+    printf &#x27;\033[38;5;108m[PONYTAIL]\033[0m&#x27;
+else
+    printf &#x27;\033[38;5;108m[PONYTAIL:%s]\033[0m&#x27; &quot;$(printf &#x27;%s&#x27; &quot;$mode&quot; | tr &#x27;[:lower:]&#x27; &#x27;[:upper:]&#x27;)&quot;
+fi
+</code></pre>
+<p>The activation hook auto-detects when the statusline is not configured in <code>~/.claude/settings.json</code> and emits a nudge with the exact JSON snippet to add:</p>
+<pre><code class="language-json">&quot;statusLine&quot;: { &quot;type&quot;: &quot;command&quot;, &quot;command&quot;: &quot;bash \&quot;/path/to/hooks/ponytail-statusline.sh\&quot;&quot; }
+</code></pre>
+<h2>AGENTS.md — The Universal Adapter</h2>
+<p>Source: <code>AGENTS.md</code> — 27 lines.</p>
+<p>The 27-line <code>AGENTS.md</code> is the most important file in the repo. It's the universal adapter: every agent that reads project-level instructions (Cursor, Windsurf, Cline, Kiro, CodeWhale, Antigravity, Copilot editor) gets ponytail just by this file existing at the repo root. The hooks, skills, and MCP server are amplifiers for agents that support richer integration.</p>
+<pre><code class="language-markdown"># AGENTS.md — 27 lines, universal adapter
+# Ponytail, lazy senior dev mode
+
+You are a lazy senior developer. Lazy means efficient, not careless.
+The best code is the code never written.
+
+Before writing any code, stop at the first rung that holds:
+1. Does this need to be built at all? (YAGNI)
+2. Does the standard library already do this? Use it.
+3. Does a native platform feature cover it? Use it.
+4. Does an already-installed dependency solve it? Use it.
+5. Can this be one line? Make it one line.
+6. Only then: write the minimum code that works.
+</code></pre>
 <h2>Cross-References</h2>
-<ul><li><a href="00-overview.md">Overview</a> — What ponytail is</li><li><a href="02-benchmarks.md">Benchmarks</a> — Agentic benchmarks</li><li><a href="03-integrations.md">Integrations</a> — Agent plugins, hooks</li></ul>
+<ul><li><a href="00-overview.md">Overview</a> — What ponytail is, philosophy, benchmark numbers</li><li><a href="02-benchmarks.md">Benchmarks</a> — Agentic benchmarks, correctness, robustness, LLM judges</li><li><a href="03-integrations.md">Integrations</a> — Agent plugins, hooks, skills, commands</li></ul>
 <p><a href="02-benchmarks.md">Next → Benchmarks</a></p>
   </article>
   <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
