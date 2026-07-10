@@ -48,6 +48,33 @@ flowchart TD
     html_video --> hyperframes & motion_canvas & manim
 ```
 
+## Technology Stack by Project
+
+```mermaid
+flowchart LR
+    subgraph TypeScript
+        OD[open-design]
+        NX[nexu]
+        DS[design]
+        HA[html-anything]
+        HV[html-video]
+        MN[monet]
+        NS[nexu-site]
+        OBS[bot-sandbox]
+        OCC[contributor-card]
+        MC[motion-canvas]
+    end
+    subgraph Go
+        LP[looper]
+    end
+    subgraph Python
+        MM[manim]
+    end
+    subgraph Multi
+        HF[hyprframes 18]
+    end
+```
+
 ## Key Projects
 
 ### open-design — Agent-Native Design Workspace
@@ -98,6 +125,25 @@ Electron + Next.js + Hono local controller + Drizzle ORM + SQLite. Session works
 ### HyperFrames — Agent-First Video
 
 Bun monorepo with React 19. Engine-agnostic: HTML + CSS + GSAP authoring model. Headless Chromium recording + ffmpeg encoding. Modular runtime builds. Cloud deployment via AWS Lambda and GCP Cloud Run.
+
+## Documentation Index
+
+- [Architecture](01-architecture.md) — Full dependency graph, layer diagram, module map
+- [Nexu Platform](02-nexu-platform.md) — Controller, web, desktop, slimclaw
+- [Open Design](03-open-design.md) — Daemon, web, contracts, brands engine
+- [Agent Detection](04-agent-detection.md) — Agent detection, registry, 26 adapters
+- [Design Systems](05-design-systems.md) — Design systems registry, brand engine
+- [Design Tokens](06-design-tokens.md) — Token system, CSS variables, theming
+- [Component Library](07-component-library.md) — 50+ primitives, 15 patterns
+- [Plugin System](08-plugin-system.md) — Plugin runtime, registry, protocol
+- [SkillHub](09-skillhub.md) — Skill catalog, install, npm-runner
+- [HTML Anything](10-html-anything.md) — 75 skills, 9 surfaces, SSE streaming
+- [HTML Video](11-html-video.md) — Engine adapters, templates, soundtrack
+- [Looper](12-looper.md) — Autonomous AI dev team, worktrees
+- [Monet](13-monet.md) — Desktop scaffold, sessions, live artifacts
+- [Data Flow](14-data-flow.md) — End-to-end data flows
+- [Developer Tooling](15-developer-tooling.md) — CLI, testing, CI/CD, deployment
+- [Smaller Projects](16-smaller-projects.md) — Bots, skills, manim, hyprframes
 
 ## Cross-References
 
