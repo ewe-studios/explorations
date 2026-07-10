@@ -4,7 +4,7 @@ title: Streamlit — Python to Interactive Web App Engine
 
 # Streamlit — Python to Interactive Web App Engine
 
-**Streamlit turns Python scripts into interactive web apps with no frontend experience.** The core model is deceptively simple: every `st.foo()` call (button, slider, chart, text) generates a Protobuf `Delta` message sent over WebSocket to a React frontend that renders it. Widget interactions trigger full-script re-execution with preserved `SessionState` — the script runs from the top, but widget values survive. The entire Python↔JavaScript contract is defined by 81 `.proto` files.
+**Streamlit turns Python scripts into interactive web apps with no frontend experience.** The core model is deceptively simple: every `st.foo()` call (button, slider, chart, text) generates a Protobuf `Delta` message sent over WebSocket to a React frontend that renders it. Widget interactions trigger full-script re-execution with preserved `SessionState` — the script runs from the top, but widget values survive. The entire Python↔JavaScript contract is defined by 83 `.proto` files.
 
 Source: `lib/streamlit/` — 231 Python files, `frontend/` — React/TypeScript, v1.45.1, Apache 2.0
 
@@ -37,7 +37,7 @@ flowchart TD
     subgraph Python["Python (231 .py files)"]
         API["st.* Public API<br/>__init__.py → DeltaGenerator"]
         DG["DeltaGenerator<br/>40+ mixin classes<br/>ButtonMixin, ChartMixin, LayoutMixin..."]
-        Proto["Protobuf Serialization<br/>81 .proto files → Python bindings"]
+        Proto["Protobuf Serialization<br/>83 .proto files → Python bindings"]
         SR["ScriptRunner Thread<br/>exec() in separate thread<br/>RerunException at yield points"]
         SS["SessionState<br/>Widget values, session storage<br/>Survives re-execution"]
         Runtime["Runtime (Tornado async)<br/>Session management, message routing"]
@@ -112,7 +112,7 @@ dg.text("Done!")            # REPLACES "Loading..." with "Done!"
 | `_event_dg` (RootContainer.EVENT) | `st.toast()` — transient, not in main flow |
 | `_bottom_dg` (RootContainer.BOTTOM) | Fixed-position elements |
 
-## The Protobuf Bridge — 81 .proto Files
+## The Protobuf Bridge — 83 .proto Files
 
 The entire Python↔JavaScript contract is defined by Protocol Buffers:
 
@@ -252,7 +252,7 @@ Uses the `"streamlit"` WebSocket subprotocol with auth tokens and session IDs fo
 ## Key Design Decisions
 
 1. **Full re-execution, not reactivity:** Simple mental model — write top-down scripts, Streamlit handles state preservation
-2. **Protobuf, not JSON:** Binary protocol for performance; 81 `.proto` files as the source of truth for the Python↔JS contract
+2. **Protobuf, not JSON:** Binary protocol for performance; 83 `.proto` files as the source of truth for the Python↔JS contract
 3. **Separate script thread:** User code runs in its own thread; yield points at every `st.foo()` enable clean interruption
 4. **40-mixin DeltaGenerator:** Each element family is a mixin; `st.write()` is the universal adapter
 5. **Arrow for data:** Large tables use Apache Arrow IPC format, avoiding JSON serialization overhead
