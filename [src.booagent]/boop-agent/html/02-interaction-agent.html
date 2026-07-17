@@ -137,7 +137,7 @@
 <p><strong>Source:</strong> <code>server/interaction-agent.ts:28-654</code> <strong>Version:</strong> Part of boop-agent 0.2.0</p>
 <h2>Role and Responsibilities</h2>
 <p>The interaction agent receives the user's message plus the last 10 turns from Convex, then chooses: answer directly (chit-chat, simple questions) or spawn a sub-agent for real work. It has exactly five tool categories:</p>
-<ol><li><strong>Memory</strong> — <code>recall()</code>, <code>write_memory()</code></li><li><strong>Spawn</strong> — <code>spawn_agent(task, integrations[], name?)</code></li><li><strong>Automations</strong> — <code>create/list/toggle/delete_automation</code></li><li><strong>Drafts</strong> — <code>list_drafts</code>, <code>send_draft</code>, <code>reject_draft</code></li><li><strong>Self-inspection</strong> — <code>get_config</code>, <code>set_runtime</code>, <code>set_model</code>, <code>set_timezone</code>, etc.</li></ol>
+<ol><li><strong>Memory</strong> — <code>recall()</code>, <code>write_memory()</code></li><li><strong>Spawn</strong> — <code>spawn_agent(task, integrations[], name?)</code></li><li><strong>Automations</strong> — <code>create/list/toggle/delete_automation</code></li><li><strong>Drafts</strong> — <code>list_drafts</code>, <code>send_draft</code>, <code>reject_draft</code> (interaction agent decides; <code>save_draft</code> belongs to execution agents only)</li><li><strong>Self-inspection</strong> — <code>get_config</code>, <code>set_runtime</code>, <code>set_model</code>, <code>set_codex_reasoning_effort</code>, <code>set_timezone</code>, <code>list_integrations</code>, <code>search_composio_catalog</code>, <code>inspect_toolkit</code></li></ol>
 <div class="mermaid">
 flowchart TD
     A[User message + last 10 turns] --&gt; B{Direct runtime switch?}
@@ -320,7 +320,7 @@ export function resolveDirectRuntimeSwitch(content: string): &quot;claude&quot; 
 <p><strong>Source:</strong> <code>server/interaction-agent.ts:263-274</code>, <code>server/interaction-agent.ts:375-396</code></p>
 <h2>Image Handling</h2>
 <p>When the user sends a photo or screenshot:</p>
-<ol><li>Images are downloaded via <code>ingestSendblueImage</code> and stored in Convex storage</li><li>The prompt is built with <code>buildPromptWithImagesOrTextFallback</code> — base64-encoded image blocks or text fallback</li><li>The interaction agent sees images directly as input</li><li>If the task requires external work, the agent passes image storage IDs to the sub-agent via <code>imageRefs</code></li></ol>
+<ol><li>Images are downloaded by the Sendblue webhook handler (<code>ingestSendblueImage</code> in <code>sendblue.ts</code>) and stored in Convex storage <strong>before</strong> <code>handleUserMessage</code> is called</li><li><code>handleUserMessage</code> receives <code>opts.images</code> with storageIds already set</li><li>The prompt is built with <code>buildPromptWithImagesOrTextFallback</code> — base64-encoded image blocks or text fallback</li><li>The interaction agent sees images directly as input</li><li>If the task requires external work, the agent passes image storage IDs to the sub-agent via <code>imageRefs</code></li></ol>
 <pre><code class="language-ts">// server/interaction-agent.ts:276
 export function resolveSpawnImageRefs(
   requestedRefs: string[] | undefined,
@@ -366,12 +366,15 @@ sequenceDiagram
     participant LLM
     participant EA as Execution Agent
     participant Mem
+    participant WS as WebSocket
 
     Caller-&gt;&gt;IA: handleUserMessage(opts)
     IA-&gt;&gt;Convex: Save user message
     IA-&gt;&gt;Convex: Fetch last 10 turns
-    IA-&gt;&gt;IA: Check direct runtime switch
-    IA-&gt;&gt;IA: Check browser disabled
+    IA-&gt;&gt;WS: Broadcast user_message / proactive_notice
+    IA-&gt;&gt;IA: listEnabledIntegrations()
+    IA-&gt;&gt;IA: Check direct runtime switch (early return)
+    IA-&gt;&gt;IA: Check browser disabled (early return)
     IA-&gt;&gt;LLM: Query with system prompt + tools
     loop Tool calls
         LLM-&gt;&gt;IA: recall / write_memory / send_ack
@@ -382,10 +385,12 @@ sequenceDiagram
         IA--&gt;&gt;LLM: Tool result
     end
     LLM-&gt;&gt;IA: Final text reply
-    IA-&gt;&gt;IA: Redact phone numbers
-    IA-&gt;&gt;IA: Check placeholder
+    IA-&gt;&gt;IA: Redact phone numbers, check placeholder
+    IA-&gt;&gt;Convex: Record usage
+    IA-&gt;&gt;WS: Broadcast assistant_message
+    IA-&gt;&gt;Convex: Save assistant message
     IA-&gt;&gt;Caller: Return reply
-    IA-&gt;&gt;Mem: extractAndStore (async)
+    IA-&gt;&gt;Mem: extractAndStore (fire-and-forget)
     IA-&gt;&gt;Convex: Record usage
     IA-&gt;&gt;Convex: Save assistant message
 

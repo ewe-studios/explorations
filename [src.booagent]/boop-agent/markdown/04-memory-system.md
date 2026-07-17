@@ -221,8 +221,8 @@ export async function extractAndStore(opts: {...}): Promise<void> {
 function effectiveScore(mem): number {
   const daysSinceAccess = Math.max(0, (Date.now() - mem.lastAccessedAt) / DAY_MS);
   const adaptiveHalfLife = BASE_HALF_LIFE_DAYS * (1 + mem.importance);
-  // identity (0.85): half-life ≈ 11.25 × 1.85 ≈ 20.8 days
-  // context  (0.40): half-life ≈ 11.25 × 1.40 ≈ 15.8 days
+  // identity (0.85): effective half-life ≈ 11.25 × 1.85 / 0.8 ≈ 26.0 days
+  // context  (0.40): effective half-life ≈ 11.25 × 1.40 / 0.8 ≈ 19.7 days
   const lambda = (LN2 / Math.max(adaptiveHalfLife, 0.001)) * DECAY_BETA;
   const effectiveLambda = lambda * (1 + mem.decayRate);
   const decayed = mem.importance * Math.exp(-effectiveLambda * daysSinceAccess);

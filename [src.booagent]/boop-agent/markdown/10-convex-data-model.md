@@ -1,11 +1,13 @@
 # Boop: Convex Data Model
 
-Boop uses Convex for all persistent state. Fourteen tables, typed queries, real-time subscriptions for the debug dashboard.
+Boop uses Convex for all persistent state. **13 tables**, typed queries, real-time subscriptions for the debug dashboard.
 
 **Source:** `convex/schema.ts`
 **Source:** `convex/*.ts` — query and mutation functions
 
 ## Schema Overview
+
+Boop has **13 tables** in the Convex schema (the `_storage` table is built-in and not defined in schema.ts).
 
 ```mermaid
 erDiagram
@@ -53,8 +55,11 @@ messages: defineTable({
 | `conversationId` | string | `sms:+1234567890` for iMessage, custom ID for dashboard chat |
 | `role` | enum | `user`, `assistant`, `system` (proactive notices) |
 | `content` | string | Message text |
-| `turnId` | string | Groups all messages in one user turn |
+| `agentId` | string (optional) | Associated execution agent |
+| `turnId` | string (optional) | Groups all messages in one user turn |
+| `createdAt` | number | Timestamp |
 | `imageStorageIds` | array | Convex storage IDs for attached images |
+| `mediaError` | string | Download error message for failed images |
 | `mediaError` | string | Download error message for failed images |
 
 **Source:** `convex/schema.ts:5-17`

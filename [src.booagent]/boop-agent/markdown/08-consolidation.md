@@ -88,14 +88,19 @@ Segment-aware skepticism:
 - If an identity memory is being merged or pruned, verify it's clearly redundant.`;
 ```
 
-The adversary model defaults to Haiku for the Claude runtime (cheap, fast):
+The adversary model defaults to Haiku for the Claude runtime (cheap, fast). For Codex, it uses `BOOP_CODEX_ADVERSARY_MODEL` env var or falls back to the current runtime model:
 
 ```ts
 // server/consolidation.ts:101
 const ADVERSARY_MODEL = process.env.BOOP_ADVERSARY_MODEL ?? "claude-haiku-4-5";
+const CODEX_ADVERSARY_MODEL = process.env.BOOP_CODEX_ADVERSARY_MODEL;
+// ... at runtime:
+const adversaryModel = runtimeConfig.runtime === "claude"
+  ? ADVERSARY_MODEL
+  : CODEX_ADVERSARY_MODEL ?? runtimeConfig.model;
 ```
 
-**Source:** `server/consolidation.ts:41-67`, `server/consolidation.ts:101-102`
+**Source:** `server/consolidation.ts:41-67`, `server/consolidation.ts:101-102`, `server/consolidation.ts:206-209`
 
 ### Phase 3: Judge
 
@@ -137,6 +142,10 @@ for (let i = 0; i < proposals.length; i++) {
     await convex.mutation(api.memoryRecords.upsert, {
       memoryId: newer.memoryId,
       content: newer.content,
+      tier: newer.tier,
+      segment: newer.segment,
+      importance: newer.importance,
+      decayRate: newer.decayRate,
       supersedes: p.older,
     });
     merged++;

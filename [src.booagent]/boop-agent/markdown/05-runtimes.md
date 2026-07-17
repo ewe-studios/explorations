@@ -164,9 +164,15 @@ export async function runCodexAppServerAgent(request: RuntimeRunRequest): Promis
 // server/runtimes/codex-app-server.ts:61
 function createIsolatedCodexHome(): string {
   const sourceHome = process.env.BOOP_CODEX_AUTH_HOME ?? join(homedir(), ".codex");
+  const sourceAuth = join(sourceHome, "auth.json");
   const codexHome = mkdtempSync(join(tmpdir(), "boop-codex-home."));
   mkdirSync(join(codexHome, "workspace"));
-  symlinkSync(sourceAuth, join(codexHome, "auth.json"));
+  const targetAuth = join(codexHome, "auth.json");
+  try {
+    symlinkSync(sourceAuth, targetAuth);
+  } catch {
+    copyFileSync(sourceAuth, targetAuth);
+  }
   writeFileSync(join(codexHome, "config.toml"), [
     'model = "gpt-5.5"',
     'approval_policy = "never"',
@@ -237,9 +243,11 @@ Boop provides its own tools for all of these — browser (Patchright), integrati
 // server/runtimes/codex-app-server.ts:161
 const CODEX_USER_FACING_VOICE_OVERLAY = `Codex runtime voice override:
 - You are powering Boop, the user's personal iMessage agent. You are not speaking as Codex.
-- Never introduce yourself as Codex, a coding agent, or a terminal assistant.
-- User-facing replies should sound like Boop: warm, casual, concise, direct.
-- Do not narrate implementation mechanics.`;
+- Never introduce yourself as Codex, a coding agent, a terminal assistant, or an OpenAI coding assistant unless the user explicitly asks about the underlying runtime.
+- User-facing replies should sound like Boop: warm, casual, concise, direct, and text-message native.
+- Do not narrate implementation mechanics. Avoid references to repos, files, patches, terminals, tests, logs, sandboxes, tool calls, runtimes, or prompts unless the user's request is specifically about those things.
+- When work was completed by tools or sub-agents, summarize the useful result in Boop's voice. Do not hand off a Codex-style engineering status report.
+- If the user asks what you are, say you are Boop. If asked what provider is running you, you may say this turn is using Codex.`;
 ```
 
 **Source:** `server/runtimes/codex-app-server.ts:161-167`
@@ -249,7 +257,7 @@ const CODEX_USER_FACING_VOICE_OVERLAY = `Codex runtime voice override:
 Codex's `thread/start` supports dynamic tools:
 
 ```ts
-// server/runtimes/codex-app-server.ts:313
+// server/runtimes/codex-app-server.ts:305
 const threadResponse = await this.call("thread/start", {
   model: request.model,
   dynamicTools: availableTools.map((runtimeTool) => ({
@@ -355,15 +363,26 @@ Users can say "use opus" or "switch to 5.5" and it resolves:
 // server/runtime-config.ts:80
 export const MODEL_ALIASES: Record<string, string> = {
   opus: "claude-opus-4-7",
+  "opus 4.7": "claude-opus-4-7",
   sonnet: "claude-sonnet-4-6",
+  "sonnet 4.6": "claude-sonnet-4-6",
   haiku: "claude-haiku-4-5-20251001",
+  "haiku 4.5": "claude-haiku-4-5-20251001",
 };
 
 export const CODEX_MODEL_ALIASES: Record<string, string> = {
   "5.5": "gpt-5.5",
   "gpt 5.5": "gpt-5.5",
+  "gpt-5.5": "gpt-5.5",
+  "5.4": "gpt-5.4",
+  "gpt 5.4": "gpt-5.4",
+  "gpt-5.4": "gpt-5.4",
   mini: "gpt-5.4-mini",
+  "5.4 mini": "gpt-5.4-mini",
+  "gpt-5.4-mini": "gpt-5.4-mini",
   codex: "gpt-5.3-codex",
+  "5.3 codex": "gpt-5.3-codex",
+  "gpt-5.3-codex": "gpt-5.3-codex",
 };
 ```
 

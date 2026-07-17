@@ -12,8 +12,8 @@ The interaction agent receives the user's message plus the last 10 turns from Co
 1. **Memory** — `recall()`, `write_memory()`
 2. **Spawn** — `spawn_agent(task, integrations[], name?)`
 3. **Automations** — `create/list/toggle/delete_automation`
-4. **Drafts** — `list_drafts`, `send_draft`, `reject_draft`
-5. **Self-inspection** — `get_config`, `set_runtime`, `set_model`, `set_timezone`, etc.
+4. **Drafts** — `list_drafts`, `send_draft`, `reject_draft` (interaction agent decides; `save_draft` belongs to execution agents only)
+5. **Self-inspection** — `get_config`, `set_runtime`, `set_model`, `set_codex_reasoning_effort`, `set_timezone`, `list_integrations`, `search_composio_catalog`, `inspect_toolkit`
 
 ```mermaid
 flowchart TD
@@ -245,10 +245,11 @@ export function resolveDirectRuntimeSwitch(content: string): "claude" | "codex" 
 
 When the user sends a photo or screenshot:
 
-1. Images are downloaded via `ingestSendblueImage` and stored in Convex storage
-2. The prompt is built with `buildPromptWithImagesOrTextFallback` — base64-encoded image blocks or text fallback
-3. The interaction agent sees images directly as input
-4. If the task requires external work, the agent passes image storage IDs to the sub-agent via `imageRefs`
+1. Images are downloaded by the Sendblue webhook handler (`ingestSendblueImage` in `sendblue.ts`) and stored in Convex storage **before** `handleUserMessage` is called
+2. `handleUserMessage` receives `opts.images` with storageIds already set
+3. The prompt is built with `buildPromptWithImagesOrTextFallback` — base64-encoded image blocks or text fallback
+4. The interaction agent sees images directly as input
+5. If the task requires external work, the agent passes image storage IDs to the sub-agent via `imageRefs`
 
 ```ts
 // server/interaction-agent.ts:276
@@ -310,12 +311,15 @@ sequenceDiagram
     participant LLM
     participant EA as Execution Agent
     participant Mem
+    participant WS as WebSocket
 
     Caller->>IA: handleUserMessage(opts)
     IA->>Convex: Save user message
     IA->>Convex: Fetch last 10 turns
-    IA->>IA: Check direct runtime switch
-    IA->>IA: Check browser disabled
+    IA->>WS: Broadcast user_message / proactive_notice
+    IA->>IA: listEnabledIntegrations()
+    IA->>IA: Check direct runtime switch (early return)
+    IA->>IA: Check browser disabled (early return)
     IA->>LLM: Query with system prompt + tools
     loop Tool calls
         LLM->>IA: recall / write_memory / send_ack
@@ -326,10 +330,12 @@ sequenceDiagram
         IA-->>LLM: Tool result
     end
     LLM->>IA: Final text reply
-    IA->>IA: Redact phone numbers
-    IA->>IA: Check placeholder
+    IA->>IA: Redact phone numbers, check placeholder
+    IA->>Convex: Record usage
+    IA->>WS: Broadcast assistant_message
+    IA->>Convex: Save assistant message
     IA->>Caller: Return reply
-    IA->>Mem: extractAndStore (async)
+    IA->>Mem: extractAndStore (fire-and-forget)
     IA->>Convex: Record usage
     IA->>Convex: Save assistant message
 ```

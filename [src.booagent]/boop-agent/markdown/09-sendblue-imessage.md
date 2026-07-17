@@ -68,7 +68,7 @@ if (message_handle) {
 }
 ```
 
-The `sendblueDedup` table uses a unique index on `handle` — the first claim wins, subsequent claims return `claimed: false`.
+The `sendblueDedup` table uses a regular index on `handle` — the first claim wins, subsequent claims return `claimed: false`. Dedup is enforced at the application level in the `claim()` mutation, not at the schema level (Convex has no unique indexes).
 
 **Source:** `server/sendblue.ts:240-248`, `convex/schema.ts:180-183`
 
@@ -129,9 +129,9 @@ Phone numbers are normalized to E.164 format:
 ```ts
 // server/sendblue.ts:66
 function normalizeE164(n: string | undefined): string | undefined {
+  if (trimmed.startsWith("+")) return trimmed;
   if (/^\d{10}$/.test(trimmed)) return `+1${trimmed}`;  // US numbers
   if (/^\d{11,15}$/.test(trimmed)) return `+${trimmed}`;
-  if (trimmed.startsWith("+")) return trimmed;
   return trimmed;
 }
 ```
