@@ -214,6 +214,28 @@ claudeCode(&quot;claude-opus-4-8&quot;, {
   | { type: &quot;raw&quot;; iteration: number; timestamp: Date; line: string };
 </code></pre>
 <p>Registered via <code>logging.onAgentStreamEvent</code> callback. Errors thrown by the callback are swallowed — a broken forwarder must not kill the run.</p>
+<h3>Stream Parsing Pipeline</h3>
+<div class="mermaid">
+flowchart TD
+    Agent[&quot;Agent Process stdout&quot;] --&gt; Lines[&quot;Line-by-line stdout&quot;]
+    Lines --&gt; Parser[&quot;provider.parseStreamLine()&quot;]
+    Parser --&gt;|Claude| ClaudeEv[&quot;JSONL assistant/system/init events&quot;]
+    Parser --&gt;|Codex| CodexEv[&quot;JSONL item.started/completed/turn.completed&quot;]
+    Parser --&gt;|Pi| PiEv[&quot;JSONL session/message_update/tool_execution&quot;]
+    Parser --&gt;|Cursor| CursorEv[&quot;JSONL tool_call events&quot;]
+    Parser --&gt;|OpenCode| OpenEv[&quot;JSONL step_start/text/tool_use&quot;]
+    Parser --&gt;|Copilot| CopilotEv[&quot;JSONL assistant.message_delta/tool.execution&quot;]
+    ClaudeEv --&gt; Unified[&quot;ParsedStreamEvent union&quot;]
+    CodexEv --&gt; Unified
+    PiEv --&gt; Unified
+    CursorEv --&gt; Unified
+    OpenEv --&gt; Unified
+    CopilotEv --&gt; Unified
+    Unified --&gt; Emitter[&quot;AgentStreamEmitter&quot;]
+    Unified --&gt; Orchestrator[&quot;Orchestrator result text&quot;]
+    Emitter --&gt;|onAgentStreamEvent| Logger[&quot;External observability&quot;]
+
+</div>
 <h2>Session Capture</h2>
 <p>After each resumable provider iteration, Sandcastle automatically copies the agent's session file from the sandbox to the host:</p>
 <p>Source: <code>src/SessionStore.ts</code> — <code>transferClaudeSession()</code>, <code>transferCodexSession()</code>, <code>encodeProjectPath()</code></p>
@@ -231,6 +253,22 @@ claudeCode(&quot;claude-opus-4-8&quot;, {
 <h3>CWD Rewriting</h3>
 <p><strong>Aha:</strong> When a session file is captured, all <code>cwd</code> fields inside the JSONL are rewritten to match the host repo root. This is critical — the provider's native resume command (<code>claude --resume <id></code>, <code>codex exec resume <id></code>, <code>pi --session <id></code>) reads the JSONL and needs <code>cwd</code> to point to the correct directory. Without rewriting, the agent would try to resume into the sandbox path, which doesn't exist on the host.</p>
 <p>The transfer functions are <strong>pure string transformations</strong> — they read the JSONL as text, regex-replace <code>cwd</code> values, and write back. No JSON parsing, no schema knowledge needed. Claude and Codex use <code>cwd</code> field matching; Pi uses <code>cwd</code> field on the header line.</p>
+<h3>Session Capture Flow</h3>
+<div class="mermaid">
+flowchart TD
+    After[&quot;After agent iteration completes&quot;] --&gt; Check{&quot;Provider has sessionStorage?&quot;}
+    Check --&gt;|&quot;No: Cursor/OpenCode/Copilot&quot;| Skip[&quot;Skip capture&quot;]
+    Check --&gt;|&quot;Yes: Claude/Codex/Pi&quot;| Copy[&quot;Copy session JSONL from sandbox to host&quot;]
+    Copy --&gt; Rewrite[&quot;Rewrite cwd fields to host repo path&quot;]
+    Rewrite --&gt; Claude{&quot;Which provider?&quot;}
+    Claude --&gt;|&quot;Claude Code&quot;| CP[&quot;~/.claude/projects/&lt;encoded&gt;/&lt;id&gt;.jsonl\nAlso copy subagent transcripts&quot;]
+    Claude --&gt;|&quot;Codex&quot;| CO[&quot;~/.codex/sessions/YYYY/MM/DD/rollout-*-&lt;id&gt;.jsonl&quot;]
+    Claude --&gt;|&quot;Pi&quot;| PI[&quot;~/.pi/agent/sessions/&lt;encoded-cwd&gt;/&lt;ts&gt;_&lt;id&gt;.jsonl&quot;]
+    CP --&gt; Ready[&quot;Session ready for resume/fork on host&quot;]
+    CO --&gt; Ready
+    PI --&gt; Ready
+
+</div>
 <h2>Session Resume</h2>
 <p>Pass <code>resumeSession</code> to <code>run()</code> to continue a prior conversation:</p>
 <p>Source: <code>src/run.ts:805-821</code></p>

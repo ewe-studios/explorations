@@ -60,6 +60,27 @@ Controls where the agent's commits land:
 
 **Aha:** Branch strategy is configured on `run()`, `interactive()`, `createSandbox()`, and `createWorktree()` — not on the provider. This makes providers fully swappable — Docker and Vercel accept the same branch strategy option.
 
+### Session Lifecycle
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant S as Sandcastle
+    participant SB as Sandbox
+    participant A as Agent
+    participant Host as Host Session Store
+
+    U->>S: run({agent, sandbox, prompt})
+    S->>SB: create sandbox + worktree
+    S->>A: launch agent with prompt
+    A-->>S: stream output + sessionId
+    S->>Host: capture session JSONL
+    S-->>U: RunResult {commits, stdout, resume?, fork?}
+    U->>S: result.resume("continue")
+    S->>Host: transfer session to sandbox
+    S->>A: resume agent with session id
+```
+
 ### Agent Provider
 
 A factory function that configures how to launch a specific coding agent:

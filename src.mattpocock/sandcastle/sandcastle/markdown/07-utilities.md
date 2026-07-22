@@ -43,6 +43,21 @@ class BoundedTail {
 
 **Why it exists:** When a provider streams output line-by-line, it accumulates the stream to build `ExecResult.stdout`/`stderr`. Consumers read just the tail (last lines of an error, or a fallback for the agent's final result), so retaining the whole stream is unnecessary. Once the accumulated string passes V8's ~512MB max string length, a naive `chunks.join()` throws `RangeError: Invalid string length`, crashing the whole orchestration. 64KiB sits comfortably above any agent completion signal or structured-output payload while staying far below V8's limit.
 
+### BoundedTail Eviction
+
+```mermaid
+flowchart TD
+    Push["push(item)"] --> Check{"item.length > maxChars?"}
+    Check -->|"Yes"| Truncate["Truncate: item.slice(-maxChars)"]
+    Check -->|"No"| Keep["Keep item as-is"]
+    Truncate --> Add["Add to items[] array\nUpdate totalChars counter"]
+    Keep --> Add
+    Add --> Evict{"totalChars > maxChars\nAND items.length > 1?"}
+    Evict -->|"Yes"| Drop["Drop oldest item (shift)\nSubtract from totalChars"]
+    Drop --> Evict
+    Evict -->|"No"| Done["Done — joined length <= maxChars"]
+```
+
 ## shutdownRegistry
 
 Source: `src/shutdownRegistry.ts` — `registerShutdown()`
@@ -127,6 +142,37 @@ cli(process.argv).pipe(
 Source: `src/errors.ts` — 23 tagged error classes
 
 All errors extend `SandboxError` via `Data.TaggedError`:
+
+```mermaid
+classDiagram
+    class SandboxError {
+        <<union>>
+    }
+    SandboxError <|-- ExecError
+    SandboxError <|-- ExecHostError
+    SandboxError <|-- CopyError
+    SandboxError <|-- DockerError
+    SandboxError <|-- PodmanError
+    SandboxError <|-- SyncError
+    SandboxError <|-- WorktreeError
+    SandboxError <|-- PromptError
+    SandboxError <|-- AgentError
+    SandboxError <|-- ConfigDirError
+    SandboxError <|-- InitError
+    SandboxError <|-- AgentIdleTimeoutError
+    SandboxError <|-- WorktreeTimeoutError
+    SandboxError <|-- ContainerStartTimeoutError
+    SandboxError <|-- CopyToWorktreeTimeoutError
+    SandboxError <|-- CopyToWorktreeError
+    SandboxError <|-- SyncInTimeoutError
+    SandboxError <|-- HookTimeoutError
+    SandboxError <|-- GitSetupTimeoutError
+    SandboxError <|-- PromptExpansionTimeoutError
+    SandboxError <|-- CommitCollectionTimeoutError
+    SandboxError <|-- MergeToHostTimeoutError
+    SandboxError <|-- SessionCaptureError
+    SandboxError <|-- CwdError
+```
 
 ```typescript
 // src/errors.ts — error classes (all Data.TaggedError)

@@ -78,6 +78,25 @@ Source: `src/shutdownRegistry.ts`
 
 Instead of each sandbox registering its own `SIGINT`/`SIGTERM` handler (which would cause `MaxListenersExceededWarning` with multiple concurrent sandboxes), Sandcastle uses a **process-wide registry**:
 
+```mermaid
+flowchart TD
+    Signal["Process receives SIGINT/SIGTERM/exit"] --> Registry["shutdownRegistry fans out"]
+    Registry --> CB1["Sandbox 1: removeContainer"]
+    Registry --> CB2["Sandbox 2: removeContainer"]
+    Registry --> CB3["Sandbox N: removeContainer"]
+    CB1 --> Exit
+    CB2 --> Exit
+    CB3 --> Exit
+    Registry --> Detach["Detach listeners first"]
+    Exit["process.exit(1) on signal\nnormal exit on exit event"]
+    Detach --> Registry
+
+    style Registry fill:#e3f2fd
+    style Exit fill:#ffebee
+```
+
+```
+
 ```
 Process exit (SIGINT/SIGTERM/exit)
   → shutdownRegistry fans out to all registered teardowns

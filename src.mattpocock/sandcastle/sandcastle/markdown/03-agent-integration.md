@@ -141,6 +141,29 @@ type AgentStreamEvent =
 
 Registered via `logging.onAgentStreamEvent` callback. Errors thrown by the callback are swallowed — a broken forwarder must not kill the run.
 
+### Stream Parsing Pipeline
+
+```mermaid
+flowchart TD
+    Agent["Agent Process stdout"] --> Lines["Line-by-line stdout"]
+    Lines --> Parser["provider.parseStreamLine()"]
+    Parser -->|Claude| ClaudeEv["JSONL assistant/system/init events"]
+    Parser -->|Codex| CodexEv["JSONL item.started/completed/turn.completed"]
+    Parser -->|Pi| PiEv["JSONL session/message_update/tool_execution"]
+    Parser -->|Cursor| CursorEv["JSONL tool_call events"]
+    Parser -->|OpenCode| OpenEv["JSONL step_start/text/tool_use"]
+    Parser -->|Copilot| CopilotEv["JSONL assistant.message_delta/tool.execution"]
+    ClaudeEv --> Unified["ParsedStreamEvent union"]
+    CodexEv --> Unified
+    PiEv --> Unified
+    CursorEv --> Unified
+    OpenEv --> Unified
+    CopilotEv --> Unified
+    Unified --> Emitter["AgentStreamEmitter"]
+    Unified --> Orchestrator["Orchestrator result text"]
+    Emitter -->|onAgentStreamEvent| Logger["External observability"]
+```
+
 ## Session Capture
 
 After each resumable provider iteration, Sandcastle automatically copies the agent's session file from the sandbox to the host:
@@ -173,6 +196,23 @@ Session location: `~/.pi/agent/sessions/--<encoded-cwd>--/<timestamp>_<session-i
 **Aha:** When a session file is captured, all `cwd` fields inside the JSONL are rewritten to match the host repo root. This is critical — the provider's native resume command (`claude --resume <id>`, `codex exec resume <id>`, `pi --session <id>`) reads the JSONL and needs `cwd` to point to the correct directory. Without rewriting, the agent would try to resume into the sandbox path, which doesn't exist on the host.
 
 The transfer functions are **pure string transformations** — they read the JSONL as text, regex-replace `cwd` values, and write back. No JSON parsing, no schema knowledge needed. Claude and Codex use `cwd` field matching; Pi uses `cwd` field on the header line.
+
+### Session Capture Flow
+
+```mermaid
+flowchart TD
+    After["After agent iteration completes"] --> Check{"Provider has sessionStorage?"}
+    Check -->|"No: Cursor/OpenCode/Copilot"| Skip["Skip capture"]
+    Check -->|"Yes: Claude/Codex/Pi"| Copy["Copy session JSONL from sandbox to host"]
+    Copy --> Rewrite["Rewrite cwd fields to host repo path"]
+    Rewrite --> Claude{"Which provider?"}
+    Claude -->|"Claude Code"| CP["~/.claude/projects/<encoded>/<id>.jsonl\nAlso copy subagent transcripts"]
+    Claude -->|"Codex"| CO["~/.codex/sessions/YYYY/MM/DD/rollout-*-<id>.jsonl"]
+    Claude -->|"Pi"| PI["~/.pi/agent/sessions/<encoded-cwd>/<ts>_<id>.jsonl"]
+    CP --> Ready["Session ready for resume/fork on host"]
+    CO --> Ready
+    PI --> Ready
+```
 
 ## Session Resume
 

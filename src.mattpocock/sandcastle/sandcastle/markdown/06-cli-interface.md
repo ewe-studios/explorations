@@ -98,6 +98,31 @@ Builds the Podman image from `.sandcastle/Containerfile`. Same flags as Docker b
 
 Removes the Podman image. `--image-name` to override.
 
+### CLI Command Tree
+
+```mermaid
+flowchart TD
+    Root["sandcastle"] --> Init["init"]
+    Root --> Docker["docker"]
+    Root --> Podman["podman"]
+    Docker --> DBI["build-image"]
+    Docker --> DRI["remove-image"]
+    Podman --> PBI["build-image"]
+    Podman --> PRI["remove-image"]
+    Init --> Agent["--agent"]
+    Init --> Model["--model"]
+    Init --> SB["--sandbox"]
+    Init --> Tmpl["--template"]
+    Init --> IT["--issue-tracker"]
+    Init --> Label["--create-label"]
+    Init --> BI["--build-image"]
+    Init --> Deps["--install-template-deps"]
+    DBI --> IN["--image-name"]
+    DBI --> DF["--dockerfile"]
+    PBI --> PN["--image-name"]
+    PBI --> CF["--containerfile"]
+```
+
 ## InitService
 
 Source: `src/InitService.ts` — scaffolding engine
@@ -115,6 +140,27 @@ The `scaffold()` method:
 3. Writes prompt.md, .env.example, .gitignore
 4. Copies template files
 5. Rewrites main file imports/calls to match selected agent/model/provider
+
+### Init Flow
+
+```mermaid
+flowchart TD
+    Start["sandcastle init"] --> Flags{"Stdin is TTY?"}
+    Flags -->|"Yes"| Interactive["Interactive prompts\n(agent, model, sandbox, tracker, template)"]
+    Flags -->|"No"| CheckFlags["Check required --flags\nFail fast if missing"]
+    Interactive --> Detect["Detect package manager\nfrom lockfile/packageManager field"]
+    CheckFlags --> Detect
+    Detect --> Scaffold["scaffold(): create .sandcastle/,\nwrite Dockerfile, prompts, template files"]
+    Scaffold --> Rewrite["rewriteMainTs(): update imports,\nfactory calls to match agent/model"]
+    Rewrite --> Tracker["substituteTemplateArgs():\ninject LIST_TASKS_COMMAND etc."]
+    Tracker --> Deps{"Template needs host deps?"}
+    Deps -->|"Yes"| Install["Install with detected\npackage manager (zod for planner)"]
+    Deps -->|"No"| Build
+    Install --> Build{"Build image?"}
+    Build -->|"Yes"| DockerBuild["docker/podman build\nwith AGENT_UID/AGENT_GID"]
+    Build -->|"No"| Done
+    DockerBuild --> Done["Done: .sandcastle/ ready"]
+```
 
 ## Display System
 
