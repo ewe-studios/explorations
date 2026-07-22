@@ -9,19 +9,18 @@ Source: `src/errors.ts`
 All 20+ error types use Effect's `Data.TaggedError` for discriminated unions:
 
 ```typescript
-// src/errors.ts — error pattern
-class ExecError extends Data.TaggedError("ExecError")<{
+// src/errors.ts:4-10 — error pattern
+export class ExecError extends Data.TaggedError("ExecError")<{
+  readonly message: string;
   readonly command: string;
-  readonly exitCode: number;
-  readonly stdout: string;
-  readonly stderr: string;
+  readonly exitCode?: number;
 }> {}
 ```
 
 This enables exhaustive pattern matching:
 ```typescript
 if (error._tag === "ExecError") {
-  // command, exitCode, stdout, stderr available
+  // message, command, exitCode? available
 }
 ```
 

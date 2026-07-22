@@ -88,19 +88,24 @@ flowchart TD
 
 **Key design:** All paths use `Effect.acquireUseRelease` for guaranteed cleanup. Even if the agent crashes or the signal is aborted, the cleanup function runs.
 
-### `none` Provider (No Sandbox)
+### Provider Tag Dispatch in SandboxFactory
 
-For bind-mount:
+The `withSandbox()` method dispatches on `provider.tag`:
+
+**`bind-mount` path:**
 - Resolves git mounts (handles both `.git` directory and worktree `.git` file)
 - Patches for Windows (ADR-0006)
 - Creates worktree, copies files, runs hooks
-- Runs agent directly on host
+- Starts container via `startSandbox()`
 
-For isolated:
+**`isolated` path:**
 - Creates worktree
-- Starts sandbox
-- Runs `syncIn()` via git bundle
-- Runs `copyIn()` for optional paths
+- Starts sandbox via `startSandbox()` (calls `provider.create()`, then `syncIn()` via git bundle, then `copyIn()` for optional paths)
+- Runs hooks
+
+**`none` path:**
+- Runs agent directly on host (no container, no worktree in `head` mode)
+- No sync needed — already on host filesystem
 
 ## Worktree Management
 

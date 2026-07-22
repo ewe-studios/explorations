@@ -21,17 +21,21 @@ flowchart TD
     subgraph Sandbox["Sandbox Layer"]
         Factory["SandboxFactory.ts"]
         Lifecycle["SandboxLifecycle.ts"]
+        DockerLC["DockerLifecycle.ts"]
+        PodmanLC["PodmanLifecycle.ts"]
         Provider["SandboxProvider.ts"]
         StartSB["startSandbox.ts"]
         SyncIn["syncIn.ts"]
         SyncOut["syncOut.ts"]
         CopyWT["CopyToWorktree.ts"]
+        WTM["WorktreeManager.ts"]
     end
 
     subgraph Providers["Sandbox Providers"]
         Docker["sandboxes/docker.ts"]
         Podman["sandboxes/podman.ts"]
         Vercel["sandboxes/vercel.ts"]
+        Daytona["sandboxes/daytona.ts"]
         NoSB["sandboxes/no-sandbox.ts"]
         TestISO["sandboxes/test-isolated.ts"]
         TestBM["sandboxes/test-bind-mount.ts"]
@@ -141,10 +145,14 @@ flowchart TD
 |--------|---------|-----------|
 | `src/SandboxFactory.ts` | Factory for worktree + sandbox creation | `WorktreeDockerSandboxFactory`, `SandboxConfig` |
 | `src/SandboxLifecycle.ts` | Sandbox start, stop, exec, hooks | `SandboxHandle`, `SandboxHooks`, `startAndWait()` |
+| `src/DockerLifecycle.ts` | Docker container start/stop | `startContainer()`, `removeContainer()` |
+| `src/PodmanLifecycle.ts` | Podman container start/stop | `startContainer()`, `removeContainer()` |
 | `src/SandboxProvider.ts` | Provider types + factory functions | `SandboxProvider`, `createBindMountSandboxProvider()`, `createIsolatedSandboxProvider()` |
+| `src/WorktreeManager.ts` | Git worktree lifecycle | `create()`, `pruneStale()`, `generateTempBranchName()`, `getCurrentBranch()` |
 | `src/sandboxes/docker.ts` | Docker bind-mount provider | `docker()` |
 | `src/sandboxes/podman.ts` | Podman bind-mount provider | `podman()` |
 | `src/sandboxes/vercel.ts` | Vercel isolated provider | `vercel()` |
+| `src/sandboxes/daytona.ts` | Daytona isolated provider (via `@daytona/sdk`) | `daytona()` |
 | `src/sandboxes/no-sandbox.ts` | No-sandbox provider (direct host) | `noSandbox()` |
 
 ### Prompt System
@@ -167,9 +175,9 @@ flowchart TD
 | `src/CwdError.ts` | `CwdError` class for invalid directory paths |
 | `src/RecoveryMessage.ts` | Recovery suggestions on failure |
 | `src/TextDeltaBuffer.ts` | Accumulate text deltas from agent output |
-| `src/boundedTail.ts` | Read last N bytes of a file (log tailing) |
-| `src/raceAbortSignal.ts` | Combine AbortSignal with timeout |
-| `src/shutdownRegistry.ts` | Register cleanup functions for process exit |
+| `src/boundedTail.ts` | Rolling output tail (64KB char limit, prevents V8 overflow) |
+| `src/raceAbortSignal.ts` | Race Effect against AbortSignal via Effect.raceFirst |
+| `src/shutdownRegistry.ts` | Process-wide signal fan-out (registerShutdown returns unregister fn) |
 | `src/MountConfig.ts` | Mount configuration types |
 | `src/mountUtils.ts` | Mount path utilities (tilde expansion, resolution) |
 | `src/resolveCwd.ts` | Resolve CWD option with Effect |

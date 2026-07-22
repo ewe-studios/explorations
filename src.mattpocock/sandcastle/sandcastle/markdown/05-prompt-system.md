@@ -53,9 +53,9 @@ Source: `src/PromptArgumentSubstitution.ts` — `BUILT_IN_PROMPT_ARG_KEYS`
 const BUILT_IN_PROMPT_ARG_KEYS = ["SOURCE_BRANCH", "TARGET_BRANCH"];
 ```
 
-**Inert text marking:** Shell blocks are marked with `\x01` so that `` !`command` `` patterns appearing inside argument values are treated as inert text, not executed:
+**Inert text marking:** `substitutePromptArgs` inserts the `\x01` marker between `!` and the backtick for every shell block found in the prompt template *before* argument values are substituted. This means `` !`command` `` patterns that arrive via `promptArgs` (user-authored content like issue titles, PR descriptions) are treated as inert text — the marker is only present on shell blocks from the original prompt file. `preprocessPrompt` then only executes blocks bearing that marker.
 
-**Aha:** `` !`…` `` expansion only runs on shell blocks written in the prompt file itself. Any `` !`…` `` pattern that appears inside an argument value is treated as inert text — it won't be executed against the host shell. This makes it safe to pass user-authored content (issue titles, PR descriptions, docs excerpts) through `promptArgs`.
+**Aha:** This is the entire security mechanism: the `\x01` marker is set during substitution on the original prompt's shell blocks, and only marked blocks are expanded. User content passed through `promptArgs` never gets the marker, so even if it contains `` !`rm -rf /` ``, it's treated as literal text.
 
 ## `` !`command` `` Expansion
 

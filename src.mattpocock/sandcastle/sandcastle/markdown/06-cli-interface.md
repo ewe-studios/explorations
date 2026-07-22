@@ -118,20 +118,21 @@ The `scaffold()` method:
 
 ## Display System
 
-Source: `src/Display.ts` — `ClackDisplay`, `FileDisplay`, `Display` Effect Context
+Source: `src/Display.ts` — `ClackDisplay`, `FileDisplay`, `SilentDisplay`, `Display` Effect Context
 
 Three display implementations via Effect Context:
 
 | Implementation | Purpose | When Used |
 |---------------|---------|-----------|
-| `ClackDisplay` | Interactive terminal UI via `@clack/prompts` | `logging.type === "stdout"` or interactive mode |
-| `FileDisplay` | Writes to log file with run delimiters | `logging.type === "file"` (default) |
+| `ClackDisplay` | Interactive terminal UI via `@clack/prompts` | Default in `main.ts` for all CLI output |
+| `FileDisplay` | Writes to log file with run delimiters, mid-line tracking | Inside `run()` when `logging.type === "file"` — agent output only |
 | `SilentDisplay` | Accumulates entries in a Ref | Tests |
+
+**How display selection works:** `main.ts` wires `ClackDisplay.layer` unconditionally for the CLI's own output (intro, summary, status). Inside `run()`, a separate Display layer is built: `FileDisplay` when logging to file (the agent's progress output goes to the log), or `ClackDisplay` when logging to stdout (the agent's output uses the same terminal UI). The two layers are merged so the CLI's own messages and the agent's output share the same terminal.
 
 **FileDisplay** writes human-readable output to the log file:
 - Run delimiters at start/end
-- Mid-line tracking for streamed chunks
-- Timestamps on each line
+- Mid-line tracking for streamed chunks (handles partial lines from agent)
 - Status messages with severity (success/warn/error)
 
 **Aha:** In file-logging mode, `run()` prints a startup message with a `tail -f` command so you can watch progress in another terminal. When `cwd` differs from `process.cwd()`, the log path is shown as absolute so it can be pasted into any terminal.
