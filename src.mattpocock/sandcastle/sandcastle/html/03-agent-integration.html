@@ -146,9 +146,9 @@
   parseStreamLine(line: string): ParsedStreamEvent[];  // Stdout line parser
 }
 </code></pre>
-<p><strong>Aha:</strong> Each agent provider has its own <code>parseStreamLine()</code> function that parses that agent's specific stdout format into Sandcastle's unified <code>ParsedStreamEvent</code> type. This is how Sandcastle normalizes six completely different agent output formats into a single stream of text chunks, tool calls, and session IDs.</p>
+<p><strong>Aha:</strong> <code>ParsedStreamEvent</code> is a discriminated union: <code>{ type: "text" | "result" | "tool_call" | "session_id" | "usage" }</code>. Each agent provider's <code>parseStreamLine()</code> parses that agent's specific stdout format into this shared type. This is how Sandcastle normalizes six completely different agent output formats into a single stream of text chunks, tool calls, and session IDs.</p>
 <h2>Six Agent Providers</h2>
-<table><tr><th>Factory</th><th>Resume?</th><th>Session Capture</th><th>Stream Format</th></tr><tr><td>`claudeCode(model, opts)`</td><td>Yes</td><td>Yes (`~/.claude/projects/`)</td><td>`stream-json` (JSONL)</td></tr><tr><td>`codex(model, opts)`</td><td>Yes</td><td>Yes (`~/.codex/sessions/`)</td><td>JSONL events</td></tr><tr><td>`pi(model, opts)`</td><td>Yes</td><td>Yes (`~/.pi/agent/sessions/`)</td><td>JSONL events</td></tr><tr><td>`cursor(model)`</td><td>No</td><td>No</td><td>`tool_call` events</td></tr><tr><td>`opencode(model)`</td><td>No</td><td>No</td><td>`text`/`tool_use` events</td></tr><tr><td>`copilot(model)`</td><td>No</td><td>No</td><td>`assistant.message_delta` events</td></tr></table>
+<table><tr><th>Factory</th><th>Resume?</th><th>Session Capture</th><th>Stream Format</th></tr><tr><td>`claudeCode(model, opts)`</td><td>Yes</td><td>Yes (`~/.claude/projects/`)</td><td>JSONL (`--output-format stream-json`)</td></tr><tr><td>`codex(model, opts)`</td><td>Yes</td><td>Yes (`~/.codex/sessions/`)</td><td>JSONL events</td></tr><tr><td>`pi(model, opts)`</td><td>Yes</td><td>Yes (`~/.pi/agent/sessions/`)</td><td>JSONL events (`--mode json`)</td></tr><tr><td>`cursor(model)`</td><td>No</td><td>No</td><td>`tool_call` events (JSONL)</td></tr><tr><td>`opencode(model, opts?)`</td><td>No</td><td>No</td><td>`text`/`tool_use` events (JSONL)</td></tr><tr><td>`copilot(model, opts?)`</td><td>No</td><td>No</td><td>`assistant.message_delta` events (JSONL)</td></tr></table>
 <h3>Claude Code Provider</h3>
 <pre><code class="language-typescript">// src/AgentProvider.ts — claudeCode factory
 claudeCode(&quot;claude-opus-4-8&quot;, {
@@ -158,7 +158,7 @@ claudeCode(&quot;claude-opus-4-8&quot;, {
   permissionMode: &quot;auto&quot;,   // Maps to --permission-mode flag
 });
 </code></pre>
-<p><strong>AFK command:</strong> <code>claude <model> --dangerously-skip-permissions --output-format stream-json --allowedTools "Edit,Write,Bash,..."</code></p>
+<p><strong>AFK command:</strong> <code>claude --print --verbose --dangerously-skip-permissions --output-format stream-json --model <model> -p -</code> (prompt piped via stdin). With resume: adds <code>--resume <id></code>; with fork: adds <code>--fork-session</code>.</p>
 <p><strong>Stream parsing</strong> (<code>parseStreamLine</code>): Parses JSONL lines from <code>stream-json</code> output:</p>
 <ul><li><code>assistant</code> messages with <code>text</code> blocks → text events</li><li><code>assistant</code> messages with <code>tool_use</code> blocks → tool call events</li><li><code>init</code> events → session_id extraction</li><li><code>system</code> events → <code>result</code> events for completion detection</li></ul>
 <p><strong>Token usage:</strong> Extracted from the last assistant message via <code>parseSessionUsage()</code>:</p>
@@ -175,9 +175,9 @@ claudeCode(&quot;claude-opus-4-8&quot;, {
   approvalsReviewer: &quot;auto_review&quot;,  // Swaps --dangerously-bypass-approvals-and-sandbox
 });
 </code></pre>
-<p><strong>AFK command:</strong> <code>codex exec run <model> --dangerously-bypass-approvals-and-sandbox</code></p>
+<p><strong>AFK command:</strong> <code>codex exec run --json -m <model></code> (prompt piped via stdin). With resume: <code>codex exec resume <id> --json -m <model> -</code>. With fork: <code>codex exec fork <id> --json -m <model></code>.</p>
 <p><strong>Stream parsing:</strong> Parses JSONL events:</p>
-<ul><li><code>turn.completed</code> → token usage</li><li><code>item.completed</code> → text content</li><li><code>item.started</code> → tool call events</li><li><code>error</code> → error events</li></ul>
+<ul><li><code>thread.started</code> → session_id (via <code>thread_id</code>)</li><li><code>item.completed</code> with <code>agent_message</code> → text content + result</li><li><code>item.started</code> with <code>command_execution</code> → tool call (Bash)</li><li><code>turn.completed</code> → token usage</li><li><code>error</code> → error events (auth failures, rate limits, API errors)</li></ul>
 <p><strong>Resume:</strong> <code>codex exec resume <id></code> with prompt piped over stdin. <strong>Fork:</strong> <code>codex exec fork <id></code>.</p>
 <p><strong>Aha:</strong> The <code>approvalsReviewer</code> option changes the CLI flags entirely. When set to <code>"auto_review"</code>, it swaps <code>--dangerously-bypass-approvals-and-sandbox</code> for <code>-a on-request -s danger-full-access</code>, enabling Codex's built-in reviewer agent to evaluate each approval prompt instead of bypassing them.</p>
 <h3>Pi Provider</h3>
@@ -188,10 +188,11 @@ claudeCode(&quot;claude-opus-4-8&quot;, {
 });
 </code></pre>
 <p><strong>Stream parsing:</strong></p>
-<ul><li><code>session</code> event → session_id</li><li><code>message_update</code> → text deltas (single-token chunks, buffered by <code>TextDeltaBuffer</code>)</li><li><code>tool_execution_start</code> → tool call events</li><li><code>agent_error</code> / <code>error</code> → error events</li></ul>
+<ul><li><code>session</code> event → session_id (via <code>obj.id</code>)</li><li><code>message_update</code> with <code>text_delta</code> → text deltas (single-token chunks, buffered by <code>TextDeltaBuffer</code>)</li><li><code>tool_execution_start</code> → tool call events (allowlisted tools only)</li><li><code>agent_end</code> → result (complete assistant message)</li><li><code>agent_error</code> / <code>error</code> → error events</li></ul>
+<p><strong>AFK command:</strong> <code>pi -p --mode json --model <model> --thinking <level></code> (prompt piped via stdin). With resume: <code>pi -p --mode json --model <model> --session <id></code>.</p>
 <p><strong>Aha:</strong> Pi emits text as single-token deltas, which makes for very choppy display output. Sandcastle's <code>TextDeltaBuffer</code> (in <code>src/TextDeltaBuffer.ts</code>) coalesces these into multi-word lines before forwarding to the display, making the output readable.</p>
 <h3>Non-Resumable Providers (Cursor, OpenCode, Copilot)</h3>
-<p>These three agents don't support session resume. Their providers have <code>sessionStorage: undefined</code> and <code>captureSessions: false</code>. Attempting to use <code>resumeSession</code> or <code>output.maxRetries</code> with them throws immediately:</p>
+<p>These three agents don't support session resume. Their providers have no <code>sessionStorage</code> property and <code>captureSessions: false</code>. Attempting to use <code>resumeSession</code> or <code>output.maxRetries</code> with them throws immediately:</p>
 <p>Source: <code>src/run.ts:563-576</code></p>
 <pre><code class="language-typescript">if (outputMaxRetries &gt; 0 &amp;&amp; !provider.sessionStorage) {
   throw new Error(
@@ -201,6 +202,9 @@ claudeCode(&quot;claude-opus-4-8&quot;, {
   );
 }
 </code></pre>
+<p><strong>Cursor</strong> AFK command: <code>agent --print --output-format stream-json --model <model> <prompt></code> (binary is <code>agent</code>, not <code>cursor</code>; prompt passed as argv arg).</p>
+<p><strong>OpenCode</strong> options: <code>variant</code> (reasoning effort, e.g. <code>"high"</code>) and <code>agent</code> (selects agent _inside_ OpenCode, e.g. <code>"build"</code>). AFK command: <code>opencode run --format json --model <model> --variant <v> --agent <a> --dangerously-skip-permissions <prompt></code>.</p>
+<p><strong>Copilot</strong> options: <code>effort</code> (<code>"low" | "medium" | "high"</code>). AFK command: <code>copilot -p <prompt> --output-format json --model <model> --allow-all-tools --effort <e></code> (uses <code>--allow-all-tools</code> for bypass, not <code>--dangerously-skip-permissions</code>).</p>
 <h2>Agent Stream Emitter</h2>
 <p>Source: <code>src/AgentStreamEmitter.ts</code> — <code>AgentStreamEvent</code> union, <code>agentStreamEmitterLayer()</code></p>
 <p>The <code>AgentStreamEmitter</code> is an Effect Context service that broadcasts agent events to external observers:</p>
@@ -221,12 +225,12 @@ claudeCode(&quot;claude-opus-4-8&quot;, {
 <p><strong>Subagent capture:</strong> After capturing the main session, Sandcastle also captures any <code>Agent</code>-tool or <code>Workflow</code>-tool subagent transcripts from <code><session-id>/subagents/agent-*.jsonl</code>. This is best-effort: failure on one transcript logs a warning but doesn't fail the run. However, main-session capture failure <strong>does</strong> fail the run.</p>
 <h3>Codex</h3>
 <p>Session location: <code>~/.codex/sessions/YYYY/MM/DD/rollout-*-<session-id>.jsonl</code></p>
-<p>Located via directory scan since the rollout prefix varies.</p>
+<p>Located via <code>find</code> command matching <code>rollout-*-${id}.jsonl</code> since the date-based directory path varies per run.</p>
 <h3>Pi</h3>
 <p>Session location: <code>~/.pi/agent/sessions/--<encoded-cwd>--/<timestamp>_<session-id>.jsonl</code></p>
 <h3>CWD Rewriting</h3>
-<p><strong>Aha:</strong> When a session file is captured, all <code>cwd</code> fields inside the JSONL are rewritten to match the host repo root. This is critical — the provider's native resume command (<code>claude --resume <id></code>) reads the JSONL and needs <code>cwd</code> to point to the correct directory. Without rewriting, the agent would try to resume into the sandbox path, which doesn't exist on the host.</p>
-<p>The transfer functions are <strong>pure string transformations</strong> — they read the JSONL as text, regex-replace <code>cwd</code> values, and write back. No JSON parsing, no schema knowledge needed.</p>
+<p><strong>Aha:</strong> When a session file is captured, all <code>cwd</code> fields inside the JSONL are rewritten to match the host repo root. This is critical — the provider's native resume command (<code>claude --resume <id></code>, <code>codex exec resume <id></code>, <code>pi --session <id></code>) reads the JSONL and needs <code>cwd</code> to point to the correct directory. Without rewriting, the agent would try to resume into the sandbox path, which doesn't exist on the host.</p>
+<p>The transfer functions are <strong>pure string transformations</strong> — they read the JSONL as text, regex-replace <code>cwd</code> values, and write back. No JSON parsing, no schema knowledge needed. Claude and Codex use <code>cwd</code> field matching; Pi uses <code>cwd</code> field on the header line.</p>
 <h2>Session Resume</h2>
 <p>Pass <code>resumeSession</code> to <code>run()</code> to continue a prior conversation:</p>
 <p>Source: <code>src/run.ts:805-821</code></p>

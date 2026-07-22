@@ -69,8 +69,8 @@ claudeCode("claude-opus-4-8", { effort: "high" })
 codex("gpt-5.4", { effort: "high" })
 pi("claude-sonnet-4-6", { thinking: "high" })
 cursor("composer-2")
-opencode("opencode/big-pickle")
-copilot("claude-sonnet-4.5")
+opencode("opencode/big-pickle", { variant: "high", agent: "build" })
+copilot("claude-sonnet-4.5", { effort: "high" })
 ```
 
 Three support session resume: Claude Code, Codex, Pi. Three do not: Cursor, OpenCode, Copilot.

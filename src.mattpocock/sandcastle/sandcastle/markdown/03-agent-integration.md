@@ -18,18 +18,18 @@ interface AgentProvider {
 }
 ```
 
-**Aha:** Each agent provider has its own `parseStreamLine()` function that parses that agent's specific stdout format into Sandcastle's unified `ParsedStreamEvent` type. This is how Sandcastle normalizes six completely different agent output formats into a single stream of text chunks, tool calls, and session IDs.
+**Aha:** `ParsedStreamEvent` is a discriminated union: `{ type: "text" | "result" | "tool_call" | "session_id" | "usage" }`. Each agent provider's `parseStreamLine()` parses that agent's specific stdout format into this shared type. This is how Sandcastle normalizes six completely different agent output formats into a single stream of text chunks, tool calls, and session IDs.
 
 ## Six Agent Providers
 
 | Factory | Resume? | Session Capture | Stream Format |
 |---------|---------|-----------------|---------------|
-| `claudeCode(model, opts)` | Yes | Yes (`~/.claude/projects/`) | `stream-json` (JSONL) |
+| `claudeCode(model, opts)` | Yes | Yes (`~/.claude/projects/`) | JSONL (`--output-format stream-json`) |
 | `codex(model, opts)` | Yes | Yes (`~/.codex/sessions/`) | JSONL events |
-| `pi(model, opts)` | Yes | Yes (`~/.pi/agent/sessions/`) | JSONL events |
-| `cursor(model)` | No | No | `tool_call` events |
-| `opencode(model)` | No | No | `text`/`tool_use` events |
-| `copilot(model)` | No | No | `assistant.message_delta` events |
+| `pi(model, opts)` | Yes | Yes (`~/.pi/agent/sessions/`) | JSONL events (`--mode json`) |
+| `cursor(model)` | No | No | `tool_call` events (JSONL) |
+| `opencode(model, opts?)` | No | No | `text`/`tool_use` events (JSONL) |
+| `copilot(model, opts?)` | No | No | `assistant.message_delta` events (JSONL) |
 
 ### Claude Code Provider
 
@@ -43,7 +43,7 @@ claudeCode("claude-opus-4-8", {
 });
 ```
 
-**AFK command:** `claude <model> --dangerously-skip-permissions --output-format stream-json --allowedTools "Edit,Write,Bash,..."`
+**AFK command:** `claude --print --verbose --dangerously-skip-permissions --output-format stream-json --model <model> -p -` (prompt piped via stdin). With resume: adds `--resume <id>`; with fork: adds `--fork-session`.
 
 **Stream parsing** (`parseStreamLine`): Parses JSONL lines from `stream-json` output:
 - `assistant` messages with `text` blocks → text events
@@ -70,13 +70,14 @@ codex("gpt-5.4", {
 });
 ```
 
-**AFK command:** `codex exec run <model> --dangerously-bypass-approvals-and-sandbox`
+**AFK command:** `codex exec run --json -m <model>` (prompt piped via stdin). With resume: `codex exec resume <id> --json -m <model> -`. With fork: `codex exec fork <id> --json -m <model>`.
 
 **Stream parsing:** Parses JSONL events:
+- `thread.started` → session_id (via `thread_id`)
+- `item.completed` with `agent_message` → text content + result
+- `item.started` with `command_execution` → tool call (Bash)
 - `turn.completed` → token usage
-- `item.completed` → text content
-- `item.started` → tool call events
-- `error` → error events
+- `error` → error events (auth failures, rate limits, API errors)
 
 **Resume:** `codex exec resume <id>` with prompt piped over stdin.
 **Fork:** `codex exec fork <id>`.
@@ -94,16 +95,19 @@ pi("claude-sonnet-4-6", {
 ```
 
 **Stream parsing:**
-- `session` event → session_id
-- `message_update` → text deltas (single-token chunks, buffered by `TextDeltaBuffer`)
-- `tool_execution_start` → tool call events
+- `session` event → session_id (via `obj.id`)
+- `message_update` with `text_delta` → text deltas (single-token chunks, buffered by `TextDeltaBuffer`)
+- `tool_execution_start` → tool call events (allowlisted tools only)
+- `agent_end` → result (complete assistant message)
 - `agent_error` / `error` → error events
+
+**AFK command:** `pi -p --mode json --model <model> --thinking <level>` (prompt piped via stdin). With resume: `pi -p --mode json --model <model> --session <id>`.
 
 **Aha:** Pi emits text as single-token deltas, which makes for very choppy display output. Sandcastle's `TextDeltaBuffer` (in `src/TextDeltaBuffer.ts`) coalesces these into multi-word lines before forwarding to the display, making the output readable.
 
 ### Non-Resumable Providers (Cursor, OpenCode, Copilot)
 
-These three agents don't support session resume. Their providers have `sessionStorage: undefined` and `captureSessions: false`. Attempting to use `resumeSession` or `output.maxRetries` with them throws immediately:
+These three agents don't support session resume. Their providers have no `sessionStorage` property and `captureSessions: false`. Attempting to use `resumeSession` or `output.maxRetries` with them throws immediately:
 
 Source: `src/run.ts:563-576`
 ```typescript
@@ -115,6 +119,12 @@ if (outputMaxRetries > 0 && !provider.sessionStorage) {
   );
 }
 ```
+
+**Cursor** AFK command: `agent --print --output-format stream-json --model <model> <prompt>` (binary is `agent`, not `cursor`; prompt passed as argv arg).
+
+**OpenCode** options: `variant` (reasoning effort, e.g. `"high"`) and `agent` (selects agent _inside_ OpenCode, e.g. `"build"`). AFK command: `opencode run --format json --model <model> --variant <v> --agent <a> --dangerously-skip-permissions <prompt>`.
+
+**Copilot** options: `effort` (`"low" | "medium" | "high"`). AFK command: `copilot -p <prompt> --output-format json --model <model> --allow-all-tools --effort <e>` (uses `--allow-all-tools` for bypass, not `--dangerously-skip-permissions`).
 
 ## Agent Stream Emitter
 
@@ -152,7 +162,7 @@ The `encodedProjectPath()` function converts the sandbox repo path to Claude's h
 
 Session location: `~/.codex/sessions/YYYY/MM/DD/rollout-*-<session-id>.jsonl`
 
-Located via directory scan since the rollout prefix varies.
+Located via `find` command matching `rollout-*-${id}.jsonl` since the date-based directory path varies per run.
 
 ### Pi
 
@@ -160,9 +170,9 @@ Session location: `~/.pi/agent/sessions/--<encoded-cwd>--/<timestamp>_<session-i
 
 ### CWD Rewriting
 
-**Aha:** When a session file is captured, all `cwd` fields inside the JSONL are rewritten to match the host repo root. This is critical — the provider's native resume command (`claude --resume <id>`) reads the JSONL and needs `cwd` to point to the correct directory. Without rewriting, the agent would try to resume into the sandbox path, which doesn't exist on the host.
+**Aha:** When a session file is captured, all `cwd` fields inside the JSONL are rewritten to match the host repo root. This is critical — the provider's native resume command (`claude --resume <id>`, `codex exec resume <id>`, `pi --session <id>`) reads the JSONL and needs `cwd` to point to the correct directory. Without rewriting, the agent would try to resume into the sandbox path, which doesn't exist on the host.
 
-The transfer functions are **pure string transformations** — they read the JSONL as text, regex-replace `cwd` values, and write back. No JSON parsing, no schema knowledge needed.
+The transfer functions are **pure string transformations** — they read the JSONL as text, regex-replace `cwd` values, and write back. No JSON parsing, no schema knowledge needed. Claude and Codex use `cwd` field matching; Pi uses `cwd` field on the header line.
 
 ## Session Resume
 

@@ -90,10 +90,11 @@ export const docker = (options?: DockerSandboxOptions): DockerSandboxProvider =>
 ```
 
 **Container lifecycle:**
-- Creates container with `docker run -d --name sandcastle-<uuid>` and `--entrypoint sleep infinity` (keeps container alive for agent to attach)
-- Mounts worktree at `/home/agent/workspace`
+- Creates container with `docker run -d --name sandcastle-<uuid>` (detached, name-prefixed)
+- Dockerfile `ENTRYPOINT` is `["sleep", "infinity"]` — container stays alive for agent to attach
+- Mounts worktree at `/home/agent/workspace` (overridden via `-w` at start)
 - Mounts `.git` directory (resolves worktree `.git` file to actual gitdir)
-- Runs as non-root `agent` user with host-matched UID/GID
+- Runs as non-root `agent` user with host-matched UID/GID (via `--user` flag)
 
 **Pre-flight checks:**
 - Verifies image exists (`docker image inspect`)
