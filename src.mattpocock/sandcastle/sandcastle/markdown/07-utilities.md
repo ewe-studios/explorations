@@ -2,146 +2,279 @@
 
 ## BoundedTail
 
-Source: `src/boundedTail.ts` — `BoundedTail` class
+Source: `src/boundedTail.ts` — `BoundedTail` class, `MAX_TAIL_CHARS`
 
-Caps buffered output to prevent V8 string overflow:
+A bounded, rolling tail of streamed output — shared by every sandbox provider that streams `exec` output:
 
 ```typescript
 // src/boundedTail.ts
-class BoundedTail {
-  private buffer = "";
-  private maxBytes: number;  // Default: 64KB
+export const MAX_TAIL_CHARS = 64 * 1024;  // 64KiB — chars, not bytes
 
-  append(chunk: string): void {
-    this.buffer += chunk;
-    if (this.buffer.length > this.maxBytes) {
-      // Keep only the last maxBytes
-      this.buffer = this.buffer.slice(-this.maxBytes);
+class BoundedTail {
+  private readonly items: string[] = [];
+  private totalChars = 0;
+  private readonly maxChars: number;
+  private readonly separator: string;
+
+  constructor(maxChars = MAX_TAIL_CHARS, separator = "") {
+    this.maxChars = maxChars;
+    this.separator = separator;
+  }
+
+  push(item: string): void {
+    // Single oversized item truncated to its own tail
+    const bounded = item.length > this.maxChars
+      ? item.slice(item.length - this.maxChars)
+      : item;
+    this.totalChars += bounded.length + (this.items.length > 0 ? this.separator.length : 0);
+    this.items.push(bounded);
+    // Evict oldest items to stay within budget
+    while (this.totalChars > this.maxChars && this.items.length > 1) {
+      const dropped = this.items.shift()!;
+      this.totalChars -= dropped.length + this.separator.length;
     }
   }
 
   toString(): string {
-    return this.buffer;
+    return this.items.join(this.separator);  // length <= maxChars
   }
 }
 ```
 
-**Aha:** Without `BoundedTail`, a long-running agent that produces megabytes of output would crash the process when the entire stdout is concatenated into a single string (V8 has a ~512MB string length limit, but practical issues occur much earlier). Every sandbox provider's `exec` uses `BoundedTail` to cap buffered output.
-
-## raceAbortSignal
-
-Source: `src/raceAbortSignal.ts` — `raceAbortSignal()`
-
-Combines an `AbortSignal` with a timeout into a single signal:
-
-```typescript
-// Creates an AbortController that fires on either:
-// 1. The provided signal being aborted
-// 2. The timeout elapsing
-```
-
-Used by the Orchestrator's idle timeout and completion timeout mechanisms.
+**Why it exists:** When a provider streams output line-by-line, it accumulates the stream to build `ExecResult.stdout`/`stderr`. Consumers read just the tail (last lines of an error, or a fallback for the agent's final result), so retaining the whole stream is unnecessary. Once the accumulated string passes V8's ~512MB max string length, a naive `chunks.join()` throws `RangeError: Invalid string length`, crashing the whole orchestration. 64KiB sits comfortably above any agent completion signal or structured-output payload while staying far below V8's limit.
 
 ## shutdownRegistry
 
-Source: `src/shutdownRegistry.ts` — `shutdownRegistry`
+Source: `src/shutdownRegistry.ts` — `registerShutdown()`
 
-**Aha:** Process-wide signal handler registry. A single `SIGINT`/`SIGTERM`/`exit` listener fans out to registered teardowns. This prevents `MaxListenersExceededWarning` when multiple sandboxes are running concurrently — each sandbox would otherwise register its own signal handler.
+Process-wide shutdown registry. Sandboxes need synchronous cleanup (remove a container, print worktree-recovery guidance) when the host process is interrupted. Registering `SIGINT`/`SIGTERM`/`exit` listeners per sandbox makes Node emit `MaxListenersExceededWarning` once more than ~10 sandboxes exist concurrently.
 
-Registration:
+This module installs exactly **one listener per signal** — no matter how many sandboxes are alive — and fans out to a set of teardown callbacks:
+
 ```typescript
-shutdownRegistry.register(async () => {
-  // Teardown logic — called once on process exit
-});
+// src/shutdownRegistry.ts
+export type ShutdownCallback = () => void;  // Synchronous only
+
+export const registerShutdown = (teardown: ShutdownCallback): (() => void) => {
+  teardownCallbacks.add(teardown);
+  attachListeners();  // First registration installs the shared listeners
+  let active = true;
+  return () => {  // Idempotent unregister function
+    if (!active) return;
+    active = false;
+    teardownCallbacks.delete(teardown);
+    if (teardownCallbacks.size === 0) detachListeners();
+  };
+};
 ```
+
+**Key properties:**
+- Callbacks are **synchronous** (`ShutdownCallback = () => void`) — signal handlers cannot await
+- On `SIGINT`/`SIGTERM`: runs every teardown, then `process.exit(1)`
+- On plain `exit`: runs every teardown without forcing exit code
+- Detaches listeners on signal so the subsequent `exit` event doesn't run teardowns twice
+- Last unregistration removes the listeners, restoring default signal behavior
+
+**Aha:** Each sandbox registers its own `removeContainerSync` callback on creation, and the unregister function is called when the container is removed normally. This means concurrent sandboxes share a single exit listener instead of each registering their own.
 
 ## ErrorHandler
 
-Source: `src/ErrorHandler.ts` — `withFriendlyErrors`, `formatErrorMessage`
+Source: `src/ErrorHandler.ts` — `formatErrorMessage()`, `withFriendlyErrors`
 
-Effect pipe that converts Effect errors to user-friendly terminal messages. Used in `main.ts`:
+Two functions for converting tagged `SandboxError`s into user-friendly terminal output:
+
+```typescript
+// src/ErrorHandler.ts
+export const formatErrorMessage = (error: SandboxError): string => {
+  switch (error._tag) {
+    case "ExecError":
+      return `Command failed in sandbox (${error.command}): ${error.message}`;
+    case "DockerError":
+      return `Docker operation failed: ${error.message}. Is Docker running?`;
+    case "PodmanError":
+      return `Podman operation failed: ${error.message}. Is Podman running?`;
+    case "AgentIdleTimeoutError":
+    case "WorktreeTimeoutError":
+    case "SessionCaptureError":
+      return error.message;
+    // ... 20+ error types, all handled
+  }
+};
+
+export const withFriendlyErrors = <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+): Effect.Effect<A, Exclude<E, SandboxError>, R | Display> =>
+  Effect.catchTags(effect as Effect.Effect<A, SandboxError, R>, {
+    ExecError: showErrorAndExit,
+    DockerError: showErrorAndExit,
+    // ... all 23 error types mapped to showErrorAndExit
+  });
+```
+
+`withFriendlyErrors` is the top-level wrapper in `main.ts`:
 
 ```typescript
 // src/main.ts
 cli(process.argv).pipe(
-  withFriendlyErrors,  // <- converts Effect errors to readable messages
+  withFriendlyErrors,  // catches all SandboxError, displays via Display, exits 1
   Effect.provide(mainLayer),
   NodeRuntime.runMain,
 );
 ```
 
-In `run()`, errors in file-logging mode are written to the log file before propagation:
-
-Source: `src/run.ts:775-788`
-```typescript
-const withErrorLog = resolvedLogging.type === "file"
-  ? baseEffect.pipe(
-      Effect.tapError((error) =>
-        Effect.gen(function* () {
-          const d = yield* Display;
-          yield* d.status(formatErrorMessage(error as SandboxError), "error");
-        }),
-      ),
-    )
-  : baseEffect;  // In stdout mode, errors already shown by withFriendlyErrors
-```
-
 ## Errors
 
-Source: `src/errors.ts` — 20+ tagged error classes
+Source: `src/errors.ts` — 23 tagged error classes
 
-All errors extend `SandboxError` union and use `Data.TaggedError` for pattern matching:
+All errors extend `SandboxError` via `Data.TaggedError`:
 
-| Error | When Thrown |
-|-------|-------------|
-| `ExecError` | Command execution failure |
-| `SyncError` | sync-in or sync-out failure |
-| `WorktreeError` | Worktree creation/removal failure |
-| `AgentIdleTimeoutError` | No output for `idleTimeoutSeconds` |
-| `SessionCaptureError` | Session JSONL copy failure |
-| `StructuredOutputError` | XML tag not found or schema validation failure |
-| `CwdError` | Invalid cwd directory |
-| `HookError` | Lifecycle hook failure |
-| `MountError` | Mount configuration error |
-| `PromptError` | Prompt resolution failure |
-
-Each error has:
-- `tag` — for discriminated union matching
-- `message` — user-friendly description
-- Underlying cause (when available)
-
-The `withTimeout()` helper wraps effects with custom timeout errors:
 ```typescript
-withTimeout(effect, timeoutMs, () => new ExecError("..."));
+// src/errors.ts — error classes (all Data.TaggedError)
+class ExecError extends Data.TaggedError("ExecError")<{
+  readonly message: string;
+  readonly command: string;
+  readonly exitCode?: number;
+}> {}
+
+class ExecHostError extends Data.TaggedError("ExecHostError")<{
+  readonly message: string;
+  readonly command: string;
+}> {}
+
+class PromptError extends Data.TaggedError("PromptError")<{
+  readonly message: string;
+  readonly exitCode?: number;
+}> {}
+
+class AgentError extends Data.TaggedError("AgentError")<{
+  readonly message: string;
+  readonly preservedWorktreePath?: string;
+}> {}
+
+class AgentIdleTimeoutError extends Data.TaggedError("AgentIdleTimeoutError")<{
+  readonly message: string;
+  readonly timeoutMs: number;
+  readonly preservedWorktreePath?: string;
+}> {}
+
+class SessionCaptureError extends Data.TaggedError("SessionCaptureError")<{
+  readonly message: string;
+  readonly sessionId?: string;
+}> {}
 ```
 
-## CwdError
+**All 23 error types:**
+| Error | Key Fields | When Thrown |
+|-------|-----------|-------------|
+| `ExecError` | `command`, `exitCode?` | Command failed inside sandbox |
+| `ExecHostError` | `command` | Command failed on host |
+| `CopyError` | — | File copy failed |
+| `DockerError` | — | Docker operation failed |
+| `PodmanError` | — | Podman operation failed |
+| `SyncError` | — | Git sync (sync-in/sync-out) failed |
+| `WorktreeError` | — | Git worktree operation failed |
+| `PromptError` | `exitCode?` | Prompt resolution failed |
+| `AgentError` | `preservedWorktreePath?` | Agent invocation failed |
+| `ConfigDirError` | — | Config directory invalid |
+| `InitError` | — | Init scaffolding failed |
+| `AgentIdleTimeoutError` | `timeoutMs`, `preservedWorktreePath?` | No output for idle timeout |
+| `WorktreeTimeoutError` | `path`, `operation`, `timeoutMs` | Worktree operation timed out |
+| `ContainerStartTimeoutError` | — | Container didn't start in time |
+| `CopyToWorktreeTimeoutError` | — | File copy to worktree timed out |
+| `CopyToWorktreeError` | `path`, `stderr`, `exitCode` | File copy to worktree failed |
+| `SyncInTimeoutError` | — | Sync-in (git bundle transfer) timed out |
+| `HookTimeoutError` | `command`, `timeoutMs` | Lifecycle hook timed out |
+| `GitSetupTimeoutError` | — | Git setup in sandbox timed out |
+| `PromptExpansionTimeoutError` | `expression`, `elapsedMs` | `` !`command` `` expansion timed out |
+| `CommitCollectionTimeoutError` | — | Collecting commits timed out |
+| `MergeToHostTimeoutError` | `sourceBranch`, `targetBranch` | Merging to host timed out |
+| `SessionCaptureError` | `sessionId?` | Capturing session JSONL failed |
 
-Source: `src/CwdError.ts` — `CwdError` class
-
-Thrown when the `cwd` option doesn't exist or isn't a directory. Exported from the public API so callers can catch it specifically.
-
-## RecoveryMessage
-
-Source: `src/RecoveryMessage.ts` — `buildRecoveryMessage()`
-
-Builds recovery suggestions on failure, including preserved worktree paths and commands to continue working.
+**Aha:** The `withTimeout()` helper (also in `errors.ts`) wraps any Effect with a custom timeout error, so `ExecError` can carry the command that timed out, `HookTimeoutError` can carry the hook command, etc. This is better than a generic timeout — every timeout error is context-specific.
 
 ## TextDeltaBuffer
 
-Source: `src/TextDeltaBuffer.ts` — `TextDeltaBuffer` class
+Source: `src/TextDeltaBuffer.ts`
 
-Buffers token-by-token chunks into multi-word lines for readable display:
+Buffers token-by-token chunks into multi-word lines for readable display (especially Pi, which emits single-token deltas):
 
-**Why it exists:** Pi (and potentially other agents) emit text as single-token deltas — each chunk is a word fragment or even a single character. Displaying these individually produces choppy, unreadable output. `TextDeltaBuffer` accumulates chunks and flushes them as complete lines when it detects word boundaries.
+```typescript
+// src/TextDeltaBuffer.ts — flush thresholds
+const LENGTH_THRESHOLD = 80;   // Flush when buffer >= 80 chars
+const DEBOUNCE_MS = 50;        // Flush after 50ms of silence
 
-```mermaid
-flowchart LR
-    In["Token chunks:\n'H' 'e' 'l' 'l' 'o' '\\n'"] --> Buf["TextDeltaBuffer"]
-    Buf --> Out["Flushed line:\n'Hello'"]
+// Flush triggers (any one fires):
+// 1. Newline detected in buffer
+// 2. Sentence boundary: /[.!?] $/ 
+// 3. Buffer length >= 80 chars
+// 4. 50ms debounce timer fires
 ```
 
-Used by the Orchestrator when forwarding agent text to the display.
+The buffer has `push()`, `flush()`, and `dispose()` methods. The running counter is encapsulated so callers can't desync it.
+
+## EnvResolver + mergeProviderEnv
+
+Source: `src/EnvResolver.ts` — `resolveEnv()`
+Source: `src/mergeProviderEnv.ts` — `mergeProviderEnv()`
+
+**EnvResolver** reads `.sandcastle/.env` from the host repo directory and merges with `process.env`. Uses `FileSystem` Effect service for testability.
+
+**mergeProviderEnv** merges resolver output with agent + sandbox provider env:
+
+```typescript
+// src/mergeProviderEnv.ts — merge rules
+// 1. Start with resolvedEnv output (.sandcastle/.env + process.env)
+// 2. Overlay agent provider env
+// 3. Overlay sandbox provider env
+// 4. Validate: agent env and sandbox env must NOT share any key → throws if overlap
+```
+
+This means provider-level `env` options (e.g. `claudeCode("...", { env: { ANTHROPIC_API_KEY: "..." } })`) override `.sandcastle/.env` values, but agent and sandbox provider envs must be disjoint.
+
+## SessionStore
+
+Source: `src/SessionStore.ts` — session transfer primitives
+
+Session capture and transfer functions:
+- `encodeProjectPath(cwd)` — converts repo path to Claude's hyphenated convention (`/home/agent/workspace` → `home-agent-workspace`)
+- `claudeHostSessionPath(cwd, id)` — computes `~/.claude/projects/<encoded>/<id>.jsonl`
+- `claudeSandboxSessionPath(cwd, id)` — computes `/home/agent/.claude/projects/<encoded>/<id>.jsonl`
+- `transferClaudeSession(jsonl, fromCwd, toCwd)` — pure string transformation, rewrites `cwd` fields in JSONL
+- `findClaudeSessionOnHost(id)` — locates session by id on host
+- `findCodexSessionOnHost(id)` — uses `find` command matching `rollout-*-${id}.jsonl` under `~/.codex/sessions/`
+- `piSessionDirPath(cwd)` — computes `~/.pi/agent/sessions/<encoded-cwd>/`
+- `findPiSessionOnHost(id)` — scans `~/.pi/agent/sessions/` directories for session by id
+
+**Aha:** Pi resolves `--session <id>` against the *current project's* encoded directory first. A transferred file in any other directory hits a "fork session?" prompt that hangs in print/json mode. So Sandcastle lands captured Pi files in the current project's directory regardless of where the sandbox wrote them.
+
+## templates
+
+Source: `src/templates.ts` — `SKELETON_PROMPT`
+
+Contains `SKELETON_PROMPT` — a reusable prompt template with `# Context`, `# Task`, `# Done` sections. The actual template registry (5 templates with metadata) lives in `InitService.ts`, not here.
+
+## resumePrecheck
+
+Source: `src/resumePrecheck.ts` — `assertResumeSessionExists()`
+
+Pre-flight check: validates that the session file exists on the host before sandbox creation. Uses `existsOnHost()` from the provider's `sessionStorage` to check.
+
+## extractStructuredOutput
+
+Source: `src/extractStructuredOutput.ts` — `extractStructuredOutput()`
+
+1. Finds the **last** occurrence of `<tag>...</tag>` in stdout (regex)
+2. Unwraps Markdown code fences if present
+3. For `Output.object`: JSON parses, validates against Standard Schema
+4. For `Output.string`: returns trimmed text
+
+On failure: throws `StructuredOutputError` with `commits`, `branch`, `preservedWorktreePath`, `sessionId`, `sessionFilePath`.
+
+## version
+
+Source: `src/version.ts` — `VERSION` constant
+
+Exports `VERSION` from `__SANDCASTLE_VERSION__` (injected by tsup from `package.json` at build time).
 
 ## MountConfig + mountUtils
 
@@ -153,6 +286,7 @@ Mount configuration types and utilities:
 - Path normalization (tilde expansion, absolute resolution)
 - Git mount resolution (follows worktree `.git` file to actual gitdir)
 - Windows worktree path patching (ADR-0006)
+- `formatVolumeMount()` — builds `-v` mount strings with SELinux labels
 
 ## resolveCwd
 
@@ -163,66 +297,44 @@ Resolves and validates the `cwd` option:
 - Absolute paths → used as-is
 - Invalid path → `CwdError` thrown
 
-## EnvResolver + mergeProviderEnv
+Uses `FileSystem` Effect service for testability.
 
-Source: `src/EnvResolver.ts` — `resolveEnv()`
-Source: `src/mergeProviderEnv.ts` — `mergeProviderEnv()`
+## raceAbortSignal
 
-**EnvResolver** resolves env from `.sandcastle/.env` + `process.env`.
+Source: `src/raceAbortSignal.ts`
 
-**mergeProviderEnv** merges the resolver output with agent + sandbox provider env:
+Races an Effect against an AbortSignal using `Effect.raceFirst(effect, Deferred.await(abortDeferred))`:
+- Checks `signal.aborted` upfront and `Effect.die`s immediately if already aborted
+- Creates a `Deferred` that fires on abort via `signal.addEventListener("abort", ...)`
+- Uses `Effect.ensuring` to clean up the event listener
+- On abort: `Effect.die` propagates as a defect (not a catchable error)
 
-```typescript
-// Merge rules:
-// 1. Provider env (agent + sandbox) overrides .sandcastle/.env for shared keys
-// 2. Agent provider env and sandbox provider env MUST NOT overlap → throws if they share any key
-// 3. When env is not provided, it defaults to {}
-```
+**Aha:** This uses Effect's `die` channel (defect propagation), not a normal error. This means abort isn't caught by `Effect.catchTags` — it propagates as an unhandled defect, which is intentional: an abort should not be silently swallowed by error handling.
 
-## resumePrecheck
+## terminalCleanup
 
-Source: `src/resumePrecheck.ts` — `assertResumeSessionExists()`
+Source: `src/terminalCleanup.ts` — `setupTerminalCleanup()`
 
-Pre-flight check: validates that the session file exists on the host before sandbox creation. Throws immediately if missing, avoiding the cost of starting a sandbox for a session that doesn't exist.
+Registers an `exit` hook that restores terminal state. `@clack/prompts`' spinner/taskLog set stdin to raw mode and hide the cursor. If the process exits via a signal handler that calls `process.exit()` directly (e.g. the Ctrl-C handler in SandboxFactory), clack's own cleanup is bypassed, leaving the terminal broken.
 
-## extractStructuredOutput
+## sandboxExec + startSandbox
 
-Source: `src/extractStructuredOutput.ts` — `extractStructuredOutput()`
+Source: `src/sandboxExec.ts` — `sandboxExec()`
+Source: `src/startSandbox.ts` — `startSandbox()`
 
-1. Finds the **last** occurrence of `<tag>...</tag>` in stdout (regex)
-2. Unwraps Markdown code fences if present (```json ... ```)
-3. For `Output.object`: JSON parses, validates against Standard Schema
-4. For `Output.string`: returns trimmed text
+**sandboxExec**: Wrapper for sandbox exec with options (cwd, onLine streaming).
 
-On failure: throws `StructuredOutputError` with `commits`, `branch`, `preservedWorktreePath`, `sessionId`, `sessionFilePath`.
+**startSandbox**: Dispatches on `provider.tag`:
+- `bind-mount`: Builds mount list (worktree + git mounts + user mounts), calls `provider.create()`
+- `isolated`: Calls `provider.create()`, then `syncIn()` via git bundle, then `copyIn()` for optional paths
+- `none`: Calls `provider.create()` directly
 
-## templates
+## interactive
 
-Source: `src/templates.ts` — template definitions + metadata
+Source: `src/interactive.ts` — `interactive()`
 
-Registry of 5 templates with metadata:
-
-| Template | Main File | Prompts | Requires Host Deps |
-|----------|-----------|---------|-------------------|
-| `blank` | `main.mts` | `prompt.md` | No |
-| `simple-loop` | `main.mts` | `prompt.md` | No |
-| `sequential-reviewer` | `main.mts` | `implement-prompt.md`, `review-prompt.md` | No |
-| `parallel-planner` | `main.mts` | `plan-prompt.md`, `implement-prompt.md`, `merge-prompt.md` | Yes (`zod`) |
-| `parallel-planner-with-review` | `main.mts` | `plan-prompt.md`, `implement-prompt.md`, `review-prompt.md`, `merge-prompt.md` | Yes (`zod`) |
-
-Each template's `template.json` contains:
-- `name` — display name
-- `description` — what it does
-- `main` — orchestration script file
-- `prompts` — array of prompt file paths
-- `hostDeps` — npm packages the main file imports
-
-## version
-
-Source: `src/version.ts` — `VERSION` constant
-
-Exports `VERSION` from `__SANDCASTLE_VERSION__` (injected by tsup from `package.json` at build time).
+Top-level function for TUI agent sessions. Defaults to `noSandbox()` when no sandbox provided. Validates `copyToWorktree` incompatible with `head` strategy.
 
 ---
 
-Next: [08-cross-cutting.md](./08-cross-cutting.md) — Error handling patterns, abort signals, shutdown lifecycle, Windows handling, and testing strategy.
+Next: [08-cross-cutting.md](./08-cross-cutting.md) — Error handling patterns, AbortSignal, shutdown lifecycle, Windows handling, testing, CI/CD.

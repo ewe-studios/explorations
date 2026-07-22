@@ -156,12 +156,12 @@ flowchart LR
 <h2>Key Concepts</h2>
 <h3>Sandbox Provider</h3>
 <p>A provider tells Sandcastle how to create an isolated environment. Built-in options:</p>
-<table><tr><th>Provider</th><th>Type</th><th>Isolation</th></tr><tr><td>`docker()`</td><td>Bind-mount</td><td>Container mounts host worktree</td></tr><tr><td>`podman()`</td><td>Bind-mount</td><td>Container mounts host worktree</td></tr><tr><td>`vercel()`</td><td>Isolated</td><td>Firecracker microVM, own filesystem</td></tr><tr><td>`noSandbox()`</td><td>None</td><td>Agent runs directly on host</td></tr></table>
+<table><tr><th>Provider</th><th>Type</th><th>Isolation</th></tr><tr><td>`docker()`</td><td>Bind-mount</td><td>Container mounts host worktree</td></tr><tr><td>`podman()`</td><td>Bind-mount</td><td>Container mounts host worktree</td></tr><tr><td>`vercel()`</td><td>Isolated</td><td>Firecracker microVM, own filesystem</td></tr><tr><td>`daytona()`</td><td>Isolated</td><td>Ephemeral sandbox via `@daytona/sdk`</td></tr><tr><td>`noSandbox()`</td><td>None</td><td>Agent runs directly on host (no `--dangerously-skip-permissions`)</td></tr></table>
 <p><strong>Aha:</strong> Bind-mount providers mount the worktree into the container — the agent writes directly to the host filesystem through the mount, so no file sync is needed. Isolated providers (Vercel) need <code>copyIn</code>/<code>copyFileOut</code> to move code in and out.</p>
 <h3>Branch Strategy</h3>
 <p>Controls where the agent's commits land:</p>
-<table><tr><th>Strategy</th><th>Behavior</th><th>Default For</th></tr><tr><td>`head`</td><td>Agent writes to host working directory directly</td><td>Bind-mount</td></tr><tr><td>`merge-to-head`</td><td>Temp branch in worktree, merged back to HEAD when done</td><td>Isolated</td></tr><tr><td>`branch`</td><td>Commits land on an explicitly named branch</td><td>Neither (opt-in)</td></tr></table>
-<p><strong>Aha:</strong> Branch strategy is configured on <code>run()</code>, not on the provider. This makes providers fully swappable — Docker and Vercel accept the same branch strategy option.</p>
+<table><tr><th>Strategy</th><th>Behavior</th><th>Default For</th></tr><tr><td>`head`</td><td>Agent writes to host working directory directly (no worktree)</td><td>Bind-mount, No-sandbox</td></tr><tr><td>`merge-to-head`</td><td>Temp branch in worktree, merged back to HEAD when done</td><td>Isolated</td></tr><tr><td>`branch`</td><td>Commits land on an explicitly named branch</td><td>Opt-in (all providers)</td></tr></table>
+<p><strong>Aha:</strong> Branch strategy is configured on <code>run()</code>, <code>interactive()</code>, <code>createSandbox()</code>, and <code>createWorktree()</code> — not on the provider. This makes providers fully swappable — Docker and Vercel accept the same branch strategy option.</p>
 <h3>Agent Provider</h3>
 <p>A factory function that configures how to launch a specific coding agent:</p>
 <pre><code class="language-typescript">// src/AgentProvider.ts — agent factories
@@ -185,12 +185,46 @@ await run({
 });
 </code></pre>
 <h2>API Surface Summary</h2>
-<table><tr><th>Entry Point</th><th>Purpose</th><th>Returns</th></tr><tr><td>`run()`</td><td>One-shot agent invocation</td><td>`RunResult` with commits, stdout, iterations</td></tr><tr><td>`createSandbox()`</td><td>Reusable sandbox for multiple runs</td><td>`Sandbox` with `run()`, `exec()`, `close()`</td></tr><tr><td>`createWorktree()`</td><td>Worktree as first-class concept</td><td>`Worktree` with `run()`, `interactive()`, `createSandbox()`</td></tr><tr><td>`interactive()`</td><td>Interactive TUI agent session</td><td>`InteractiveResult`</td></tr></table>
-<p>See <a href="./01-architecture.md">01-architecture.md</a> for the full dependency graph and module map.</p>
-<h2>Why This Exists</h2>
-<p>Sandcastle emerged from the need to run AFK (away from keyboard) agents reliably at scale. Instead of manually creating branches, launching containers, running agents, and merging back, Sandcastle provides a single API that handles the entire lifecycle — with hooks for customization at every step.</p>
-<p>The project is built on the <strong>Effect</strong> platform (<code>effect</code>, <code>@effect/platform</code>, <code>@effect/cli</code>) for its internal CLI and orchestration, but the public API is plain async/await TypeScript — callers don't need to know Effect.</p>
-<p>Aha: The library is ~1,300 lines of custom code across ~60 source files (plus ~60 test files), yet it handles Docker/Podman/Vercel sandboxes, six agent types, five templates, session capture/resume/fork, structured output with retry, and a full CLI. The provider abstraction is what makes this scale — each new sandbox or agent is a thin adapter, not a rewrite.</p>
+<table><tr><th>Entry Point</th><th>Purpose</th><th>Returns</th></tr><tr><td>`run()`</td><td>One-shot agent invocation</td><td>`RunResult` with commits, stdout, iterations, resume/fork</td></tr><tr><td>`createSandbox()`</td><td>Reusable sandbox for multiple runs</td><td>`Sandbox` with `run()`, `exec()`, `close()`</td></tr><tr><td>`createWorktree()`</td><td>Worktree as first-class concept</td><td>`Worktree` with `run()`, `interactive()`, `createSandbox()`</td></tr><tr><td>`interactive()`</td><td>Interactive TUI agent session</td><td>`InteractiveResult`</td></tr></table>
+<h3>Key Options on <code>run()</code></h3>
+<table><tr><th>Option</th><th>Type</th><th>Default</th><th>Purpose</th></tr><tr><td>`agent`</td><td>`AgentProvider`</td><td>—</td><td>Agent factory (`claudeCode`, `codex`, `pi`, etc.)</td></tr><tr><td>`sandbox`</td><td>`SandboxProvider`</td><td>—</td><td>Sandbox provider (`docker`, `podman`, `vercel`, etc.)</td></tr><tr><td>`branchStrategy`</td><td>`BranchStrategy`</td><td>per-provider</td><td>Where commits land (`head`, `merge-to-head`, `branch`)</td></tr><tr><td>`prompt` / `promptFile`</td><td>string</td><td>—</td><td>Prompt source (mutually exclusive)</td></tr><tr><td>`promptArgs`</td><td>`PromptArgs`</td><td>—</td><td>`{{KEY}}` placeholder values (file prompts only)</td></tr><tr><td>`maxIterations`</td><td>number</td><td>`1`</td><td>Max agent iterations</td></tr><tr><td>`logging`</td><td>`LoggingOption`</td><td>`file`</td><td>`{ type: "file", path }` or `{ type: "stdout" }`</td></tr><tr><td>`completionSignal`</td><td>string \</td><td>string[]</td><td>`<promise>COMPLETE</promise>`</td><td>Early stop signal(s)</td></tr><tr><td>`idleTimeoutSeconds`</td><td>number</td><td>`600`</td><td>Fail if no output for this long</td></tr><tr><td>`completionTimeoutSeconds`</td><td>number</td><td>`60`</td><td>Grace window after signal seen but process hanging</td></tr><tr><td>`output`</td><td>`OutputDefinition`</td><td>—</td><td>Structured output extraction (`Output.object` / `Output.string`)</td></tr><tr><td>`resumeSession`</td><td>string</td><td>—</td><td>Resume prior agent session by ID</td></tr><tr><td>`signal`</td><td>`AbortSignal`</td><td>—</td><td>Cancel the run mid-execution</td></tr><tr><td>`copyToWorktree`</td><td>string[]</td><td>—</td><td>Host paths to copy into worktree before sandbox start</td></tr><tr><td>`hooks`</td><td>`SandboxHooks`</td><td>—</td><td>Lifecycle hooks (`host.*`, `sandbox.*`)</td></tr></table>
+<h3>Structured Output</h3>
+<p>Sandcastle can extract typed data from agent stdout via XML tags:</p>
+<pre><code class="language-typescript">import { Output } from &quot;@ai-hero/sandcastle&quot;;
+import { z } from &quot;zod&quot;;
+
+const result = await run({
+  // ...
+  output: Output.object({
+    tag: &quot;result&quot;,
+    schema: z.object({ summary: z.string(), score: z.number() }),
+    maxRetries: 2,  // Built-in retry via session resume
+  }),
+});
+
+console.log(result.output.summary);  // typed as string
+console.log(result.output.score);    // typed as number
+</code></pre>
+<p>On validation failure with <code>maxRetries > 0</code>, Sandcastle resumes the same agent session with a token-efficient feedback prompt — the agent doesn't redo its work, just re-emits the corrected tag.</p>
+<h3>Session Capture, Resume & Fork</h3>
+<p>After each iteration with Claude Code, Codex, or Pi, Sandcastle captures the session JSONL from sandbox to host (with <code>cwd</code> fields rewritten to match the host repo root). You can then:</p>
+<pre><code class="language-typescript">const result = await run({ ... });
+
+// Resume the same conversation
+const continued = await result.resume?.(&quot;Continue where you left off&quot;);
+
+// Fork for parallel review (leaves parent session intact)
+const [reviewA, reviewB] = await Promise.all([
+  result.fork?.(&quot;Review the auth layer&quot;, { branchStrategy: { type: &quot;branch&quot;, branch: &quot;review-a&quot; } }),
+  result.fork?.(&quot;Audit the data model&quot;, { branchStrategy: { type: &quot;branch&quot;, branch: &quot;review-b&quot; } }),
+]);
+</code></pre>
+<p><strong>Aha:</strong> Fork isolates the session JSONL only — it does <strong>not</strong> isolate the branch or sandbox. Safe concurrent forks require distinct branches. The default <code>head</code> and <code>merge-to-head</code> strategies are not safe for concurrent forks.</p>
+<h3>Logging Modes</h3>
+<ul><li><strong>File mode</strong> (default): Writes progress to a log file under <code>.sandcastle/logs/</code>. Prints <code>tail -f <path></code> at startup so you can watch in another terminal. Supports <code>onAgentStreamEvent</code> callback for observability forwarding and <code>verbose: true</code> for raw JSONL interleaving.</li><li><strong>Stdout mode</strong>: Renders interactive Clack UI in the terminal. <code>verbose: true</code> writes raw lines to stdout (interleaved with the UI).</li></ul>
+<h3>Effect Platform</h3>
+<p>Sandcastle's internal orchestration runs on the Effect platform (<code>Effect</code>, <code>Layer</code>, <code>Effect.runPromise</code>). This provides typed error channels, resource safety via <code>acquireUseRelease</code> (guaranteed cleanup even on abort), and dependency injection via Context/Tags/Layers. The public API is plain async/await TypeScript — callers don't need to know Effect.</p>
+<p><strong>Aha:</strong> The library is ~1,300 lines of custom code across ~60 source files (plus ~60 test files), yet it handles Docker/Podman/Vercel/Daytona sandboxes, six agent types, five templates, session capture/resume/fork, structured output with retry, and a full CLI. The provider abstraction is what makes this scale — each new sandbox or agent is a thin adapter, not a rewrite.</p>
 <hr>
 <p>Next: <a href="./01-architecture.md">01-architecture.md</a> — Full dependency graph, layer diagram, and module map.</p>
   </article>
