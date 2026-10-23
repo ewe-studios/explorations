@@ -410,9 +410,67 @@ const seq = await this.db.transaction(async (transaction) =&gt; {
 <p><code>checkGlobalIds</code> verifies no ID is reused across record types. A <code>record_ids</code> table maps every ID to its table. A conversation and a task cannot share an ID.</p>
 <h3>Document Action Validation</h3>
 <p><code>checkDocumentActions</code> validates document writes. It checks that creates target nonexistent IDs, that deltas have a base, and that an address has at most one current incarnation. The check "Document address already has a current incarnation" prevents two live versions of the same logical document.</p>
+<h3>The Two SQLite Adapters</h3>
+<p>The SQLite core is portable. <code>SqliteStorage</code> talks to one facade, <code>SqliteDatabase</code>. Two adapters implement that facade.</p>
+<pre><code class="language-ts">// packages/durable/src/storage/sqlite/database.ts -- the facade (verbatim)
+export interface SqliteDatabase extends SqliteExecutor {
+  transaction&lt;T&gt;(callback: (transaction: SqliteExecutor) =&gt; Promise&lt;T&gt;): Promise&lt;T&gt;;
+  close(): Promise&lt;void&gt;;
+}
+</code></pre>
+<p>Every operation is asynchronous, so an adapter may execute outside the harness runtime. The <code>SqliteExecutor</code> surface is four operations plus a transaction: <code>exec</code>, <code>run</code>, <code>get</code>, <code>all</code>, and <code>transaction</code>.</p>
+<h4>Node: <code>node:sqlite</code></h4>
+<p>The Node adapter wraps the built-in <code>node:sqlite</code> <code>DatabaseSync</code>.</p>
+<pre><code class="language-ts">// packages/durable/src/storage/sqlite/node.ts -- connection settings (abridged)
+export type NodeSqliteDatabaseOptions = {
+  readonly walAutoCheckpointPages?: number;   // default 1000; 0 disables
+  readonly busyTimeoutMs?: number;            // default 5000; SQLite defaults to 0
+};
+</code></pre>
+<p>Prepared statements are cached per connection by SQL text, so the database and its transaction handles share them across transactions.</p>
+<p>The adapter serializes operations through a <code>SerialOperationQueue</code>. An operation starts immediately when nothing is running or waiting. Otherwise it waits behind everything before it. An asynchronous operation holds the queue until it settles, with a barrier published before it starts, so calls it makes synchronously wait behind it. A transaction handle throws if it is used after its transaction settled.</p>
+<h4>Cloudflare: Durable Object SQL</h4>
+<p>The Cloudflare adapter targets the SQLite storage of a Cloudflare Durable Object.</p>
+<pre><code class="language-ts">// packages/durable/src/storage/sqlite/cloudflare.ts -- the binding (abridged)
+export type DurableObjectSqliteStorage = {
+  readonly sql: { exec(query: string, ...bindings: DurableObjectSqlValue[]): ... };
+  transaction&lt;T&gt;(closure: () =&gt; Promise&lt;T&gt;): Promise&lt;T&gt;;
+};
+</code></pre>
+<p>The type is structural, so the package needs no Workers type dependency. <code>DurableObjectSqlValue</code> is <code>ArrayBuffer | string | number | null</code>.</p>
+<p>Two adaptations matter. First, Durable Object SQL binds numbers as doubles, so a <code>bigint</code> outside the safe integer range would lose precision. <code>bindValue</code> throws instead of silently rounding.</p>
+<pre><code class="language-ts">// packages/durable/src/storage/sqlite/cloudflare.ts -- bind bigint (abridged)
+if (value &lt; BigInt(Number.MIN_SAFE_INTEGER) || value &gt; BigInt(Number.MAX_SAFE_INTEGER)) {
+  throw new RangeError(`Durable Object SQL cannot bind ${value} without losing precision`);
+}
+</code></pre>
+<p>Second, <code>BLOB</code> columns come back as <code>ArrayBuffer</code>, converted to <code>Uint8Array</code> in place.</p>
+<p>The adapter serializes through a <code>SerialQueue</code>. Synchronous operations run immediately when idle. A transaction holds the queue, so queued calls wait behind it. Adapters given the same storage object share one queue through a <code>WeakMap</code>.</p>
+<pre><code class="language-ts">// packages/durable/src/storage/sqlite/cloudflare.ts -- transaction (abridged)
+transaction&lt;T&gt;(callback): Promise&lt;T&gt; {
+  return this.queue.hold(() =&gt;
+    this.storage.transaction(async () =&gt; {
+      const transaction = new DurableObjectSqliteTransaction(this.storage);
+      try {
+        return await callback(transaction);
+      } finally {
+        transaction.active = false;
+      }
+    }),
+  );
+}
+</code></pre>
+<p>The transaction handle is invalid once the callback settles. <code>close</code> is a no-op drain, because the Durable Object owns its storage.</p>
+<p>The Aha is that one SQLite core serves two very different hosts. Node gets WAL, a file lock, and a busy timeout. Cloudflare gets a single-owner binding where the platform owns the file and there is no lock. The facade hides that difference behind one <code>SqliteDatabase</code> interface.</p>
 <h2>Comparing the Three Backends</h2>
 <table><tr><th>Backend</th><th>Write</th><th>Read</th><th>Recovery</th><th>Use</th></tr><tr><td>Memory</td><td>Fast</td><td>Fast</td><td>None</td><td>Tests, ephemeral</td></tr><tr><td>JSONL</td><td>Fast append</td><td>Replay to memory</td><td>Replay</td><td>Portable, single-file-ish</td></tr><tr><td>SQLite</td><td>Indexed</td><td>Indexed</td><td>Native</td><td>Production, queries</td></tr></table>
 <p>The contract is identical. Only the trade-offs change.</p>
+<h2>What Is Not a Backend: Postgres and the Browser</h2>
+<p>The storage contract has exactly three implementations: Memory, JSONL, and SQLite. There is no Postgres backend. The SQL in <code>migrations.ts</code> is SQLite-specific: <code>STRICT</code> tables, <code>CHECK (json_valid(record))</code>, and SQLite check constraints. The migrations run through SQLite. durable does not ship a Postgres adapter.</p>
+<p>There is also no browser-side durable store. durable requires Node 22.19.0 or newer. It is a server-side runtime.</p>
+<p>The browser appears in two places, neither of which is storage:</p>
+<ul><li>chord's <code>WebSocketLink</code> lets a browser be a client host that talks to a server host. State still lives on the server.</li><li>codemode's <code>InlineCodemodeSandbox</code> runs a QuickJS VM on the calling thread, for Cloudflare Workers and browsers.</li></ul>
+<p>Cloudflare appears in two real places: the SQLite adapter above (Durable Object SQL) and codemode's inline sandbox in <a href="./10-codemode.md">10-codemode.md</a>. What the code does not contain is a Cloudflare D1 or KV backend, a Postgres backend, or an IndexedDB/localStorage durable store. Those would be new backends, not gaps in this documentation.</p>
 <h2>What This Looks Like in Rust</h2>
 <p>Rust maps the design almost one-to-one, with stronger compile-time guarantees.</p>
 <pre><code class="language-rust">// A branded ID with zero runtime cost, like durable&#x27;s Id&lt;Kind, Type&gt;

@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>13 -- Delta Replication vs CRDTs (Automerge) -- pi_latest</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/pi_latest/docs</span>
+    <div class="nav-actions">
+      <a href="10-codemode.html" class="nav-breadcrumb">10 -- Codemode: The Sandbox</a><a href="11-data-flow.html" class="nav-breadcrumb">11 -- Data Flow: One Request End to End</a><a href="12-cross-cutting.html" class="nav-breadcrumb">12 -- Cross-Cutting Concerns</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="12-cross-cutting.html" class="nav-btn" title="Previous: 12 -- Cross-Cutting Concerns">← prev</a>
+      <a href="README.html" class="nav-btn nav-btn-next" title="Next: pi_latest -- Documentation Index">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>13 -- Delta Replication vs CRDTs (Automerge)</h1>
+<p>chord's delta system is often compared to a CRDT. It is not one. It is single-writer operation-log replication. Automerge is a multi-writer CRDT. Both answer the same question, "how do I sync a shared value efficiently?", with opposite answers. This document explains the algorithm, where the two diverge, where chord's choice is optimal, and where it trades away what a CRDT gives.</p>
+<p>Jargon first. A CRDT (conflict-free replicated data type) is a data structure where concurrent edits merge deterministically, and every replica converges to the same value no matter the delivery order. An RGA (replicated growable array) is the sequence CRDT Automerge uses for text. A Lamport clock is a counter that orders events causally. An op ID is a unique identity plus a Lamport timestamp plus an actor ID. A tombstone is a marker that an element was deleted, kept so other replicas converge.</p>
+<h2>The Two Answers</h2>
+<p>The problem: two sides hold a copy of one JSON value. One side changes it. The other side must learn the change without resending the whole value.</p>
+<p>Automerge's answer: let any replica edit, give every change an identity and a timestamp, and make merge a commutative join. Convergence falls out of the algebra, not the delivery.</p>
+<p>chord's answer: forbid concurrent editors. One writer produces a linear sequence of operations. Replicas are read-only views that apply the operations in order. Convergence falls out of having one writer.</p>
+<p>The Aha is that chord did not implement a simpler CRDT. It removed the problem a CRDT exists to solve. There is nothing to merge, because there is one author.</p>
+<h2>What chord Actually Does</h2>
+<p>This is the algorithm, from the code.</p>
+<h3>The Operation Vocabulary</h3>
+<p>A mutation is turned into a delta: a list of operations. Each operation is a tuple.</p>
+<pre><code class="language-ts">// packages/chord/src/delta/index.ts -- the op type (verbatim)
+export type Op =
+  | readonly [&quot;r&quot;, JsonValue]
+  | readonly [&quot;s&quot;, NonEmptyPath, JsonValue]
+  | readonly [&quot;d&quot;, NonEmptyPath]
+  | readonly [&quot;a&quot;, NonEmptyPath, string]
+  | readonly [&quot;t&quot;, NonEmptyPath, number]
+  | readonly [&quot;p&quot;, Path, number, number, JsonValue[]]
+  | readonly [&quot;m&quot;, Path, number[]];
+</code></pre>
+<table><tr><th>Op</th><th>Meaning</th></tr><tr><td>`r`</td><td>Replace the whole value. The only op that does.</td></tr><tr><td>`s`</td><td>Set a field at a path.</td></tr><tr><td>`d`</td><td>Delete a field at a path.</td></tr><tr><td>`a`</td><td>Append a string to the end of a string field.</td></tr><tr><td>`t`</td><td>Drop the first `count` characters of a string field (keep the tail).</td></tr><tr><td>`p`</td><td>Splice an array: `splice(index, deleteCount, ...items)`.</td></tr><tr><td>`m`</td><td>Reorder an array by a permutation.</td></tr></table>
+<p><code>s</code>, <code>d</code>, <code>a</code>, <code>t</code> never target the root. Only <code>r</code>, <code>p</code>, and <code>m</code> may. <code>isBase</code> uses this: a batch whose first op is <code>r</code> is a full replacement.</p>
+<h3>Apply Is a Left Fold</h3>
+<p><code>apply</code> is a plain loop over the ops.</p>
+<pre><code class="language-ts">// packages/chord/src/delta/index.ts -- apply (abridged)
+export function apply&lt;T&gt;(target: T | undefined, ops: readonly Op[]): T {
+  return applyOps(target, ops);
+}
+
+function applyOps&lt;T&gt;(target: T | undefined, ops: readonly Op[]): T {
+  let root = target as unknown as JsonValue;
+  for (const op of ops) {
+    assertValidOp(op);
+    if (op[0] === &quot;r&quot;) {
+      root = op[1];            // adopted, not copied
+      continue;
+    }
+    const path = op[1];
+    assertSafePath(path);
+    if (op[0] === &quot;p&quot;) {
+      const target_ = path.length === 0 ? root : resolve(root, path);
+      target_.splice(op[2], op[3]);                       // delete
+      const chunkSize = 10_000;
+      for (let offset = 0; offset &lt; op[4].length; offset += chunkSize) {
+        target_.splice(op[2] + offset, 0, ...op[4].slice(offset, offset + chunkSize));
+      }
+      continue;
+    }
+    if (op[0] === &quot;m&quot;) {
+      const target_ = path.length === 0 ? root : resolve(root, path);
+      const previous = target_.slice();
+      for (let index = 0; index &lt; op[2].length; index++) target_[index] = previous[op[2][index]!]!;
+      continue;
+    }
+    const parent = resolve(root, path.slice(0, -1));
+    const key = path[path.length - 1]!;
+    // defineProperty, not assignment: an inherited setter would otherwise run on write
+    const write = (value) =&gt; Object.defineProperty(parent, key, { value, writable: true, enumerable: true, configurable: true });
+    const read = () =&gt; (Object.hasOwn(parent, key) ? parent[key] : undefined);
+    switch (op[0]) {
+      case &quot;s&quot;: write(op[2]); break;
+      case &quot;d&quot;: Array.isArray(parent) ? parent.splice(key, 1) : delete parent[key]; break;
+      case &quot;a&quot;: { const current = read(); write(`${current}${op[2]}`); break; }  // append
+      case &quot;t&quot;: { const current = read(); write(current.slice(op[2])); break; }  // drop the first N chars
+    }
+  }
+  return root;
+}
+</code></pre>
+<p>There are no op IDs, no timestamps, no actor IDs. There is no merge step. The fold is it.</p>
+<p>The Aha is that <code>a</code> and <code>t</code> are positional and relative to the current value in one history. <code>a</code> appends to whatever the string is now. <code>t</code> drops the first <code>count</code> characters. They are a sliding window, not a concurrent-insertion record.</p>
+<h3>Immutable Apply Is Copy-on-Write</h3>
+<p><code>applyImmutable</code> produces a new value without mutating the old one.</p>
+<pre><code class="language-ts">// packages/chord/src/delta/index.ts -- applyImmutable (abridged)
+export function applyImmutableBatches&lt;T&gt;(target: T | undefined, batches: Iterable&lt;readonly Op[]&gt;): T {
+  let root = target as unknown as JsonValue;
+  const owned = new WeakSet&lt;object&gt;();
+  for (const ops of batches) {
+    for (const op of ops) {
+      if (op[0] === &quot;r&quot;) { root = op[1]; continue; }
+      if (op[0] === &quot;p&quot;) {
+        const appended = appendCopy(root, op, owned);   // concat fast path
+        if (appended !== undefined) { root = appended; continue; }
+      }
+      root = copyContainers(root, op[0] === &quot;p&quot; || op[0] === &quot;m&quot; ? op[1] : op[1].slice(0, -1), owned);
+      root = applyOps(root, [op]);
+    }
+  }
+  return root;
+}
+</code></pre>
+<p><code>copyContainers</code> copies only the containers on the touched path. For <code>p</code> and <code>m</code> it copies the array's path; for <code>s</code>/<code>d</code>/<code>a</code>/<code>t</code> it copies the parent's path, because the last segment is a property write, not a container. The old value and the new value share every untouched subtree. A pure append to an array uses <code>concat</code>, one copy, instead of a copy that the splice then grows.</p>
+<p>The Aha is structural sharing. A tiny edit deep in a large value copies only the spine to that edit. The rest is shared by reference.</p>
+<h3>The Wire Form</h3>
+<p>Ops cross a boundary compressed. Two compressions apply.</p>
+<ol><li>Path interning: a path is assigned an id on its second use. A <code>["#", id, path]</code> definition is emitted once; later ops reference the id.</li><li>Arity omission: an op drops its path when it matches the previous op's path.</li></ol>
+<pre><code class="language-ts">// packages/chord/src/delta/index.ts -- intern on second use (verbatim comment)
+// Intern on SECOND use. A definition costs more than the path it replaces, so
+// interning on first use loses on the many paths written exactly once.
+</code></pre>
+<p>A <code>r</code> batch clears the interning dictionary, so a reader replays from the last base with a fresh decoder.</p>
+<h3>The 4096-Op Cap</h3>
+<p>A delta is capped. Past <code>MAX_DELTA_OPERATIONS</code>, the tracker falls back to a root replace.</p>
+<pre><code class="language-ts">// packages/chord/src/delta/tracker.ts -- the cap (verbatim)
+const MAX_DELTA_OPERATIONS = 4_096;
+</code></pre>
+<p>The Aha is why. A giant change is cheaper as one full value than as thousands of ops. The cap bounds both write size and apply time.</p>
+<h3>Storage: Base Plus Deltas</h3>
+<p>durable stores a document as a base plus a tail of deltas.</p>
+<pre><code class="language-ts">// packages/durable/src/types.ts -- document content (concept)
+type DocumentContent =
+  | { kind: &quot;base&quot;; version: number; value: JsonObject }
+  | { kind: &quot;delta&quot;; version: number; ops: readonly Op[] };
+</code></pre>
+<p>Reading materializes: load the base, then <code>apply</code> each delta in order. A document may checkpoint with <code>checkpointWhen</code>, which stores a full base instead of a delta. This bounds the read tail. See <a href="./05-durable-storage.md">05-durable-storage.md</a>.</p>
+<h3>Replication: Monotonic Cursor, No Gaps</h3>
+<p>A replica attaches to a source with a snapshot and a cursor.</p>
+<pre><code class="language-ts">// packages/chord/src/state.ts -- the cursor contract (verbatim comment)
+// Monotonic source cursor. The first frame after a snapshot must be `snapshot.cursor + 1`.
+</code></pre>
+<p>A gap is an error.</p>
+<pre><code class="language-ts">// packages/chord/src/state.ts -- the gap guard (verbatim)
+if (frame.cursor !== expected) {
+  throw new Error(`Replicated state source cursor has a gap: expected ${expected}, received ${frame.cursor}`);
+}
+</code></pre>
+<p>The Aha is that order is not just assumed. It is enforced. A lost frame throws, which forces a resync from a new snapshot. A CRDT tolerates loss and reordering; chord refuses them.</p>
+<p>A slow subscriber is bounded: at most 100 deliveries wait behind the running callback.</p>
+<pre><code class="language-ts">// packages/chord/src/state.ts -- the overflow rule (verbatim comment)
+// At most 100 deliveries wait behind the running callback; overflow keeps
+// only the newest pending value/context/delivery, so update sequences may skip.
+</code></pre>
+<p>Overflow coalesces to the newest value. Intermediate values are skipped. This is read-side coalescing, not a merge.</p>
+<h2>What Automerge Does</h2>
+<p>Automerge is a JSON CRDT. These are its well-known properties.</p>
+<ol><li><strong>Any replica edits.</strong> There is no single writer. Concurrent edits from different devices are the normal case.</li><li><strong>Every change is immutable and addressed.</strong> A change has a hash. Changes form a hash graph of causal dependencies.</li><li><strong>Maps are last-writer-wins registers.</strong> Each property is a register with a Lamport timestamp and an actor ID. A concurrent write to the same key is resolved by the timestamp, then by the actor ID.</li><li><strong>Text and lists are an RGA.</strong> Each element has an op ID. An insertion references its predecessor element. Two insertions at the same position are ordered by op ID, deterministically on every replica.</li><li><strong>Deletion is a tombstone.</strong> A deleted text element is marked, not removed, so a concurrent edit to it still converges. Garbage collection removes tombstones later.</li><li><strong>Merge is a join.</strong> Merging is commutative, associative, and idempotent. The result does not depend on delivery order or duplicates.</li></ol>
+<p>The Aha is the difference in guarantees. Automerge's merge is safe under arbitrary order and duplication. chord's apply is not. chord avoids needing that safety by having one writer.</p>
+<h2>Where They Diverge</h2>
+<table><tr><th>Axis</th><th>chord</th><th>Automerge</th></tr><tr><td>Writers</td><td>One</td><td>Many, concurrent</td></tr><tr><td>Order</td><td>Total, enforced by cursor</td><td>Partial, causal</td></tr><tr><td>Operation identity</td><td>None; op is a tuple</td><td>Op ID, Lamport clock, actor ID</td></tr><tr><td>Convergence</td><td>From single writer + in-order apply</td><td>From commutative, idempotent merge</td></tr><tr><td>Text edits</td><td>`a` append, `t` drop-prefix (positional)</td><td>RGA insert by predecessor ID (intent-preserving)</td></tr><tr><td>Deletion</td><td>`d` removes now</td><td>Tombstone, retained for convergence</td></tr><tr><td>Reordering</td><td>`m` permutation (O(n))</td><td>Move op (references an element)</td></tr><tr><td>Delivery loss</td><td>Gap is an error</td><td>Loss is tolerated (anti-entropy)</td></tr><tr><td>Duplicate delivery</td><td>Corrupts (re-applies)</td><td>Harmless (idempotent)</td></tr></table>
+<p>The deepest divergence is the first row. Everything else follows from it. Because chord has one writer, its ops need no identity. Because they have no identity, they cannot be safely reordered or re-applied. Because they cannot, the cursor must be gap-checked.</p>
+<h2>Where It Is Optimal</h2>
+<p>chord's choice is optimal for its actual job. The job is a server-owned conversation where one process writes and many watchers read.</p>
+<ol><li><strong>Simplicity.</strong> No clocks, no actor IDs, no causal graph, no merge routine. An op is a bare tuple. Storage is a base plus an ordered delta tail. The whole thing is a few hundred lines.</li><li><strong>Compact deltas for the common edits.</strong> Streaming tool output is an append (<code>a</code>). A sliding context window is a drop-prefix plus append (<code>t</code> then <code>a</code>). These are the most frequent edits, and each is one small op.</li><li><strong>Determinism by construction.</strong> There is no conflict resolution to get wrong, because there is no conflict. Replay is a pure fold.</li><li><strong>Cheap reads.</strong> A document is a base plus a short tail, bounded by <code>checkpointWhen</code>. The immutable apply shares untouched subtrees.</li><li><strong>Debuggability.</strong> A linear log is easy to audit and replay. "What changed" is a sequence, not a graph.</li><li><strong>Bandwidth.</strong> Path interning, arity omission, and deflate cut the wire size without losing the order that makes them safe.</li></ol>
+<p>The Aha is that the "single writer" is not a limitation here. It is the source of every other win. An agent harness owns its conversation. No second device edits it. So the system gives up nothing it needs.</p>
+<h2>The Trade-Offs and Issues</h2>
+<p>These are the honest costs. Each is a direct consequence of removing the CRDT's merge machinery.</p>
+<ol><li><strong>No offline or multi-device concurrent editing.</strong> Two clients cannot edit the same document and merge later. If the product ever needs that, chord's model does not extend to it; you would layer a real CRDT on top or change the ownership model.</li></ol>
+<ol><li><strong>Re-application is not idempotent.</strong> Applying a batch twice appends twice and truncates twice. Automerge's merge is idempotent, so duplicate delivery is free. chord must guarantee exactly-once by the cursor and the single-writer log. If a replica's cursor drifts, it diverges. The gap guard turns that drift into an error rather than silent corruption, which is the safe choice, but it is a recovery event, not a normal path.</li></ol>
+<ol><li><strong>Positional edits assume one history.</strong> <code>p</code> splices by index and <code>m</code> reorders by permutation. Under any concurrency they corrupt silently. The design avoids this by forbidding concurrency. That is a constraint enforced outside the op algebra, not a property of the ops themselves.</li></ol>
+<ol><li><strong><code>r</code> adopts, not copies.</strong> A root replace installs the batch's value by reference.</li></ol>
+<pre><code class="language-ts">// packages/chord/src/delta/index.ts -- the ownership rule (verbatim comment)
+// Adopted, not copied. The consumer owns the batch it was handed.
+//
+// Fanning one batch out to several consumers in-process therefore makes
+// their replicas alias each other. That is an ownership rule, not a
+// defect: copy the batch at the fan-out point, or let each consumer
+// decode its own. A batch that crosses a real boundary is already
+// distinct, because serialisation produces fresh objects.
+</code></pre>
+<p>Two in-process replicas that share one decoded batch will alias. The code documents this as an ownership rule, not a defect. The safe pattern is to copy at the fan-out point, or let each consumer decode its own. It is a hazard only if you ignore the rule.</p>
+<ol><li><strong>The 4096 cap loses the delta advantage exactly when the edit is large.</strong> A big change becomes a full-value replace, O(n) bytes. That is correct and bounded, but it is the opposite of delta-efficient. A CRDT has no such cliff; a large change is many small changes.</li></ol>
+<ol><li><strong><code>m</code> is O(n) even for one move.</strong> Reordering an array of n items carries an n-length permutation. Automerge's move references the element, O(1)-ish per move.</li></ol>
+<ol><li><strong>Array growth is O(n) in the op.</strong> <code>arr.length = n</code> is emitted as a splice of explicit nulls.</li></ol>
+<pre><code class="language-ts">// packages/chord/src/delta/index.ts -- growth stays proportional (verbatim comment)
+// Growth stays possible and stays proportional — the tracker already emits
+// `arr.length = n` as a splice of explicit nulls, whose op size grows with the
+// gap, so a large growth costs a large op rather than a small one.
+</code></pre>
+<p>This keeps growth honest, but it means a sparse array extension is as large as the gap.</p>
+<ol><li><strong><code>t</code> truncation is irreversible.</strong> Dropping the prefix discards those characters. A rewindable document recovers by keeping per-version bases, not by replaying the delta backward. A CRDT with tombstones keeps deleted text until garbage collection. chord's truncation is a real deletion.</li></ol>
+<ol><li><strong>Overflow coalesces and skips.</strong> A subscriber more than 100 deliveries behind loses intermediate values and keeps the newest. That is correct for a view, but it is not a merge; a subscriber that needs every step must not fall behind.</li></ol>
+<p>The Aha is that every one of these is the price of "one writer, ordered log." None is a bug. Each is the honest boundary of the model.</p>
+<h2>A Worked Example: Concurrent Edits at One Position</h2>
+<p>Two users start with the string <code>"ab"</code>. Both insert at position 1.</p>
+<p>Automerge: user A inserts <code>x</code> at 1 (after <code>a</code>), user B inserts <code>y</code> at 1 (after <code>a</code>). The inserts reference the same predecessor <code>a</code>. RGA orders the two by op ID, identically on every replica. Both converge to <code>"axyb"</code> or <code>"ayxb"</code>, the same on all replicas.</p>
+<p>chord: the concept does not exist. There is one writer. A second editor is not an editor; it is a client that sends its intent to the writer, which serializes it. The string is never edited by two writers at once, so "concurrent insert at one position" is not a state the system can be in.</p>
+<p>The Aha is that chord did not answer the concurrency question. It made the question un-askable.</p>
+<h2>When to Choose Which</h2>
+<table><tr><th>Requirement</th><th>chord-style single-writer</th><th>Automerge-style CRDT</th></tr><tr><td>One server owns the document</td><td>Fits</td><td>Fits</td></tr><tr><td>Many clients edit offline, then sync</td><td>Does not fit</td><td>Fits</td></tr><tr><td>Need to audit a linear history</td><td>Fits</td><td>Harder (a graph)</td></tr><tr><td>Need minimal implementation</td><td>Fits</td><td>Larger</td></tr><tr><td>Need to tolerate lost/duplicate messages</td><td>Must resync</td><td>Fits</td></tr><tr><td>Need streaming append of output</td><td>Fits, one small op</td><td>Fits but heavier per element</td></tr></table>
+<h2>The Production Lesson</h2>
+<p>durable is single-leader replication: one writer, a log, ordered followers. The correct analogy is a primary-replica database or Raft, not a CRDT. For an agent harness that owns its conversations, that is the right model. It is simpler, faster to read, and easy to replay.</p>
+<p>If the product later needs two devices editing one conversation offline, the change is architectural, not local. You would replace the delta-and-cursor layer with a real mergeable structure, or put the single writer behind a sync service and treat devices as clients, which is what chord's model already expects.</p>
+<h2>Where to Go Next</h2>
+<p>The delta vocabulary itself is in <a href="./02-chord-concepts.md">02-chord-concepts.md</a>. The storage that persists base-plus-delta is in <a href="./05-durable-storage.md">05-durable-storage.md</a>. The cross-cutting production picture is in <a href="./12-cross-cutting.md">12-cross-cutting.md</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

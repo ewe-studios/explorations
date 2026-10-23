@@ -41,6 +41,7 @@ Three TypeScript packages form one durable agent runtime. `chord` is the foundat
 |----------|---------------|
 | [11-data-flow.md](./11-data-flow.md) | End-to-end sequence diagrams |
 | [12-cross-cutting.md](./12-cross-cutting.md) | Rust, production-grade, and a resilient-storage guide |
+| [13-crdt-vs-automerge.md](./13-crdt-vs-automerge.md) | chord's delta vs CRDTs (Automerge): algorithm, divergence, tradeoffs |
 
 ## Quick Orientation
 
