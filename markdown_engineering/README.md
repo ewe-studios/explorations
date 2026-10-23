@@ -17,7 +17,7 @@ Detailed analysis of [markdown.engineering](https://www.markdown.engineering), a
 
 Step-by-step guide to building a similar documentation site powered by LLM-generated content, Mermaid diagrams, and markdown.
 
-A most important detail you must always follow is explanations being presented in asd-ste100 simplified technical english to make it easy and clear to understand.
+A most important detail you must always follow is explanations being presented in asd-ste100 simplified technical english to make it easy and clear to understand. All abbreviations must be spelled out always.
 
 | Document                                                                  | Covers                                                                   |
 | ------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
