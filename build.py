@@ -490,6 +490,7 @@ def build(project_dir: str):
 
     descriptions = {
         'pi': "Modular AI agent framework. 7 TypeScript packages for LLM APIs, agent runtimes, and applications.",
+        'pi_latest': "Durable multi-process agent harness (durable) built on the chord typed host runtime, plus the codemode code-execution sandbox. Deep dive into durable execution, storage, scheduling, and live reload.",
         'hermes': "Self-improving AI agent. Python framework with 40+ tools, 10+ messaging platforms, and pluggable memory.",
         'autoresearch': "Autonomous AI research system. AI agent experiments with LLM training code overnight, ~100 experiments/night.",
         'open-pencil': "Open-source design editor. Opens .fig/.pen files, 100+ AI tools, MCP server, WebRTC collaboration, headless CLI + Vue SDK.",

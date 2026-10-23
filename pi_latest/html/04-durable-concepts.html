@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>04 -- Durable Core: Deep Dive -- pi_latest</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/pi_latest/docs</span>
+    <div class="nav-actions">
+      <a href="01-architecture.html" class="nav-breadcrumb">01 -- Architecture</a><a href="02-chord-concepts.html" class="nav-breadcrumb">02 -- Chord Concepts: Deep Dive</a><a href="03-chord-runtime.html" class="nav-breadcrumb">03 -- Chord Runtime: Deep Dive</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="03-chord-runtime.html" class="nav-btn" title="Previous: 03 -- Chord Runtime: Deep Dive">← prev</a>
+      <a href="05-durable-storage.html" class="nav-btn nav-btn-next" title="Next: 05 -- Durable Storage">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>04 -- Durable Core: Deep Dive</h1>
+<p>durable has six core parts: session, conversation, entry, document, task, and submission. This document is a deep dive into each one. It shows how each part works, not just what it is. The document is the deepest dive, because it is the part that makes change durable and efficient.</p>
+<h2>Session: One Writer, One Line</h2>
+<p>A Session is one open view over one storage backend. It owns one mutation line. Every change, read or write, queues onto that line. The line is a promise chain.</p>
+<pre><code class="language-ts">// packages/durable/src/session/session.ts -- the mutation line (verbatim)
+#enqueue&lt;T&gt;(job: () =&gt; Promise&lt;T&gt;): Promise&lt;T&gt; {
+  const run = this.#tail.then(job);
+  this.#tail = run.then(
+    () =&gt; undefined,
+    () =&gt; undefined,
+  );
+  return run;
+}
+</code></pre>
+<p><code>#tail</code> starts as <code>Promise.resolve()</code>. Each job chains onto the current tail. Each job updates the tail. The result: one job runs at a time. There is no lock, no mutex, no <code>await</code> race. The promise chain is the serialization.</p>
+<div class="mermaid">
+sequenceDiagram
+    participant A as Job A
+    participant B as Job B
+    participant C as Job C
+    Note over A,C: one mutation line
+    A-&gt;&gt;B: A settles, B starts
+    B-&gt;&gt;C: B settles, C starts
+
+</div>
+<p>The Aha is that durable does not use a lock. It uses a promise chain. Concurrency becomes "one thing at a time, in order."</p>
+<h3>GuardedStorage</h3>
+<p>The Session wraps its backend in <code>GuardedStorage</code>. The guard tracks every backend call still underway and decides what a failure means.</p>
+<pre><code class="language-ts">// packages/durable/src/session/session.ts -- one guarded backend call (abridged)
+async #call&lt;T&gt;(read: Context | undefined, run: () =&gt; Promise&lt;T&gt;): Promise&lt;T&gt; {
+  this.#assertHealthy();
+  if (this.#closing) throw new Error(&quot;Session is closed&quot;);
+  const call = (async () =&gt; run())();
+  this.#underway.add(call);
+  try {
+    return await call;
+  } catch (error) {
+    this.#assertHealthy();
+    // A failed read says nothing about Storage; a failed commit says everything.
+    const exempt =
+      read !== undefined &amp;&amp; (error instanceof StorageRequestError || read.abortSignal?.aborted === true);
+    if (!exempt) this.#latch.fail(error);
+    throw error;
+  } finally {
+    this.#underway.delete(call);
+  }
+}
+</code></pre>
+<p>The key line is <code>exempt</code>. A read that fails is a single failed call. A commit that fails is fatal. <code>commit</code> and <code>mintId</code> pass no read context, so they are never exempt. Once a commit is admitted, we do not know whether it wrote. The guard fails the whole Session. A caller can never act on a commit whose outcome is unknown.</p>
+<h3>The Commit Path</h3>
+<p><code>#runCommit</code> is the heart. It stages a change, settles it, commits it, then adopts it.</p>
+<div class="mermaid">
+flowchart TD
+    Stage[stage in Transaction] --&gt; Settle[settleSuccess -&gt; writes]
+    Settle --&gt;|no writes| Discard[discard, return]
+    Settle --&gt; Commit[storage.commit writes]
+    Commit --&gt; Adopt[adopt seq into cache]
+    Adopt --&gt; Publish[publish to listeners]
+
+</div>
+<p>If adoption fails after a successful commit, the Session fails. Storage already has the data; memory does not. That is unrecoverable, so the Session fails rather than diverge.</p>
+<h3>The Document Cache</h3>
+<p>The Session caches loaded documents by their address. Three maps track them: <code>#documents</code>, <code>#idleDocuments</code>, and <code>#attachedDocuments</code>. An idle document is dropped after the retention period. An attached document stays because a watcher holds it. A later read cold-loads from storage. This keeps memory bounded in a long-running process.</p>
+<h2>Conversation: Forks and Ownership</h2>
+<p>A conversation is a chat with an ID. It may have a parent and a fork point. It may have an owner task. Entries are immutable, so a fork shares the parent's entries and adds its own.</p>
+<pre><code class="language-ts">// packages/durable/src/types.ts -- a conversation record (abridged)
+export type ConversationRecord = {
+  id: ConversationId;
+  parent?: { conversationId: ConversationId; at: EntryId };
+  owner?: { conversationId: ConversationId; taskId: TaskId };
+  // ...
+};
+</code></pre>
+<p><code>parent</code> is the fork source and the entry it forked at. <code>owner</code> is the task that created the conversation. A child task owns its sub-conversation. The ownership tree is how an abort cascades from a root task down to its children.</p>
+<p>A fork copies documents according to a fork policy. <code>current</code> copies the current value. <code>initial</code> resets to the initial value. <code>asOf</code> copies the value at the fork entry. The copies page through storage, <code>SCAN_PAGE_SIZE = 256</code> documents at a time. See <a href="./07-durable-tasks.md">07-durable-tasks.md</a> for how ownership drives the scheduler.</p>
+<h2>Entry: Immutable Append</h2>
+<p>An entry is one immutable piece of a conversation. It has a kind, a model payload, and a head marker. Entries are appended, never edited. To change a conversation, you add an entry; you do not rewrite an old one.</p>
+<p>The <code>head</code> field marks the start of a context window. The context is the entries from the head forward. A <code>ResetEntry</code> has <code>head: "self"</code>. Compaction sets <code>head</code> to the first kept entry. A head marker is found by scanning backward from an entry.</p>
+<pre><code class="language-ts">// packages/durable/src/entries.ts -- the built-in entry kinds (abridged)
+export const UserEntry = defineEntry(&quot;pi.user&quot;);
+export const AssistantEntry = defineEntry(&quot;pi.assistant&quot;);
+export const SystemEntry = defineEntry(&quot;pi.system&quot;);
+export const ToolResultEntry = defineEntry(&quot;pi.tool-result&quot;);
+export const ResetEntry = defineEntry(&quot;pi.reset&quot;);
+export const CompactionEntry = defineEntry(&quot;pi.compaction&quot;);
+</code></pre>
+<p>The Aha is the reason for immutability. History is a fact. A fork can point at any entry and share it. Compaction can move the head without rewriting the past. Storage can keep entries as an append-only list.</p>
+<h2>Document: The Durable Unit of State</h2>
+<p>A document is typed, versioned JSON at a scope. It is the part that makes change durable and efficient. This is the deep dive.</p>
+<h3>Address: Where a Document Lives</h3>
+<p>A document has a scope. The scope is session, conversation, or task. A document family adds a key within that scope. The address combines kind, scope, owner, and key.</p>
+<pre><code class="language-ts">// packages/durable/src/documents.ts -- resolve the address from arguments (abridged)
+export function resolveAddress(definition, args): ResolvedAddress {
+  let index = 0;
+  let scope;
+  switch (definition.scope) {
+    case &quot;session&quot;:      scope = { kind: &quot;session&quot; }; break;
+    case &quot;conversation&quot;: scope = { kind: &quot;conversation&quot;, conversationId: ownerId(args[index++]) }; break;
+    case &quot;task&quot;:         scope = { kind: &quot;task&quot;, taskId: ownerId(args[index++]) }; break;
+  }
+  const key = definition.family === true ? (args[index++] as string) : undefined;
+  const address = key === undefined
+    ? { kind: definition.kind, scope }
+    : { kind: definition.kind, scope, key };
+  return { address, id: addressId(address), nextArgument: index };
+}
+</code></pre>
+<p>The address turns into a stable string identity.</p>
+<pre><code class="language-ts">// packages/durable/src/documents.ts -- stable string identity (verbatim)
+export function addressId(address: DocumentAddress): string {
+  const owner =
+    address.scope.kind === &quot;session&quot;
+      ? null
+      : address.scope.kind === &quot;conversation&quot;
+        ? address.scope.conversationId
+        : address.scope.taskId;
+  return JSON.stringify([address.kind, address.scope.kind, owner, address.key ?? null]);
+}
+</code></pre>
+<p>The Aha is that the address is logical, not a storage row. A document at an address can have many incarnations over time. Each incarnation is a <code>DocumentId</code>. The address stays stable; the incarnation advances.</p>
+<h3>Semantics: Scope, History, Fork</h3>
+<p>A document definition declares three semantics plus a version.</p>
+<table><tr><th>Field</th><th>Meaning</th></tr><tr><td>`scope`</td><td>session, conversation, or task</td></tr><tr><td>`history`</td><td>`latest` (keep current only) or `rewindable` (keep every version)</td></tr><tr><td>`fork`</td><td>`current`, `initial`, or `asOf`</td></tr><tr><td>`version`</td><td>schema version, a positive integer</td></tr><tr><td>`initial`</td><td>the value before any change</td></tr><tr><td>`migrate`</td><td>rewrite an old value to the new version</td></tr><tr><td>`checkpointWhen`</td><td>when to store a full base instead of a delta</td></tr></table>
+<p><code>defineDoc</code> makes a singleton. <code>defineDocFamily</code> makes a family, where <code>initial(seed)</code> builds the first value from a key.</p>
+<h3>Incarnation: A New Record Per Version</h3>
+<p>When a document changes, storage may create a new incarnation. <code>documentCreate</code> builds the create record.</p>
+<pre><code class="language-ts">// packages/durable/src/documents.ts -- a new incarnation (abridged)
+export function documentCreate(definition, address, id): DocumentCreate {
+  // scope conversation carries history and fork; session and task do not
+  return { id, kind: address.kind, scope: address.scope, history, fork };
+}
+</code></pre>
+<p>A rewindable document creates a new incarnation per version. A latest-only document reuses one incarnation. Either way, a read must agree with the definition.</p>
+<pre><code class="language-ts">// packages/durable/src/documents.ts -- the definition must match the record (verbatim)
+export function checkRecordScope(definition, record): void {
+  if (
+    record.scope.kind !== definition.scope ||
+    (record.scope.kind === &quot;conversation&quot; &amp;&amp;
+      (record.history !== definition.history || record.fork !== definition.fork))
+  ) {
+    throw new TypeError(`Document ${record.id} (${record.kind}) does not match the supplied definition semantics`);
+  }
+}
+</code></pre>
+<h3>Versioning and Migration</h3>
+<p>A stored version must be usable by the supplied definition. <code>checkRecordVersion</code> rejects a stored version newer than the code, and rejects an older version with no migration.</p>
+<pre><code class="language-ts">// packages/durable/src/documents.ts -- version gate (verbatim)
+export function checkRecordVersion(definition, record, version): void {
+  if (version &gt; definition.version) {
+    throw new Error(`Document ${record.id} (${record.kind}) has newer version ${version} than ${definition.version}`);
+  }
+  if (version &lt; definition.version &amp;&amp; definition.migrate === undefined) {
+    throw new Error(`Document ${record.id} (${record.kind}) requires migration from version ${version}`);
+  }
+}
+</code></pre>
+<p><code>materializeDocumentValue</code> runs the migration when versions differ, then returns a detached copy.</p>
+<pre><code class="language-ts">// packages/durable/src/documents.ts -- materialize and migrate (verbatim)
+if (version === definition.version) return value;
+return copyJson(definition.migrate!(value, version)) as JsonObject;
+</code></pre>
+<p>The Aha is that migration is lazy. A stored old value stays old on disk. It becomes the new shape only when read. That avoids a full-store rewrite on every schema change.</p>
+<h3>How a Change Becomes Durable and Efficient</h3>
+<p>Here is the whole path of one document change.</p>
+<div class="mermaid">
+sequenceDiagram
+    participant H as Harness
+    participant T as Transaction
+    participant D as Doc handle (tracker)
+    participant S as Storage
+    H-&gt;&gt;T: change(tx)
+    T-&gt;&gt;D: read handle (chord observable)
+    D-&gt;&gt;D: mutate -&gt; produce ops
+    T-&gt;&gt;T: settle -&gt; DocumentWrite
+    T-&gt;&gt;S: commit(writes)
+    S-&gt;&gt;S: store base or delta
+    S--&gt;&gt;T: seq
+    T-&gt;&gt;T: adopt(seq)
+
+</div>
+<p>A document handle is a chord observable. Mutating it produces a delta of operations, not a full value. On settle, the transaction emits a <code>DocumentWrite</code> carrying the value and the operations. Storage stores either a base (full value) or a delta (operations). The commit returns only after storage applied it. Then the cache adopts the new value.</p>
+<p>Durability: the write is one element of a commit batch. It is atomic with every other change. A crash before the commit loses it. A crash after the commit keeps it. There is no half document.</p>
+<p>Efficiency: small changes store only the operations. <code>checkpointWhen</code> decides when a full base is cheaper than a long delta tail. A huge change falls back to a root replace past <code>MAX_DELTA_OPERATIONS = 4096</code> operations. The storage deep dive in <a href="./05-durable-storage.md">05-durable-storage.md</a> explains base-plus-delta and checkpointing in full.</p>
+<h2>Task: A Durable State Machine</h2>
+<p>A task is a durable state machine. It has a kind, an input, a checkpoint, and a status.</p>
+<pre><code class="language-ts">// packages/durable/src/types.ts -- task state (concept)
+export type TaskState = {
+  status: &quot;pending&quot; | &quot;running&quot; | &quot;waiting&quot; | &quot;completing&quot; | &quot;terminal&quot;;
+  checkpoint?: ...;
+  outcome?: TaskOutcome;
+  on?: TaskId[];
+  policy?: JoinPolicy;
+};
+</code></pre>
+<p>The five statuses.</p>
+<table><tr><th>Status</th><th>Meaning</th></tr><tr><td>`pending`</td><td>Ready to run</td></tr><tr><td>`running`</td><td>A phase is executing</td></tr><tr><td>`waiting`</td><td>Waiting for other tasks</td></tr><tr><td>`completing`</td><td>Held while owned work finishes</td></tr><tr><td>`terminal`</td><td>Done; outcome is final</td></tr></table>
+<p>A task runs phases. A phase reads state, writes a new checkpoint, and returns a next step. A phase can wait on child tasks, then resume from the checkpoint. The scheduler drives this. The deep dive is <a href="./07-durable-tasks.md">07-durable-tasks.md</a>.</p>
+<p>The Aha is that the checkpoint, not the stack, is the memory. A crash loses the running stack. It does not lose the checkpoint. On resume, the phase re-runs from the checkpoint and reaches the same state.</p>
+<h2>Submission: Requests Into a Conversation</h2>
+<p>A submission is a request to a conversation. It is an input (a user message) or a write (a tool result, a compaction summary).</p>
+<table><tr><th>Status</th><th>Meaning</th></tr><tr><td>`queued`</td><td>Waiting to be placed</td></tr><tr><td>`placed`</td><td>Placed in the conversation</td></tr><tr><td>`done`</td><td>Settled</td></tr><tr><td>`unanswered`</td><td>Could not be answered</td></tr></table>
+<p>A busy conversation queues submissions. An idle conversation places them. A submission matches its response by a request id. <code>submissionByRequest</code> looks one up. This is how many writers share one conversation safely.</p>
+<div class="mermaid">
+flowchart LR
+    S[Submit] --&gt; Idle{conversation idle?}
+    Idle --&gt;|yes| Place[place, run]
+    Idle --&gt;|no| Queue[queue]
+    Queue --&gt; Place
+
+</div>
+<p>The Aha is that a conversation has one active turn. Submissions serialize onto that turn. A tool result arrives later and is matched to its turn by request id.</p>
+<h2>Commit: The Atomic Step</h2>
+<p>Every change is a commit. A transaction stages writes, settles them, commits them as one batch, and adopts the sequence. There is no partial change. The storage document explains why a commit is atomic and recoverable. See <a href="./05-durable-storage.md">05-durable-storage.md</a>.</p>
+<h2>The Whole Shape</h2>
+<div class="mermaid">
+flowchart TD
+    S[Session] --&gt; C[Conversations]
+    C --&gt; E[Entries]
+    C --&gt; D[Documents]
+    S --&gt; T[Tasks]
+    T --&gt; D
+    S --&gt; Sub[Submissions]
+    Sub --&gt; C
+
+</div>
+<p>A Session owns conversations, tasks, and submissions. A conversation owns entries and documents. A task owns its input, checkpoint, and outcome.</p>
+<h2>Where to Go Next</h2>
+<p>The next document explains how storage makes a commit durable across the three backends. Read <a href="./05-durable-storage.md">05-durable-storage.md</a>. For the runtime that hosts these objects, read <a href="./03-chord-runtime.md">03-chord-runtime.md</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
