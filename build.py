@@ -513,6 +513,8 @@ def build(project_dir: str):
         'moqdev': "Media over QUIC (MoQ) ecosystem. IETF draft protocol for low-latency live streaming over WebTransport. 18-crate Rust workspace with Go/Swift bindings, OBS plugin, and relay server.",
         'n0-computer': "Iroh P2P networking ecosystem. Dial-by-public-key QUIC connections with NAT hole-punching. 60+ projects including blobs, gossip, docs sync, RPC, and CLI tools.",
         'websocket': "WebSocket implementations in Rust. tungstenite-rs (RFC6455 core), tokio-tungstenite (async), websocat (CLI tool), plus deprecated rust-websocket and Sunrise reactive library.",
+        'zcoder': "Parallel-first AI coding harness in Rust. A terminal UI client talks to a self-spawning daemon over a Unix socket; the daemon owns SQLite persistence and a single-writer executor that drives model calls via genai.",
+        'proa': "Rust server-side rendering framework. Compiles Rust-authored HTML templates to pre-escaped byte sequences at compile time, streams over a chained-bump buffer, and hydrates interactive islands via the RSJS Rust-to-JavaScript compiler.",
     }
     desc = descriptions.get(project_name, f"Documentation for {project_name}.")
 
