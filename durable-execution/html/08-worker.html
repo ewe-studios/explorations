@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>08 -- The Worker: claim a task, run until it blocks or finishes -- durable-execution</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/durable-execution/docs</span>
+    <div class="nav-actions">
+      <a href="05-types-and-protocol.html" class="nav-breadcrumb">05 -- Types and Protocol: everything that can be said, and its form on a wire</a><a href="06-kernel.html" class="nav-breadcrumb">06 -- The Kernel: a pure state machine</a><a href="07-engine.html" class="nav-breadcrumb">07 -- The Engine: the document, on disk</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="07-engine.html" class="nav-btn" title="Previous: 07 -- The Engine: the document, on disk">← prev</a>
+      <a href="09-server-and-config.html" class="nav-btn nav-btn-next" title="Next: 09 -- Server and Config: one route, built from the environment">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>08 -- The Worker: claim a task, run until it blocks or finishes</h1>
+<p>The worker is not a service; it is an object with one method, <code>run</code>, and its whole life is the duration of one <code>execute</code> delivery. It claims a task, runs the user's function from the top, and tells the engine which of four things happened — the function returned, blocked, hit a platform failure, or raised. The reason the function can be run from the top <em>every</em> time without running its calls twice is that each durable call creates its own promise at its own position, and a call whose promise already settled reads back instead of running. This document is <code>Worker.run</code> and <code>_attempt</code>, in the protocol's own words.</p>
+<h1>Part 1 -- The Shape of One Claim</h1>
+<p>The module docstring is the whole control flow, and <code>run</code> implements it directly:</p>
+<pre><code class="language-python"># resonate/worker.py (module docstring, verbatim)
+    run        task.acquire, then loop over _attempt:
+                 returned        -&gt; task.fulfill (resolved)
+                 raised Blocked  -&gt; task.suspend  (again if nothing to wait for)
+                 platform error  -&gt; task.release
+                 anything else   -&gt; task.fulfill (rejected)
+    _attempt   one run of the function from the top
+</code></pre>
+<p><code>run</code> begins by claiming — not by running — and the claim is a protocol request, <code>task.acquire</code>:</p>
+<pre><code class="language-python"># resonate/worker.py (shape, abbreviated)
+class Worker:
+    def __init__(self, engine, clock, pid, ttl=30_000) -&gt; None:
+        self.engine, self.clock, self.pid, self.ttl = engine, clock, pid, ttl
+        self.ran: list[str] = []   # which task ids this worker picked up, for tests
+
+    def run(self, task_id: str, version: int) -&gt; str:
+        reply = self.engine.process(
+            TaskAcquire(task_id, version, self.pid, self.ttl), self.clock())
+        if reply.status != 200:
+            # Somebody else holds it, or it has moved on. Not an error: this
+            # is what at-least-once delivery looks like from the inside.
+            return &quot;not mine&quot;
+        self.ran.append(task_id)
+        task, promise = reply.data[&quot;task&quot;], reply.data[&quot;promise&quot;]
+        v = task[&quot;version&quot;]
+        name, version, args = called(loads(promise[&quot;param&quot;]))
+        fn = lookup(name, version)
+        ...
+</code></pre>
+<p>Three things happen at the claim. First, the acquire carries this worker's <code>pid</code> and <code>ttl</code>, so the kernel can mark the task <code>acquired</code> with a lease and a bumped version — two deliveries racing for the same task resolve to one owner, and the loser gets a 409 that <code>run</code> reports as <code>"not mine"</code> (still a 200 at the HTTP layer: re-delivering would not change the answer, and the refusal <em>is</em> the fence doing its job). Second, the function's name, version, and arguments are read back out of the promise's parameter — the promise is the only place the call is recorded, so the worker derives everything from it rather than from the dispatch. Third, <code>lookup(name, version)</code> finds the body; a task created before a deploy still names the body it was written against, and a worker that no longer carries that version raises <code>UnknownFunction</code> rather than running the nearest thing.</p>
+<h1>Part 2 -- The Loop: four ways out</h1>
+<p>After the claim, <code>run</code> loops over <code>_attempt</code>, and each pass ends in exactly one of four outcomes:</p>
+<pre><code class="language-python"># resonate/worker.py (verbatim)
+        while True:
+            try:
+                result = self._attempt(fn, args, task_id, v)
+            except Blocked as b:
+                # Not a failure. Waiting for a value you do not have is
+                # how this system makes progress.
+                suspend = self.engine.process(
+                    TaskSuspend(task_id, v, tuple(b.ids)), self.clock())
+                if suspend.status == 300:
+                    # One of them settled while we were deciding to wait
+                    # for it. Nothing to wait for, so carry on from the top.
+                    continue
+                return &quot;suspended&quot;
+            except PLATFORM:
+                # Not the function&#x27;s answer: this attempt could not
+                # produce one. Hand the task back at the same version so
+                # it is offered again, to this worker or another.
+                self.engine.process(TaskRelease(task_id, v), self.clock())
+                return &quot;released&quot;
+            except Exception as e:
+                # The function&#x27;s answer, and an unwelcome one. A rejection
+                # is a result: it is recorded, it wakes whoever was
+                # awaiting it, and replay reads it back rather than
+                # running again.
+                self.engine.process(TaskFulfill(
+                    task_id, v, PromiseSettle(task_id, REJECTED, dumps(describe(e)))),
+                    self.clock())
+                return &quot;rejected&quot;
+            self.engine.process(TaskFulfill(
+                task_id, v, PromiseSettle(task_id, RESOLVED, dumps(result))),
+                self.clock())
+            return &quot;done&quot;
+</code></pre>
+<p>The four outcomes, and why the loop can run more than once:</p>
+<table><tr><th>the function</th><th>what the worker sends</th><th>outcome</th></tr><tr><td>returned</td><td>`task.fulfill` resolved</td><td>`"done"`</td></tr><tr><td>raised its own exception</td><td>`task.fulfill` **rejected**</td><td>`"rejected"`</td></tr><tr><td>raised `Blocked`</td><td>`task.suspend`</td><td>`"suspended"` — or `continue` on a 300</td></tr><tr><td>hit a platform failure</td><td>`task.release` at the same version</td><td>`"released"`</td></tr></table>
+<p><code>Blocked</code> is the interesting one. <code>TaskSuspend</code> returns <code>300</code> when one of the awaited promises settled while the worker was deciding to wait for it — the kernel's <code>task_suspend</code> answers <code>300</code> if any awaited promise is no longer pending, handing back a <code>preload</code> so the retry can read the settled values immediately. The worker's answer is <code>continue</code>: nothing to wait for, so run from the top again. A <code>200</code> means the task is now parked <code>suspended</code>, with a callback registered on every awaited promise, and the worker reports <code>"suspended"</code>.</p>
+<p><code>PLATFORM</code> (<code>LeaseLost</code>, <code>Conflict</code>, <code>Unavailable</code>) is the "not an answer" case: the attempt could not produce a result at all, so the task is released at the same version and offered again — to this worker or another — rather than settling anything. The lease is the mechanism behind <code>LeaseLost</code> in particular: every write the running function makes goes through the task's fence at the version it acquired, so a worker whose lease was reclaimed by the sweep gets a 409 on its next write, the SDK raises <code>LeaseLost</code>, and the attempt stops rather than recording a result that a new owner is already producing.</p>
+<div class="mermaid">
+flowchart TD
+    A[&quot;task.acquire(id, version, pid, ttl)&quot;] --&gt; B{&quot;status == 200?&quot;}
+    B -- no --&gt; C[&quot;&#x27;not mine&#x27; — still a 200 at HTTP&quot;]
+    B -- yes --&gt; D[&quot;called(param) → name, version, args&lt;br/&gt;lookup(name, version) → fn&quot;]
+    D --&gt; E[&quot;_attempt(fn, args, id, v)&quot;]
+    E --&gt; F{&quot;outcome&quot;}
+    F -- &quot;returned&quot; --&gt; G[&quot;task.fulfill resolved → &#x27;done&#x27;&quot;]
+    F -- &quot;raised Blocked&quot; --&gt; H[&quot;task.suspend&quot;]
+    H --&gt; I{&quot;status == 300?&quot;}
+    I -- yes --&gt; E
+    I -- no --&gt; J[&quot;&#x27;suspended&#x27;&quot;]
+    F -- &quot;platform error&quot; --&gt; K[&quot;task.release → &#x27;released&#x27;&quot;]
+    F -- &quot;other exception&quot; --&gt; L[&quot;task.fulfill rejected → &#x27;rejected&#x27;&quot;]
+
+</div>
+<h1>Part 3 -- _attempt: one run, from the top, on its own loop</h1>
+<p><code>_attempt</code> is where the durable function actually runs, and it owns the event loop because a durable function is async and a worker is not:</p>
+<pre><code class="language-python"># resonate/worker.py (verbatim)
+    def _attempt(self, fn, args, task_id: str, version: int):
+        async def attempt():
+            _INVOCATION.set(Invocation(self.engine, task_id, version, self.clock))
+            _FRAME.set(_Call(task_id))
+            return await fn.invoke(*args)
+
+        return asyncio.run(attempt())
+</code></pre>
+<p>The two context variables are what make a durable call durable. <code>_INVOCATION</code> carries the task id and the version every write is fenced at — so <code>inv.fence(...)</code> can raise <code>LeaseLost</code> when the lease is gone. <code>_FRAME</code> carries the position the next call's id comes from — so <code>frame.child()</code> yields <code>task_id:1</code>, <code>task_id:2</code>, and so on in program order. <code>asyncio.run</code> creates a fresh loop per attempt, so a leaf that does real I/O can await it while everything outside stays synchronous, and <code>asyncio</code> copies the context into each task <code>gather</code> creates, so concurrent branches each get their own frame and cannot tread on each other's counters.</p>
+<p><code>Invocation.fence</code> is the other half, and it is worth seeing next to <code>_attempt</code> because it is what turns "run the function" into "run the function, but only while the lease holds":</p>
+<pre><code class="language-python"># resonate/sdk.py (shape, abbreviated — the fence every write goes through)
+@dataclass
+class Invocation:
+    engine: Any
+    task_id: str
+    version: int
+    now: Callable[[], int]
+    corr: int = 0
+
+    def fence(self, action):
+        self.corr += 1
+        reply = self.engine.process(
+            TaskFence(self.task_id, self.version, f&quot;c{self.corr}&quot;, action), self.now())
+        if reply.status != 200:
+            raise LeaseLost(f&quot;{self.task_id} at version {self.version}: {reply.data}&quot;)
+        inner = reply.data[&quot;action&quot;]
+        return inner[&quot;head&quot;][&quot;status&quot;], inner[&quot;data&quot;]
+</code></pre>
+<p>Every <code>promise.create</code> and <code>promise.settle</code> a running function makes goes through this fence, at the version the task was acquired. The version is the point: the kernel's <code>task_fence</code> refuses a fence at a version that no longer matches the task's, which is exactly what happens when the sweep reclaims a lease and re-dispatches the task at a bumped version. The old worker's next write then raises <code>LeaseLost</code> instead of committing a stale result.</p>
+<div class="mermaid">
+sequenceDiagram
+    participant W1 as worker (old, v1)
+    participant K as kernel
+    participant W2 as worker (new, v2)
+
+    W1-&gt;&gt;K: task.acquire(id, 0) → acquired v1
+    Note over W1: lease_at = now + ttl
+    K-&gt;&gt;K: sweep: lease expired → re-pend, bump to v2, execute
+    W1-&gt;&gt;K: task.fence(id, v1, ...)
+    K--&gt;&gt;W1: 409 (version mismatch)
+    Note over W1: SDK raises LeaseLost → release, stop
+    W2-&gt;&gt;K: task.acquire(id, 1) → acquired v2
+
+</div>
+<p>The fence does not <em>prevent</em> a stale worker from running; it prevents it from <em>recording</em>, which is the only thing that matters.</p>
+<h1>The Aha Moment</h1>
+<p><strong>Aha:</strong> A worker does not <em>execute a task</em>; it <em>replays a function and stops at the first promise that is not there yet</em>. The loop over <code>_attempt</code> is not a retry loop, it is the same run resuming with more of its promises settled. That is why the function is always run from the top and never "continued" — the only difference between the first attempt and the hundredth is how many of the <code>read_back</code> branches in <code>Durable.__call__</code> return immediately. The worker has no notion of "where the run was"; it only knows which promises are still pending, and that is all the state that exists.</p>
+<h1>Cross-References</h1>
+<ul><li>The <code>Blocked</code> exception and <code>PLATFORM</code> tuple the worker matches on: <a href="./03-rpc-and-gather.html">03-rpc-and-gather.md</a>.</li><li>The <code>Invocation.fence</code> mechanism and <code>LeaseLost</code>, in the SDK: <a href="./02-programming-model.html">02-programming-model.md</a>.</li><li>The kernel's <code>task.acquire</code>, <code>task.suspend</code>, <code>task.fulfill</code>, <code>task.release</code> the worker drives: <a href="./06-kernel.html">06-kernel.md</a>.</li><li>The server that hands the worker its <code>execute</code> messages: <a href="./09-server-and-config.html">09-server-and-config.md</a>.</li></ul>
+<p>Continue to <a href="./09-server-and-config.html">09-server-and-config.md</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

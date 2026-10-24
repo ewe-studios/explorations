@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>06 -- The Kernel: a pure state machine -- durable-execution</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/durable-execution/docs</span>
+    <div class="nav-actions">
+      <a href="03-rpc-and-gather.html" class="nav-breadcrumb">03 -- .rpc and gather: one promise, created here, settled there</a><a href="04-architecture.html" class="nav-breadcrumb">04 -- Architecture: read, decide, write once</a><a href="05-types-and-protocol.html" class="nav-breadcrumb">05 -- Types and Protocol: everything that can be said, and its form on a wire</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="05-types-and-protocol.html" class="nav-btn" title="Previous: 05 -- Types and Protocol: everything that can be said, and its form on a wire">← prev</a>
+      <a href="07-engine.html" class="nav-btn nav-btn-next" title="Next: 07 -- The Engine: the document, on disk">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>06 -- The Kernel: a pure state machine</h1>
+<p>The kernel is the protocol's state machine, and its purity is the design's load-bearing fact: every function here takes a <code>Document</code>, a request (or a clock tick), and an instant, and returns a reply plus the objects it changed — never performing I/O, never reading a clock, never generating an id. The engine wraps it with the store and the queue; the kernel only <em>decides</em>. This document walks the three pieces: the document it decides about, the sweep that advances time, and the fifteen operations that handle requests, with the invariants that hold every document to its shape.</p>
+<h1>Part 1 -- The Document, the Object, the Two Records</h1>
+<p>The unit of state is the <strong>origin</strong>: every promise and task of one run lives in one origin, and the whole origin lives in one <code>Document</code> — one object in the bucket. The document carries its objects, a logical <code>clock</code>, a generation counter, and the <em>one</em> deadline it has armed:</p>
+<pre><code class="language-python"># resonate/kernel.py (shape, abbreviated)
+@wire
+@dataclass
+class Document:
+    objects: list[Object] = field(default_factory=list)
+    clock: int = 0
+    gen: int = 0
+    timer_at: int | None = None
+    timer_name: str | None = None
+
+    def get(self, id: str) -&gt; Object | None:
+        for o in self.objects:
+            if o.id == id:
+                return o
+        return None
+
+    def insert(self, o: Object) -&gt; Object:
+        insort(self.objects, o, key=lambda x: dewey(x.id))
+        return o
+</code></pre>
+<p>The objects are kept sorted by Dewey id (<code>bisect.insort</code> with the <code>dewey</code> key from <a href="./01-the-promise.html">01-the-promise.md</a>), so a store that lists lexicographically serves the document in the numeric order the execution unfolded. Each <code>Object</code> holds a <code>Promise</code> and, for calls with a target, a <code>Task</code>:</p>
+<pre><code class="language-python"># resonate/kernel.py (shape, abbreviated)
+@wire
+@dataclass
+class Promise:
+    state: str = PENDING
+    param: Value = field(default_factory=Value)
+    value: Value = field(default_factory=Value)
+    tags: dict[str, str] = field(default_factory=dict)
+    timeout_at: int = 0
+    created_at: int = 0
+    settled_at: int | None = None
+    callbacks: list[str] = field(default_factory=list)
+    listeners: list[str] = field(default_factory=list)
+
+@wire
+@dataclass
+class Task:
+    state: str = T_PENDING
+    version: int = 0
+    pid: str | None = None
+    ttl: int | None = None
+    resumes: set[str] = field(default_factory=set)
+    retry_at: int | None = None
+    lease_at: int | None = None
+</code></pre>
+
+<div class="mermaid">
+flowchart LR
+    P[&quot;pending&lt;br/&gt;retry_at armed&quot;] --&gt;|&quot;acquire (fence)&quot;| A[&quot;acquired&lt;br/&gt;lease_at armed&quot;]
+    A --&gt;|&quot;suspend (Blocked)&quot;| S[&quot;suspended&lt;br/&gt;no timer&quot;]
+    A --&gt;|&quot;halt&quot;| H[&quot;halted&lt;br/&gt;no timer&quot;]
+    P --&gt; H
+    S --&gt;|&quot;wake on settle&quot;| P
+    H --&gt;|&quot;continue&quot;| P
+    A --&gt;|&quot;fulfill&quot;| F[&quot;fulfilled&lt;br/&gt;no timer&quot;]
+    S --&gt; F
+    H --&gt; F
+    P --&gt; F
+
+</div>
+<p>A task's five states are <code>pending</code>, <code>acquired</code>, <code>suspended</code>, <code>halted</code>, <code>fulfilled</code>; its two timers are <code>retry_at</code> (when a pending task is re-dispatched) and <code>lease_at</code> (when an acquired task's lease runs out). The invariants pin them down later. The kernel's only configuration is two numbers:</p>
+<pre><code class="language-python"># resonate/kernel.py (verbatim)
+@dataclass(frozen=True)
+class KernelCfg:
+    retry_timeout: int = 30_000
+    preload_limit: int = 10
+</code></pre>
+<h1>Part 2 -- The Sweep: time passing, applied in three passes</h1>
+<p>A clock tick is the internal message <code>Timeout(origin)</code>, and <code>handle_internal</code> is the whole of what it means: sweep, then commit:</p>
+<pre><code class="language-python"># resonate/kernel.py (verbatim)
+def handle_internal(doc: Document, now: int, cfg: KernelCfg) -&gt; list[Effect]:
+    return commit(doc, sweep(doc, now, cfg))
+</code></pre>
+<p>The sweep is three passes, each asking "is anything due now?" against the document as it stands after the previous pass:</p>
+<pre><code class="language-python"># resonate/kernel.py (verbatim)
+def sweep(doc: Document, now: int, cfg: KernelCfg) -&gt; Commands:
+    expired = [o for o in doc.objects
+               if o.promise.state == PENDING and now &gt;= o.promise.timeout_at]
+    c = Commands(add=[
+        replace(o, promise=replace(o.promise, state=o.promise.timeout_state(),
+                                   settled_at=o.promise.timeout_at))
+        for o in expired])
+    for o in expired:
+        c = c.merge(trigger_settlement(c.view(doc), o.id, now, cfg))
+
+    for o in c.view(doc).objects:
+        t = o.task
+        if t is not None and t.state == T_PENDING and t.retry_at is not None and t.retry_at &lt;= now:
+            o = replace(o, task=replace(t, retry_at=now + cfg.retry_timeout))
+            c = c.merge(Commands([o], execute(o)))
+
+    for o in c.view(doc).objects:
+        t = o.task
+        if t is not None and t.state == T_ACQUIRED and t.lease_at is not None and t.lease_at &lt;= now:
+            o = replace(o, task=pending(t, now + cfg.retry_timeout))
+            c = c.merge(Commands([o], execute(o)))
+    return c
+</code></pre>
+<p>Three passes, in order:</p>
+<ol><li><strong>Expire promises.</strong> Any pending promise whose <code>timeout_at</code> has passed settles at its</li></ol>
+<p>   <code>timeout_state()</code> — a timer resolves, everything else becomes <code>rejected_timedout</code> — and its    settlement chain runs: its callbacks are woken, its listeners get an <code>Unblock</code>.</p>
+<ol><li><strong>Re-dispatch pending tasks.</strong> A pending task past its <code>retry_at</code> has its retry re-armed one</li></ol>
+<p>   <code>retry_timeout</code> later, and its <code>execute</code> message is (re)sent. This is how a dropped <code>execute</code>    recovers: the retry deadline was committed before the message left.</p>
+<ol><li><strong>Reclaim acquired leases.</strong> An acquired task past its <code>lease_at</code> is made pending again with a fresh</li></ol>
+<p>   retry and re-dispatched. This is how a worker that died mid-run is replaced.</p>
+<p>Each pass reads through <code>c.view(doc)</code> — the document plus the commands accumulated so far — so a task expired in pass 1 is seen as such in pass 3, and a single <code>Timeout</code> can advance many objects in one write.</p>
+<div class="mermaid">
+flowchart TD
+    A[&quot;sweep(doc, now, cfg)&quot;] --&gt; B[&quot;pass 1: expire promises&lt;br/&gt;state = timeout_state(), settled_at = timeout_at&quot;]
+    B --&gt; C[&quot;pass 1b: trigger_settlement —&lt;br/&gt;park task, wake callbacks, Unblock listeners&quot;]
+    C --&gt; D[&quot;pass 2: re-dispatch pending tasks&lt;br/&gt;retry_at += retry_timeout, execute&quot;]
+    D --&gt; E[&quot;pass 3: reclaim acquired leases&lt;br/&gt;pending(retry_at), execute&quot;]
+    E --&gt; F[&quot;Commands → commit → effects&quot;]
+
+</div>
+<h1>Part 3 -- The Operations: sweep, then decide</h1>
+<p>Every <em>external</em> request (a client POST) is handled by the same shape: sweep first, match the request to its operation, run it against the swept document, filter the sweep's sends, then commit:</p>
+<pre><code class="language-python"># resonate/kernel.py (shape, abbreviated)
+def handle_external(doc, req, now, cfg) -&gt; tuple[list[Effect], Reply]:
+    swept = sweep(doc, now, cfg)
+    mid = swept.view(doc)
+    match req:
+        case PromiseGet():       reply, c = promise_get(mid, req)
+        case PromiseCreate():    reply, c = promise_create(mid, req, now, cfg)
+        case PromiseSettle():    reply, c = promise_settle(mid, req, now, cfg)
+        case PromiseRegisterCallback(): reply, c = promise_register_callback(mid, req)
+        case PromiseRegisterListener(): reply, c = promise_register_listener(mid, req)
+        case TaskGet():          reply, c = task_get(mid, req)
+        case TaskCreate():       reply, c = task_create(mid, req, now, cfg)
+        case TaskAcquire():      reply, c = task_acquire(mid, req, now, cfg)
+        case TaskRelease():      reply, c = task_release(mid, req, now, cfg)
+        case TaskFulfill():      reply, c = task_fulfill(mid, req, now, cfg)
+        case TaskSuspend():      reply, c = task_suspend(mid, req, cfg)
+        case TaskFence():        reply, c = task_fence(mid, req, now, cfg)
+        case TaskHeartbeat():    reply, c = task_heartbeat(mid, req, now)
+        case TaskHalt():         reply, c = task_halt(mid, req)
+        case TaskContinue():     reply, c = task_continue(mid, req, now, cfg)
+    final = c.view(mid)
+    kept = []
+    for e in swept.send:
+        if isinstance(e.msg, Execute):
+            o = final.get(e.msg.task_id)
+            if o is None or o.task is None or o.task.state != T_PENDING or o.task.version != e.msg.version:
+                continue
+        kept.append(e)
+    return commit(doc, Commands(swept.add + c.add, kept + c.send)), reply
+</code></pre>
+<p>Sweeping <em>first</em> matters: a <code>promise.get</code> answered after its deadline should see the deadline's effect, and a <code>task.acquire</code> for a lease the sweep just reclaimed must not succeed. The <code>kept</code> filter is the subtle bit — the sweep may have produced an <code>execute</code> for a task that the request's operation then superseded (settled, suspended, fulfilled), and that stale dispatch is dropped rather than delivered. The reply comes from the operation; the effects come from the sweep plus the operation, in one commit.</p>
+<p>A representative operation, <code>promise_create</code>, shows the pattern of "validate, then either idempotent return or new objects":</p>
+<pre><code class="language-python"># resonate/kernel.py (shape, abbreviated)
+def promise_create(doc, r, now, cfg) -&gt; tuple[Reply, Commands]:
+    address = r.tags.get(TAG_TARGET)
+    if address is not None and not is_valid_address(address):
+        return Reply.err(400, &quot;Invalid resonate:target address&quot;), NOTHING
+    if r.tags.get(TAG_TIMER) == &quot;true&quot; and address is not None:
+        return Reply.err(400, &quot;A timer promise must not have a resonate:target tag&quot;), NOTHING
+    delay = r.tags.get(TAG_DELAY)
+    if delay is not None:
+        if not delay.isdigit():
+            return Reply.err(400, &quot;resonate:delay must be a non-negative integer&quot;), NOTHING
+        if int(delay) &gt;= r.timeout_at:
+            return Reply.err(400, &quot;resonate:delay must be less than timeoutAt&quot;), NOTHING
+        if address is None:
+            return Reply.err(400, &quot;resonate:delay requires a resonate:target tag&quot;), NOTHING
+    o = doc.get(r.id)
+    if o is not None:
+        return Reply.ok({&quot;promise&quot;: o.promise.to_record(r.id)}), NOTHING   # idempotent
+    p = new_promise(r, now)
+    reply = Reply.ok({&quot;promise&quot;: p.to_record(r.id)})
+    if p.target() is None:
+        return reply, Commands([Object(r.id, p)])
+    if p.state != PENDING:
+        return reply, Commands([Object(r.id, p, Task(state=T_FULFILLED))])
+    if delay is not None and now &lt; int(delay):
+        return reply, Commands([Object(r.id, p, Task(state=T_PENDING, retry_at=int(delay)))])
+    o = Object(r.id, p, Task(state=T_PENDING, retry_at=p.created_at + cfg.retry_timeout))
+    return reply, Commands([o], execute(o))
+</code></pre>
+<p>The chain of cases is the whole of durable call semantics in miniature: a promise with no target is a pure value, no task; a promise already past its deadline is born settled; a delayed dispatch is born pending with a <code>retry_at</code> of the delay; otherwise the task is born pending with a retry one <code>retry_timeout</code> later and an <code>execute</code> queued. The idempotence is explicit — if the id already exists, return what is there and add nothing.</p>
+<h1>Part 4 -- Settle and Its Chain</h1>
+<p><code>settle</code> is the one place a promise stops being pending, and it always runs <code>trigger_settlement</code>, which is where the "callbacks" and "listeners" fields finally pay off:</p>
+<pre><code class="language-python"># resonate/kernel.py (shape, abbreviated)
+def settle(doc, id, state, value, now, cfg) -&gt; tuple[dict, Commands]:
+    o = doc.get(id)
+    assert o is not None and o.promise.state == PENDING
+    o = replace(o, promise=replace(o.promise, state=state, value=copy.deepcopy(value), settled_at=now))
+    c = Commands([o])
+    return o.promise.to_record(id), c.merge(trigger_settlement(c.view(doc), id, now, cfg))
+
+def trigger_settlement(doc, id, now, cfg) -&gt; Commands:
+    o = doc.get(id)
+    assert o is not None
+    task = o.task
+    if task is not None and task.state != T_FULFILLED:
+        task = parked(task, T_FULFILLED)
+    c = Commands([replace(o, task=task, promise=replace(o.promise, callbacks=[], listeners=[]))])
+
+    for awaiter in o.promise.callbacks:
+        ao = doc.get(awaiter)
+        if ao is None or ao.task is None:
+            continue
+        if ao.promise.state != PENDING or now &gt;= ao.promise.timeout_at:
+            continue
+        t = ao.task
+        if t.state == T_SUSPENDED:
+            ao = replace(ao, task=replace(t, state=T_PENDING, resumes={id},
+                                          retry_at=now + cfg.retry_timeout))
+            c = c.merge(Commands([ao], execute(ao)))
+        elif t.state in (T_PENDING, T_ACQUIRED, T_HALTED) and id not in t.resumes:
+            c = c.merge(Commands([replace(ao, task=replace(t, resumes=t.resumes | {id}))]))
+
+    record = o.promise.to_record(id)
+    return c.merge(Commands(send=[Send(address, Unblock(record)) for address in o.promise.listeners]))
+</code></pre>
+<p>When a promise settles, its own task is parked fulfilled, its callback list is consumed — each suspended awaiter is re-pended and dispatched, each still-running awaiter records the id in its <code>resumes</code> so its next <code>task.suspend</code> can answer <code>300</code> — and every listener gets an <code>Unblock</code> carrying the settled record. That is the "first settlement wakes the parent" mechanism <a href="./03-rpc-and-gather.html">03-rpc-and-gather.md</a> relies on.</p>
+<h1>Part 5 -- The Invariants</h1>
+<p>Every document is checked against the same rules the catalogue asserts, in <code>check_invariants</code> — the kernel's own self-audit:</p>
+<pre><code class="language-python"># resonate/kernel.py (shape, abbreviated)
+def check_invariants(doc: Document) -&gt; str | None:
+    ids = {o.id for o in doc.objects}
+    if [o.id for o in doc.objects] != sorted(ids, key=dewey):
+        return &quot;objects are not sorted by dewey id&quot;
+    for o in doc.objects:
+        p, t = o.promise, o.task
+        if p.state == PENDING and p.settled_at is not None:
+            return f&quot;promise {o.id}: pending but has settled_at&quot;
+        if p.state != PENDING and p.settled_at is None:
+            return f&quot;promise {o.id}: settled but has no settled_at&quot;
+        ...
+        if t.state == T_PENDING and (t.retry_at is None or t.lease_at is not None):
+            return f&quot;task {o.id}: pending without exactly a retry timer&quot;
+        if t.state == T_ACQUIRED and (t.lease_at is None or t.retry_at is not None):
+            return f&quot;task {o.id}: acquired without exactly a lease timer&quot;
+        if t.state in (T_SUSPENDED, T_HALTED, T_FULFILLED) and (t.retry_at or t.lease_at) is not None:
+            return f&quot;task {o.id}: {t.state} with an armed timer&quot;
+        ...
+    if doc.timer_at != min_deadline(doc):
+        return f&quot;timer_at {doc.timer_at} != min_deadline {min_deadline(doc)}&quot;
+    return None
+</code></pre>
+<p>Read the task-timer invariants carefully: a pending task has <em>exactly</em> a retry timer and no lease; an acquired task has <em>exactly</em> a lease and no retry; a suspended, halted, or fulfilled task has neither. That is the entire lifecycle discipline in four lines — a task is either waiting to run, running, or done, and never any two of them.</p>
+<h1>The Aha Moment</h1>
+<p><strong>Aha:</strong> The kernel is a <em>pure</em> state machine not because purity is elegant but because it is the only way to test the thing. A function that has already written to a bucket cannot be replayed, so it cannot be graded against 93 catalogue entries or explored exhaustively; one that only returns effects can be run against the same document a million times for free. The <code>if not c.add: return []</code> in <code>commit</code> is the payoff: a decision that changed nothing owes no effects, which is exactly the property that makes "replay" and "idempotent timeout" and "a read writes nothing" all fall out of the same rule.</p>
+<h1>Cross-References</h1>
+<ul><li>The promise and task records the kernel operates on: <a href="./01-the-promise.html">01-the-promise.md</a>.</li><li>The engine that arms, commits, disarms, and sends the kernel's effects: <a href="./07-engine.html">07-engine.md</a>.</li><li>The request shapes the kernel matches on: <a href="./05-types-and-protocol.html">05-types-and-protocol.md</a>.</li><li>The catalogue that shadows exactly these invariants: <a href="./14-properties.html">14-properties.md</a>.</li></ul>
+<p>Continue to <a href="./07-engine.html">07-engine.md</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
