@@ -377,9 +377,11 @@ class Md2Html:
         text = re.sub(r'\*(.+?)\*', r'<em>\1</em>', text)
         # Links
         text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', text)
-        # Relative md links in docs: ../markdown/XX-slug.md → XX-slug.html
-        text = re.sub(r'\[([^\]]+)\]\((\.+/)*markdown/([^)]+\.md)\)',
-                      lambda m: f'<a href="{os.path.splitext(m.group(3))[0]}.html">{m.group(1)}</a>',
+        # Relative .md links point at source docs; in the rendered tree they
+        # are .html. Leave absolute (scheme-bearing) URLs alone.
+        text = re.sub(r'href="([^"]*\.md)"',
+                      lambda m: (f'href="{os.path.splitext(m.group(1))[0]}.html"'
+                                 if "://" not in m.group(1) else m.group(0)),
                       text)
         return text
 
@@ -515,6 +517,7 @@ def build(project_dir: str):
         'websocket': "WebSocket implementations in Rust. tungstenite-rs (RFC6455 core), tokio-tungstenite (async), websocat (CLI tool), plus deprecated rust-websocket and Sunrise reactive library.",
         'zcoder': "Parallel-first AI coding harness in Rust. A terminal UI client talks to a self-spawning daemon over a Unix socket; the daemon owns SQLite persistence and a single-writer executor that drives model calls via genai.",
         'proa': "Rust server-side rendering framework. Compiles Rust-authored HTML templates to pre-escaped byte sequences at compile time, streams over a chained-bump buffer, and hydrates interactive islands via the RSJS Rust-to-JavaScript compiler.",
+        'durable-execution': "Resonate's durable-execution runtime. One primitive (the durable promise), a pure kernel, two ports, and a push model: the full Python engine in code/final, from the programming model to the conformance catalogue.",
     }
     desc = descriptions.get(project_name, f"Documentation for {project_name}.")
 

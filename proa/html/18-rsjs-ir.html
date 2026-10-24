@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>18 -- RSJS IR: Side-Tables, Client IR v3, and the Staged Compiler ABI -- proa</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/proa/docs</span>
+    <div class="nav-actions">
+      <a href="15-build-tooling.html" class="nav-breadcrumb">15 -- Build Tooling: Linked Compilation and Source Engineering</a><a href="16-cli.html" class="nav-breadcrumb">16 -- CLI: One Binary, Three Identities</a><a href="17-rsjs-overview.html" class="nav-breadcrumb">17 -- RSJS Overview: Islands, Signals, Memos, Handlers, Queries</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="17-rsjs-overview.html" class="nav-btn" title="Previous: 17 -- RSJS Overview: Islands, Signals, Memos, Handlers, Queries">← prev</a>
+      <a href="19-rsjs-macros.html" class="nav-btn nav-btn-next" title="Next: 19 -- RSJS Macros: The Proc-Macro Frontend and the Three-Phase Build">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>18 -- RSJS IR: Side-Tables, Client IR v3, and the Staged Compiler ABI</h1>
+<p><code>rsjs_ir</code> is the intermediate representation (IR) crate at the center of the RSJS compiler. It owns everything that sits between the author's <code>#[rsjs]</code> component and the JavaScript that ships to the browser: the identifier types, the constrained expression language, the reactive declarations, the per-node binding tables, the <code>Island</code> container, the optimization passes, the analysis layer, the JavaScript emitter, and the versioned compiler ABI. One property defines the crate: it is deliberately <strong>independent of <code>syn</code> and <code>proc_macro</code></strong>. The proc-macro frontend (<code>rsjs_macros</code>) builds an <code>Island</code> from a lifted <code>html_sync!</code> parse tree, but the IR itself carries no <code>syn</code> types. Any future frontend -- a programmatic builder, a JSON ingestion path, an alternative authoring surface -- can build the same IR without going through the macro. That independence is what makes the IR testable in isolation and light to depend on for code that only inspects or transforms it.</p>
+<p>The crate spans 38 source files and 51,537 lines. It is organized into layers that stack from data types up to the staged compile pipeline.</p>
+<div class="mermaid">
+flowchart TD
+    subgraph DATA[Data types]
+        TYPES[types.rs&lt;br/&gt;10 identifier newtypes]
+        VALUE[value.rs&lt;br/&gt;Value enum]
+        MARKERS[markers.rs&lt;br/&gt;hydration markers]
+    end
+    subgraph IR[Core IR]
+        CLIENT[client/&lt;br/&gt;Client IR v3 expr/stmt/module/type]
+        REACTIVE[reactive.rs&lt;br/&gt;SignalDecl EventHandler Query Mutation]
+        BIND[bindings.rs&lt;br/&gt;6 per-node side-tables]
+        ISLAND[island.rs&lt;br/&gt;Island container + view tree]
+        LISTS[lists.rs&lt;br/&gt;keyed lists]
+        BUILDER[builder/&lt;br/&gt;IslandBuilder]
+    end
+    subgraph PASSES[Rewrites and analysis]
+        OPT[optimize/&lt;br/&gt;PassRunner HandlerDedup DeadSignal]
+        ANALYSIS[analysis/&lt;br/&gt;strategy dep_collector typing]
+        BROWSER[browser_registry.rs dom_registry.rs]
+    end
+    subgraph EMIT[Emission and staged pipeline]
+        EMIT_JS[emit_js.rs client/emit_js.rs&lt;br/&gt;JavaScript emitters]
+        JSON[client/json.rs json_write.rs&lt;br/&gt;JSON round-trip]
+        LINKED[client/linked_helpers.rs&lt;br/&gt;LinkedHelperProgram]
+        ABI[abi.rs&lt;br/&gt;descriptor + capability ABI]
+        LINK[link.rs&lt;br/&gt;owner partitioning]
+        FINAL[final_plan.rs unit_projection.rs&lt;br/&gt;final plan]
+        OWNER[linked_owner_js.rs&lt;br/&gt;owner module emission]
+        BUILD[build.rs&lt;br/&gt;build identities]
+    end
+    BUILDER --&gt; ISLAND
+    CLIENT --&gt; ISLAND
+    REACTIVE --&gt; ISLAND
+    BIND --&gt; ISLAND
+    LISTS --&gt; ISLAND
+    ISLAND --&gt; OPT --&gt; EMIT_JS
+    ISLAND --&gt; ANALYSIS --&gt; EMIT_JS
+    CLIENT --&gt; JSON
+    CLIENT --&gt; LINKED
+    ABI --&gt; LINK --&gt; FINAL --&gt; OWNER
+    FINAL --&gt; LINKED
+    BUILD --&gt; FINAL
+
+</div>
+<h2>Why a separate crate</h2>
+<p>The crate root (<code>rsjs_ir/src/lib.rs</code>) states three reasons the IR lives apart from the proc macro.</p>
+<p>First, <strong>testability in isolation.</strong> Unit tests construct side-tables by hand and assert the JavaScript emitter output, with no macro expansion required. The <code>optimize</code> module's tests, for example, build a two-button <code>Island</code> with <code>IslandBuilder</code>, run <code>HandlerDedup</code>, and assert the merged handler count.</p>
+<p>Second, <strong>lighter to depend on.</strong> Consumers that want to inspect or transform an IR do not pull in <code>syn</code> or <code>proc-macro2</code>. The Rust <code>TokenStream</code> emitter that rewrites an authored <code>WebRenderSync<L></code> / <code>WebRender<L></code> impl lives in <code>rsjs_macros::emit_rust</code>, not here, because emitting Rust wants <code>quote!</code>, spans, and macro hygiene.</p>
+<p>Third, <strong>stability against the renderer.</strong> Generated Rust targets Proa rendering contracts, but the IR itself stays independent of the rendering implementation so a renderer change does not force unnecessary compiler rebuilds.</p>
+<p>The milestone status covers M1 through M9: identifiers and the expression enum (M1), the JavaScript emitter (M2), the Rust emitter (M3), control-flow lowering (M4-M5), optimization passes (M6), the proc-macro frontend and manifest (M7), server-driven queries (M8), and mutations (M9).</p>
+<h2>The identifier types</h2>
+<p>Every side-table in the IR is keyed by a small, non-interchangeable integer. <code>types.rs</code> defines ten newtypes over <code>u32</code>, each deliberately distinct so a <code>NodeId</code> cannot be passed where a <code>SignalId</code> is expected even though the representations match.</p>
+<pre><code class="language-rust">// rsjs_ir/src/types.rs (abbreviated)
+pub struct SignalId(pub u32);        // a reactive cell declaration
+pub struct SharedStoreId(pub u32);   // a page-scoped shared-state acquisition
+pub struct EventHandlerId(pub u32);  // an event handler declaration
+pub struct CallbackSlotId(pub u32);  // a named reusable-component callback slot
+pub struct NodeRefId(pub u32);       // a DOM node reference handle
+pub struct NodeId(pub u32);          // a node in the lifted parse tree
+pub struct ExprId(pub u32);          // a ClientExpr inside the ExprArena
+pub struct LocalId(pub u32);         // a local binding inside a handler body
+pub struct QueryId(pub u32);         // a server-driven query (M8)
+pub struct MutationId(pub u32);      // an imperative mutation (M9)
+</code></pre>
+<p>The invariant is stated in the module docs: all identifiers are <strong>dense, monotonic indices</strong>, handed out in allocation order starting at <code>0</code>. This lets emitters and analyses use <code>Vec<T></code>-backed storage for random access without a hashmap. <code>ExprArena</code> is the clearest case: an expression is a <code>Box</code>-ed <code>ClientExpr</code> stored in a <code>Vec</code>, and an <code>ExprId</code> is its index, so shared subtrees (several text bindings reading one signal) stay cheap. <code>LocalId</code> differs from the rest: handler locals are scoped by the generated JavaScript function, not by the island side-tables, and descriptor remapping rewrites child-component local ids when reusable components are inlined.</p>
+<h2>The Value type</h2>
+<p><code>Value</code> (<code>value.rs</code>) is the small set of primitives the emitters know how to render into either Rust (for the server initial-state literal) or JavaScript (for the client runtime initial value). It has exactly six variants and is <code>#[non_exhaustive]</code>.</p>
+<pre><code class="language-rust">// rsjs_ir/src/value.rs (abbreviated)
+#[non_exhaustive]
+pub enum Value {
+    Bool(bool),
+    Int(i64),      // lowered to a bare JS number literal
+    BigInt(i128),  // lowered to a JS BigInt literal; wide-integer seed
+    Float(f64),
+    String(String),
+    Null,          // maps to JS null
+}
+</code></pre>
+<p>The <code>Int</code> vs <code>BigInt</code> split matters only to the JavaScript emitters and seed-blob writers. A <code>Value::Int</code> lowers to a bare JavaScript number. A <code>Value::BigInt</code> lowers to a BigInt literal such as <code>9007199254740993n</code>, and as a signal seed it uses the same JSON-string wire format that <code>rsjs::client_codec::ClientEncode</code> uses for the wide domains (<code>i64</code>, <code>u64</code>). The analyzer produces <code>BigInt</code> for every explicit <code>i64</code>/<code>u64</code> literal and promotes contextual unsuffixed literals when a proven wide domain requires it. On the server the two behave identically; only the client-side emitters care. This is the same wide-integer rule documented in the overview: <code>i64</code> and <code>u64</code> always cross the hydration boundary as canonical decimal strings.</p>
+<h2>Client IR v3: the constrained expression language</h2>
+<p>The <code>client</code> module holds the one representation that everything reactive lowers to. Legacy handler IR v1 was deleted; v3 is the single expression and statement IR. It is deliberately constrained: it is the JavaScript-lowerable subset of Rust expressions, nothing more. Every reactive expression, every handler body, every client-helper body, and every descriptor handler body uses this IR.</p>
+<h3>Client types and integer domains</h3>
+<p><code>client/types.rs</code> defines <code>ClientType</code>, the closed value vocabulary, and <code>IntegerDomain</code>, the proven Rust fixed-width integer domain.</p>
+<pre><code class="language-rust">// rsjs_ir/src/client/types.rs (abbreviated)
+pub enum IntegerDomain { I32, U32, I64, U64 }
+
+pub enum ClientType {
+    Unit, Bool,
+    I32, U32, I64, U64, F32, F64,
+    String,
+    Option(Box&lt;ClientType&gt;),
+    Vec(Box&lt;ClientType&gt;),
+    Object(Vec&lt;ClientObjectField&gt;),
+    ValueObject { type_key: String, fields: Vec&lt;ClientObjectField&gt; },
+    Struct(String),
+    Enum(String),
+    Event,
+    DomElement,
+    Signal(Box&lt;ClientType&gt;),
+    Callback(Box&lt;ClientType&gt;),
+    Dyn,
+    Unknown,
+}
+</code></pre>
+<p><code>ClientType</code> has 21 variants. The leaves (<code>Bool</code> through <code>String</code>) are the codec-compatible scalars. <code>Object</code> and <code>ValueObject</code> are the two struct shapes: <code>ValueObject</code> is the helper-internal value object with a 64-hex-digit <code>type_key</code> and scalar-only fields. <code>Signal</code> and <code>Callback</code> are reactive-handle types. <code>Dyn</code> and <code>Unknown</code> mark expressions whose type is dynamic or not yet backfilled. <code>ClientType::of_value</code> infers a type from a <code>Value</code> literal; memo cells start at <code>Unknown</code> and are backfilled by the whole-island typing pass.</p>
+<h3>Expressions</h3>
+<p><code>client/expr.rs</code> defines <code>ClientExpr</code>, a 39-variant enum. The variants group into reads, accessors, operations, and calls. The leaf reads are the reactive roots:</p>
+<pre><code class="language-rust">// rsjs_ir/src/client/expr.rs (shape, abbreviated)
+pub enum ClientExpr {
+    Unit,
+    Literal(Value),
+    ArrayLit(Vec&lt;Value&gt;),
+    QueryKey(Vec&lt;ClientExpr&gt;),
+    Local(ClientLocalId),
+    SignalRead(SignalId),
+    QueryRead { id: QueryId, accessor: QueryAccessor },
+    MutationRead { id: MutationId, accessor: MutationAccessor },
+    EventRead(EventValue),
+    EventCurrentTarget,
+    DomRead { target: Box&lt;ClientExpr&gt;, accessor: NodeRefAccessor },
+    EventCollectionLen(EventCollection),
+    EventCollectionRead { collection: EventCollection, index: Box&lt;ClientExpr&gt;, field: EventCollectionField },
+    NodeRefRead { id: NodeRefId, accessor: NodeRefAccessor },
+    EventTargetWithinNodeRef { id: NodeRefId, inside: bool },
+    EventAttribute { source: EventAttributeSource, attr: String },
+    EventPayload { attr: String },
+    CallbackPayload,
+    NodePayload { attr: String, tokens: String },
+    BrowserRead(ClientBrowserRead),
+    Encoding { op: EncodingOp, value: Box&lt;ClientExpr&gt; },
+    Conditional { condition: Box&lt;ClientExpr&gt;, then_expr: Box&lt;ClientExpr&gt;, else_expr: Box&lt;ClientExpr&gt; },
+    IsNonEmpty { target: Box&lt;ClientExpr&gt; },
+    StringToLowercase { target: Box&lt;ClientExpr&gt; },
+    StringContains { haystack: Box&lt;ClientExpr&gt;, needle: Box&lt;ClientExpr&gt; },
+    StringTransform { op: StringTransformOp, target: Box&lt;ClientExpr&gt; },
+    StringPredicate { op: StringPredicateOp, haystack: Box&lt;ClientExpr&gt;, needle: Box&lt;ClientExpr&gt; },
+    Project { target: Box&lt;ClientExpr&gt;, path: JsonPointer },
+    AsType { target: Box&lt;ClientExpr&gt;, ty: AsType },
+    IsPresent { target: Box&lt;ClientExpr&gt; },
+    Eq { target: Box&lt;ClientExpr&gt;, value: Value },
+    Neq { target: Box&lt;ClientExpr&gt;, value: Value },
+    Coalesce { target: Box&lt;ClientExpr&gt;, fallback: Value },
+    Unary { op: ClientUnaryOp, expr: Box&lt;ClientExpr&gt; },
+    Binary { op: ClientBinaryOp, left: Box&lt;ClientExpr&gt;, right: Box&lt;ClientExpr&gt; },
+    StructInit { type_name: String, fields: Vec&lt;ClientStructFieldValue&gt; },
+    Field { base: Box&lt;ClientExpr&gt;, name: String },
+    Index { base: Box&lt;ClientExpr&gt;, index: Box&lt;ClientExpr&gt; },
+    Call { function: ClientFunctionRef, args: Vec&lt;ClientExpr&gt; },
+}
+</code></pre>
+<p><code>ClientBinaryOp</code> is the operator vocabulary. The numeric operators exist in two families. The checked family (<code>ClientBinaryOp::Checked { op: CheckedIntegerOp, domain: IntegerDomain }</code>) encodes a fixed-width operation that must keep Rust's wrapping-or-panicking semantics. The JavaScript emitter lowers it to a <code>checked_int_add</code> / <code>checked_int_sub</code> / <code>checked_int_mul</code> / <code>checked_int_div</code> / <code>checked_int_rem</code> runtime helper that takes the domain as a trailing string argument, for example <code>checked_int_add(a, b, "i32")</code>; checked negation is <code>checked_int_neg(expr, "i32")</code>. There is one helper per operator, not per <code>(CheckedIntegerOp, domain)</code> pair. The dynamic family (<code>DynAdd</code> through <code>DynNe</code>) is used where the width is unknown. Comparison, boolean, and the unary operators round out the surface.</p>
+<p><code>ClientFunctionRef</code> is the call target vocabulary: <code>Local(ClientFunctionId)</code> for a module-local function, <code>Import { module, name }</code> for a static import, <code>Helper { edge, authored_path, name }</code> for a relocation-resolved client helper, <code>Runtime(name)</code> for a runtime intrinsic, and <code>Unresolved(path)</code> for a path the linker resolves later.</p>
+<h3>Statements and blocks</h3>
+<p><code>client/stmt.rs</code> defines <code>ClientStmt</code> (19 variants) and <code>ClientBlock</code>, a flat vector of statements. The statements that mutate reactive state are <code>SignalSet</code> (write a value) and <code>SignalUpdate</code> (apply a closure). The imperative ones are <code>RunMutation</code>, <code>QueryRefetch</code>, <code>QueryInvalidate</code>, <code>CallbackInvoke</code>, <code>Console</code>, <code>BrowserEffect</code>, and <code>NodeRefEffect</code>. Control flow is <code>If</code> and <code>ForRange</code>; <code>EventPreventDefault</code> and <code>EventStopPropagation</code> are the two event-control statements.</p>
+<pre><code class="language-rust">// rsjs_ir/src/client/stmt.rs (shape, abbreviated)
+pub enum ClientStmt {
+    Expr(ClientExpr),
+    Let { local: ClientLocalId, name: String, ty: ClientType, value: Option&lt;ClientExpr&gt; },
+    Assign { local: ClientLocalId, value: ClientExpr },
+    AssignPlace { place: ClientPlace, value: ClientExpr },
+    SignalSet { id: SignalId, value: ClientExpr },
+    SignalUpdate { id: SignalId, closure: ClientSimpleClosure },
+    EventPreventDefault,
+    EventStopPropagation,
+    Console { level: ConsoleLevel, args: Vec&lt;ClientExpr&gt; },
+    CallbackInvoke { callback: CallbackSlotId, payload: ClientExpr },
+    RunMutation { mutation: MutationId, args: Vec&lt;ClientExpr&gt; },
+    QueryRefetch { query: QueryId },
+    QueryInvalidate { query: QueryId },
+    BrowserEffect(ClientBrowserEffect),
+    NodeRefEffect { id: NodeRefId, effect: ClientNodeRefEffect },
+    Return(Option&lt;ClientExpr&gt;),
+    Block(ClientBlock),
+    If { condition: ClientExpr, then_block: ClientBlock, else_block: Option&lt;ClientBlock&gt; },
+    ForRange { local: ClientLocalId, name: String, integer_domain: IntegerDomain,
+               start: ClientExpr, end: ClientExpr, inclusive: bool, body: ClientBlock },
+}
+</code></pre>
+<p><code>ClientBrowserEffect</code> (24 variants) is the browser side-effect surface: window scroll and print, location and history navigation, document events and title, clipboard read/write, WebAuthn ceremonies, event-file reads, storage writes, and URL search-param writes. Each carries its <code>Expr</code> arguments inline. <code>ClientNodeRefEffect</code> (28 variants) is the node-ref imperative surface: focus, blur, click, scroll, selection, form validity, class toggling, attribute and style writes, and the popover/modal dialog family. <code>ClientPlace</code> is the assignment target: <code>Local(ClientLocalId)</code> or <code>Field { base, name }</code>.</p>
+<h3>Modules and functions</h3>
+<p><code>client/module.rs</code> defines the module graph. A <code>ClientModule</code> holds <code>imports</code>, <code>exports</code>, <code>functions</code>, <code>constants</code>, and a <code>BTreeMap<String, String></code> of <code>metadata</code>. <code>ClientModuleKind</code> is one of <code>Island</code>, <code>ComponentFragment</code>, <code>Route</code>, <code>ClientModule</code>, or <code>Runtime</code>. A <code>ClientFunction</code> holds a dense <code>ClientFunctionId</code>, <code>params</code>, a <code>return_ty</code>, a <code>body</code> block, a <code>ClientVisibility</code> (<code>Private</code> or <code>Exported</code>), and <code>captures</code>. The module also exposes <code>prune_unreachable_client_functions</code>, which removes private functions unreachable from the module's exports without renumbering ids so descriptor and module references stay stable.</p>
+<p><code>client/builder.rs</code> supplies the small test-side allocators that sit under those types. <code>ClientFunctionBuilder</code> hands out dense <code>ClientLocalId</code>s and accumulates a <code>ClientBlock</code>; <code>ClientModuleBuilder</code> hands out dense <code>ClientFunctionId</code>s and accumulates a <code>ClientModule</code>. Both are <code>finish()</code>-style builders used by conversion spikes and fixture tests, not by the production macro path.</p>
+<h3>Client helper signatures and linking</h3>
+<p><code>client/helper_signature.rs</code> owns the normalized Rust type grammar for standalone <code>#[rsjs::client]</code> helper signatures. <code>parse_client_helper_type</code> reads the producer-normalized type spelling and returns a <code>ClientType</code>. Supported leaves are <code>()</code>, <code>bool</code>, <code>i32</code>, <code>i64</code>, <code>u32</code>, <code>u64</code>, <code>f64</code>, <code>String</code>, and parameter-only <code>&str</code>; <code>Option<T></code>, <code>Vec<T></code>, and parameter-only <code>&[T]</code> compose recursively. Borrowed slices map to <code>ClientType::Vec</code>, direct <code>Option<Option<T>></code> is rejected, and <code>f32</code> is rejected because Client IR cannot preserve Rust's per-operation <code>f32</code> rounding. The five <code>ClientHelperTypeError</code> variants (<code>Unsupported</code>, <code>NestedOption</code>, <code>UnsupportedFloat32</code>, <code>BorrowedSliceReturn</code>, <code>BorrowedStringReturn</code>) each carry the offending type and the <code>ClientHelperTypePosition</code> (<code>Parameter</code> or <code>Return</code>).</p>
+<p>Two constants are part of the helper contract. <code>CLIENT_VALUE_OBJECT_TYPE_PREFIX</code> (<code>@rsjs_object(</code>) reserves the grammar for helper-internal value objects: a 64-hex-digit <code>type_key</code> followed by <code>;field=scalar-type</code> pairs, emitted only by the closed <code>#[rsjs::client] mod</code> frontend. <code>CLIENT_HELPER_LEN_INTRINSIC_JS</code> is the single producer-owned runtime reference permitted inside origin-free helper bodies, used for Rust <code>String</code>/<code>Vec</code>/slice <code>.len()</code>; it is the only spelling <code>is_client_helper_runtime_intrinsic</code> accepts.</p>
+<p><code>client/linked_helpers.rs</code> is the final linker for standalone helpers. A <code>LinkedHelperDefinition</code> carries a <code>LinkedHelperKey</code> (a content-addressed byte key), <code>params</code>, <code>return_ty</code>, a <code>body</code> <code>ClientBlock</code>, and the caller-local <code>calls</code> it makes. <code>LinkedHelperProgram</code> is the caller-specific, transitively closed program: a <code>root_calls</code> table plus a <code>helpers</code> table plus a private <code>function_ids</code> table. Construction is fail-closed -- every body must have an exact local edge table, every target must be defined, and the definition set must equal the transitive closure of <code>root_calls</code>. Cycles are legal because emitted JavaScript function declarations are hoisted. The emitted helper names are <code>__rsjs_helper_<id></code>, and unresolved edges use the <code>UNLINKED_HELPER_IDENTIFIER_PREFIX</code> (<code>__rsjs_unlinked_</code>). The two error enums are <code>LinkedHelperLinkError</code> (15 variants, from <code>DuplicateBinding</code> through <code>TooManyHelpers</code>) and <code>LinkedHelperEmitError</code> (7 variants, ending in <code>Client</code>), and the two call-site classifiers are <code>LinkedHelperCaller</code> (<code>Root</code> or <code>Helper</code>) and <code>LinkedHelperSignaturePosition</code> (<code>Parameter</code> or <code>Return</code>).</p>
+<h2>Reactive declarations</h2>
+<p><code>reactive.rs</code> holds the declarations that populate the island's side-tables. The most important is <code>SignalDecl</code>, because a memo is not a separate type:</p>
+<pre><code class="language-rust">// rsjs_ir/src/reactive.rs (shape, abbreviated)
+pub struct SignalDecl {
+    pub id: SignalId,
+    pub source_name: Option&lt;String&gt;,
+    pub source_anchor: Option&lt;SourceAnchor&gt;,
+    pub init: Value,
+    pub derived: Option&lt;ExprId&gt;,          // Some(body) for a memo, None for a leaf
+    pub ty: ClientType,
+    pub integer_domain: Option&lt;IntegerDomain&gt;,
+    pub shared: Option&lt;SharedFieldRef&gt;,   // Some(store, field) for shared-state cells
+}
+</code></pre>
+<p>A leaf signal has <code>derived: None</code> and a real <code>init</code>. A memo has <code>derived: Some(ExprId)</code> and <code>init: Value::Null</code>, because a derived value is never seeded; it is recomputed from the seeded source signals. The seed-blob writers emit a <code>null</code> placeholder at a derived cell's index. A shared field cell has <code>shared: Some(SharedFieldRef { store, field })</code> and <code>init: Value::Null</code>. All three share the <code>SignalId</code> space so every downstream consumer -- dependency collection, binding dependency arrays, <code>__sig_<id></code> naming, component-inline signal remapping -- slots into the same wiring unchanged.</p>
+<p><code>EventHandler</code> stores an id, an optional debounce window in milliseconds, and the handler body as a Client IR v3 <code>ClientBlock</code>. <code>QueryDecl</code> stores a structural <code>key_expr</code>, a <code>server_initial</code> value, a <code>client_fetcher</code>, a <code>data_ty</code>, and <code>QueryOptions</code> with six knobs: <code>interval_ms</code>, <code>refetch_on_focus</code>, <code>download_progress</code>, <code>stream_text</code>, <code>retry_count</code>, and <code>stale_time_ms</code>. <code>MutationDecl</code> stores a <code>key_expr</code>, a <code>server_runner</code>, a <code>client_runner</code>, an <code>invalidates</code> list of query-key expression ids, and <code>MutationOptions</code> with <code>InvalidationStrategy</code> (<code>Refetch</code> or <code>Reset</code>). <code>NodeRefDecl</code>, <code>IntervalDecl</code>, and <code>CallbackSlot</code> complete the set; intervals carry no id because nothing else references them.</p>
+<h2>The bindings side-tables</h2>
+<p><code>bindings.rs</code> is where the DOM connects to reactive state. <code>Bindings</code> is a struct of six <code>HashMap</code> fields keyed by <code>NodeId</code>, one per binding kind:</p>
+<pre><code class="language-rust">// rsjs_ir/src/bindings.rs (shape, abbreviated)
+pub struct Bindings {
+    pub text_bindings: HashMap&lt;NodeId, ExprId&gt;,                 // node -&gt; text expr
+    pub attr_bindings: HashMap&lt;(NodeId, String), AttrBinding&gt;,  // (node, name) -&gt; dynamic attr
+    pub event_bindings: HashMap&lt;(NodeId, EventName), EventHandlerId&gt;,
+    pub conditional_sections: HashMap&lt;NodeId, Vec&lt;ConditionalSection&gt;&gt;,
+    pub input_bindings: HashMap&lt;NodeId, InputBinding&gt;,          // two-way form bindings
+    pub node_ref_bindings: HashMap&lt;NodeId, NodeRefBinding&gt;,
+}
+</code></pre>
+<p><code>text_bindings</code> say which text nodes display which expression. <code>attr_bindings</code> pair a dynamic attribute with an expression and an <code>AttrBindingKind</code> (<code>Value</code>, <code>Boolean</code>, or <code>Url</code>). <code>event_bindings</code> say which DOM event on which node invokes which handler. <code>conditional_sections</code> hold <code>{ if cond { then } else { else } }</code> predicates as a <code>ConditionalSection</code> with <code>then_children</code> and <code>else_children</code> node lists. <code>input_bindings</code> pair a form input with a <code>SignalId</code> via an <code>InputKind</code> (<code>Value</code>, <code>Checked</code>, or <code>Selected</code>) for <code>bind_value</code> / <code>bind_checked</code> / <code>bind_selected</code>. <code>node_ref_bindings</code> bind an element to an author-declared <code>NodeRefId</code>.</p>
+<p>The event surface is a closed list. <code>EventName</code> has 57 variants spanning <code>Click</code>, <code>Input</code>, <code>Change</code>, <code>Paste</code>, <code>Focus</code>, <code>Blur</code>, <code>KeyDown</code>, <code>KeyUp</code>, the full mouse and pointer families, <code>Scroll</code>, <code>Wheel</code>, <code>BeforeInput</code>, the composition events, drag and drop, <code>Toggle</code>/<code>BeforeToggle</code>, the animation and transition events, <code>Submit</code>, the document-level <code>DocumentClick</code>/<code>DocumentPointerDown</code>/<code>DocumentKeyDown</code>, and the window-level <code>WindowPopState</code>/<code>WindowHashChange</code>/<code>WindowStorage</code>/<code>WindowResize</code>/<code>WindowScroll</code>. The <code>EventName</code> type carries the canonical conversions: <code>as_dom_name()</code>, <code>as_attr_name()</code>, <code>as_descriptor_name()</code>, plus <code>is_document_event()</code> and <code>is_window_event()</code> predicates.</p>
+<p>Conditional rendering is a binding concern, not a structural one. Both branches of an <code>if</code> are statically present in the view tree; the runtime shows one and hides the other.</p>
+<h2>The view tree and the Island</h2>
+<p><code>island.rs</code> defines the container and the view structure. The <code>ViewTree</code> supplies stable <code>NodeId</code>s, and <code>ViewNode</code> is one of five shapes: <code>Element { tag, children, static_attrs, server_attrs, payload_attrs }</code>, <code>ForLoop { attrs, label, pat, expr, body_prefix, children }</code>, <code>TextBindingSlot</code>, <code>StaticText(String)</code>, and <code>ServerOnly(ServerOnlyNode)</code>. Only <code>Element</code> and <code>ForLoop</code> can have children; the builder panics if a child is attached to a text slot, static text, or server-only node.</p>
+<p>The <code>Island</code> is a bag of side-tables, not a tree of reactive nodes:</p>
+<pre><code class="language-rust">// rsjs_ir/src/island.rs (shape, abbreviated)
+pub struct Island {
+    pub shared_stores: Vec&lt;SharedStoreDecl&gt;,
+    pub signals: Vec&lt;SignalDecl&gt;,
+    pub handlers: Vec&lt;EventHandler&gt;,
+    pub callback_slots: Vec&lt;CallbackSlot&gt;,
+    pub node_refs: Vec&lt;NodeRefDecl&gt;,
+    pub bindings: Bindings,
+    pub exprs: ExprArena,
+    pub view_tree: ViewTreeRef,
+    pub is_async: bool,
+    pub client_module_imports: Vec&lt;String&gt;,
+    pub hydration_strategy: HydrationStrategy,
+    pub component_fragment_imports: Vec&lt;String&gt;,
+    pub component_fragment_mounts: Vec&lt;ComponentFragmentMount&gt;,
+    pub queries: Vec&lt;QueryDecl&gt;,
+    pub mutations: Vec&lt;MutationDecl&gt;,
+    pub intervals: Vec&lt;IntervalDecl&gt;,
+    pub lists: Vec&lt;ListDecl&gt;,
+}
+</code></pre>
+<p><code>HydrationStrategy</code> is the client-side activation trigger: <code>Immediate</code>, <code>Visible</code>, <code>Idle</code>, <code>Interaction { event: Option<String> }</code>, or <code>Media { query: String }</code>. <code>is_async</code> selects the <code>html!</code> (async) Rust emission path instead of the sync <code>html_sync!</code> path. The component-fragment fields record descriptor-backed reusable child components the island composes; a <code>ComponentFragmentMount</code> carries the mount root, the child asset id, callback adapters, and the signal/node aliases that wire parent cells into the child.</p>
+<h2>The IslandBuilder</h2>
+<p><code>builder/mod.rs</code> is the hand-author frontend. It lets tests and programmatic frontends construct an <code>Island</code> without going through the macro. It is deliberately thin: every method either allocates a new id and returns it, or wires an existing id into a side-table. The builder does not validate cross-references -- misuse panics later, when an emitter or analysis dereferences a bad id.</p>
+<pre><code class="language-rust">// rsjs_ir/src/builder/mod.rs (abbreviated)
+pub fn signal(&amp;mut self, init: Value) -&gt; SignalId;          // leaf, type inferred from init
+pub fn signal_typed(&amp;mut self, init: Value, ty: ClientType) -&gt; SignalId;
+pub fn memo(&amp;mut self, body: ExprId) -&gt; SignalId;           // derived cell, ty Unknown until typing
+pub fn shared_store(&amp;mut self, source_name: String, rust_type: String, ...) -&gt; SharedStoreId;
+pub fn shared_field(&amp;mut self, store: SharedStoreId, field: String, ty: ClientType) -&gt; SignalId;
+pub fn expr(&amp;mut self, client_expr: ClientExpr) -&gt; ExprId;
+pub fn handler_from_ir(&amp;mut self, body_ir: ClientBlock) -&gt; EventHandlerId;
+pub fn debounce_handler_from_ir(&amp;mut self, ms: u64, body_ir: ClientBlock) -&gt; EventHandlerId;
+pub fn interval(&amp;mut self, ms: u64, body_ir: ClientBlock);
+pub fn keyed_list(&amp;mut self, decl: ListDecl);
+pub fn callback_slot(&amp;mut self, name: &amp;str) -&gt; CallbackSlotId;
+pub fn node_ref(&amp;mut self) -&gt; NodeRefId;
+pub fn element(&amp;mut self, tag: &amp;str, parent: Option&lt;NodeId&gt;) -&gt; NodeId;
+pub fn text_node(&amp;mut self, parent: NodeId, expr: ExprId) -&gt; NodeId;
+pub fn bind_event(&amp;mut self, node: NodeId, event: EventName, handler: EventHandlerId);
+pub fn bind_input(&amp;mut self, node: NodeId, kind: InputKind, signal: SignalId);
+pub fn bind_attr(&amp;mut self, node: NodeId, name: &amp;str, kind: AttrBindingKind, expr: ExprId);
+pub fn bind_node_ref(&amp;mut self, node: NodeId, node_ref: NodeRefId);
+pub fn query(&amp;mut self, key_expr: ExprId, server_initial: ExprId, client_fetcher: ExprId,
+             options: QueryOptions) -&gt; QueryId;
+pub fn mutation(&amp;mut self, key_expr: ExprId, server_runner: ExprId, client_runner: ExprId,
+                invalidates: Vec&lt;ExprId&gt;, options: MutationOptions) -&gt; MutationId;
+pub fn set_root(&amp;mut self, id: NodeId);
+pub fn build(self) -&gt; Island;
+</code></pre>
+<p>Two methods deserve note. <code>memo</code> pushes a <code>SignalDecl</code> with <code>init: Value::Null</code>, <code>derived: Some(body)</code>, and <code>ty: ClientType::Unknown</code>; the whole-island typing pass backfills the type later via <code>set_signal_ty</code>. <code>set_signal_derived</code> exists for the component inliner: child signal declarations are copied before the child expression arena, so a child memo's remapped body id only becomes known after the arena copy.</p>
+<p>The builder also separates three attribute kinds that the server and client treat differently. <code>static_attr</code> records author attributes (<code>class="error"</code>, <code>id="foo"</code>) that the Rust emitter threads straight back into the generated <code>html_sync!</code> body. <code>server_attr</code> records <code>rsjs::server_attr(...)</code> tokens that only the Rust emitter consumes. <code>payload_attr</code> records a JSON-encoded dynamic payload that delegated client handlers consume; <code>payload_attr_for_tokens</code> deduplicates the compiler-owned attribute name so repeated template expressions on one element share one encoded DOM value.</p>
+<h2>Keyed lists</h2>
+<p><code>lists.rs</code> defines <code>ListDecl</code>, the client-side reconciliation of a container's children over a <code>Vec</code>-valued signal. <code>ListSource</code> is either <code>Signal(SignalId)</code> or <code>Expr(ExprId)</code>. <code>ListItemExpr</code> and <code>ListTemplateNode</code> describe the per-item template. The runtime pairs each server-rendered child with its initial item using the <code>data-rsjs-key</code> marker instead of re-creating the DOM.</p>
+<h2>Hydration markers</h2>
+<p><code>markers.rs</code> is the single source of truth for the attribute names the JavaScript and Rust emitters must agree on. Both emitters embed these strings into byte streams, so they are <code>&'static str</code>, not an enum -- the cheapest representation, and it lets callers interpolate without an allocation. A typo in one emitter produces unmatched markers, which the runtime can only report as a missing-node warning.</p>
+<table><tr><th>Constant</th><th>Value</th><th>Written by</th><th>Read by</th></tr><tr><td>`MARKER_BIND`</td><td>`data-rsjs-bind`</td><td>Rust emitter</td><td>JS emitter (`bind_text`)</td></tr><tr><td>`MARKER_ATTR`</td><td>`data-rsjs-attr`</td><td>Rust emitter</td><td>JS emitter (attr bindings)</td></tr><tr><td>`MARKER_HANDLER`</td><td>`data-rsjs-handler`</td><td>Rust emitter</td><td>JS emitter (event bindings)</td></tr><tr><td>`MARKER_REF`</td><td>`data-rsjs-ref`</td><td>Rust emitter</td><td>JS emitter (node refs)</td></tr><tr><td>`MARKER_COMPONENT`</td><td>`data-rsjs-component`</td><td>Rust emitter</td><td>fragment root lookup</td></tr><tr><td>`MARKER_COMPONENT_MOUNT`</td><td>`data-rsjs-component-mount`</td><td>Rust emitter</td><td>parent mount lookup</td></tr><tr><td>`MARKER_INPUT_VALUE`</td><td>`data-rsjs-input-value`</td><td>Rust emitter</td><td>JS emitter (two-way value)</td></tr><tr><td>`MARKER_INPUT_CHECKED`</td><td>`data-rsjs-input-checked`</td><td>Rust emitter</td><td>JS emitter (two-way checked)</td></tr><tr><td>`MARKER_INPUT_SELECTED`</td><td>`data-rsjs-input-selected`</td><td>Rust emitter</td><td>JS emitter (two-way selected)</td></tr><tr><td>`MARKER_LIST`</td><td>`data-rsjs-list`</td><td>analyser</td><td>JS emitter (keyed-list container)</td></tr><tr><td>`MARKER_LIST_KEY`</td><td>`data-rsjs-key`</td><td>Rust emitter</td><td>`bind_list` adoption pass</td></tr><tr><td>`ISLAND_WRAPPER_TAG`</td><td>`rsjs-island`</td><td>Rust emitter</td><td>`hydrate` root resolution</td></tr><tr><td>`ISLAND_ROOT_ATTR`</td><td>`data-rsjs-island-root`</td><td>Rust emitter</td><td>`hydrate` root resolution</td></tr><tr><td>`ISLAND_MARKER_ATTR`</td><td>`data-rsjs-island`</td><td>Rust emitter</td><td>dehydrated state script tag</td></tr></table>
+<p>The island wrapper is an HTML5 custom element, <code><rsjs-island></code>. The asset id travels on <code>data-rsjs-island-root</code>, not an HTML <code>id</code>, so several instances of the same island can appear in one valid page. The runtime resolves roots with <code>document.querySelectorAll('rsjs-island[data-rsjs-island-root="<asset_id>"]')</code>.</p>
+<h2>Optimization passes</h2>
+<p><code>optimize/mod.rs</code> is pure IR-to-IR rewriting. It ships two concrete passes and a fixed-point runner. The module docs are explicit that the JavaScript emitter does not run these passes implicitly: callers that want the optimized output construct a <code>PassRunner</code> (or use <code>default_passes</code>) and run it before calling <code>emit_js::emit</code>. This keeps <code>emit_js</code> deterministic with respect to its input.</p>
+<pre><code class="language-rust">// rsjs_ir/src/optimize/mod.rs (abbreviated)
+pub trait IslandPass {
+    fn name(&amp;self) -&gt; &amp;&#x27;static str;               // e.g. &quot;handler_dedup&quot;
+    fn run(&amp;self, island: &amp;mut Island) -&gt; PassResult;
+}
+
+pub struct PassResult { pub changed: bool, pub stats: PassStats }
+pub struct PassStats { pub items_removed: usize, pub items_merged: usize, pub items_visited: usize }
+
+pub fn default_passes() -&gt; PassRunner {
+    PassRunner::new()
+        .add(HandlerDedup::new())
+        .add(DeadSignalElimination::new())
+}
+</code></pre>
+<p><code>PassRunner::run_all</code> applies the passes in declared order until a fixed point, capped at <code>MAX_ROUNDS = 10</code>. The cap is a safety net against a pass that violates the idempotence contract and oscillates; in practice each pair converges in one or two rounds. Every pass must be idempotent: running it twice must report <code>changed: false</code> on the second run.</p>
+<p><code>handler_dedup.rs</code> merges structurally-identical event handlers. Two handlers are equivalent when their stored Client IR v3 blocks are equal under structural <code>PartialEq</code>, including the debounce window. Equivalence is over signal ids, not values: two handlers that both write <code>count.set(0)</code> merge, but one that writes <code>other.set(0)</code> does not. The pass picks the first (lowest-id) handler as the canonical one, rewrites every <code>event_bindings</code> entry that pointed at a duplicate, and drops the orphaned entries. Surviving handlers keep their original ids, so the <code>handlers</code> vector may become sparse -- the emitters key off the stored id, not the vector position.</p>
+<p><code>dead_signal_elimination.rs</code> drops signals with no readers and no writers. It is deliberately conservative: a signal that is only ever written survives, because writes may be observed through paths not yet present in the v0.1 surface. The pass walks every arena expression (readers only, since writes are statements), every handler and interval block (readers and writers), every keyed-list source, every input binding (both a reader and a writer, two-way), and every component-fragment mount's signal aliases and callback adapters. The last walk is shared with the reachability analysis so the pass and the strategy layer cannot disagree about which signals a mount keeps alive.</p>
+<h2>The analysis layer</h2>
+<p><code>analysis/</code> has five modules and is re-exported at the crate root. Its core is <code>strategy.rs</code>, which answers the question "does this island need browser JavaScript, and what must be serialized for it?"</p>
+<h3>Render strategy and reachability</h3>
+<p><code>classify_render_strategy(island)</code> returns a <code>StrategyAnalysis</code> with a <code>RenderStrategy</code> of <code>ServerOnly</code>, <code>SsrHydrate</code>, or <code>ClientOnlyExplicit</code> (all <code>#[non_exhaustive]</code>). The strategy is <code>ServerOnly</code> when the island has no reachability roots, and <code>SsrHydrate</code> otherwise. Reachability roots are the IR facts that make browser JavaScript reachable. <code>client_reachability_roots</code> seeds them from the binding side-tables -- text bindings, attribute bindings, event bindings, conditional sections, input bindings, node-ref bindings, intervals, keyed lists, and component-fragment mounts -- then closes each seed reactively: signal reads follow derived and memo bodies recursively, query reads recurse <code>key_expr</code> and <code>client_fetcher</code>, mutation reads recurse <code>key_expr</code>, <code>client_runner</code>, and each <code>invalidates</code> entry, and write targets (<code>SignalSet</code>, <code>SignalUpdate</code>, <code>RunMutation</code>, <code>QueryRefetch</code>, <code>QueryInvalidate</code>) pull in their destinations.</p>
+<div class="mermaid">
+flowchart TD
+    SEED[seed roots from bindings&lt;br/&gt;text/attr/event/conditional/input/node-ref] --&gt; CLOSE[reactive closure]
+    CLOSE --&gt; SIG[SignalRead follows derived/memo bodies]
+    CLOSE --&gt; QRY[QueryRead recurses key + fetcher]
+    CLOSE --&gt; MUT[MutationRead recurses key + runner + invalidates]
+    CLOSE --&gt; WRT[write targets: SignalSet Update RunMutation Refetch]
+    CLOSE --&gt; BROWSER[browser reads/effects, helper calls, client-module calls]
+    SIG --&gt; ROOTS[deduped ClientReachabilityRoot list]
+    QRY --&gt; ROOTS
+    MUT --&gt; ROOTS
+    WRT --&gt; ROOTS
+    BROWSER --&gt; ROOTS
+    ROOTS --&gt; CROSS[client_crossings]
+    CROSS --&gt; SEEDBLob[SignalSeed ClientEncode]
+    CROSS --&gt; QUERYBlob[QueryKey QueryFetcher QueryInitialValue]
+    CROSS --&gt; MUTBlob[MutationKey MutationRunner MutationInvalidationKey]
+
+</div>
+<p>The roots feed <code>client_crossings</code>, the deterministic ledger of values serialized into browser-visible state. Each reachable leaf signal that is neither derived nor shared produces a <code>SignalInitialValue</code> crossing (<code>SignalSeed</code>, requirement <code>ClientEncode</code>). Each reachable query produces <code>QueryKey</code> + <code>QueryFetcher</code> (<code>QueryMetadataBlob</code>) plus <code>QueryInitialValue</code> (<code>QuerySeedBlob</code>). Each reachable mutation produces <code>MutationKey</code> + <code>MutationRunner</code> plus one <code>MutationInvalidationKey</code> per <code>invalidates</code> entry. Payload attributes referenced by <code>EventPayload</code> or <code>NodePayload</code> become <code>HandlerPayload</code> and <code>NodePayload</code> crossings.</p>
+<p><code>DeadClientPrimitive</code> records declarations that reachability did not use -- a dead signal, memo, handler, node ref, query, or mutation -- each with a kind, label, and source anchor.</p>
+<h3>Dependency collection and typing</h3>
+<p><code>dep_collector.rs</code> owns the structural walks. <code>collect_deps(arena, root)</code> returns the signals an expression depends on; <code>collect_client_block_deps</code>, <code>collect_client_block_reactive_deps</code>, and <code>collect_client_block_helper_edges</code> extend it to blocks. The walks are one shared preorder traversal: <code>walk_client_expr</code> visits an expression then every nested sub-expression, and <code>walk_client_stmt</code> / <code>walk_client_block</code> extend it through statements, browser effects, node-ref effects, and child blocks. Reactive collection records only reads -- <code>SignalRead</code>, <code>QueryRead</code>, <code>MutationRead</code> -- never write destinations, in first-encounter order with dedup. External collection also records signal writes, callback slots, node refs, helper edges, client-module calls, and five <code>uses_*</code> flags, and it fails with <code>ClientBlockDependencyError::LocalFunction</code> or <code>UnresolvedFunction</code> for unclosable function references.</p>
+<p><code>typing.rs</code> computes types on demand rather than storing them on nodes. <code>TypeEnv::type_of</code> returns a <code>ClientType</code> per expression; leaves such as accessors and browser reads have fixed types, while <code>EventPayload</code>, <code>NodePayload</code>, <code>CallbackPayload</code>, calls, and indexing are <code>Unknown</code>. <code>TypeEnv::integer_domain_of</code> returns the proven <code>IntegerDomain</code>, and <code>numeric_width</code> projects a <code>ClientType</code> to <code>NumberInt</code>, <code>NumberFloat</code>, <code>BigInt</code>, or <code>Dynamic</code>. <code>backfill_derived_signal_types</code> writes the <code>ty</code> and <code>integer_domain</code> of memo cells whose declarations were not yet backfilled.</p>
+<h3>Helper validation</h3>
+<p><code>helper_validation.rs</code> and <code>helper_typing.rs</code> validate standalone <code>#[rsjs::client]</code> helper bodies. The structural pass (<code>validate_client_helper_expr</code> / <code>validate_client_helper_block</code>) rejects too many parameters, too many locals, non-dense local declarations, unknown or out-of-scope locals, assignment to a parameter, invalid object field names, non-origin-free dependencies, and unsupported statements or expressions. The typing pass (<code>validate_client_helper_block_types</code>) checks each <code>ClientHelperTypeSite</code> -- a <code>Let</code> initializer, an assignment, a signal set/update, an <code>If</code> condition, a binary operand, a helper argument, a return -- against the target signature, and reports <code>ClientHelperBodyTypeError</code> variants like <code>TypeMismatch</code>, <code>IncompatibleConditionalBranches</code>, and <code>InvalidBinaryOperands</code>.</p>
+<h2>The browser and DOM registries</h2>
+<p><code>browser_registry.rs</code> is a declarative registry of <code>rsjs::<module>::<helper></code> browser helpers. Each <code>BrowserHelperSpec</code> entry declares, in one place, the <code>rsjs</code> path, argument shapes, the diagnostic usage string, the "unknown helper" allowlist line, the client value type, the gesture/async constraint, how it lowers into Client IR, and the <code>rsjs_conformance/browser_api_matrix.json</code> entry it backs. The registry drives recognition and argument checking in the macro analyzer, JavaScript emission, typing, and the SSR stub cross-check test.</p>
+<pre><code class="language-rust">// rsjs_ir/src/browser_registry.rs (abbreviated)
+pub enum HelperContext { ReactiveRead, HandlerEffect }
+pub enum HelperConstraint { None, UserGesture }
+pub enum ArgKind { Reactive, SignalRef }
+pub enum HelperLowering {
+    WindowField(WindowField),
+    StorageGet { area: BrowserStorageArea, value_type: StorageValueType },
+    WindowScrollTo, WindowScrollBy, WindowPrint,
+    ClipboardWriteText, ClipboardReadTextInto,
+    StorageSetItem(StorageArea), StorageRemoveItem(StorageArea),
+    DeclaredRead { js: &amp;&#x27;static str },    // $0..$9 splice lowered args
+    DeclaredEffect { js: &amp;&#x27;static str },
+}
+pub static REGISTRY: &amp;[BrowserHelperSpec] = &amp;[ /* window, clipboard, storage, navigator, root */ ];
+</code></pre>
+<p>The key insight is <code>DeclaredRead</code> / <code>DeclaredEffect</code>: a simple read or effect can be added as one <code>&'static str</code> JavaScript template with <code>$0</code>..<code>$9</code> placeholders, and the analyzer, descriptor JSON, JavaScript emitter, typing pass, and SSR fallback all handle it generically. Only helpers that need bespoke IR (multi-statement async protocols, signal writes) keep dedicated Client IR variants. The template must be a self-contained JavaScript expression that survives a missing browser global, so <code>navigator.language</code> lowers to <code>((typeof navigator !== "undefined") ? (navigator.language ?? "") : "")</code>. The migrated families are <code>window</code>, <code>local_storage</code>, <code>session_storage</code>, <code>clipboard</code>, <code>navigator</code>, and <code>root</code>; the remaining families (<code>location</code>, <code>history</code>, <code>document</code>, <code>webauthn</code>, <code>url</code>, <code>encoding</code>) still live on the legacy hand-written path and migrate opportunistically.</p>
+<p><code>dom_registry.rs</code> adapts the generated <code>rsjs_web</code> DOM operation registry to the existing stable <code>NodeRefAccessor</code> variants. It exposes <code>find_node_ref_read</code>, <code>find_node_ref_effect</code>, <code>find_current_target_read</code>, and <code>node_ref_accessor</code>, which maps a <code>DomOperation</code> plus an optional static attribute name onto the Client IR accessor. <code>operation_type</code> derives the scalar <code>ClientType</code> from the operation's <code>DomFallback</code>.</p>
+<h2>The JavaScript emitters</h2>
+<p><code>emit_js.rs</code> (the island-level emitter) and <code>client/emit_js.rs</code> (the Client IR v3 emitter) turn an optimized <code>Island</code> into a per-island JavaScript module. The island emitter's public entry point is <code>emit(island, name) -> String</code>, plus <code>try_emit_linked</code> for the final-link variant that never emits symbolic helper calls, and the <code>emit_fragment</code> family for component fragments. A server-only island returns an empty string.</p>
+<p>The emitted module opens with a runtime import, then a <code>hydrate</code> call whose body declares signals, node refs, queries, mutations, handlers, and bindings. The naming conventions are stable and generated from the dense ids: signals are <code>__sig_<id></code>, handlers <code>__handler_<id></code>, node refs <code>__ref_<id></code>, DOM nodes <code>__node_<id></code>, callback slots <code>__callback_<id></code>, query registrations <code>__rsjs_query_registration_<id></code>, mutations <code>__rsjs_mutation_<id></code>, client locals <code>__local_<id></code>, and client functions <code>__fn_<id></code>.</p>
+<pre><code class="language-rust">// rsjs_ir/src/client/emit_js.rs (abbreviated)
+pub struct ClientEmitContext {
+    pub event_name: &amp;&#x27;static str,      // &quot;event&quot;
+    pub root_name: &amp;&#x27;static str,       // &quot;root&quot;
+    pub local_prefix: &amp;&#x27;static str,    // &quot;__local_&quot;
+    pub signal_prefix: &amp;&#x27;static str,   // &quot;__sig_&quot;
+    pub query_prefix: &amp;&#x27;static str,    // &quot;__rsjs_query_&quot;
+    pub mutation_prefix: &amp;&#x27;static str, // &quot;__rsjs_mutation_&quot;
+    pub callback_prefix: &amp;&#x27;static str, // &quot;__callback_&quot;
+    pub node_ref_prefix: &amp;&#x27;static str, // &quot;__ref_&quot;
+    pub local_names: ..., pub linked_helper_calls: ...,
+}
+</code></pre>
+<p>The hydration function varies by strategy: <code>Immediate</code> imports <code>hydrate</code>, while <code>Visible</code>, <code>Idle</code>, <code>Interaction { .. }</code>, and <code>Media { .. }</code> import <code>hydrate_when_visible</code>, <code>hydrate_when_idle</code>, <code>hydrate_on_interaction</code>, and <code>hydrate_when_media</code>, wrapped as <code>hydrate_from_module(import.meta.url, ...)</code>. An <code>Interaction</code> strategy appends the event list; a <code>Media</code> strategy appends the query string.</p>
+<p>Signal emission differs by cell kind. A leaf signal reads its seed via <code>signal(signal_initial(__rsjs_signal_initials, <id>, <default>))</code>; an integer-domain signal uses <code>integer_signal(signal_initial_integer(..., "<domain>"), "<domain>")</code>; a typed container uses <code>signal_initial_typed</code>; a wide value uses <code>signal_initial_wide</code>. A derived cell becomes <code>const __sig_<id> = memo(() => <body>, [deps]);</code> and pushes its <code>_dispose</code> onto the disposer list. A shared field becomes <code>const __sig_<id> = __rsjs_shared_<store>.field("<field>");</code>. Node resolution uses a static index walk: <code>const __node_<id> = walk_path(root, [0, 1], "data-rsjs-bind", "<id>");</code>, where the leading <code>0</code> descends from the <code><rsjs-island></code> wrapper into the island root.</p>
+<p>Delegated events use <code>bind_delegated_events(root, "click", new Map([["<nodeId>", __handler_<id>]]))</code>; submit uses <code>bind_submit</code>; document and window events use <code>bind_document_event</code> and <code>bind_window_event</code>. The island function returns <code>() => dispose_all(__rsjs_disposers, "rsjs bindings")</code>.</p>
+<p>The Client IR v3 emitter exposes <code>emit_client_expr_js</code>, <code>emit_client_stmt_js</code>, <code>emit_client_block_js</code>, <code>emit_client_module_js</code>, and their <code>_with_context</code> variants. It reports <code>ClientEmitError</code> with variants such as <code>UnsupportedExpr</code>, <code>UnresolvedFunctionRef</code>, <code>UnboundHelperCall</code>, and <code>ContextualIntegerLiteralOutOfRange</code>. Determinism is explicit: the module doc notes the emitter sorts <code>HashMap</code> iteration so identical IR produces identical output.</p>
+<h2>Client IR JSON</h2>
+<p><code>client/json_write.rs</code> (write) and <code>client/json.rs</code> (parse) define the descriptor and sidecar wire format for Client IR v3. The writer emits <code>{"kind": ...}</code>-shaped objects for every expression, statement, type, and module, and the parser reads them back. The two are inverse: the tests round-trip a block and an expression through <code>client_block_json</code> / <code>parse_client_block_json_str</code> and assert equality. The module format is versioned with <code>CLIENT_IR_SCHEMA_VERSION</code> (3) and marked <code>rsjs.client_module_ir</code>. Helper call references are explicit in the JSON, carrying their <code>edge</code> id, <code>authored_path</code>, and <code>name</code>, so the descriptor retains the source edge even before relocation.</p>
+<h2>The compiler ABI</h2>
+<p><code>abi.rs</code> is the versioned public data model for the staged RSJS compiler ABI. It contains no proc-macro or linker integration -- only the descriptor and semantic model, the content-addressed identity tokens, the version and capability negotiation matrix, and full validation.</p>
+<h3>Canonical encoding and identity</h3>
+<p><code>CanonicalEncode</code> and <code>CanonicalEncoder</code> produce canonical bytes; <code>canonical_semantic_hash</code> derives a 32-byte <code>SemanticHash</code> (<code>HASH_BYTES = 32</code>) over a domain-tagged record stream. The canonical hash domain is <code>proa.rsjs.compiler-abi.canonical.v1\0</code>. Three JSON-compat domains exist for helpers: <code>helper-signature.v1</code>, <code>helper-client-ir.v3</code>, and <code>helper-codegen-ir.v1</code>. Seven digest ids (<code>define_digest_id!</code>) name the pipeline stages: <code>InvocationId</code>, <code>CargoUnitId</code>, <code>LinkUnitId</code>, <code>PlanId</code>, <code>FinalUnitId</code>, <code>SemanticHash</code>, and <code>DebugHash</code>. <code>FinalUnitId::for_plan</code> ties the last two: a final unit's identity is the hash of its semantic unit fingerprint and its <code>PlanId</code>.</p>
+<h3>Version and capability negotiation</h3>
+<p><code>AbiVersion { major, minor }</code> and <code>ProducerVersion { major, minor, patch }</code> carry versions; a <code>VersionRange { min, max }</code> checks containment. The descriptor magic is <code>DESCRIPTOR_MAGIC = *"RSJSABI\0"</code> (8 bytes). <code>DESCRIPTOR_SCHEMA_V1 = AbiVersion(1, 0)</code> and <code>CLIENT_IR_V3 = AbiVersion(3, 0)</code>, with <code>CLIENT_IR_SCHEMA_VERSION = 3</code>. <code>CapabilitySet</code> is a <code>u64</code> bitfield with twelve bits, from <code>TOLERANT_SERVER_GRAPH</code> (bit 0) through <code>SHARED_STATE_PROVIDER_TOPOLOGY</code> (bit 11); the descriptor capability set is the union of all twelve, and the runtime capability set is <code>TEMPORAL_PROPS | OWNER_PARTITION_INPUTS | DOM_SPAN_CARDINALITY</code>. An <code>AbiSupport</code> matrix declares what a consumer understands, and <code>DescriptorEnvelope::validate(&support)</code> fails closed on any mismatch.</p>
+<h3>Descriptors</h3>
+<p><code>DescriptorKind</code> is <code>Component</code> or <code>Helper</code>. A <code>ComponentDescriptor</code> carries 25 canonical fields: the semantic key, a defining witness, <code>render_kind</code>, <code>origin_permission</code>, the method-extraction and site-registration ABI versions, <code>root_eligible</code>, a <code>client_ir_hash</code>, and the graph tables (<code>values</code>, <code>effects</code>, <code>control_regions</code>, <code>origins</code>, <code>fields</code>, <code>crossing_hooks</code>, <code>prop_uses</code>, <code>direct_components</code>, <code>direct_helpers</code>, <code>shared_state</code>, <code>shared_state_providers</code>, <code>dependencies</code>, <code>owner_sites</code>, <code>region_sites</code>, <code>keyed_collection_sites</code>, <code>span</code>, <code>hydration</code>). A <code>HelperDescriptor</code> carries 12 fields. The descriptor body computes the required descriptor and runtime capability sets, and the envelope carries a <code>semantic_hash</code> plus an optional <code>debug_hash</code> over debug-only source locations excluded from the semantic hash.</p>
+<p>The enums are the semantic vocabulary. <code>RenderKind</code> is <code>WebRenderSync</code> or <code>WebRender</code>. <code>OriginKind</code> spans <code>SourceOnly</code> through <code>BrowserCapabilityWrite</code>; everything except <code>SourceOnly</code> requires client permission. <code>EffectKind</code> lists the effect classes from <code>DomTextUpdate</code> through <code>Serialization</code>. <code>TemporalPropMode</code> distinguishes <code>LiveRead</code>, <code>SeedOnce</code>, <code>EffectDependency</code>, <code>QueryKeyDependency</code>, <code>ForbiddenProviderSeed</code>, and <code>ForbiddenBoundaryCrossing</code>. <code>HydrationConstraint</code> (<code>Unconstrained</code>, <code>Eager</code>, <code>Visible</code>, <code>Idle</code>, <code>Interaction</code>, <code>Media</code>) is the ABI-level activation strategy. <code>ComponentBindingSource</code> (<code>ServerOnly</code>, <code>StaticCallback</code>, <code>SerializedSeed</code>, <code>LiveValue</code>, <code>LiveCallback</code>, <code>ClientHandle</code>, <code>StaticSlot</code>, <code>LiveSlot</code>) drives owner coupling. <code>AbiValidationError</code> has roughly 50 variants, all fail-closed: magic mismatch, version out of range, capability under- or over-declaration, non-dense local ids, dangling graph endpoints, and hash mismatches.</p>
+<h2>Semantic linking and owner partitioning</h2>
+<p><code>link.rs</code> performs deterministic owner partitioning. The input is a resolved component graph of <code>ResolvedComponentInstance</code>s and <code>ResolvedComponentEdge</code>s. <code>derive_owner_partition_input</code> turns each resolved field binding into a coupling relation: <code>LiveValue</code> becomes <code>LiveProp</code>, <code>LiveCallback</code> becomes <code>LiveCallback</code>, <code>ClientHandle</code> becomes <code>ClientHandle</code>, <code>LiveSlot</code> becomes <code>ReactiveLifecycle</code>, and <code>ServerOnly</code>/<code>StaticCallback</code>/<code>SerializedSeed</code>/<code>StaticSlot</code> do not fuse. Forbidden temporal modes (<code>ForbiddenProviderSeed</code>, <code>ForbiddenBoundaryCrossing</code>) fail at link time.</p>
+<p><code>partition_owners</code> runs a <code>UnionFind</code> over the coupling edges, checks <code>Cut</code> (<code>IndependentIsland</code> / <code>NestedOwner</code>) only after the full coupling closure so indirect coupling paths are caught with a <code>coupling_path</code>, and numbers the active groups <code>LinkedOwnerId</code> 0..n in order of their smallest candidate. <code>resolve_strategy</code> maps each candidate's <code>HydrationConstraint</code> to an <code>OwnerActivationStrategy</code> (<code>Eager</code>, <code>Visible</code>, <code>Idle</code>, <code>Interaction { event }</code>, <code>Media { query }</code>), defaulting an unconstrained candidate to <code>Eager</code> and erroring on conflicting constraints.</p>
+<h2>The final plan and unit projection</h2>
+<p><code>final_plan.rs</code> is pure byte validation -- it never touches the filesystem or environment. The final plan is a content-addressed JSON document with <code>PLAN_FORMAT = "proa.rsjs.semantic_link_plan"</code> and <code>PLAN_SCHEMA_VERSION = 15</code>. Its tables are <code>components</code>, <code>helpers</code>, <code>helper_codegen</code>, <code>component_codegen</code>, <code>component_sites</code>, <code>standalone_roots</code>, <code>owners</code>, <code>candidate_to_owner</code>, <code>component_inputs</code> (<code>live_props</code> / <code>live_callbacks</code>), <code>shared_state_providers</code>, <code>shared_state_requirements</code>, and <code>node_ref_aliases</code>. <code>validate_component_plan_bytes</code> decodes and cross-checks the plan into a <code>FinalComponentSelection</code>, then <code>select()</code> narrows it to the candidates belonging to one macro expansion.</p>
+<p>Runtime identities are derived, not assigned. <code>scope_id</code> is the SHA-256 of <code>"proa.rsjs.runtime-root.v1\0"</code> plus the root semantic key; <code>site_id</code> is the SHA-256 of <code>"proa.rsjs.runtime-site.v1\0"</code> plus the scope id, component semantic key, and structural path; and <code>candidate_id</code> is the low 8 bytes of <code>site_id</code> as a little-endian <code>u64</code>. Collisions are rejected.</p>
+<p><code>final_plan/unit_projection.rs</code> re-decodes the same global plan and emits a canonical <code>proa.rsjs.final_unit_plan</code> (schema version 1) containing only the records whose <code>cargo_unit_id</code> matches, with candidate ids rewritten to full <code>{ scope, site, candidate }</code> coordinates. Callers publish these bytes under their SHA-256 as a Cargo dependency. Owner ordinals are replaced at the site boundary so they never survive in a dependency or ABI.</p>
+<p>Content-addressed assets derive from the plan: component fragments get <code>rsjs_fragment_{sha256("proa.rsjs.final-component-fragment.v1\0" + canonical_material)}</code>, and owner modules get <code>rsjs_owner_{sha256("proa.rsjs.final-owner-module.v1\0" + site_id + uses_queries + uses_mutations + js)}</code>, where <code>js</code> is the emitter output with the self-referential asset and seed slots normalized to <code>OWNER_HASH_PLACEHOLDER = "rsjs_owner_content_placeholder"</code>. Fused-member seed keys are <code>rsjs_member_{hex(site_id)}</code>.</p>
+<p><code>linked_owner_js.rs</code> emits the JavaScript for one activation boundary. Its plan is a <code>LinkedOwnerModulePlan</code> carrying the owner asset id, the root candidate, the activation strategy, the query and mutation flags, and the mount, signal-alias, signal-seed, callback-edge, and lifecycle tables. <code>emit_linked_owner_module</code> validates the plan and emits a module whose fragments accept <code>{ seedRoot, islandRoot, signals, signalSeeds, nodeRefs, preserveDirtyControls, expose }</code> and populate <code>expose.signals</code>, <code>expose.nodeRefs</code>, <code>expose.payloadHandlers</code>, and <code>expose.lifecycleControls</code>. The <code>LINKED_CANDIDATE_ATTR</code> is <code>data-rsjs-linked-candidate</code>.</p>
+<h2>Build identities</h2>
+<p><code>build.rs</code> defines the deterministic build identities that name the pipeline stages before the plan. <code>InvocationSpec::invocation_id()</code>, <code>CargoUnitSpec::cargo_unit_id()</code>, <code>LinkUnitManifest::link_unit_id()</code>, and <code>LinkPlanMaterial::plan_id()</code> produce content-addressed ids. <code>LinkArtifact::path</code> is excluded from the canonical identity so moving an artifact on disk does not change its semantic identity. <code>BuildIdentityError</code> reports the cases where an identity cannot be derived.</p>
+<h2>The Aha Moment</h2>
+<p><strong>Aha:</strong> The reactive graph has no edges stored anywhere -- and neither does the compile pipeline store a "who owns whom" tree. Both are derived, on demand, by walking the one source of truth.</p>
+<p>A <code>SignalDecl</code> does not store its dependents. An <code>EventHandler</code> does not store the signals it reads. There is no <code>dependencies: Vec<SignalId></code> field anywhere in the crate. Dependency information is computed by analyses that walk the <code>ClientExpr</code> tree, and binding dependency arrays fall out of that same walk. This is why the optimization passes can rewrite the IR in place without first repairing a parallel edge list -- there is no edge list to repair.</p>
+<p>The same discipline repeats one layer up. Owner partitioning in <code>link.rs</code> does not start from a stored component tree. It starts from <code>OwnerCandidate</code>s and <code>OwnerRelation</code>s, computes the coupling closure with a <code>UnionFind</code>, and derives owners, activation strategies, and content-addressed asset ids from that closure. The final plan is a byte document that names every stage by hash, not by path or registry entry. Treating structure as derived rather than stored keeps the IR cheap to construct, hard to get out of sync, and deterministic to emit: the single source of truth is the expression tree and the relation list, and everything the runtime or the linker needs falls out of walking them.</p>
+<h2>Cross-References</h2>
+<ul><li>The authoring surface and reactive types this IR lowers from: <a href="./17-rsjs-overview.html">17-rsjs-overview.md</a>.</li><li>The <code>#[rsjs]</code> proc macro that lifts templates into this IR and rewrites the render body:</li></ul>
+<p>  <a href="./19-rsjs-macros.html">19-rsjs-macros.md</a>.</p>
+<ul><li>The DOM/event facade and the descriptor wire transport that consume the ABI: <a href="./20-rsjs-web-transport.html">20-rsjs-web-transport.md</a>.</li><li>The linked build pipeline that runs descriptor compile, semantic link, and final compile:</li></ul>
+<p>  <a href="./15-build-tooling.html">15-build-tooling.md</a>.</p>
+<ul><li>The core <code>proa_ir</code> that precedes RSJS in the overall pipeline: <a href="./11-ir.html">11-ir.md</a>.</li></ul>
+<p>Continue to <a href="./19-rsjs-macros.html">19-rsjs-macros.md</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

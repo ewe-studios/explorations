@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>11 -- The IR: Expressions, Statements, Reactive Bindings, and Codegen -- proa</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/proa/docs</span>
+    <div class="nav-actions">
+      <a href="08-md-macros.html" class="nav-breadcrumb">08 -- The Markdown Macros</a><a href="09-data-loading.html" class="nav-breadcrumb">09 -- Data Loading, Cache, and Error Boundaries</a><a href="10-streaming.html" class="nav-breadcrumb">10 -- Streaming: Suspense, Drivers, and Page Pool</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="10-streaming.html" class="nav-btn" title="Previous: 10 -- Streaming: Suspense, Drivers, and Page Pool">← prev</a>
+      <a href="12-framework-core.html" class="nav-btn nav-btn-next" title="Next: 12 -- Framework Core: Manifest, Bootstrap, Body Finalizers, and the Send Policy">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>11 -- The IR: Expressions, Statements, Reactive Bindings, and Codegen</h1>
+<p>The <code>proa_ir</code> crate is one typed tree with a split brain. The same <code>Expr</code> tree runs two ways. On the server it is interpreted against a data scope. On the client it is compiled to JavaScript. The two paths must agree, so the server evaluator reimplements ECMAScript coercion and rounding semantics exactly. This document covers every layer: identifiers, values, expressions, statements, triggers, reactive attributes, forms, validation, the builder API, the three code generators, and the server evaluator.</p>
+<h2>The Layer Contract</h2>
+<p>The crate doc (<code>proa_ir/src/lib.rs:4</code>) states the design goals in four words. The IR must be complete, type-safe, optimizable, and portable. It builds up in layers.</p>
+<pre><code class="language-rust">// proa_ir/src/lib.rs:19
+// - Types: Basic identifiers (SignalId, FieldId, Selector, etc.)
+// - Values: Literal values that can appear in the IR
+// - Expressions: Pure computations that produce values
+// - Statements: Side effects (state updates, DOM operations, fetches)
+// - Triggers: Events that cause effects to run
+</code></pre>
+<p>Expressions are pure. Statements have side effects. Triggers schedule effects. This split is enforced by the types themselves. <code>Expr</code> has no assignment node. <code>Stmt</code> has no value result. A handler is a <code>Block</code> of <code>Stmt</code> run under a <code>Trigger</code>.</p>
+<p>The crate is <code>#![forbid(unsafe_code)]</code>. <code>Expr</code> and <code>Value</code> are <code>Serialize + Deserialize</code>, so a runtime-template compiler can store a compiled program as data. The server evaluation section covers how those stored programs run.</p>
+<h2>IrStr and the Identifier Types</h2>
+<p><code>IrStr</code> (<code>proa_ir/src/types.rs:18</code>) is the string type for identifiers, property keys, and string literals.</p>
+<pre><code class="language-rust">// proa_ir/src/types.rs:18
+pub type IrStr = Cow&lt;&#x27;static, str&gt;;
+</code></pre>
+<p>Compile-time construction borrows a <code>&'static str</code>. Deserialized programs own their strings. Every identifier is a newtype over <code>IrStr</code>. <code>SignalId</code>, <code>FieldId</code>, <code>VarId</code>, and <code>Selector</code> each have a <code>const fn new(&'static str)</code> that borrows, an <code>owned(impl Into<String>)</code> for runtime strings, and <code>as_str</code>. The const constructors keep the macro and builder paths allocation-free.</p>
+<p>The small enums live here too. <code>Method</code> (<code>types.rs:99</code>) has <code>Get</code>, <code>Post</code>, <code>Put</code>, <code>Patch</code>, <code>Delete</code>, serialized UPPERCASE. <code>ToastLevel</code> (<code>types.rs:111</code>) has <code>Info</code>, <code>Success</code>, <code>Warning</code>, <code>Error</code>, serialized lowercase. <code>ContentType</code> (<code>types.rs:122</code>) and <code>ResponseType</code> (<code>types.rs:133</code>) cover fetch options.</p>
+<h2>Value</h2>
+<p><code>Value</code> (<code>proa_ir/src/value.rs:23</code>) is the literal data type. It has seven variants.</p>
+<pre><code class="language-rust">// proa_ir/src/value.rs:23
+#[serde(untagged)]
+pub enum Value {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    String(IrStr),
+    Array(Vec&lt;Value&gt;),
+    Object(#[serde(with = &quot;object_entries&quot;)] Vec&lt;(IrStr, Value)&gt;),
+}
+</code></pre>
+<p><code>Int</code> and <code>Float</code> are one observable "JS number" type. <code>Int</code> exists only so authoring and serialization stay exact for integer data. <code>Object</code> keeps insertion order as a <code>Vec</code> of pairs. Duplicate keys follow JS object-literal semantics: the last entry wins on access. The <code>object_entries</code> serializer (<code>value.rs:42</code>) writes objects as JSON maps, not arrays of pairs, so serialized values look like and round-trip as JS objects.</p>
+<p>Constructors are <code>const fn</code>: <code>null</code>, <code>bool</code>, <code>int</code>, <code>float</code>, <code>string</code>. <code>object</code> is the non-const constructor. <code>From</code> impls cover <code>bool</code>, <code>i32</code>, <code>i64</code>, <code>f64</code>, <code>&'static str</code>, <code>String</code>, <code>Vec<T></code>, and <code>Option<T></code> where <code>T: Into<Value></code>.</p>
+<h2>Expr</h2>
+<p><code>Expr</code> (<code>proa_ir/src/expr.rs:16</code>) is the expression language. It has 85 variants across nine families: primitives, property access, arithmetic, comparison, logic, strings, construction and arrays, type checks and conversion, and math. A few representative groups show the shape.</p>
+<pre><code class="language-rust">// proa_ir/src/expr.rs:16
+#[serde(tag = &quot;type&quot;, rename_all = &quot;snake_case&quot;)]
+pub enum Expr {
+    Lit { value: Value },
+    Signal { id: SignalId },
+    Field { id: FieldId },
+    Var { id: VarId },
+    Scope { path: Vec&lt;IrStr&gt; },
+    Response,
+    Error,
+    Event,
+    Target,
+    // ...
+    Prop { expr: Box&lt;Expr&gt;, prop: IrStr },
+    Index { expr: Box&lt;Expr&gt;, index: Box&lt;Expr&gt; },
+    // ...
+    FormatNumber { value: Box&lt;Expr&gt;, decimals: u8 },
+    // ...
+    CardType { expr: Box&lt;Expr&gt; },
+}
+</code></pre>
+<p>The <code>Scope</code> variant is the server data root. Its <code>path</code> walks nested objects from the render scope. Missing segments resolve to <code>Null</code>. <code>Signal</code>, <code>Field</code>, <code>Response</code>, <code>Error</code>, <code>Event</code>, and <code>Target</code> are client-only roots. The <code>FormatNumber</code> variant is the money workhorse. Its doc example is <code>Concat["$", FormatNumber(total_cents / 100, 2)]</code>.</p>
+<p>The tree exposes a <code>for_each_child</code> walker (<code>expr.rs:403</code>). The match is exhaustive with no wildcard arm. Adding an <code>Expr</code> variant is a compile error until the walker learns its children. Consumers that need the whole subtree drive this with an explicit worklist, which keeps the walk allocation-bounded and immune to stack overflow on hostile deeply nested expressions.</p>
+<p>Convenience constructors mirror the builder. <code>Expr::lit</code>, <code>signal</code>, <code>field</code>, <code>var</code>, <code>scope</code>, <code>scope_path</code>, <code>response</code>, <code>error</code>, <code>prop</code>, <code>index</code>, and the arithmetic, comparison, logic, and string operators all exist. <code>From<bool/i32/i64/f64/&str/String></code> let literals coerce into <code>Expr</code>.</p>
+<h2>Stmt</h2>
+<p><code>Stmt</code> (<code>proa_ir/src/stmt.rs:21</code>) is the side-effect language. <code>Block</code> is just <code>Vec<Stmt></code> (<code>stmt.rs:16</code>). It has 55 variants across control flow, state updates, async operations, DOM operations, navigation, notifications, storage, and clipboard.</p>
+<pre><code class="language-rust">// proa_ir/src/stmt.rs:21
+#[serde(tag = &quot;type&quot;, rename_all = &quot;snake_case&quot;)]
+pub enum Stmt {
+    Let { var: VarId, value: Expr },
+    SetSignal { id: SignalId, value: Expr },
+    SetField { id: FieldId, value: Expr },
+    SetFieldError { id: FieldId, error: Expr },
+    // ...
+    If { cond: Expr, then: Block, else_: Option&lt;Block&gt; },
+    For { var: VarId, index_var: Option&lt;VarId&gt;, iter: Expr, body: Block },
+    // ...
+    Fetch { url: Expr, options: FetchOptions, on_success: Block, on_error: Block },
+    // ...
+    Toast { message: Expr, level: ToastLevel, duration_ms: Option&lt;u32&gt; },
+    // ...
+    CopyToClipboard { value: Expr },
+    Log { value: Expr, level: LogLevel },
+}
+</code></pre>
+<p><code>FetchOptions</code> (<code>stmt.rs:275</code>) carries <code>method</code>, <code>headers</code>, <code>body</code>, <code>content_type</code>, <code>response_type</code>, <code>credentials</code>, <code>timeout_ms</code>, <code>cache</code>, <code>retries</code>, and <code>retry_delay_ms</code>. <code>Credentials</code> (<code>stmt.rs:328</code>) is <code>SameOrigin</code>, <code>Include</code>, or <code>Omit</code>. <code>CacheMode</code> (<code>stmt.rs:341</code>) has five values from <code>Default</code> to <code>OnlyIfCached</code>. <code>ScrollBehavior</code> (<code>stmt.rs:358</code>) and <code>LogLevel</code> (<code>stmt.rs:368</code>) are the small enums. <code>Match</code> statements use <code>MatchArm</code> (<code>stmt.rs:379</code>) and <code>Pattern</code> (<code>stmt.rs:389</code>), which supports <code>Wildcard</code>, <code>Literal</code>, <code>Binding</code>, and <code>Equals</code>.</p>
+<h2>Trigger and Effect</h2>
+<p><code>Trigger</code> (<code>proa_ir/src/trigger.rs:44</code>) has 31 variants across lifecycle, form field events, form events, element events, reactive signals, window events, and timers.</p>
+<pre><code class="language-rust">// proa_ir/src/trigger.rs:44
+pub enum Trigger {
+    Mount,
+    Unmount,
+    Input { field: FieldId },
+    Change { field: FieldId },
+    Blur { field: FieldId },
+    Focus { field: FieldId },
+    // ...
+    Click { selector: Selector },
+    KeyDown { selector: Selector, key: Option&lt;KeyFilter&gt; },
+    // ...
+    SignalChange { signal: SignalId },
+    SignalsChange { signals: Vec&lt;SignalId&gt; },
+    Computed { expr: Expr },
+    // ...
+    Interval { ms: u32 },
+    Timeout { ms: u32 },
+    CustomEvent { event: &amp;&#x27;static str },
+}
+</code></pre>
+<p><code>KeyFilter</code> (<code>trigger.rs:177</code>) matches a key plus optional <code>ctrl</code>, <code>shift</code>, <code>alt</code>, and <code>meta</code> modifiers. Its constructors are <code>const fn</code>, so <code>KeyFilter::new("Enter").ctrl()</code> compiles at const-eval time. Convenience constructors <code>on_input</code>, <code>on_change</code>, <code>on_blur</code>, <code>on_focus</code>, <code>on_click</code>, <code>on_signal</code>, <code>on_key</code>, <code>on_enter</code>, and <code>on_escape</code> cover the common cases.</p>
+<p><code>Effect</code> (<code>trigger.rs:16</code>) pairs a <code>Trigger</code> with a body and an optional <code>when</code> condition. The <code>when</code> field is <code>#[serde(skip_serializing_if = "Option::is_none")]</code>, so a bare effect serializes to just its trigger and body.</p>
+<h2>Reactive Attributes</h2>
+<p><code>Binding</code> (<code>proa_ir/src/reactive.rs:15</code>) is the client computation model. It has seven variants.</p>
+<pre><code class="language-rust">// proa_ir/src/reactive.rs:15
+pub enum Binding {
+    Static,
+    FormState { key: &amp;&#x27;static str },
+    FieldState { field: &amp;&#x27;static str, key: &amp;&#x27;static str },
+    Not { inner: Box&lt;Binding&gt; },
+    And { left: Box&lt;Binding&gt;, right: Box&lt;Binding&gt; },
+    Or { left: Box&lt;Binding&gt;, right: Box&lt;Binding&gt; },
+    Map { inner: Box&lt;Binding&gt;, expr: &amp;&#x27;static str },
+}
+</code></pre>
+<p><code>ReactiveAttr<T></code> (<code>reactive.rs:86</code>) holds a <code>default</code> value and a <code>binding</code>. SSR outputs the default. If the binding is not <code>Static</code>, JS is generated to update the attribute. <code>static_value</code>, <code>form_state</code>, and <code>field_state</code> construct the three base cases. <code>map_binding</code> wraps a binding in a JavaScript expression where <code>$</code> is the value.</p>
+<p>The <code>Not</code>, <code>BitAnd</code>, and <code>BitOr</code> impls for <code>ReactiveAttr<bool></code> are the clever part. They short-circuit at compile time.</p>
+<pre><code class="language-rust">// proa_ir/src/reactive.rs:161
+impl BitAnd for ReactiveAttr&lt;bool&gt; {
+    fn bitand(self, rhs: Self) -&gt; Self::Output {
+        ReactiveAttr {
+            default: self.default &amp;&amp; rhs.default,
+            binding: match (&amp;self.binding, &amp;rhs.binding) {
+                (Binding::Static, Binding::Static) =&gt; Binding::Static,
+                (Binding::Static, _) if !self.default =&gt; Binding::Static, // false &amp;&amp; x = false
+                (_, Binding::Static) if !rhs.default =&gt; Binding::Static,  // x &amp;&amp; false = false
+                (Binding::Static, _) if self.default =&gt; rhs.binding,      // true &amp;&amp; x = x
+                (_, Binding::Static) if rhs.default =&gt; self.binding,      // x &amp;&amp; true = x
+                _ =&gt; self.binding.and(rhs.binding),
+            },
+        }
+    }
+}
+</code></pre>
+<p><code>true && x</code> becomes just <code>x</code>. <code>false && x</code> becomes <code>Static</code>. <code>BitOr</code> does the dual. <code>negated</code> eliminates double negation, so <code>!!is_valid</code> returns the original <code>FormState</code> binding. These optimizations mean a disabled button written as <code>is_submitting | !is_valid</code> serializes to the smallest possible client binding, not a tree of boolean nodes.</p>
+<p><code>ReactiveClass</code> (<code>reactive.rs:200</code>) is the reactive string form. It has a <code>base</code> class plus a list of <code>(condition, class_if_true, class_if_false)</code> triples. <code>default_class</code> computes the SSR string.</p>
+<h2>FormIR</h2>
+<p><code>FormIR</code> (<code>proa_ir/src/form.rs:18</code>) is the top-level structure compiled to JavaScript.</p>
+<pre><code class="language-rust">// proa_ir/src/form.rs:18
+pub struct FormIR {
+    pub id: &amp;&#x27;static str,
+    pub signals: Vec&lt;SignalDef&gt;,
+    pub fields: Vec&lt;FieldDef&gt;,
+    pub derived: Vec&lt;DerivedDef&gt;,
+    pub effects: Vec&lt;Effect&gt;,
+    pub options: FormOptions,
+}
+</code></pre>
+<p><code>SignalDef</code> (<code>form.rs:45</code>) holds an id, an initial value, and an optional <code>persist</code> storage key. <code>FieldDef</code> (<code>form.rs:79</code>) holds an id, an optional initial value, <code>rules</code>, <code>validate_on</code>, <code>transforms</code>, an optional <code>format</code> mask, and optional <code>disabled</code> and <code>readonly</code> expressions. <code>DerivedDef</code> (<code>form.rs:152</code>) is a named computed expression.</p>
+<p><code>FormOptions</code> (<code>form.rs:169</code>) carries the form behavior. Its defaults matter.</p>
+<pre><code class="language-rust">// proa_ir/src/form.rs:220
+impl Default for FormOptions {
+    fn default() -&gt; Self {
+        Self {
+            action: None,
+            method: None,
+            validate_on_submit: true,
+            scroll_to_error: true,
+            focus_error: true,
+            show_error_summary: false,
+            error_summary_selector: None,
+            disable_submit_when_invalid: false,
+            disable_submit_while_loading: true,
+            reset_on_success: false,
+            on_submit: None,
+            on_success: None,
+            on_error: None,
+        }
+    }
+}
+</code></pre>
+<p>Three submit-time behaviors are on by default: validate all fields, scroll to the first error, and focus it. The submit button is disabled while loading by default, but not while invalid. A form author turns on the rest explicitly through the builder.</p>
+<h2>ValidationRule and InputFormat</h2>
+<p><code>ValidationRule</code> (<code>proa_ir/src/validate.rs:15</code>) has 43 variants across presence, length, numeric, format, date, cross-field, conditional, array, file, async, custom, and composition. The convenience constructors cover the common ones: <code>required</code>, <code>email</code>, <code>min_length</code>, <code>max_length</code>, <code>pattern</code>, <code>matches</code>, <code>async_validate</code>, <code>when</code>, <code>required_if</code>, <code>required_if_field</code>, and <code>custom</code>.</p>
+<p><code>ValidationTrigger</code> (<code>validate.rs:338</code>) is <code>Blur</code> (the default), <code>Input</code>, <code>Change</code>, or <code>Submit</code>. <code>Transform</code> (<code>validate.rs:353</code>) is <code>Trim</code>, <code>Lowercase</code>, <code>Uppercase</code>, <code>DigitsOnly</code>, or <code>NormalizeWhitespace</code>. <code>InputFormat</code> (<code>validate.rs:369</code>) is the display mask: <code>Phone</code>, <code>CreditCard</code>, <code>Date</code>, <code>Ssn</code>, <code>ZipCode</code>, <code>Cvc</code>, <code>Name</code>, <code>Currency</code>, or <code>Custom</code>.</p>
+<pre><code class="language-rust">// proa_ir/src/validate.rs:369
+pub enum InputFormat {
+    Phone,
+    CreditCard,
+    Date { pattern: &amp;&#x27;static str },
+    Ssn,
+    ZipCode,
+    Cvc,
+    Name,
+    Currency { locale: &amp;&#x27;static str },
+    Custom { mask: &amp;&#x27;static str },
+}
+</code></pre>
+<p><code>FieldValidation</code> (<code>validate.rs:322</code>) is the standalone validation config used by the older form surface. It bundles a <code>FieldId</code>, rules, a trigger, and transforms.</p>
+<h2>Server Evaluation</h2>
+<p><code>eval</code> (<code>proa_ir/src/eval/mod.rs</code>) interprets the server dialect of <code>Expr</code> against a <code>ScopeStack</code> and produces a <code>Value</code>. The module doc states the contract directly. The same IR compiles to JS for the client, so evaluation semantics are pinned to the JS emitters: f64 arithmetic and coercion, strict <code>===</code> comparison, UTF-16 string lengths, and JS method semantics.</p>
+<p><code>ScopeStack</code> (<code>eval/mod.rs:42</code>) is the data environment. It has a root value plus a stack of named bindings pushed for loop variables.</p>
+<pre><code class="language-rust">// proa_ir/src/eval/mod.rs:42
+pub struct ScopeStack&lt;&#x27;a&gt; {
+    root: &amp;&#x27;a Value,
+    vars: Vec&lt;(IrStr, Value)&gt;,
+}
+</code></pre>
+<p><code>push_var</code> and <code>pop_var</code> manage bindings. <code>var</code> looks up innermost-first. The interpreter pushes a binding for each <code>ForEach</code> style loop body and pops it after.</p>
+<p><code>EvalBudget</code> (<code>eval/mod.rs:83</code>) bounds evaluation. The defaults are <code>DEFAULT_MAX_DEPTH = 64</code> (<code>eval/mod.rs:91</code>) and <code>DEFAULT_MAX_ITERATIONS = 10_000</code> (<code>eval/mod.rs:93</code>). <code>eval</code> uses the default budget. <code>eval_with_budget</code> takes an explicit one.</p>
+<p><code>EvalError</code> (<code>eval/mod.rs:107</code>) has nine variants: <code>DepthLimit</code>, <code>IterationLimit</code>, <code>UnknownVar</code>, <code>TypeMismatch</code>, <code>CompositeComparison</code>, <code>ClientOnly</code>, <code>Unsupported</code>, <code>InvalidRegex</code>, and <code>InvalidDecimals</code>. Evaluation never panics. Malformed or over-budget input surfaces here.</p>
+<p>The dispatcher is split into per-category handlers for a deliberate reason. The comment at <code>eval/mod.rs:420</code> explains it.</p>
+<pre><code class="language-rust">// proa_ir/src/eval/mod.rs:420
+// The evaluator is split into per-category handlers rather than one giant
+// match: debug builds do not reuse stack slots across match arms, so a
+// single ~85-arm function makes each recursion level cost tens of KB of
+// stack and the depth budget alone cannot prevent overflow.
+</code></pre>
+<p>Each recursion level is a small <code>Cx</code> frame. The depth budget then keeps evaluation inside even a 2 MiB test-thread stack. <code>eval_inner</code> (<code>eval/mod.rs:491</code>) routes each variant to <code>eval_access</code>, <code>eval_arith</code>, <code>eval_compare</code>, <code>eval_logic</code>, <code>eval_string_op</code>, <code>eval_construct</code>, <code>eval_array_op</code>, <code>eval_type_op</code>, or <code>eval_math</code>. The match is exhaustive, so new variants fail compilation until routed.</p>
+<p>The semantics helpers are the heart of the JS parity. <code>jsnum.rs</code> implements <code>to_number</code> (<code>jsnum.rs:13</code>), <code>display</code> (<code>jsnum.rs:33</code>), <code>number_to_string</code> (<code>jsnum.rs:61</code>), and <code>js_round</code> (<code>jsnum.rs:252</code>).</p>
+<pre><code class="language-rust">// proa_ir/src/eval/jsnum.rs:252
+// JS `Math.round`: half-up toward positive infinity.
+pub fn js_round(x: f64) -&gt; f64 {
+    if !x.is_finite() || x.fract() == 0.0 {
+        return x;
+    }
+    let f = x.floor();
+    if x &lt; f + 0.5 {
+        f
+    } else {
+        f + 1.0
+    }
+}
+</code></pre>
+<p>The doc comment is explicit about why. <code>floor(x + 0.5)</code> misrounds values like <code>0.49999999999999994</code>, because the addition itself rounds up to 1.0. The exact-midpoint version is correct.</p>
+<p><code>number_to_string</code> matches ECMAScript shortest-round-trip formatting and switches to exponent form outside <code>[1e-6, 1e21)</code>. <code>utf16_len</code>, <code>utf16_lt</code>, <code>utf16_slice</code>, and <code>utf16_at</code> make string length and indexing match JS UTF-16 code units, not Rust <code>char</code>s. <code>parse_int_10</code> and <code>parse_float</code> reimplement the JS leading-prefix parsing rules.</p>
+<p><code>tofixed.rs</code> reimplements <code>Number.prototype.toFixed</code>. The problem is subtle. ECMAScript picks the integer closest to <code>x * 10^d</code>, choosing the larger one on exact ties. Rust's <code>format!("{:.d}")</code> rounds ties to even, so it disagrees on exactly representable ties like <code>0.125</code>. The fix expands the double to its exact decimal digits and rounds half-up on the digit string. <code>MAX_FRACTION_DIGITS</code> is 100 (<code>tofixed.rs:16</code>). <code>EXACT_PRECISION</code> is 1100 (<code>tofixed.rs:21</code>), which exceeds the longest possible exact expansion of an f64 fraction.</p>
+<p><code>date.rs</code> formats epoch milliseconds in UTC. <code>format_date</code> (<code>date.rs:19</code>) supports tokens <code>YYYY</code>, <code>YY</code>, <code>MM</code>, <code>M</code>, <code>DD</code>, <code>D</code>, <code>HH</code>, <code>H</code>, <code>mm</code>, <code>m</code>, <code>ss</code>, <code>s</code>, and <code>SSS</code>. <code>MAX_TIME_MS</code> is <code>8.64e15</code> (<code>date.rs:11</code>). Out-of-range input yields <code>"Invalid Date"</code> like JS. The day-to-date conversion uses Howard Hinnant's <code>civil_from_days</code> algorithm (<code>date.rs:62</code>).</p>
+<p><code>Add</code> is special. <code>js_add</code> (<code>eval/mod.rs:263</code>) follows JS <code>+</code>: string concatenation if either operand is a string, numeric addition otherwise. <code>strict_eq</code> (<code>eval/mod.rs:292</code>) errors on arrays and objects, because JS compares them by reference identity and server values have no identity. <code>prop_access</code> (<code>eval/mod.rs:345</code>) is null-propagating: <code>Null</code> bases and missing properties yield <code>Null</code>. Duplicate object keys resolve to the last entry.</p>
+<h2>Server Dialect Validation</h2>
+<p><code>validate_server_dialect</code> (<code>proa_ir/src/dialect.rs:71</code>) rejects client-only nodes before a program runs.</p>
+<pre><code class="language-rust">// proa_ir/src/dialect.rs:71
+pub fn validate_server_dialect(expr: &amp;Expr) -&gt; Result&lt;(), Vec&lt;DialectError&gt;&gt; {
+    validate_server_dialect_bounded(expr, usize::MAX)
+}
+</code></pre>
+<p>The bounded variant stops collecting once the budget is full. <code>DialectErrorReason</code> (<code>dialect.rs:23</code>) is <code>ClientOnly</code>, <code>Impure</code>, or <code>Unsupported</code>. <code>Now</code> is <code>Impure</code>, because server renders must be deterministic. <code>ParseDate</code> is <code>Unsupported</code>. Everything else rejected is <code>ClientOnly</code>.</p>
+<p><code>DialectError</code> (<code>dialect.rs:34</code>) carries the offending variant name, a dot path into the tree, and the reason. The path points at the exact subexpression. An error like <code>client-only expression </code>Signal<code> at </code>cond.left.items[2]`` tells an authoring tool precisely where to look. The walker collects every offending node, not just the first, so a whole slot can be fixed in one round trip.</p>
+<p><code>Stmt</code> is not reachable from <code>Expr</code>, so no statement-level walk is needed. Expressions are pure.</p>
+<h2>The Builder API</h2>
+<p>The builder modules (<code>proa_ir/src/builder/mod.rs:8</code>) provide a fluent API for constructing IR by hand. This is the ergonomic path for tooling and tests. <code>ExprBuilder</code> (<code>builder/expr.rs:16</code>) wraps an <code>Expr</code> with chainable methods for every family: <code>lit</code>, <code>signal</code>, <code>field</code>, <code>var</code>, <code>scope</code>, <code>scope_path</code>, <code>prop</code>, <code>index</code>, arithmetic, comparison, logic, <code>then_else</code>, <code>or_else</code>, string and array operations, type checks, conversion, math, and validation helpers.</p>
+<pre><code class="language-rust">// proa_ir/src/builder/expr.rs:609
+let expr = ExprBuilder::field(&quot;email&quot;)
+    .len()
+    .gt(0)
+    .and(ExprBuilder::field(&quot;email&quot;).is_email())
+    .build();
+</code></pre>
+<p><code>FormBuilder</code> (<code>builder/form.rs:18</code>) builds a <code>FormIR</code>. <code>signal</code>, <code>signal_persisted</code>, <code>field</code>, <code>field_with_rules</code>, <code>derived</code>, <code>derived_from</code>, <code>effect</code>, and <code>effect_when</code> add members. <code>on_input</code>, <code>on_change</code>, <code>on_blur</code>, <code>on_click</code>, <code>on_submit</code>, and <code>on_signal_change</code> are shortcuts for effects. <code>FieldBuilder</code> (<code>builder/form.rs:213</code>) configures one field with validation, transforms, format masks, and disabled or readonly conditions. <code>BlockBuilder</code> (<code>builder/form.rs:358</code>) builds statement blocks. The <code>block()</code> and <code>form()</code> free functions are the entry points.</p>
+<pre><code class="language-rust">// proa_ir/src/builder/form.rs:555
+let form = form(&quot;signup&quot;)
+    .signal(&quot;loading&quot;, false)
+    .field(&quot;email&quot;, |f| {
+        f.required(&quot;Email is required&quot;).email(&quot;Invalid email&quot;).trim()
+    })
+    .field(&quot;password&quot;, |f| {
+        f.required(&quot;Password is required&quot;).min_length(8, &quot;At least 8 characters&quot;)
+    })
+    .derived_from(&quot;is_valid&quot;, ExprBuilder::form_valid)
+    .on_submit(block().set(&quot;loading&quot;, true).build())
+    .disable_submit_when_invalid()
+    .build();
+</code></pre>
+<h2>Code Generation</h2>
+<p>The codegen module (<code>proa_ir/src/codegen/mod.rs</code>) has two generations. The legacy <code>JsCodegen</code> (<code>codegen/js.rs:17</code>) compiles a <code>FormIR</code> to one self-contained IIFE. The newer split codegen separates a shared runtime from a tiny per-form config.</p>
+<pre><code class="language-rust">// proa_ir/src/codegen/mod.rs:38
+// Legacy full codegen (includes everything inline)
+pub use js::{expr_to_js, JsCodegen};
+
+// New split codegen
+pub use form::{FormCodegen, FormCodegenConfig};
+pub use runtime::{
+    generate_runtime, generate_runtime_minified, runtime_url, DEFAULT_CDN_URL, RUNTIME_VERSION,
+};
+</code></pre>
+<p><code>JsCodegen</code> emits an IIFE with <code>$id</code>, <code>$s</code> for signals, <code>$f</code> for fields, <code>$e</code> for errors, <code>$t</code> for touched state, <code>$v</code> for validators, and inline helper functions. Its <code>emit_expr</code> maps every <code>Expr</code> variant to a JavaScript expression. <code>Signal</code> becomes <code>$s.name</code>. <code>Field</code> becomes <code>$f.name</code>. <code>Scope</code> becomes <code>$scope["segment"]</code>. <code>FieldHasError</code> becomes <code>$e.name !== null</code>.</p>
+<p>The split path has a different shape. <code>FormCodegen</code> (<code>codegen/form.rs:39</code>) emits a <code><script type="module"></code> that imports from the runtime CDN and calls <code>createForm(id, config)</code>.</p>
+<pre><code class="language-rust">// proa_ir/src/codegen/form.rs:55
+pub fn generate_script(form: &amp;FormIR, config: FormCodegenConfig) -&gt; String {
+    let mut gen = Self::new(config);
+    gen.emit_script(form);
+    gen.output
+}
+</code></pre>
+<p><code>FormCodegenConfig</code> (<code>codegen/form.rs:19</code>) has <code>cdn_url</code>, <code>minify</code>, and <code>inline</code>, defaulting to <code>None</code>, <code>false</code>, and <code>true</code>. <code>generate_js</code> omits the script tag but keeps the import.</p>
+<p>The runtime (<code>codegen/runtime.rs</code>) is a self-contained JavaScript string. <code>RUNTIME_VERSION</code> is <code>"0.1.0"</code> (<code>runtime.rs:10</code>). <code>DEFAULT_CDN_URL</code> is <code>"https://cdn.proa.so"</code> (<code>runtime.rs:13</code>). <code>runtime_url</code> (<code>runtime.rs:19</code>) returns a direct <code>.js</code> path when given one, otherwise <code>{base}/v{version}/proa.min.js</code>. The runtime exports <code>Form</code>, <code>ReactiveBindings</code>, <code>createForm</code>, <code>debounce</code>, <code>throttle</code>, <code>toast</code>, card detection, and the input formatters.</p>
+<pre><code class="language-rust">// proa_ir/src/codegen/runtime.rs:30
+pub fn generate_runtime() -&gt; String {
+    RUNTIME_JS.to_string()
+}
+</code></pre>
+<p>The runtime <code>Form</code> class holds <code>signals</code>, <code>fields</code>, <code>errors</code>, <code>touched</code>, <code>dirty</code>, <code>rules</code>, <code>asyncRules</code>, and <code>formats</code>. It binds to the DOM, validates fields, handles submit, and manages effects. <code>ReactiveBindings</code> (<code>runtime.rs:901</code>) discovers <code>data-bind-*</code> attributes and reevaluates them when form state changes. <code>createForm</code> (<code>runtime.rs:1087</code>) queues forms registered before <code>DOMContentLoaded</code> and initializes them when the DOM is ready.</p>
+<p><code>expr_to_js</code> (<code>codegen/js.rs:1414</code>) renders a single <code>Expr</code> as a standalone JavaScript expression string. It is used for evaluator and emitter parity testing.</p>
+<p>The script-context escaper matters for security. <code>escape_string</code> (<code>codegen/js.rs:1434</code>) masks the three byte sequences that could break out of an inline script: <code><</code> becomes <code>\x3C</code> so the HTML tokenizer never sees <code></script></code> or <code><!--</code>, and <code>U+2028</code> and <code>U+2029</code> become their <code>\uXXXX</code> escapes so legacy parsers cannot break a string literal. The doc comment notes this mirrors the canonical script-context masking in <code>proa_react/src/island.rs</code>.</p>
+<h2>The Serde Bridge</h2>
+<p><code>ser.rs</code> serializes any <code>Serialize</code> type directly into a <code>Value</code>, not through <code>serde_json::Value</code>. There is no intermediate tree, so scope data allocates only the resulting <code>Value</code>.</p>
+<pre><code class="language-rust">// proa_ir/src/ser.rs:95
+pub fn to_value&lt;T&gt;(value: &amp;T) -&gt; Result&lt;Value, ToValueError&gt;
+where
+    T: ?Sized + Serialize,
+{
+    value.serialize(ValueSerializer)
+}
+</code></pre>
+<p><code>ToValueError</code> (<code>ser.rs:18</code>) has four variants: <code>IntOutOfRange</code> when an integer does not fit in <code>i64</code>, <code>BytesUnsupported</code> for byte arrays, <code>KeyMustBeString</code> for non-string map keys, and <code>Custom</code>. Enums serialize externally tagged. Unit variants become strings. Newtype, tuple, and struct variants become single-entry objects. The <code>MapKeySerializer</code> (<code>ser.rs:482</code>) accepts only strings and chars and rejects everything else with a labeled <code>KeyMustBeString</code>.</p>
+<h2>The Legacy FormHandle</h2>
+<p><code>form_handle.rs</code> is the deprecated compatibility surface for older <code>#[derive(proa_macros::FormSchema)]</code> users. The module doc points to the replacement.</p>
+<pre><code class="language-rust">// proa_ir/src/form_handle.rs:4
+// New Proa forms should use the wellformed crate directly, via
+// wellformed_macros::form_schema!(mod name = &quot;schema.json&quot;, runtime =
+// ::wellformed, client = ::rsjs).
+</code></pre>
+<p>The <code>FormSchema</code> trait (<code>form_handle.rs:288</code>) is <code>#[deprecated(since = "0.1.2")]</code>. <code>FormHandle<T></code> (<code>form_handle.rs:206</code>) collects field metadata and bindings during render, stored in <code>RefCell</code>s. <code>FormState</code> (<code>form_handle.rs:105</code>) exposes <code>is_valid</code>, <code>is_submitting</code>, <code>is_dirty</code>, <code>is_touched</code>, and <code>submit_count</code> as <code>ReactiveAttr</code>. <code>FieldState</code> (<code>form_handle.rs:35</code>) exposes <code>error</code>, <code>has_error</code>, <code>touched</code>, <code>dirty</code>, and <code>value</code>. <code>FieldRegistration</code> (<code>form_handle.rs:155</code>) returns the props to spread on an input.</p>
+<h2>ComponentTree</h2>
+<p><code>ComponentTree</code> (<code>proa_ir/src/component_tree.rs:12</code>) is the framework-owned component tree IR. The <code>proa_macros::html_tree!</code> macro produces it without coupling the expansion to a component library.</p>
+<pre><code class="language-rust">// proa_ir/src/component_tree.rs:19
+pub enum TreeNode {
+    Element(ElementNode),
+    Component(ComponentNode),
+    Text(TextNode),
+    Expression(ExpressionNode),
+    Conditional(ConditionalNode),
+    Fragment(Vec&lt;TreeNode&gt;),
+    ChildrenSlot,
+}
+</code></pre>
+<p><code>ElementNode</code> (<code>component_tree.rs:44</code>) has a tag, attrs, children, and a <code>self_closing</code> flag. <code>TreeAttr</code> (<code>component_tree.rs:100</code>) is <code>Static</code>, <code>Dynamic</code>, <code>Bool</code>, <code>Computed</code>, or <code>Spread</code>. <code>ComponentTree::uses_component</code> checks whether a tree references a name. <code>component_dependencies</code> returns each referenced component once, in traversal order.</p>
+<h2>dev_hot</h2>
+<p><code>dev_hot.rs</code> holds the wire types for explicitly enabled development template updates. <code>StaticManifest</code> (<code>dev_hot.rs:11</code>) is a <code>schema</code> version plus a map of templates keyed by an authored ID. <code>StaticTemplate</code> (<code>dev_hot.rs:20</code>) holds a <code>shape</code> string and pre-escaped <code>slots</code>. This is the substrate for hot-swapping static template runs in development without a recompile.</p>
+<h2>The Full Flow</h2>
+<div class="mermaid">
+flowchart TD
+    A[Author FormIR via builder or macro] --&gt; B{where does it run}
+    B --&gt;|server render| C[validate_server_dialect]
+    C --&gt;|ok| D[ScopeStack root + vars]
+    D --&gt; E[eval expression against scope]
+    E --&gt; F[Value]
+    C --&gt;|client-only node| G[DialectError with path]
+    B --&gt;|client| H[FormCodegen or JsCodegen]
+    H --&gt; I[JavaScript createForm config]
+    I --&gt; J[runtime Form class + ReactiveBindings]
+    J --&gt; K[hydrate SSR DOM]
+
+</div>
+<p>The same <code>Expr</code> tree feeds both branches. The server branch validates the dialect, then interprets against a scope. The client branch compiles to JavaScript. The semantics agree because the server interpreter reimplements ECMAScript rules.</p>
+<div class="mermaid">
+flowchart LR
+    S[Signal / Field / Scope roots] --&gt; B[Expr tree]
+    B --&gt; E1[eval_arith / eval_compare / eval_string_op / eval_math]
+    E1 --&gt; V[Value]
+    B --&gt; E2[emit_expr in JsCodegen / FormCodegen]
+    E2 --&gt; J[JavaScript]
+    V -.same semantics.-&gt; J
+
+</div>
+<h2>The Aha Moment</h2>
+<p><strong>Aha:</strong> The server evaluator is not a separate language. It reimplements ECMAScript so the server render and the client hydration agree digit for digit.</p>
+<p>This is visible in three concrete places. <code>js_add</code> reimplements JS <code>+</code>, where one string operand turns numeric addition into concatenation. <code>strict_eq</code> refuses to compare arrays and objects, because JS compares them by reference identity and server values have no identity. <code>js_round</code> implements half-up rounding against the exact midpoint, because <code>floor(x + 0.5)</code> misrounds values like <code>0.49999999999999994</code>.</p>
+<p>The <code>toFixed</code> implementation is the deepest example. ECMAScript picks the integer closest to <code>x * 10^d</code>, choosing the larger one on exact ties. Rust rounds ties to even. So a naive Rust <code>format!("{:.2}", 0.125)</code> disagrees with JavaScript on exactly representable ties. Proa expands the double to its exact decimal digits, up to 1100 places, then rounds half-up on the digit string. The result is the same string the browser would produce.</p>
+<p>The split-brain design makes this necessary. One <code>Expr</code> tree is both a server program and a client program. If the two paths disagreed, a value rendered server-side would differ from the value the browser recomputes on hydration. The dialect validator keeps the boundary honest. Client-only nodes are rejected before they reach the server interpreter, with a path to the offending subexpression.</p>
+<h2>Cross-References</h2>
+<ul><li>The <code>Value</code> and <code>LoadValue</code> shape that data loading builds on: <a href="./09-data-loading.html">09-data-loading.md</a>.</li><li>The <code>RenderBuffer</code> and <code>WriteError</code> types the server render path writes into: <a href="./04-write-buf.html">04-write-buf.md</a>.</li><li>The RSJS island model that <code>proa_ir</code> compiles toward: <a href="./17-rsjs-overview.html">17-rsjs-overview.md</a>.</li><li>The <code>html_tree!</code> macro that produces <code>ComponentTree</code>: <a href="./07-html-macros.html">07-html-macros.md</a>.</li><li>The <code>wellformed</code> crate that new forms migrate to, named in the legacy surface: <a href="./23-supporting-crates.html">23-supporting-crates.md</a>.</li></ul>
+<p>Continue to <a href="./12-framework-core.html">12-framework-core.md</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

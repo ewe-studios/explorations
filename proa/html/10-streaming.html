@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>10 -- Streaming: Suspense, Drivers, and Page Pool -- proa</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/proa/docs</span>
+    <div class="nav-actions">
+      <a href="07-html-macros.html" class="nav-breadcrumb">07 -- The HTML Macros</a><a href="08-md-macros.html" class="nav-breadcrumb">08 -- The Markdown Macros</a><a href="09-data-loading.html" class="nav-breadcrumb">09 -- Data Loading, Cache, and Error Boundaries</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="09-data-loading.html" class="nav-btn" title="Previous: 09 -- Data Loading, Cache, and Error Boundaries">← prev</a>
+      <a href="11-ir.html" class="nav-btn nav-btn-next" title="Next: 11 -- The IR: Expressions, Statements, Reactive Bindings, and Codegen">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>10 -- Streaming: Suspense, Drivers, and Page Pool</h1>
+<p>Streaming in Proa is a scheduling problem, not a serialization problem. The shell renders first. Each deferred boundary renders into its own buffer. A driver polls all boundaries at once and emits whichever finish first. The wire format carries boundary HTML as base64 inside an inert template, so the browser swaps it in only when it is ready. This document covers the render mode, the boundary types, <code>Suspense</code>, the out-of-order and in-order drivers, the runtime script, and the page pool.</p>
+<h2>RenderMode and Priority</h2>
+<p><code>RenderMode</code> (<code>proa_core/src/render/mode.rs:9</code>) selects how one request streams.</p>
+<pre><code class="language-rust">// proa_core/src/render/mode.rs:9
+pub enum RenderMode {
+    ChunkedInOrder,
+    ChunkedOutOfOrder,
+    #[default]
+    Static,
+    Agent,
+}
+</code></pre>
+<p><code>Static</code> renders the whole document into one buffer. <code>ChunkedInOrder</code> streams chunks in document order. <code>ChunkedOutOfOrder</code> detaches each boundary and emits them as they complete. <code>Agent</code> targets dense machine-readable output. <code>as_str</code> maps each to a snake_case string. <code>from_header</code> and <code>from_query_param</code> parse friendly aliases like <code>in-order</code> or <code>out_of_order</code>.</p>
+<p><code>Priority</code> (<code>proa_core/src/render/priority.rs:14</code>) orders ready boundaries, not their starts.</p>
+<pre><code class="language-rust">// proa_core/src/render/priority.rs:14
+pub enum Priority {
+    #[default]
+    Critical,
+    Optional,
+    Defer,
+}
+</code></pre>
+<p>All boundaries start concurrently. Priority never delays or serializes work. When several complete in the same driver turn, <code>Critical</code> is emitted before <code>Optional</code>, then <code>Defer</code>. Equal priorities use their boundary id. <code>priority_rank</code> collapses the enum to 0, 1, 2 for sorting.</p>
+<h2>The Boundary Model</h2>
+<p>The boundary types live in <code>proa_core</code> so <code>WebContext</code> and <code>Suspense</code> can schedule deferred work without depending on <code>proa_stream</code>. <code>PendingBoundary</code> is the scheduled work.</p>
+<pre><code class="language-rust">// proa_core/src/render/stream.rs:75
+pub struct PendingBoundary {
+    pub id: u64,
+    pub future: PendingBoundaryFuture,
+    pub priority: Priority,
+    pub timeout: Option&lt;Duration&gt;,
+}
+</code></pre>
+<p><code>PendingBoundaryFuture</code> is a <code>Pin<Box<dyn Future<Output = Result<RenderedBoundary, WriteError>> + 'static>></code>. <code>SendPendingBoundary</code> is the same shape with a <code>Send</code> future, kept as a separate type. A local future cannot be relabeled into the send path through type erasure. This is the compiler proof the direct streaming path relies on.</p>
+<p><code>RenderedBoundary</code> is the successful output of one detached branch.</p>
+<pre><code class="language-rust">// proa_core/src/render/stream.rs:27
+pub struct RenderedBoundary&lt;B = crate::RenderBuffer, N = PendingBoundary&gt; {
+    pub html: B,
+    pub artifacts: RenderArtifacts,
+    pub nested: Vec&lt;N&gt;,
+}
+</code></pre>
+<p>The <code>html</code> and its <code>artifacts</code> travel together. A stream driver can publish exact RSJS and React deltas only after the boundary commits. <code>nested</code> holds boundaries discovered while rendering the detached branch. They stay speculative until their parent is published, so a nested update cannot arrive before its placeholder exists in the DOM.</p>
+<p>Two recorder traits schedule boundaries. <code>StreamBoundaryRecorder</code> (<code>stream.rs:157</code>) has <code>next_boundary_id</code> and <code>push_boundary</code>. <code>SendStreamBoundaryRecorder</code> is the <code>Send</code> variant. Two transport traits flush chunks. <code>StreamChunkView</code> (<code>stream.rs:174</code>) exposes ordered slices without a contiguous copy. <code>StreamChunkFlusher</code> (<code>stream.rs:209</code>) has <code>flush_chunk</code> and a default <code>flush_chunk_view</code> that flattens.</p>
+<h2>StreamContext and Identity</h2>
+<p><code>StreamContext</code> (<code>proa_stream/src/context.rs:17</code>) is the request-scoped registry.</p>
+<pre><code class="language-rust">// proa_stream/src/context.rs:17
+pub struct StreamContext {
+    handle: Arc&lt;StreamHandle&gt;,
+    mode: RenderMode,
+    pending_boundaries: Rc&lt;RefCell&lt;Vec&lt;PendingBoundary&gt;&gt;&gt;,
+}
+</code></pre>
+<p>It implements <code>StreamBoundaryRecorder</code>. <code>next_boundary_id</code> delegates to the shared <code>StreamHandle::next_token</code>. <code>push_boundary</code> appends to the <code>RefCell</code> vector. <code>drain_boundaries_into</code> moves newly registered work into a reusable staging vector, so nested boundary admission does not reallocate on every driver turn.</p>
+<p><code>StreamHandle</code> (<code>proa_stream/src/handle.rs:10</code>) pairs a <code>RequestId</code> with an <code>AtomicU64</code> counter starting at 1. <code>RequestId</code> (<code>proa_stream/src/request_id.rs:8</code>) draws from a process-global <code>AtomicU64</code> starting at 1. <code>LocalBoundaryBranch</code> (<code>context.rs:84</code>) is a branch-owned registry for a detached boundary that is still speculative. Nested futures do not enter the live scheduler until their parent commits.</p>
+<p><code>SendStreamContext</code> (<code>context.rs:114</code>) is the <code>Send</code> twin, using <code>Arc<Mutex<Vec<SendPendingBoundary>>></code> instead of <code>Rc<RefCell<...>></code>. The <code>RefCell</code> variant is deliberately single-threaded. The <code>Send</code> variant exists only for compiler-proved <code>Send</code> graphs.</p>
+<h2>Suspense</h2>
+<p><code>Suspense</code> (<code>proa_stream/src/suspense.rs:30</code>) is one type with three personalities.</p>
+<pre><code class="language-rust">// proa_stream/src/suspense.rs:30
+pub struct Suspense&lt;C, Fb&gt; {
+    pub child: C,
+    pub fallback: Fb,
+    pub priority: Priority,
+    pub timeout: Option&lt;Duration&gt;,
+}
+</code></pre>
+<p><code>new</code> defaults to <code>Priority::Critical</code> and no timeout. <code>priority</code> and <code>timeout</code> matter only in out-of-order HTML streaming. Buffered, in-order, and Markdown rendering preserve document order and ignore both, because reordering would break their wire contract and cancelling a flushed in-order child could leave partial markup on the wire.</p>
+<p>The <code>WebRender</code> impl branches on mode. In <code>ChunkedOutOfOrder</code> with a recorder, it detaches the child.</p>
+<pre><code class="language-rust">// proa_stream/src/suspense.rs:142
+if matches!(cx.render_mode(), RenderMode::ChunkedOutOfOrder) {
+    if let Some(recorder) = cx.stream_recorder().cloned() {
+        let boundary_id = recorder.next_boundary_id();
+        let context_parts = cx.context_parts();
+        let nested_stream = Rc::new(LocalBoundaryBranch::new(Rc::clone(&amp;recorder)));
+        // ...
+        recorder.push_boundary(PendingBoundary::with_options(
+            boundary_id,
+            Box::pin(async move {
+                let mut child_cx =
+                    WebContext::&lt;L, RenderBuffer&gt;::with_loader_buffer_and_context_parts(
+                        RenderBuffer::new(),
+                        loader,
+                        context_parts,
+                    )
+                    .with_render_mode(RenderMode::ChunkedOutOfOrder);
+                child_cx.set_stream_recorder(child_stream);
+                // render child, recover error fallback, commit artifacts
+                let out = child_cx.into_output();
+                let nested = nested_stream.take_boundaries();
+                Ok(RenderedBoundary::with_nested(out, artifacts, nested))
+            }),
+            priority,
+            timeout,
+        ));
+        // write start comment, fallback, end comment
+        return RenderOutcome::Done(...);
+    }
+}
+</code></pre>
+<p>The detached child owns its <code>RenderBuffer</code> and its artifact delta. The only shared mutable state is the boundary registry. The shell gets a start comment, the fallback, and an end comment. The child's future is scheduled for later.</p>
+<p>In <code>ChunkedInOrder</code> with a flusher, the child renders inline on the same context, flushing chunks.</p>
+<pre><code class="language-rust">// proa_stream/src/suspense.rs:204
+if matches!(cx.render_mode(), RenderMode::ChunkedInOrder)
+    &amp;&amp; cx.stream_chunk_flusher().is_some()
+{
+    let pre_flush = cx.flush_stream_chunk();
+    let future = Box::pin(async move {
+        pre_flush?;
+        let mut output_guard = ClearRenderBufferOnDrop::new(&amp;mut cx.out);
+        // render child, recover error fallback, commit or rollback
+        let result = cx.flush_stream_chunk();
+        output_guard.disarm();
+        result
+    });
+    return RenderOutcome::Pending(future);
+}
+</code></pre>
+<p><code>ClearRenderBufferOnDrop</code> (<code>suspense.rs:52</code>) holds a raw pointer to the shared <code>RenderBuffer</code>. If the in-order boundary is cancelled or unwinds before its final flush, the drop guard clears only the unflushed suffix. Nested successful flushes already cleared the buffer and stay committed.</p>
+<p>The default path ignores the fallback and renders the child inline.</p>
+<pre><code class="language-rust">// proa_stream/src/suspense.rs:257
+let _ = fallback;
+RenderOutcome::Pending(Box::pin(
+    async move { proa_core::render_child(cx, child).await },
+))
+</code></pre>
+<p><code>let _ = fallback</code> marks the deliberate discard. A static or in-order render never shows the fallback. The <code>MdRender</code> impl does the same with a <code>RestoreMarkdownBoundaryOnDrop</code> guard that restores <code>MdState</code> on cancellation. The <code>WebRenderSend</code> impl mirrors the three branches for <code>SendWebContext</code>.</p>
+<h2>The Out-of-Order Driver</h2>
+<p><code>OutOfOrderBoundaryDriver</code> (<code>proa_stream/src/driver/out_of_order.rs:176</code>) is the runtime-independent scheduler.</p>
+<pre><code class="language-rust">// proa_stream/src/driver/out_of_order.rs:176
+pub struct OutOfOrderBoundaryDriver {
+    in_flight: FuturesUnordered&lt;ScheduledBoundaryFuture&gt;,
+    scheduled: BTreeMap&lt;u64, ScheduledBoundary&gt;,
+    ready: VecDeque&lt;BoundaryEvent&gt;,
+    deadlines: DeadlineIndex,
+}
+</code></pre>
+<p><code>in_flight</code> polls all admitted futures concurrently. <code>scheduled</code> maps id to priority, deadline, and an <code>AbortHandle</code>. <code>ready</code> buffers events already produced but not yet returned. <code>deadlines</code> tracks the earliest timeout.</p>
+<p>The observable event is <code>BoundaryEvent</code> (<code>out_of_order.rs:159</code>).</p>
+<pre><code class="language-rust">// proa_stream/src/driver/out_of_order.rs:159
+pub enum BoundaryEvent&lt;R = RenderedBoundary&gt; {
+    Finished { id: u64, rendered: Result&lt;R, WriteError&gt; },
+    TimedOut { id: u64 },
+}
+</code></pre>
+<p><code>push</code> admits a boundary, computing its deadline from <code>now + timeout</code>. It wraps the future in <code>Abortable</code> so the driver can cancel a stalled child. <code>next_completed</code> batches every result ready in the same poll, sorts by <code>(priority_rank, id)</code>, and returns the first. <code>expire</code> cancels every boundary whose deadline passed and emits <code>TimedOut</code> events in the same priority order.</p>
+<p>The deadline index switches representation at a crossover.</p>
+<pre><code class="language-rust">// proa_stream/src/driver/out_of_order.rs:35
+const DEADLINE_HEAP_THRESHOLD: usize = 64;
+</code></pre>
+<p>Below 64 boundaries, deadlines live in a dense <code>Vec</code> scanned on each wake. Above it, the index rebuilds as a min-heap of <code>(deadline, id)</code> pairs. Stale entries are checked against the live <code>BTreeMap</code>, so an id whose deadline changed never produces a wrong expiry. The <code>rebalance</code> method shrinks back to dense below half the threshold.</p>
+<p>The non-tokio <code>next_event</code> (<code>out_of_order.rs:565</code>) has no clock. It conservatively expires every timed boundary at admission, so a timeout never becomes an unbounded wait. Hosts that want elapsed-time semantics drive <code>next_deadline</code> and <code>expire</code> with their own clock.</p>
+<p><code>SendOutOfOrderBoundaryDriver</code> (<code>out_of_order.rs:190</code>) is the structurally separate <code>Send</code> twin. A local future cannot enter the direct path through type erasure.</p>
+<h2>The Transport Frame</h2>
+<p>The out-of-order wire format carries HTML as base64 inside an inert template.</p>
+<pre><code class="language-rust">// proa_stream/src/driver/out_of_order.rs:770
+const BOUNDARY_TEMPLATE_OPEN: &amp;[u8] = b&quot;&lt;template id=\&quot;proa-tpl-&quot;;
+const BOUNDARY_TEMPLATE_ENCODING: &amp;[u8] = b&quot;\&quot; data-proa-encoding=\&quot;base64-v1\&quot;&gt;&quot;;
+const BOUNDARY_TEMPLATE_CLOSE: &amp;[u8] = b&quot;&lt;/template&gt;&quot;;
+const BOUNDARY_SCRIPT_OPEN: &amp;[u8] = b&quot;&lt;script&quot;;
+const BOUNDARY_SWAP_OPEN: &amp;[u8] = b&quot;&gt;$proa(&quot;;
+const BOUNDARY_SWAP_CLOSE: &amp;[u8] = b&quot;);&lt;/script&gt;&quot;;
+</code></pre>
+<p><code>append_boundary_template_slices</code> writes the open tag, encodes the HTML slices directly into the template with a streaming <code>EncoderWriter</code>, then writes the close tag. <code>append_boundary_swap_script_with_nonce</code> appends a script that calls <code>$proa(id)</code>. A same-ready batch writes several templates then one <code>$proaBatch([ids])</code> script. A timeout writes <code><!--proa:timeout:id--></code> with no swap, preserving the fallback already in the shell.</p>
+<p>The drain loop ties it together.</p>
+<pre><code class="language-rust">// proa_stream/src/driver/out_of_order.rs:658
+pub async fn drain_pending_boundaries_with_nonce_and_artifacts&lt;F, Fut&gt;(
+    stream: &amp;StreamContext,
+    nonce: Option&lt;&amp;CspNonce&gt;,
+    mut emit: F,
+) where
+    F: FnMut(OutOfOrderBoundaryChunk) -&gt; Fut,
+    Fut: Future&lt;Output = bool&gt;,
+{
+    let mut driver = OutOfOrderBoundaryDriver::new();
+    let mut pending_boundaries = Vec::new();
+    loop {
+        stream.drain_boundaries_into(&amp;mut pending_boundaries);
+        driver.extend(pending_boundaries.drain(..), Instant::now());
+        let Some(event) = driver.next_event().await else { break; };
+        // build OutOfOrderBoundaryChunk from Finished/TimedOut
+        if !emit(chunk).await { return; }
+    }
+}
+</code></pre>
+<p><code>OutOfOrderBoundaryChunk</code> (<code>out_of_order.rs:627</code>) is <code>id</code>, <code>bytes</code>, and <code>artifacts</code>. A successful boundary carries its exact <code>RenderArtifacts</code>. Failures and timeouts carry an empty snapshot, because their speculative subtree is not published. The callback must emit metadata before <code>bytes</code>. The swap script dispatches <code>proa:boundary-ready</code> at the end of <code>bytes</code>, so metadata appended after the frame arrives too late.</p>
+<h2>The Runtime Script</h2>
+<p>The browser-side runtime (<code>proa_stream/src/runtime_script.rs:8</code>) is one minified script. It installs <code>window.$proaBatch</code>, which walks comment markers <code>proa:start:<id></code> and <code>proa:end:<id></code>, finds the <code><template id="proa-tpl-<id>"></code>, decodes its base64 content, and swaps it in before the end marker. <code>window.$proa(id)</code> is the single-id spelling.</p>
+<p>The script refuses templates that are not exactly <code>data-proa-encoding="base64-v1"</code>, that lack both markers, or whose markers are not siblings. The versioned encoding tag gates the decode path. <code>atob</code> then <code>TextDecoder</code> turn the bytes into HTML, which is installed with <code>t.innerHTML</code>. After the swap it dispatches <code>proa:boundary-ready</code>.</p>
+<p><code>inline_runtime_tag</code> returns the script as static bytes. <code>write_inline_runtime_tag</code> appends the request <code>CspNonce</code> when one is configured.</p>
+<h2>Supervised Drivers</h2>
+<p>The tokio-backed drivers (<code>proa_stream/src/driver/supervised.rs</code>) handle timed boundaries while the HTTP body is backpressured. An untimed boundary stays inline in <code>FuturesUnordered</code>. A timed boundary is owned by a runtime task, so its timeout can still fire and drop the child future during backpressure.</p>
+<p><code>RuntimeOutOfOrderBoundaryDriver</code> (<code>supervised.rs:184</code>) is a hybrid. If a pinned local executor has entered <code>LocalBoundarySupervisionGuard</code>, timed boundaries use <code>spawn_local</code>; otherwise they stay inline. <code>supervise</code> races the child against <code>tokio::time::sleep(timeout)</code> with a biased select, so a boundary ready at its deadline wins over cancellation. A panicking child is caught and surfaced as <code>WriteError::render("boundary task panicked")</code>.</p>
+<p><code>RuntimeSendOutOfOrderBoundaryDriver</code> (<code>supervised.rs:302</code>) does the same with <code>tokio::spawn</code> when a runtime is present. The <code>SupervisedTasks::next_events</code> batch sorts completed tasks by priority then id, exactly like the inline driver.</p>
+<h2>In-Order Markdown Driver</h2>
+<p><code>InOrderMarkdownDriver</code> (<code>proa_stream/src/driver/in_order_markdown.rs:37</code>) renders a Markdown root to a transport-facing flusher.</p>
+<pre><code class="language-rust">// proa_stream/src/driver/in_order_markdown.rs:69
+pub async fn render_md_in_order_to_flusher&lt;R: MdRender&gt;(
+    root: R,
+    flusher: Rc&lt;dyn StreamChunkFlusher&gt;,
+) -&gt; Result&lt;(), WriteError&gt; {
+    render_md_in_order_to_flusher_with_loader(root, Arc::new(NoLoader), flusher).await
+}
+</code></pre>
+<p>The with-loader variant builds a <code>WebContext</code> with <code>ChunkedInOrder</code> mode and the flusher, renders the root, then flushes the final chunk. <code>VecChunkFlusher</code> is the in-memory test sink. <code>render_md_in_order_to_vec</code> wraps it to collect a <code>Vec<u8></code>. The test <code>suspense_flushes_markdown_chunks_in_order</code> pins the guarantee: three chunks, <code>before\n</code>, <code>child\n\n</code>, <code>after\n</code>, in that order.</p>
+<h2>PreparedLoader and Discovery</h2>
+<p><code>PreparedLoader</code> (<code>proa_stream/src/preloaded_loader.rs:64</code>) starts known keys before render begins.</p>
+<pre><code class="language-rust">// proa_stream/src/preloaded_loader.rs:64
+pub struct PreparedLoader&lt;L: ?Sized = dyn DynDataLoader&gt; {
+    inner: Arc&lt;L&gt;,
+    prepared: HashMap&lt;LoadKey, SharedLoad&gt;,
+}
+</code></pre>
+<p><code>start_prepared</code> (<code>preloaded_loader.rs:35</code>) is the only runtime seam in <code>proa_stream</code>. With the default <code>rt-tokio</code> feature it spawns the load eagerly onto the ambient runtime. Without it the future is stored unspawned and starts on first await. The eagerness changes three user-visible behaviors: panic handling, drop semantics, and runtime requirements. The doc comment on <code>start_prepared</code> lists them precisely.</p>
+<p><code>CollectLoadKeys</code> (<code>proa_stream/src/discovery.rs:12</code>) is the discovery surface. A route root implements it to append known keys to a vector, which the framework passes to <code>PreparedLoader</code> so pre-send can start them before the shell renders. The full pre-send story is in <a href="./12-framework-core.html">12-framework-core.md</a>.</p>
+<h2>The Page Pool</h2>
+<p>The spec names a page pool. The source tells a more precise story. <code>PagePool</code> (<code>proa_core/src/render/sink.rs:107</code>) exists but is deprecated.</p>
+<pre><code class="language-rust">// proa_core/src/render/sink.rs:107
+#[deprecated(note = &quot;RenderBuffer owns and recycles its pages directly&quot;)]
+pub struct PagePool&lt;const N: usize&gt; {
+    spare: RefCell&lt;Vec&lt;SinkPage&lt;N&gt;&gt;&gt;,
+    max_idle: usize,
+}
+</code></pre>
+<p><code>PagePool</code> keeps a <code>Vec</code> of recycled <code>SinkPage</code> allocations, capped at 16 idle pages by default. <code>SinkWriter</code> checks pages out, seals them when full, and returns them on flush or drop. <code>MemorySink</code> collects flushed bytes for tests. All of these are marked <code>#[deprecated]</code>. The module doc is blunt: standard sync, async, Markdown, and streaming rendering now use the owned <code>RenderBuffer</code>, and the legacy types are unused by framework, <code>Suspense</code>, <code>ErrorBoundary</code>, or standard context paths.</p>
+<p>The modern buffer is <code>RenderBuffer</code> (<code>proa_core/src/shared/write_buf.rs:746</code>), a <code>ChainedBumpWriter<4096></code>. <code>STANDARD_PAGE_SIZE</code> is 4096 bytes. <code>RenderBuffer</code> owns and recycles its pages directly, with no external pool. Its page ownership and checkpoint mechanics are in <a href="./04-write-buf.html">04-write-buf.md</a>. The out-of-order frame's <code>append_boundary_buffer_template</code> encodes <code>RenderBuffer::slices()</code> without flattening, so page edges never corrupt the base64.</p>
+<h2>The Full Flow</h2>
+<div class="mermaid">
+flowchart TD
+    A[root render] --&gt; B{mode}
+    B --&gt;|Static| S[render whole document inline]
+    B --&gt;|ChunkedInOrder| I[Suspense flushes parent buffer]
+    B --&gt;|ChunkedOutOfOrder| O[Suspense detaches child]
+    O --&gt; P[push PendingBoundary to registry]
+    P --&gt; D[driver drains registry]
+    D --&gt; Q[FuturesUnordered polls all]
+    Q --&gt;|ready| R[sort by priority then id]
+    Q --&gt;|deadline| T[expire and abort]
+    R --&gt; F[frame as base64 template + swap script]
+    T --&gt; M[emit timeout comment, keep fallback]
+    F --&gt; E[emit metadata then bytes]
+    E --&gt; W[browser swaps template in place]
+
+</div>
+<p>The shell, fallback, and start and end comments are already on the wire before the driver starts. Each boundary commit arrives as a self-contained frame. The browser installs it exactly where the markers say.</p>
+<h2>The Aha Moment</h2>
+<p><strong>Aha:</strong> Out-of-order streaming never streams raw HTML into the live DOM. It streams base64 inside an inert <code><template></code> tag, then swaps the decoded result in with a script.</p>
+<p>This is a deliberate security and correctness choice, not a size optimization. A raw HTML fragment dropped mid-document is parsed immediately by the browser. An attacker-controlled string containing <code></template></code> or a malformed tag could break out of the frame and rewrite the page. By base64-encoding the fragment, the parser sees only the inert template element. The bytes inside are inert text until the swap script decodes and installs them.</p>
+<p>The versioned tag <code>data-proa-encoding="base64-v1"</code> closes the decode path. The runtime refuses any template whose encoding tag is not exactly that value, then decodes with <code>atob</code> and <code>TextDecoder</code>. The test <code>boundary_transport_round_trips_unicode_and_adversarial_bytes</code> feeds the frame unicode, a nested balanced template, and three malformed closing-tag escapes. Every byte round-trips, and no <code><</code> survives in the encoded payload.</p>
+<p>The same "inert until ready" principle appears in the shell. The start and end markers are HTML comments, which the parser treats as inert. The fallback is real markup the browser shows immediately. When the boundary commits, the runtime replaces the region between the markers. The fallback is what the user sees while the real content is still in flight.</p>
+<h2>Cross-References</h2>
+<ul><li>The <code>RenderBuffer</code> page ownership and <code>ChainedBumpWriter</code>: <a href="./04-write-buf.html">04-write-buf.md</a>.</li><li><code>DataResolver</code> and <code>PreparedLoader</code> in the data-loading stack: <a href="./09-data-loading.html">09-data-loading.md</a>.</li><li>The <code>WebRender</code>, <code>WebRenderSend</code>, and <code>MdRender</code> traits <code>Suspense</code> implements: <a href="./02-render-traits.html">02-render-traits.md</a>.</li><li>The <code>WebContext</code> fork and <code>context_parts</code> that detach a boundary: <a href="./03-web-context.html">03-web-context.md</a>.</li></ul>
+<p>Continue to <a href="./11-ir.html">11-ir.md</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

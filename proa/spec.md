@@ -108,36 +108,36 @@ proa/
 | 13 | Framework core: manifest, bootstrap, finalizers | DONE | `12-framework-core.md` |
 | 14 | Framework axum: routing, static, HTTP | DONE | `13-framework-axum.md` |
 | 15 | Actions: event handlers, forms | DONE | `14-actions.md` |
-| 16 | Build tooling: build, source tools, linking | TODO | `15-build-tooling.md` |
-| 17 | CLI commands | TODO | `16-cli.md` |
-| 18 | RSJS overview: islands, signals, memos | TODO | `17-rsjs-overview.md` |
-| 19 | rsjs_ir | TODO | `18-rsjs-ir.md` |
-| 20 | rsjs_macros: #[rsjs], JS lowering | TODO | `19-rsjs-macros.md` |
-| 21 | rsjs_web + rsjs_transport | TODO | `20-rsjs-web-transport.md` |
-| 22 | Fonts pipeline | TODO | `21-fonts.md` |
-| 23 | Docs (MDX) rendering | TODO | `22-docs.md` |
-| 24 | Supporting crates | TODO | `23-supporting-crates.md` |
-| 25 | Applications and examples | TODO | `24-applications.md` |
-| 26 | Data flow end-to-end | TODO | `25-data-flow.md` |
-| 27 | Cross-cutting: Rust, production, resilient storage | TODO | `26-cross-cutting.md` |
-| 28 | README index | TODO | `README.md` |
+| 16 | Build tooling: build, source tools, linking | DONE | `15-build-tooling.md` |
+| 17 | CLI commands | DONE | `16-cli.md` |
+| 18 | RSJS overview: islands, signals, memos | DONE | `17-rsjs-overview.md` |
+| 19 | rsjs_ir | DONE | `18-rsjs-ir.md` |
+| 20 | rsjs_macros: #[rsjs], JS lowering | DONE | `19-rsjs-macros.md` |
+| 21 | rsjs_web + rsjs_transport | DONE | `20-rsjs-web-transport.md` |
+| 22 | Fonts pipeline | DONE | `21-fonts.md` |
+| 23 | Docs (MDX) rendering | DONE | `22-docs.md` |
+| 24 | Supporting crates | DONE | `23-supporting-crates.md` |
+| 25 | Applications and examples | DONE | `24-applications.md` |
+| 26 | Data flow end-to-end | DONE | `25-data-flow.md` |
+| 27 | Cross-cutting: Rust, production, resilient storage | DONE | `26-cross-cutting.md` |
+| 28 | README index | DONE | `README.md` |
 
 ### Phase 2: HTML Rendering
 
 | # | Task | Status | File |
 |---|------|--------|------|
-| 29 | Generate all HTML pages | TODO | `html/*.html` |
-| 30 | Index page with navigation | TODO | `html/index.html` |
-| 31 | Shared CSS | TODO | `html/styles.css` |
+| 29 | Generate all HTML pages | DONE | `html/*.html` |
+| 30 | Index page with navigation | DONE | `html/index.html` |
+| 31 | Shared CSS | DONE | `html/styles.css` |
 
 ### Phase 3: Grandfather Review
 
 | # | Task | Status |
 |---|------|--------|
-| 32 | Names match source | TODO |
-| 33 | Numbers match source | TODO |
-| 34 | Flows match source | TODO |
-| 35 | Nothing missing from public API | TODO |
+| 32 | Names match source | DONE |
+| 33 | Numbers match source | DONE |
+| 34 | Flows match source | DONE |
+| 35 | Nothing missing from public API | DONE |
 
 ## Build System
 
