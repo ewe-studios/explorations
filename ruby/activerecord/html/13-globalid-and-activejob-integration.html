@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>13 -- GlobalID and ActiveJob: passing records to background jobs -- activerecord</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/activerecord/docs</span>
+    <div class="nav-actions">
+      <a href="10-scoping-and-eager-loading.html" class="nav-breadcrumb">10 -- Scoping and eager loading: narrowing queries, avoiding N+1</a><a href="11-query-cache-and-pool.html" class="nav-breadcrumb">11 -- Query cache and connection pool: sharing the work</a><a href="12-the-nice-ruby-experience.html" class="nav-breadcrumb">12 -- The nice Ruby experience: a DSL that reads like English</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="12-the-nice-ruby-experience.html" class="nav-btn" title="Previous: 12 -- The nice Ruby experience: a DSL that reads like English">← prev</a>
+      <a href="README.html" class="nav-btn nav-btn-next" title="Next: ActiveRecord: a deep technical exploration">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>13 -- GlobalID and ActiveJob: passing records to background jobs</h1>
+<p>A background job runs in a different process, later. It cannot receive a Ruby object such as <code>user = User.find(1)</code>, because that object cannot be serialized into the job queue and would be stale anyway. The job must receive a locator, a string that names the record, and re-load the record when it runs. GlobalID produces that locator. Active Job recognizes Active Record models and converts them to GlobalIDs automatically. This document explains both halves and the enqueue-after-commit guarantee that ties them to transactions.</p>
+<p>Source files: Active Record is at <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib</code>, Active Job at <code>/Users/darkvoid/.gems/gems/activejob-8.1.4/lib</code>, and GlobalID at <code>/Users/darkvoid/.gems/gems/globalid-1.4.0/lib</code>. Short paths below are relative to each gem's <code>lib</code> directory.</p>
+<p>For the <code>after_commit</code> callback that pairs with this, see <a href="./07-callbacks-and-validations.html">07-callbacks-and-validations.md</a>. For associations and <code>dependent:</code> options, see <a href="./06-associations.html">06-associations.md</a>.</p>
+<h2>GlobalID: a locator string</h2>
+<p><code>GlobalID::Identification</code> gives any model with a <code>find</code> method two methods: <code>to_global_id</code> and <code>to_signed_global_id</code>. The first is at <code>global_id/identification.rb:38-41</code>:</p>
+<pre><code class="language-ruby">def to_global_id(options = {})
+  GlobalID.create(self, options)
+end
+alias to_gid to_global_id
+</code></pre>
+<p>The result is a string in the form <code>gid://app/Person/1</code>, shown in the documentation at <code>global_id/identification.rb:21-28</code>. It names the application, the model class, and the primary key. <code>GlobalID::Locator.locate</code> reverses it: it constantizes the model name and calls <code>find</code> with the id. The signed variant, <code>to_sgid</code> at <code>global_id/identification.rb:108-111</code>, adds a signature so the value cannot be tampered with, and it expires by default after one month (see the discussion at lines 51-96).</p>
+<p>A GlobalID is deliberately not the record. It is a small, stable string that survives any queue and any serializer. The record itself is re-fetched at job run time, so the job always works on the current database state.</p>
+<h2>How Active Record gets GlobalID</h2>
+<p>Active Record does not require GlobalID itself. The integration is injected by GlobalID's railtie, at <code>global_id/railtie.rb:33-36</code>:</p>
+<pre><code class="language-ruby">ActiveSupport.on_load(:active_record) do
+  require &#x27;global_id/identification&#x27;
+  send :include, GlobalID::Identification
+end
+</code></pre>
+<p><code>ActiveSupport.on_load(:active_record)</code> runs its block the first time <code>ActiveRecord::Base</code> is loaded, so the <code>Identification</code> module is included into <code>ActiveRecord::Base</code> lazily. This is a clean example of the load-hook pattern: GlobalID depends on Active Record, so it waits for Active Record to load rather than Active Record depending on GlobalID.</p>
+<h2>ActiveJob argument serialization</h2>
+<p>Active Job serializes every job argument before enqueueing. <code>ActiveJob::Arguments#serialize_argument</code> at <code>active_job/arguments.rb:38-76</code> is a case expression over Ruby types. Strings, numbers, and booleans pass through unchanged. Arrays and hashes recurse. Symbols get a serializer marker. And the interesting branch is at lines 54-55:</p>
+<pre><code class="language-ruby">when GlobalID::Identification
+  convert_to_global_id_hash(argument)
+</code></pre>
+<p><code>convert_to_global_id_hash</code> at <code>active_job/arguments.rb:191-196</code> produces the wire form:</p>
+<pre><code class="language-ruby">def convert_to_global_id_hash(argument)
+  { GLOBALID_KEY =&gt; argument.to_global_id.to_s }
+rescue URI::GID::MissingModelIdError
+  raise SerializationError, &quot;Unable to serialize #{argument.class} &quot; \
+    &quot;without an id. (Maybe you forgot to call save?)&quot;
+end
+</code></pre>
+<p><code>GLOBALID_KEY</code> is <code>"_aj_globalid"</code>, defined at <code>active_job/arguments.rb:90</code>. So <code>SomeJob.perform_later(user)</code> does not enqueue a user; it enqueues the hash <code>{ "_aj_globalid" => "gid://app/User/1" }</code>. A new, unsaved record has no id, and the rescue turns that into <code>ActiveJob::SerializationError</code> with the hint "Maybe you forgot to call save?".</p>
+<p>On the worker side, <code>deserialize_argument</code> at <code>active_job/arguments.rb:109-126</code> inspects each hash. <code>serialized_global_id?</code> at lines 128-130 is true when the hash has exactly one key, <code>"_aj_globalid"</code>. <code>deserialize_global_id</code> at lines 132-134 then calls <code>GlobalID::Locator.locate</code>, which re-fetches the record.</p>
+<div class="mermaid">
+sequenceDiagram
+  participant M as Enqueue process
+  participant Q as Job queue
+  participant W as Worker process
+  participant D as Database
+  M-&gt;&gt;M: user.to_global_id.to_s
+  M-&gt;&gt;Q: enqueue job with _aj_globalid string
+  Q-&gt;&gt;W: deliver job
+  W-&gt;&gt;W: GlobalID::Locator.locate gid
+  W-&gt;&gt;D: User.find(id)
+  D--&gt;&gt;W: current User record
+  W-&gt;&gt;W: job runs with fresh record
+
+</div>
+<p>The distinction between the GlobalID string and the record is the whole point. The queue stores a string; the worker loads a fresh object. If the record was deleted between enqueue and run, <code>locate</code> returns <code>nil</code> or raises, and Active Job wraps that in <code>ActiveJob::DeserializationError</code>.</p>
+<h2>Enqueueing after commit</h2>
+<p>A job enqueued inside a transaction can be picked up by a worker before the transaction commits. The worker then loads a record that does not exist yet. The fix is to defer the enqueue until the transaction commits. Active Job provides <code>enqueue_after_transaction_commit</code>, and its implementation is in <code>active_job/enqueue_after_transaction_commit.rb:25-47</code>:</p>
+<pre><code class="language-ruby">def raw_enqueue
+  if self.class.enqueue_after_transaction_commit
+    self.successfully_enqueued = true
+    deferred_scheduled_at = scheduled_at
+    deferred_queue_name = queue_name
+    deferred_priority = priority
+    ActiveRecord.after_all_transactions_commit do
+      previous_scheduled_at, previous_queue_name, previous_priority = scheduled_at, queue_name, priority
+      self.scheduled_at = deferred_scheduled_at
+      self.queue_name = deferred_queue_name
+      self.priority = deferred_priority
+      self.successfully_enqueued = false
+      super
+    ensure
+      self.scheduled_at = previous_scheduled_at
+      self.queue_name = previous_queue_name
+      self.priority = previous_priority
+    end
+    self
+  else
+    super
+  end
+end
+</code></pre>
+<p>The actual enqueue (<code>super</code>) moves into an <code>ActiveRecord.after_all_transactions_commit</code> block, along with the queue, priority, and schedule captured at call time. If the transaction rolls back, the block never runs and no job is enqueued. <code>perform_all_later</code> gets the same treatment at lines 15-21: jobs with the setting are partitioned out and enqueued only after commit.</p>
+<p>This is the mechanism behind the common pattern from document 07:</p>
+<pre><code class="language-ruby">class Comment &lt; ApplicationRecord
+  after_create_commit :notify_subscribers
+
+  private
+
+  def notify_subscribers
+    SubscribersMailer.new_comment(self).deliver_later
+  end
+end
+</code></pre>
+<p><code>after_create_commit</code> fires after commit, and the mailer's job inherits the deferred enqueue behavior, so the mail is enqueued only when the INSERT is durable.</p>
+<div class="mermaid">
+flowchart TD
+  A[&quot;perform_later inside transaction&quot;] --&gt; B{&quot;enqueue_after_transaction_commit?&quot;}
+  B -- &quot;no&quot; --&gt; C[&quot;enqueue now&quot;]
+  B -- &quot;yes&quot; --&gt; D[&quot;capture queue and schedule&quot;]
+  D --&gt; E[&quot;register after_all_transactions_commit&quot;]
+  E --&gt; F{&quot;transaction outcome&quot;}
+  F -- &quot;commit&quot; --&gt; G[&quot;enqueue job&quot;]
+  F -- &quot;rollback&quot; --&gt; H[&quot;never enqueued&quot;]
+
+</div>
+<h2>DestroyAssociationAsyncJob</h2>
+<p>Destroying a large dependent association can be slow enough to belong in a background job. The <code>dependent: :destroy_async</code> option on a <code>has_many</code> association does exactly that: it enqueues <code>ActiveRecord::DestroyAssociationAsyncJob</code> instead of destroying the children inline. The job is in <code>active_record/destroy_association_async_job.rb:10-31</code>:</p>
+<pre><code class="language-ruby">class DestroyAssociationAsyncJob &lt; ActiveJob::Base
+  queue_as { ActiveRecord.queues[:destroy] }
+
+  discard_on ActiveJob::DeserializationError
+
+  def perform(
+    owner_model_name: nil, owner_id: nil,
+    association_class: nil, association_ids: nil, association_primary_key_column: nil,
+    ensuring_owner_was_method: nil
+  )
+    association_model = association_class.constantize
+    owner_class = owner_model_name.constantize
+    owner = owner_class.find_by(owner_class.primary_key =&gt; [owner_id])
+
+    if !owner_destroyed?(owner, ensuring_owner_was_method)
+      raise DestroyAssociationAsyncError, &quot;owner record not destroyed&quot;
+    end
+
+    association_model.where(association_primary_key_column =&gt; association_ids).find_each do |r|
+      r.destroy
+    end
+  end
+end
+</code></pre>
+<p>The job receives plain values, not records: the owner's class name and id, the association's class name and ids, and the primary key column. It re-loads the owner, checks that the owner is actually gone (or that the association was configured to run anyway), and destroys the children in batches with <code>find_each</code>. <code>queue_as { ActiveRecord.queues[:destroy] }</code> puts these jobs on the destroy queue, and <code>discard_on ActiveJob::DeserializationError</code> means a record that vanished before the job ran is quietly ignored rather than retried forever.</p>
+<p>The mirror image holds: the job does not receive the owner object for the same reason your own jobs should not. It receives the ids and re-fetches. This is the GlobalID principle applied by hand, inside Active Record itself.</p>
+<h2>The Aha Moment</h2>
+<p><strong>Aha:</strong> Passing a record to a background job is a lie that works by indirection. You write <code>perform_later(user)</code>, but the queue stores the string <code>"gid://app/User/1"</code>, not the user. At run time <code>GlobalID::Locator</code> turns that string back into <code>User.find(1)</code>, so the worker always sees the current row, not a stale copy. Every other rule follows from that one idea: an unsaved record cannot be serialized because it has no id, a deleted record raises <code>DeserializationError</code> because <code>find</code> fails, and enqueueing after commit matters because the worker may otherwise run <code>find</code> before the row exists. The whole integration is just "store a locator string, re-fetch on the other side".</p>
+<p>Continue to <a href="./README.html">README.md</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>01 -- Connection and adapters: from database.yml to bytes on a socket -- activerecord</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/activerecord/docs</span>
+    <div class="nav-actions">
+      <a href="00-overview.html" class="nav-breadcrumb">00 -- ActiveRecord: an object-relational mapper in two halves</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="00-overview.html" class="nav-btn" title="Previous: 00 -- ActiveRecord: an object-relational mapper in two halves">← prev</a>
+      <a href="02-sql-generation-arel.html" class="nav-btn nav-btn-next" title="Next: 02 -- SQL generation with Arel: an AST and a visitor">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>01 -- Connection and adapters: from database.yml to bytes on a socket</h1>
+<p>Every ActiveRecord query, create, update, and delete ends at the same place: a piece of SQL text handed to a database driver, plus a set of bind values. This chapter follows that path backwards. It starts at the configuration file, moves through the pool of connections, and ends at the adapter-specific method that actually talks to the database.</p>
+<p>The chapter uses PostgreSQL (PostgreSQL is a relational database system) as the concrete adapter, but the abstract machinery is the same for MySQL, SQLite, and every other adapter. The entry point is <code>establish_connection</code> in <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/connection_handling.rb</code>.</p>
+<h2>From one config to one pool</h2>
+<p>Rails applications put their database settings in <code>config/database.yml</code>. At boot, that YAML (YAML is a human-readable data serialization format) is parsed into a hash and handed to ActiveRecord as <code>ActiveRecord::Base.configurations</code>. A typical file looks like this:</p>
+<pre><code class="language-yaml">development:
+  primary:
+    adapter: postgresql
+    database: myapp_development
+    pool: 5
+    checkout_timeout: 5
+</code></pre>
+<p>The word <code>pool: 5</code> sets <code>max_connections</code> to 5. The word <code>checkout_timeout: 5</code> sets <code>checkout_timeout</code> to 5 seconds. Both become options on the <code>ConnectionPool</code> object described below.</p>
+<p>Calling <code>establish_connection</code> is a three-line method:</p>
+<pre><code class="language-ruby">def establish_connection(config_or_env = nil)
+  config_or_env ||= DEFAULT_ENV.call.to_sym
+  db_config = resolve_config_for_connection(config_or_env)
+  connection_handler.establish_connection(db_config, owner_name: self, role: current_role, shard: current_shard)
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/connection_handling.rb</code>, lines 50 through 54. If no argument is given, the current environment name (for example <code>:development</code>) is used. The environment name is resolved to a database configuration object, then passed to the connection handler together with two selector keys: a role and a shard.</p>
+<ul><li>A role is usually <code>:writing</code> or <code>:reading</code>. The <code>:writing</code> role is the primary database; the <code>:reading</code> role is a read replica.</li><li>A shard is usually <code>:default</code>. Shards are for horizontal partitioning: the same schema split across many databases by a key.</li></ul>
+<p>The default role and shard are <code>:writing</code> and <code>:default</code>. The connection handler uses the pair <code>(role, shard)</code> as the address of a specific pool.</p>
+<div class="mermaid">
+flowchart LR
+    Y[&quot;config database.yml&quot;] --&gt; C[&quot;DatabaseConfigurations&quot;]
+    C --&gt; R[&quot;resolve config&quot;]
+    R --&gt; H[&quot;ConnectionHandler&quot;]
+    H --&gt; P[&quot;PoolManager&quot;]
+    P --&gt; PC[&quot;PoolConfig role and shard&quot;]
+    PC --&gt; CP[&quot;ConnectionPool&quot;]
+    CP --&gt; A[&quot;AbstractAdapter connections&quot;]
+
+</div>
+<h2>The configuration resolver</h2>
+<p><code>ActiveRecord::Base.configurations</code> holds a <code>DatabaseConfigurations</code> object. Its <code>resolve</code> method turns whatever was passed (a symbol, a hash, or a connection URL, which is a uniform resource locator) into one of two normalized objects: a <code>HashConfig</code> or a <code>UrlConfig</code>.</p>
+<pre><code class="language-ruby">def resolve(config) # :nodoc:
+  return config if DatabaseConfigurations::DatabaseConfig === config
+
+  case config
+  when Symbol
+    resolve_symbol_connection(config)
+  when Hash, String
+    build_db_config_from_raw_config(default_env, &quot;primary&quot;, config)
+  else
+    raise TypeError, &quot;Invalid type for configuration. Expected Symbol, String, or Hash. Got #{config.inspect}&quot;
+  end
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/database_configurations.rb</code>, lines 176 through 187. A symbol is looked up in the already-built list of configurations. A hash or a string is treated as a raw config for the current environment under the name <code>"primary"</code>.</p>
+<p>The whole YAML tree is flattened by <code>build_configs</code> and <code>walk_configs</code>, in the same file near lines 202 through 225. <code>build_configs</code> iterates each environment, and <code>walk_configs</code> iterates each named config within one environment. After flattening, environment variables such as <code>DATABASE_URL</code> are merged in near lines 305 through 307, so a process environment can override the file.</p>
+<p>The normalized config keeps the <code>adapter</code> key separate from connection options. The adapter name (for example <code>"postgresql"</code>) is the single most important field, because it selects which adapter class will be instantiated.</p>
+<h2>The connection handler and the pool manager</h2>
+<p><code>ConnectionHandler#establish_connection</code> is in <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/connection_adapters/abstract/connection_handler.rb</code>, lines 115 through 153. Its job is to turn a config and a <code>(role, shard)</code> pair into a <code>PoolConfig</code>, and to remember that <code>PoolConfig</code> in the right slot.</p>
+<pre><code class="language-ruby">def establish_connection(config, owner_name: Base, role: Base.current_role, shard: Base.current_shard, clobber: false)
+  owner_name = determine_owner_name(owner_name, config)
+
+  pool_config = resolve_pool_config(config, owner_name, role, shard)
+  db_config = pool_config.db_config
+
+  pool_manager = set_pool_manager(pool_config.connection_descriptor)
+
+  existing_pool_config = pool_manager.get_pool_config(role, shard)
+
+  if !clobber &amp;&amp; existing_pool_config &amp;&amp; existing_pool_config.db_config == db_config
+    if owner_name.primary_class? &amp;&amp; (existing_pool_config.connection_descriptor != owner_name)
+      existing_pool_config.connection_descriptor = owner_name
+    end
+    existing_pool_config.pool
+  else
+    disconnect_pool_from_pool_manager(pool_manager, role, shard)
+    pool_manager.set_pool_config(role, shard, pool_config)
+    payload = { connection_name: ..., role: role, shard: shard, config: db_config.configuration_hash }
+    ActiveSupport::Notifications.instrumenter.instrument(&quot;!connection.active_record&quot;, payload) do
+      pool_config.pool
+    end
+  end
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/connection_adapters/abstract/connection_handler.rb</code>, lines 115 through 153, shortened. If a pool with the same config already exists at that <code>(role, shard)</code> address, it is reused. Otherwise the old pool is disconnected and a new <code>PoolConfig</code> is installed. The <code>!connection.active_record</code> notification is how Rails' logging reports "connected to database".</p>
+<p>The handler delegates to a <code>PoolManager</code>, which maps a connection name to a grid of pools keyed by role and shard. The <code>ConnectionHandler</code> is the public face; the <code>PoolManager</code> is the storage. <code>retrieve_connection_pool</code>, near line 212 of the same file, is the hot path every query uses to find its pool. With <code>strict: true</code> and no pool found, it raises <code>ConnectionNotDefined</code> and includes the role and shard in the error message.</p>
+<p><code>PoolConfig</code> is a thin wrapper. Its <code>pool</code> method builds the real pool lazily:</p>
+<pre><code class="language-ruby">def pool
+  @pool || synchronize { @pool ||= ConnectionAdapters::ConnectionPool.new(self) }
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/connection_adapters/pool_config.rb</code>, lines 65 through 67. One line at the bottom of that file matters for every forking web server:</p>
+<pre><code class="language-ruby">ActiveSupport::ForkTracker.after_fork { ActiveRecord::ConnectionAdapters::PoolConfig.discard_pools! }
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/connection_adapters/pool_config.rb</code>, line 83. When a process forks, the child must not share a database socket with its parent. After a fork, all cached pools are discarded and rebuilt lazily on first use.</p>
+<h2>The connection pool</h2>
+<p>A <code>ConnectionPool</code> is the object that limits how many database connections exist and guarantees that no two threads use the same connection at the same time. The class documentation in <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/connection_adapters/abstract/connection_pool.rb</code>, lines 54 through 128, states the contract directly: each thread checks out a connection, uses it, and checks it back in.</p>
+<p>The important options are documented in that same block:</p>
+<ul><li><code>checkout_timeout</code> — seconds to wait for a free connection before raising a timeout error. Default 5 seconds.</li><li><code>max_connections</code> — the pool capacity. Default 5. A nil or -1 value means unlimited.</li><li><code>min_connections</code> — connections kept open at all times. Default 0.</li><li><code>idle_timeout</code> — seconds a connection may sit unused before being closed. Default 300.</li></ul>
+<p>The pool is thread-safe. It uses Ruby's <code>MonitorMixin</code> (a re-entrant mutex, where a mutex is a mutual exclusion lock) to guard its internal state. Checkout and checkin are symmetric:</p>
+<pre><code class="language-ruby">def checkout(checkout_timeout = @checkout_timeout)
+  return checkout_and_verify(acquire_connection(checkout_timeout)) unless @pinned_connection
+
+  @pinned_connection.lock.synchronize do
+    synchronize do
+      if @pinned_connection
+        @pinned_connection.verify!
+        unless @connections.include?(@pinned_connection)
+          @connections &lt;&lt; @pinned_connection
+        end
+        @pinned_connection
+      else
+        checkout_and_verify(acquire_connection(checkout_timeout))
+      end
+    end
+  end
+end
+
+def checkin(conn)
+  return if @pinned_connection.equal?(conn)
+
+  conn.lock.synchronize do
+    synchronize do
+      connection_lease.clear(conn)
+      conn.expire
+      @available.add conn
+    end
+  end
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/connection_adapters/abstract/connection_pool.rb</code>, lines 639 through 660 and 667 through 677. Checkout takes a connection from an <code>@available</code> queue; if the queue is empty and the pool is under capacity, <code>acquire_connection</code> opens a new one; if the pool is full, the thread waits until <code>checkout_timeout</code> expires. Checkin clears the lease registry entry and puts the connection back on <code>@available</code>.</p>
+<p>The lease registry is keyed by execution context, not by thread. Inside a concurrent framework like a web server, one unit of work may hop between threads. <code>IsolatedExecutionState.context</code> tracks the current logical unit of work, so a connection stays attached to the request even if the thread changes.</p>
+<div class="mermaid">
+sequenceDiagram
+    participant T as &quot;application thread&quot;
+    participant P as &quot;ConnectionPool&quot;
+    participant C as &quot;connection adapter&quot;
+    T-&gt;&gt;P: checkout
+    P-&gt;&gt;C: acquire or reuse a connection
+    P--&gt;&gt;T: leased connection
+    T-&gt;&gt;C: exec_query SQL
+    C--&gt;&gt;T: result
+    T-&gt;&gt;P: checkin
+    P-&gt;&gt;P: put connection back on available queue
+
+</div>
+<p>The public methods on the pool mirror this. <code>lease_connection</code> checks a connection out for the whole request; <code>with_connection</code> checks one out, yields it, and checks it back in when the block finishes; <code>release_connection</code> returns a leased connection early. The model-level wrappers <code>lease_connection</code>, <code>connection</code>, <code>with_connection</code>, and <code>release_connection</code> are in <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/connection_handling.rb</code> near lines 267 through 314.</p>
+<h2>The adapter layer</h2>
+<p>The pool holds adapter objects, not raw sockets. The common superclass is <code>AbstractAdapter</code> in <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/connection_adapters/abstract_adapter.rb</code>, line 31. Its initializer, near lines 132 through 185, sets up three things this chapter cares about:</p>
+<ol><li>A visitor. <code>@visitor = arel_visitor</code> builds an <code>Arel::Visitors::ToSql</code> that knows how to compile Arel nodes into this adapter's SQL dialect.</li><li>A statement pool. <code>@statements = build_statement_pool</code> holds prepared statements.</li><li>A prepared-statements flag. <code>@prepared_statements</code> defaults to true unless <code>ActiveRecord.disable_prepared_statements</code> is set or the config overrides it.</li></ol>
+<p>The visitor and the collector are defined together:</p>
+<pre><code class="language-ruby">def collector
+  if prepared_statements
+    Arel::Collectors::Composite.new(
+      Arel::Collectors::SQLString.new,
+      Arel::Collectors::Bind.new,
+    )
+  else
+    Arel::Collectors::SubstituteBinds.new(
+      self,
+      Arel::Collectors::SQLString.new,
+    )
+  end
+end
+
+def arel_visitor
+  Arel::Visitors::ToSql.new(self)
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/connection_adapters/abstract_adapter.rb</code>, lines 1261 through 1277. When prepared statements are on, the collector builds SQL text in one buffer and bind values in a separate list, so the two stay apart. When they are off, a <code>SubstituteBinds</code> collector inlines quoted values directly into the SQL text. The choice is visible in the SQL log: prepared statements show <code>?</code> placeholders, substituted statements show literal values.</p>
+<p>A concrete adapter subclasses <code>AbstractAdapter</code> and fills in the parts that differ per database. The PostgreSQL adapter is in <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/connection_adapters/postgresql_adapter.rb</code>:</p>
+<pre><code class="language-ruby">class PostgreSQLAdapter &lt; AbstractAdapter
+  ADAPTER_NAME = &quot;PostgreSQL&quot;
+
+  class &lt;&lt; self
+    def new_client(conn_params)
+      PG.connect(**conn_params)
+    rescue ::PG::Error =&gt; error
+      # ... translate driver errors into ActiveRecord exceptions ...
+    end
+  end
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/connection_adapters/postgresql_adapter.rb</code>, lines 53 through 71, shortened. <code>new_client</code> wraps the <code>pg</code> gem's <code>PG.connect</code>. The <code>rescue</code> block is the adapter's exception translation layer: a raw driver error about a missing database becomes <code>ActiveRecord::NoDatabaseError</code>, a bad username becomes <code>ActiveRecord::DatabaseConnectionError</code>, and so on. This is why application code can rescue <code>ActiveRecord::</code> exceptions instead of driver exceptions.</p>
+<p>Each adapter also declares a <code>type_map</code>: a mapping from database type names to <code>ActiveRecord::Type::*</code> cast objects. The PostgreSQL adapter defines <code>NATIVE_DATABASE_TYPES</code> near line 134, which lists the SQL type each abstract type maps to when creating a column (for example, <code>string</code> maps to <code>character varying</code>). The type map used for reading results is built from the PostgreSQL Object Identifier (OID) registry at connect time, which is how the driver knows which Ruby class to build for each column.</p>
+<h2>The execution path</h2>
+<p>A query reaches the adapter through the abstract <code>DatabaseStatements</code> module. The first stop is <code>to_sql_and_binds</code>, which turns an Arel tree (or a raw string) into SQL text plus a bind list:</p>
+<pre><code class="language-ruby">def to_sql_and_binds(arel_or_sql_string, binds = [], preparable = nil, allow_retry = false) # :nodoc:
+  if arel_or_sql_string.respond_to?(:ast)
+    arel_or_sql_string = arel_or_sql_string.ast
+  end
+
+  if Arel.arel_node?(arel_or_sql_string) &amp;&amp; !(String === arel_or_sql_string)
+    unless binds.empty?
+      raise &quot;Passing bind parameters with an arel AST is forbidden. &quot; \
+        &quot;The values must be stored on the AST directly&quot;
+    end
+
+    collector = collector()
+    collector.retryable = true
+
+    if prepared_statements
+      collector.preparable = true
+      sql, binds = visitor.compile(arel_or_sql_string, collector)
+      # ...
+    else
+      sql = visitor.compile(arel_or_sql_string, collector)
+    end
+    allow_retry = collector.retryable
+    [sql.freeze, binds, preparable, allow_retry]
+  else
+    arel_or_sql_string = arel_or_sql_string.dup.freeze unless arel_or_sql_string.frozen?
+    [arel_or_sql_string, binds, preparable, allow_retry]
+  end
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/connection_adapters/abstract/database_statements.rb</code>, lines 17 through 51. The interesting constraint is the raise on line 25: you cannot pass bind values alongside an Arel tree. Arel nodes carry their own values as bind parameters on the tree itself. The visitor walks the tree and pushes each value into the collector's bind list as it goes.</p>
+<p>The public execution methods are thin wrappers over this. <code>exec_query</code> for reads:</p>
+<pre><code class="language-ruby">def exec_query(sql, name = &quot;SQL&quot;, binds = [], prepare: false)
+  internal_exec_query(sql, name, binds, prepare: prepare)
+end
+</code></pre>
+<p>And <code>exec_insert</code> for writes, both in the same file:</p>
+<pre><code class="language-ruby">def exec_insert(sql, name = nil, binds = [], pk = nil, sequence_name = nil, returning: nil)
+  sql, binds = sql_for_insert(sql, pk, binds, returning)
+  internal_exec_query(sql, name, binds)
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/connection_adapters/abstract/database_statements.rb</code>, lines 150 through 152 and 160 through 163. <code>exec_delete</code> and <code>exec_update</code> follow the same pattern near lines 168 through 177.</p>
+<p>Everything below those methods funnels into <code>raw_execute</code>:</p>
+<pre><code class="language-ruby">def raw_execute(sql, name = nil, binds = [], prepare: false, async: false, allow_retry: false, materialize_transactions: true, batch: false)
+  type_casted_binds = type_casted_binds(binds)
+  log(sql, name, binds, type_casted_binds, async: async, allow_retry: allow_retry) do |notification_payload|
+    with_raw_connection(allow_retry: allow_retry, materialize_transactions: materialize_transactions) do |conn|
+      begin
+        result = perform_query(conn, sql, binds, type_casted_binds, prepare: prepare, notification_payload: notification_payload, batch: batch)
+        query_completed = true
+      ensure
+        begin
+          handle_warnings(result, sql)
+        rescue
+          raise if query_completed
+        end
+      end
+      result
+    end
+  end
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/connection_adapters/abstract/database_statements.rb</code>, lines 567 through 588. This is the lowest shared level. It type-casts the binds, logs the query, borrows the raw driver connection, and calls <code>perform_query</code>. The abstract <code>perform_query</code> raises <code>NotImplementedError</code> at line 591; each adapter must supply its own.</p>
+<p>The PostgreSQL version is in <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/connection_adapters/postgresql/database_statements.rb</code>, lines 127 through 162:</p>
+<pre><code class="language-ruby">def perform_query(raw_connection, sql, binds, type_casted_binds, prepare:, notification_payload:, batch: false)
+  update_typemap_for_default_timezone
+  result = if prepare
+    begin
+      stmt_key = prepare_statement(sql, binds, raw_connection)
+      notification_payload[:statement_name] = stmt_key
+      raw_connection.exec_prepared(stmt_key, type_casted_binds)
+    rescue PG::FeatureNotSupported =&gt; error
+      # ... retry after flushing the cached plan ...
+    end
+  elsif binds.nil? || binds.empty?
+    raw_connection.async_exec(sql)
+  else
+    raw_connection.exec_params(sql, type_casted_binds)
+  end
+
+  verified!
+  notification_payload[:affected_rows] = result.cmd_tuples
+  notification_payload[:row_count] = result.ntuples
+  result
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/connection_adapters/postgresql/database_statements.rb</code>, lines 127 through 162, shortened. Three branches. Prepared statements use <code>exec_prepared</code> with a statement key. Queries with binds but no prepare use <code>exec_params</code>, which sends SQL and values together. Queries with no binds at all use <code>async_exec</code>. In every branch the raw <code>pg</code> result is returned to <code>raw_execute</code>, which then passes it to <code>cast_result</code> so the adapter can build an <code>ActiveRecord::Result</code> with typed columns.</p>
+<h2>The Aha Moment</h2>
+<p><strong>Aha:</strong> A database connection is never used directly. It is always wrapped twice: first by an <code>AbstractAdapter</code> that knows the SQL dialect, quoting rules, and type map, then by a <code>ConnectionPool</code> that owns the adapter and enforces the checkout/checkin contract. Application code asks the pool for a connection, asks the adapter to run a query, and gives the connection back. The <code>(role, shard)</code> pair is the address of the pool, and everything else is just bookkeeping around those two objects.</p>
+<p>The double wrapping is what makes the rest of the stack simple. The model and the relation never talk to a socket. They talk to a connection object that already knows how to compile Arel to SQL and how to cast driver results into Ruby values. Chapter <a href="./02-sql-generation-arel.html">02-sql-generation-arel.md</a> shows the compilation half; chapter <a href="./11-query-cache-and-pool.html">11-query-cache-and-pool.md</a> in the second half shows the pool and query cache in more depth.</p>
+<p>Continue to <a href="./02-sql-generation-arel.html">02-sql-generation-arel.md</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

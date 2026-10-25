@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>04 -- Arguments and Serializers: how a model becomes a Global ID -- activejob</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/activejob/docs</span>
+    <div class="nav-actions">
+      <a href="01-the-job.html" class="nav-breadcrumb">01 -- The Job: one object, two lives</a><a href="02-enqueue-lifecycle.html" class="nav-breadcrumb">02 -- The Enqueue Lifecycle: from `perform_later` to the adapter</a><a href="03-execution.html" class="nav-breadcrumb">03 -- Execution: `perform_now`, `execute`, and the nested run</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="03-execution.html" class="nav-btn" title="Previous: 03 -- Execution: `perform_now`, `execute`, and the nested run">← prev</a>
+      <a href="05-queue-adapters.html" class="nav-btn nav-btn-next" title="Next: 05 -- Queue Adapters: the tiny interface behind everything">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>04 -- Arguments and Serializers: how a model becomes a Global ID</h1>
+<p>Arguments are the payload of a job. ActiveJob must turn any Ruby object you pass into a hash that a queue backend can store, then turn it back on the worker. Two pieces do this: <code>ActiveJob::Arguments</code> and the <code>Serializers</code> registry.</p>
+<p>Source files: <code>/Users/darkvoid/.gems/gems/activejob-8.1.4/lib/active_job/arguments.rb</code>, <code>/Users/darkvoid/.gems/gems/activejob-8.1.4/lib/active_job/serializers.rb</code>, and everything under <code>/Users/darkvoid/.gems/gems/activejob-8.1.4/lib/active_job/serializers/</code>. The Global ID (GlobalID) gem is at <code>/Users/darkvoid/.gems/gems/globalid-1.4.0/lib/global_id/</code>.</p>
+<h2>The problem</h2>
+<p>Queue backends store simple data: strings, numbers, booleans, null, arrays, and objects. A Ruby <code>Date</code>, a <code>Symbol</code>, an <code>ActiveSupport::Duration</code>, and an Active Record model are none of those. They must be converted to JavaScript Object Notation (JSON) primitives and back.</p>
+<p>The conversion must also be lossless enough for a worker in a different process and, possibly, a different version of your code. This is a harder constraint than JSON alone.</p>
+<h2><code>ActiveJob::Arguments</code></h2>
+<p><code>Arguments</code> is a module with two public methods:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/arguments.rb, lines 34-36 and 82-86
+def serialize(arguments)
+  arguments.map { |argument| serialize_argument(argument) }
+end
+
+def deserialize(arguments)
+  arguments.map { |argument| deserialize_argument(argument) }
+rescue
+  raise DeserializationError
+end
+</code></pre>
+<p><code>serialize_argument</code> is a <code>case</code> that classifies each argument:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/arguments.rb, lines 38-76
+def serialize_argument(argument)
+  case argument
+  when nil, true, false, Integer, Float # Types that can hardly be subclassed
+    argument
+  when String
+    if argument.class == String
+      argument
+    else
+      begin
+        Serializers.serialize(argument)
+      rescue SerializationError
+        argument
+      end
+    end
+  when Symbol
+    { Serializers::OBJECT_SERIALIZER_KEY =&gt; &quot;ActiveJob::Serializers::SymbolSerializer&quot;, &quot;value&quot; =&gt; argument.name }
+  when GlobalID::Identification
+    convert_to_global_id_hash(argument)
+  when Array
+    argument.map { |arg| serialize_argument(arg) }
+  when ActiveSupport::HashWithIndifferentAccess
+    serialize_indifferent_hash(argument)
+  when Hash
+    symbol_keys = argument.keys
+    symbol_keys.select! { |k| k.is_a?(Symbol) }
+    symbol_keys.map!(&amp;:name)
+    aj_hash_key = if Hash.ruby2_keywords_hash?(argument)
+      RUBY2_KEYWORDS_KEY
+    else
+      SYMBOL_KEYS_KEY
+    end
+    result = serialize_hash(argument)
+    result[aj_hash_key] = symbol_keys
+    result
+  else
+    Serializers.serialize(argument)
+  end
+end
+</code></pre>
+
+<div class="mermaid">
+flowchart TD
+  A[&quot;argument&quot;] --&gt; B{&quot;type?&quot;}
+  B --&gt;|&quot;nil true false Integer Float String&quot;| C[&quot;return as-is&quot;]
+  B --&gt;|&quot;Symbol&quot;| D[&quot;symbol serializer hash&quot;]
+  B --&gt;|&quot;GlobalID::Identification&quot;| E[&quot;gid hash&quot;]
+  B --&gt;|&quot;Array&quot;| F[&quot;recurse per element&quot;]
+  B --&gt;|&quot;Hash&quot;| G[&quot;serialize hash with key tracking&quot;]
+  B --&gt;|&quot;anything else&quot;| H[&quot;Serializers.serialize&quot;]
+  H --&gt;|&quot;no serializer found&quot;| I[&quot;SerializationError&quot;]
+
+</div>
+<p>The design rule: primitives pass through untouched, containers recurse, and everything else goes through the serializer registry. A model hits the <code>GlobalID::Identification</code> branch before the generic <code>Serializers</code> branch.</p>
+<h2>The Global ID branch</h2>
+<p>When an argument responds to <code>GlobalID::Identification</code> — every Active Record model does, through <code>include GlobalID::Identification</code> in the GlobalID Railtie (<code>/Users/darkvoid/.gems/gems/globalid-1.4.0/lib/global_id/railtie.rb</code> lines 33-36) — ActiveJob stores a one-key hash:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/arguments.rb, lines 191-196
+def convert_to_global_id_hash(argument)
+  { GLOBALID_KEY =&gt; argument.to_global_id.to_s }
+rescue URI::GID::MissingModelIdError
+  raise SerializationError, &quot;Unable to serialize #{argument.class} &quot; \
+    &quot;without an id. (Maybe you forgot to call save?)&quot;
+end
+</code></pre>
+<p><code>GLOBALID_KEY</code> is <code>"_aj_globalid"</code> (<code>lib/active_job/arguments.rb</code> line 90). The stored string looks like <code>gid://demo/Photo/5</code>.</p>
+<p>The <code>gid://</code> URI is produced by <code>GlobalID::Identification#to_global_id</code> and <code>URI::GID</code>:</p>
+<pre><code class="language-ruby"># Source: /Users/darkvoid/.gems/gems/globalid-1.4.0/lib/global_id/identification.rb, lines 38-40
+def to_global_id(options = {})
+  GlobalID.create(self, options)
+end
+</code></pre>
+
+<pre><code class="language-ruby"># Source: /Users/darkvoid/.gems/gems/globalid-1.4.0/lib/global_id/uri/gid.rb, lines 76-78 (abridged)
+def create(app, model, params = nil)
+  build app: app, model_name: model.class.name, model_id: model.id, params: params
+end
+</code></pre>
+<p>So <code>Photo.find(5).to_global_id.to_s</code> is <code>"gid://demo/Photo/5"</code>: the app name (<code>demo</code>), the class name (<code>Photo</code>), and the primary key (<code>5</code>).</p>
+<p>On the worker, <code>deserialize_argument</code> recognizes the one-key hash and loads the record from the database:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/arguments.rb, lines 109-134 (abridged)
+def deserialize_argument(argument)
+  case argument
+  when nil, true, false, String, Integer, Float
+    argument
+  when Array
+    argument.map { |arg| deserialize_argument(arg) }
+  when Hash
+    if serialized_global_id?(argument)
+      deserialize_global_id argument
+    elsif custom_serialized?(argument)
+      Serializers.deserialize(argument)
+    else
+      deserialize_hash(argument)
+    end
+  else
+    raise ArgumentError, &quot;Can only deserialize primitive arguments: #{argument.inspect}&quot;
+  end
+end
+
+def serialized_global_id?(hash)
+  hash.size == 1 &amp;&amp; hash.include?(GLOBALID_KEY)
+end
+
+def deserialize_global_id(hash)
+  GlobalID::Locator.locate hash[GLOBALID_KEY]
+end
+</code></pre>
+<p><code>GlobalID::Locator.locate</code> turns the URI back into a model instance by calling the model's <code>find</code> with the id:</p>
+<pre><code class="language-ruby"># Source: /Users/darkvoid/.gems/gems/globalid-1.4.0/lib/global_id/locator.rb, lines 211-217
+def locate(gid, options = {})
+  return unless model_id_is_valid?(gid)
+  model_class = gid.model_class
+  model_class = model_class.includes(options[:includes]) if options[:includes]
+
+  model_class.find gid.model_id
+end
+</code></pre>
+
+<div class="mermaid">
+sequenceDiagram
+  participant App as &quot;Enqueue process&quot;
+  participant Hash as &quot;Queue payload&quot;
+  participant Worker as &quot;Worker process&quot;
+  participant DB as &quot;Database&quot;
+
+  App-&gt;&gt;App: photo.to_global_id.to_s
+  App-&gt;&gt;Hash: {&quot;_aj_globalid&quot; =&gt; &quot;gid://demo/Photo/5&quot;}
+  Hash-&gt;&gt;Worker: argument arrives as hash
+  Worker-&gt;&gt;Worker: GlobalID::Locator.locate
+  Worker-&gt;&gt;DB: Photo.find(&quot;5&quot;)
+  DB--&gt;&gt;Worker: fresh Photo instance
+  Worker-&gt;&gt;Worker: perform(photo)
+
+</div>
+<p>The model is never embedded. The worker issues a fresh query and gets the current state of the record, not the state at enqueue time. If the record was deleted, <code>find</code> raises, and the common remedy is <code>discard_on ActiveJob::DeserializationError</code> (see the generated <code>ApplicationJob</code> template and <a href="./07-exceptions-retry-discard.html">07-exceptions-retry-discard.md</a>).</p>
+<p>Two failure modes are surfaced as specific errors. An unsaved model raises <code>SerializationError</code>:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/arguments.rb, lines 17-26 (abridged)
+class SerializationError &lt; ArgumentError; end
+</code></pre>
+<p>Any deserialization failure is wrapped in <code>DeserializationError</code>, with the original as the cause:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/arguments.rb, lines 10-15
+class DeserializationError &lt; StandardError
+  def initialize
+    super(&quot;Error while trying to deserialize arguments: #{$!.message}&quot;)
+    set_backtrace $!.backtrace
+  end
+end
+</code></pre>
+<h2>Hashes and their keys</h2>
+<p>Ruby hashes can have symbol keys, but JSON objects cannot. ActiveJob serializes symbol keys to strings and remembers which ones to restore:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/arguments.rb, lines 140-157 (abridged)
+def serialize_hash(argument)
+  argument.each_with_object({}) do |(key, value), hash|
+    hash[serialize_hash_key(key)] = serialize_argument(value)
+  end
+end
+
+def deserialize_hash(serialized_hash)
+  result = serialized_hash.transform_values { |v| deserialize_argument(v) }
+  if result.delete(WITH_INDIFFERENT_ACCESS_KEY)
+    result = result.with_indifferent_access
+  elsif symbol_keys = result.delete(SYMBOL_KEYS_KEY)
+    result = transform_symbol_keys(result, symbol_keys)
+  elsif symbol_keys = result.delete(RUBY2_KEYWORDS_KEY)
+    result = transform_symbol_keys(result, symbol_keys)
+    result = Hash.ruby2_keywords_hash(result)
+  end
+  result
+end
+</code></pre>
+<p>Five reserved keys mark metadata: <code>_aj_symbol_keys</code> for symbol-keyed hashes, <code>_aj_ruby2_keywords</code> for hashes that were Ruby 2 keyword arguments, <code>_aj_hash_with_indifferent_access</code> for <code>HashWithIndifferentAccess</code>, <code>_aj_globalid</code> for Global ID references, and <code>_aj_serialized</code> for custom serializers. These keys are reserved, and using them yourself raises:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/arguments.rb, lines 90-107 and 159-170
+GLOBALID_KEY = &quot;_aj_globalid&quot;
+SYMBOL_KEYS_KEY = &quot;_aj_symbol_keys&quot;
+RUBY2_KEYWORDS_KEY = &quot;_aj_ruby2_keywords&quot;
+WITH_INDIFFERENT_ACCESS_KEY = &quot;_aj_hash_with_indifferent_access&quot;
+
+def serialize_hash_key(key)
+  case key
+  when RESERVED_KEYS
+    raise SerializationError.new(&quot;Can&#x27;t serialize a Hash with reserved key #{key.inspect}&quot;)
+  when String
+    key
+  when Symbol
+    key.name
+  else
+    raise SerializationError.new(&quot;Only string and symbol hash keys may be serialized as job arguments, but #{key.inspect} is a #{key.class}&quot;)
+  end
+end
+</code></pre>
+<h2>The serializer registry</h2>
+<p><code>Serializers</code> keeps a set of known serializers. <code>serialize</code> finds the first one that matches the argument's class; <code>deserialize</code> looks up the serializer by the name stored in the hash:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/serializers.rb, lines 31-48
+def serialize(argument)
+  serializer = @serializers_index[argument.class] || serializers.find { |s| s.serialize?(argument) }
+  raise SerializationError.new(&quot;Unsupported argument type: #{argument.class.name}&quot;) unless serializer
+  serializer.serialize(argument)
+end
+
+def deserialize(argument)
+  serializer_name = argument[OBJECT_SERIALIZER_KEY]
+  raise ArgumentError, &quot;Serializer name is not present in the argument: #{argument.inspect}&quot; unless serializer_name
+
+  serializer = serializer_name.safe_constantize
+  raise ArgumentError, &quot;Serializer #{serializer_name} is not known&quot; unless serializer
+
+  serializer.deserialize(argument)
+end
+</code></pre>
+<p>Every custom serializer stores its own class name under <code>OBJECT_SERIALIZER_KEY</code> (<code>"_aj_serialized"</code>, line 104), so the worker knows which class can reverse it. The registry is also readable and writable: <code>ActiveJob::Serializers.serializers</code> returns the known serializers, and <code>serializers=</code> replaces the list (<code>serializers.rb</code> lines 51-57).</p>
+<p>The base class is <code>ObjectSerializer</code>, a singleton:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/serializers/object_serializer.rb, lines 24-49 (abridged)
+class ObjectSerializer
+  include Singleton
+
+  def initialize
+    super
+    @template = { Serializers::OBJECT_SERIALIZER_KEY =&gt; self.class.name }.freeze
+  end
+
+  def serialize?(argument)
+    argument.is_a?(klass)
+  end
+
+  def serialize(hash)
+    @template.merge(hash)
+  end
+
+  def deserialize(hash)
+    raise NotImplementedError, &quot;#{self.class.name} should implement a public #deserialize(hash) method&quot;
+  end
+end
+</code></pre>
+<p>The registry ships with serializers for <code>Symbol</code>, <code>Duration</code>, <code>DateTime</code>, <code>Date</code>, <code>TimeWithZone</code>, <code>Time</code>, <code>Module</code>, <code>Range</code>, and <code>BigDecimal</code> (<code>lib/active_job/serializers.rb</code> lines 106-114). Each is a tiny subclass. <code>DateSerializer</code> is representative:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/serializers/date_serializer.rb, lines 5-18
+class DateSerializer &lt; ObjectSerializer
+  def serialize(date)
+    super(&quot;value&quot; =&gt; date.iso8601)
+  end
+
+  def deserialize(hash)
+    Date.iso8601(hash[&quot;value&quot;])
+  end
+
+  def klass
+    Date
+  end
+end
+</code></pre>
+<p><code>TimeSerializer</code> inherits from <code>TimeObjectSerializer</code> (itself an <code>ObjectSerializer</code> subclass that adds nanosecond <code>iso8601</code> serialization).</p>
+<p><code>TimeWithZoneSerializer</code> is worth studying because it stores the zone, not just the instant:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/serializers/time_with_zone_serializer.rb, lines 5-23
+class TimeWithZoneSerializer &lt; ObjectSerializer
+  NANO_PRECISION = 9
+
+  def serialize(time_with_zone)
+    super(
+      &quot;value&quot; =&gt; time_with_zone.iso8601(NANO_PRECISION),
+      &quot;time_zone&quot; =&gt; time_with_zone.time_zone.tzinfo.name
+    )
+  end
+
+  def deserialize(hash)
+    Time.iso8601(hash[&quot;value&quot;]).in_time_zone(hash[&quot;time_zone&quot;] || Time.zone)
+  end
+
+  def klass
+    ActiveSupport::TimeWithZone
+  end
+end
+</code></pre>
+<h2>Writing a custom serializer</h2>
+<p>A custom serializer subclasses <code>ObjectSerializer</code> and implements <code>serialize</code>, <code>deserialize</code>, and <code>klass</code>:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/serializers/object_serializer.rb, lines 6-24 (documentation)
+class MoneySerializer &lt; ActiveJob::Serializers::ObjectSerializer
+  def serialize(money)
+    super(&quot;amount&quot; =&gt; money.amount, &quot;currency&quot; =&gt; money.currency)
+  end
+
+  def deserialize(hash)
+    Money.new(hash[&quot;amount&quot;], hash[&quot;currency&quot;])
+  end
+
+  def klass
+    Money
+  end
+end
+</code></pre>
+<p>In Rails, register it through <code>config.active_job.custom_serializers = [MoneySerializer]</code>, which the Railtie feeds into <code>Serializers.add_serializers</code> (<code>lib/active_job/railtie.rb</code> lines 22-27). Out of Rails, call <code>ActiveJob::Serializers.add_serializers MoneySerializer</code> directly.</p>
+<h2>The Aha Moment</h2>
+<p><strong>Aha:</strong> The model argument is a foreign key, not a copy. Passing a model to a job stores a <code>gid://</code> reference, and the worker reloads the record with a fresh <code>find</code>. This is why jobs see current data, why a deleted record breaks a job with a clear <code>DeserializationError</code>, and why you never accidentally ship stale database rows through the queue. The serializer registry is the escape hatch: any value type that is not a model, a primitive, or a container can teach ActiveJob how to freeze and thaw it.</p>
+<p>Continue to <a href="./05-queue-adapters.html">05-queue-adapters.md</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

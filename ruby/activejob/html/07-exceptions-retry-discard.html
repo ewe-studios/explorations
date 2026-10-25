@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>07 -- Exceptions, Retry, and Discard -- activejob</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/activejob/docs</span>
+    <div class="nav-actions">
+      <a href="04-arguments-and-serializers.html" class="nav-breadcrumb">04 -- Arguments and Serializers: how a model becomes a Global ID</a><a href="05-queue-adapters.html" class="nav-breadcrumb">05 -- Queue Adapters: the tiny interface behind everything</a><a href="06-callbacks.html" class="nav-breadcrumb">06 -- Callbacks: hooks around enqueue and perform</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="06-callbacks.html" class="nav-btn" title="Previous: 06 -- Callbacks: hooks around enqueue and perform">← prev</a>
+      <a href="08-continuable.html" class="nav-btn nav-btn-next" title="Next: 08 -- Continuable: steps, cursors, checkpoints, and resume">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>07 -- Exceptions, Retry, and Discard</h1>
+<p>Jobs fail. ActiveJob gives you declarative control over what happens when they do: retry with backoff, discard silently, or run custom code. This document explains the machinery.</p>
+<p>Source files: <code>/Users/darkvoid/.gems/gems/activejob-8.1.4/lib/active_job/exceptions.rb</code> and <code>/Users/darkvoid/.gems/gems/activejob-8.1.4/lib/active_job/execution.rb</code>.</p>
+<h2>The rescue chain</h2>
+<p><code>retry_on</code> and <code>discard_on</code> are built on top of <code>ActiveSupport::Rescuable#rescue_from</code>. <code>Execution</code> includes <code>Rescuable</code>, and <code>perform_now</code> is the rescue point:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/execution.rb, lines 12-14 and 45-58
+module Execution
+  extend ActiveSupport::Concern
+  include ActiveSupport::Rescuable
+
+  def perform_now
+    self.executions = (executions || 0) + 1
+    deserialize_arguments_if_needed
+    _perform_job
+  rescue Exception =&gt; exception
+    handled = rescue_with_handler(exception)
+    return handled if handled
+
+    run_after_discard_procs(exception)
+    raise
+  end
+end
+</code></pre>
+<p>When <code>perform</code> raises, <code>rescue_with_handler</code> searches the registered handlers bottom to top, then up the class hierarchy, and runs the first one whose class matches:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/exceptions.rb, lines 24-25 (documentation)
+# +retry_on+ and +discard_on+ handlers are searched from bottom to top, and up the class hierarchy.
+# The handler of the first class for which &lt;tt&gt;exception.is_a?(klass)&lt;/tt&gt; holds true is the one invoked, if any.
+</code></pre>
+<p>If a handler returns a value, that value becomes the return value of <code>perform_now</code>, and the exception is swallowed. If nothing handles it, the exception re-raises and reaches the queue backend.</p>
+<div class="mermaid">
+flowchart TD
+  A[&quot;perform raises&quot;] --&gt; B[&quot;rescue_with_handler&quot;]
+  B --&gt; C{&quot;handler matches?&quot;}
+  C --&gt;|&quot;retry_on&quot;| D[&quot;retry path&quot;]
+  C --&gt;|&quot;discard_on&quot;| E[&quot;discard path&quot;]
+  C --&gt;|&quot;none&quot;| F[&quot;re-raise to backend&quot;]
+  D --&gt; G[&quot;retry_job re-enqueues&quot;]
+  E --&gt; H[&quot;job ends, exception swallowed&quot;]
+  G --&gt; I[&quot;job runs again&quot;]
+  I --&gt; A
+
+</div>
+<h2><code>retry_on</code></h2>
+<p><code>retry_on</code> registers a <code>rescue_from</code> handler that either re-enqueues or gives up:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/exceptions.rb, lines 64-83
+def retry_on(*exceptions, wait: 3.seconds, attempts: 5, queue: nil, priority: nil, jitter: JITTER_DEFAULT, report: false)
+  rescue_from(*exceptions) do |error|
+    executions = executions_for(exceptions)
+    if attempts == :unlimited || executions &lt; attempts
+      ActiveSupport.error_reporter.report(error, source: &quot;application.active_job&quot;) if report
+      retry_job wait: determine_delay(seconds_or_duration_or_algorithm: wait, executions: executions, jitter: jitter), queue: queue, priority: priority, error: error
+    else
+      if block_given?
+        instrument :retry_stopped, error: error do
+          yield self, error
+        end
+        run_after_discard_procs(error)
+      else
+        instrument :retry_stopped, error: error
+        run_after_discard_procs(error)
+        raise error
+      end
+    end
+  end
+end
+</code></pre>
+<p>The defaults are <code>wait: 3.seconds</code> and <code>attempts: 5</code>, where attempts includes the original execution. <code>attempts: :unlimited</code> retries forever. <code>report: true</code> reports through the error reporter before retrying.</p>
+<p>The per-declaration counter is tracked in <code>exception_executions</code>, keyed by the string representation of the exception list:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/exceptions.rb, lines 197-204
+def executions_for(exceptions)
+  if exception_executions
+    exception_executions[exceptions.to_s] = (exception_executions[exceptions.to_s] || 0) + 1
+  else
+    executions
+  end
+end
+</code></pre>
+<p><code>executions</code> itself is the total run count, incremented in <code>perform_now</code> (see <a href="./03-execution.html">03-execution.md</a>). <code>exception_executions</code> is serialized with the job (<code>core.rb</code> line 127), so both counters survive the round trip through the queue.</p>
+<h2>Backoff and jitter</h2>
+<p><code>determine_delay</code> computes the wait:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/exceptions.rb, lines 171-195
+def determine_delay(seconds_or_duration_or_algorithm:, executions:, jitter: JITTER_DEFAULT)
+  jitter = jitter == JITTER_DEFAULT ? self.class.retry_jitter : (jitter || 0.0)
+
+  case seconds_or_duration_or_algorithm
+  when  :polynomially_longer
+    # This delay uses a polynomial backoff strategy, which was previously misnamed as exponential
+    delay = executions**4
+    delay_jitter = determine_jitter_for_delay(delay, jitter)
+    delay + delay_jitter + 2
+  when ActiveSupport::Duration, Integer
+    delay = seconds_or_duration_or_algorithm.to_i
+    delay_jitter = determine_jitter_for_delay(delay, jitter)
+    delay + delay_jitter
+  when Proc
+    algorithm = seconds_or_duration_or_algorithm
+    algorithm.call(executions)
+  else
+    raise &quot;Couldn&#x27;t determine a delay based on #{seconds_or_duration_or_algorithm.inspect}&quot;
+  end
+end
+
+def determine_jitter_for_delay(delay, jitter)
+  return 0.0 if jitter.zero?
+  Kernel.rand * delay * jitter
+end
+</code></pre>
+<p>The <code>:wait</code> option accepts three forms:</p>
+<ul><li>a fixed <code>Duration</code> or <code>Integer</code> in seconds,</li><li>a <code>Proc</code> that receives the execution count and returns a delay,</li><li>the symbol <code>:polynomially_longer</code>, whose delay is <code>executions**4 + 2</code> (plus jitter), giving roughly 3s, then 18s, then 83s, and so on. The source comment notes this was previously misnamed "exponential".</li></ul>
+<p>Jitter is a random fraction added to the delay so retrying jobs do not thundering-herd a backend. The effective default is <code>0.0</code>, set by the <code>retry_jitter</code> class attribute:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/exceptions.rb, line 11
+class_attribute :retry_jitter, instance_accessor: false, instance_predicate: false, default: 0.0
+</code></pre>
+<p>(The doc comment at line 36 still says 15%; the code default is 0.0. Pass <code>jitter: 0.15</code> for a 15% upper bound, or set <code>self.retry_jitter</code> on the job.)</p>
+<h2>How a retried job re-enqueues</h2>
+<p><code>retry_job</code> is an instance method that re-runs the normal enqueue path with overrides, then restores the original attributes:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/exceptions.rb, lines 158-165
+def retry_job(options = {})
+  instrument :enqueue_retry, options.slice(:error, :wait) do
+    scheduled_at, queue_name, priority = self.scheduled_at, self.queue_name, self.priority
+    enqueue options
+  ensure
+    self.scheduled_at, self.queue_name, self.priority = scheduled_at, queue_name, priority
+  end
+end
+</code></pre>
+<p>Because <code>enqueue</code> applies <code>set(options)</code>, the <code>:wait</code>, <code>:queue</code>, and <code>:priority</code> options become the re-enqueue parameters. The <code>ensure</code> restores the job's own schedule, queue, and priority after the push, so a later retry uses the original values again.</p>
+<p>The retried job keeps its <code>job_id</code> and its incremented <code>executions</code>, because those are serialized. In effect a retry is just <code>perform_later</code> of the same job again.</p>
+<div class="mermaid">
+sequenceDiagram
+  participant Perf as &quot;perform_now&quot;
+  participant Rescue as &quot;retry_on handler&quot;
+  participant Job as &quot;retry_job&quot;
+  participant Adapter as &quot;Adapter&quot;
+
+  Perf-&gt;&gt;Perf: perform raises IOError
+  Perf-&gt;&gt;Rescue: rescue_from(IOError)
+  Rescue-&gt;&gt;Rescue: executions_for increments
+  Rescue-&gt;&gt;Job: retry_job(wait: 5, error: e)
+  Job-&gt;&gt;Adapter: enqueue(job with wait)
+  Adapter--&gt;&gt;Job: accepted
+  Job--&gt;&gt;Rescue: job instance
+  Rescue--&gt;&gt;Perf: handled (no re-raise)
+
+</div>
+<h2><code>discard_on</code></h2>
+<p><code>discard_on</code> swallows the exception entirely:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/exceptions.rb, lines 109-117
+def discard_on(*exceptions, report: false)
+  rescue_from(*exceptions) do |error|
+    instrument :discard, error: error do
+      ActiveSupport.error_reporter.report(error, source: &quot;application.active_job&quot;) if report
+      yield self, error if block_given?
+      run_after_discard_procs(error)
+    end
+  end
+end
+</code></pre>
+<p>The canonical use is a record that no longer exists when the worker loads it:</p>
+<pre><code class="language-ruby"># Source: lib/rails/generators/job/templates/application_job.rb.tt, lines 5-7
+# Most jobs are safe to ignore if the underlying records are no longer available
+# discard_on ActiveJob::DeserializationError
+</code></pre>
+<p><code>after_discard</code> registers a block run whenever a job is discarded for any reason:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/exceptions.rb, lines 119-133 and 206-214
+def after_discard(&amp;blk)
+  self.after_discard_procs += [blk]
+end
+
+def run_after_discard_procs(exception)
+  exceptions = []
+  after_discard_procs.each do |blk|
+    instance_exec(self, exception, &amp;blk)
+  rescue StandardError =&gt; e
+    exceptions &lt;&lt; e
+  end
+  raise exceptions.last unless exceptions.empty?
+end
+</code></pre>
+<h2>A note on older names</h2>
+<p>The task that prompted this exploration mentions <code>RetryJob</code> / <code>DiscardJob</code> exceptions and <code>rescue_with</code> handling. In 8.1.4 those no longer exist. The <code>RetryJob</code> and <code>DiscardJob</code> exception classes, and the <code>discard_job</code> instance method, were removed from Rails in version 5.0. What remains in 8.1.4 is:</p>
+<ul><li><code>retry_job</code> — an instance method (shown above), the primitive behind <code>retry_on</code> and the Continuable resume machinery (<a href="./08-continuable.html">08-continuable.md</a>).</li><li><code>rescue_from</code> — the <code>ActiveSupport::Rescuable</code> API that <code>retry_on</code> and <code>discard_on</code> build on, invoked through <code>rescue_with_handler</code> in <code>perform_now</code>.</li></ul>
+<p>There is no <code>discard_job</code> method; discarding is only via <code>discard_on</code> or by handling the exception and not re-raising. The modern recommendation is the declarative pair <code>retry_on</code> / <code>discard_on</code>.</p>
+<h2>The Aha Moment</h2>
+<p><strong>Aha:</strong> Retry is just re-enqueue. There is no special retry channel. <code>retry_job</code> calls the exact same <code>enqueue</code> you call from <code>perform_later</code>, carrying the same <code>job_id</code>, the same serialized arguments, and an incremented <code>executions</code> counter. The backoff is only a <code>wait</code> value computed from that counter. This means retries inherit every enqueue feature for free — queues, priorities, schedules, callbacks, instrumentation — because they are ordinary enqueues.</p>
+<p>Continue to <a href="./08-continuable.html">08-continuable.md</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

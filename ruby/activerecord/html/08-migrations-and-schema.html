@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>08 -- Migrations and schema: evolving the database in Ruby -- activerecord</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/activerecord/docs</span>
+    <div class="nav-actions">
+      <a href="05-persistence.html" class="nav-breadcrumb">05 -- Persistence: from Ruby object to SQL and back</a><a href="06-associations.html" class="nav-breadcrumb">06 -- Associations: foreign keys as Ruby objects</a><a href="07-callbacks-and-validations.html" class="nav-breadcrumb">07 -- Callbacks and validations: the model life cycle</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="07-callbacks-and-validations.html" class="nav-btn" title="Previous: 07 -- Callbacks and validations: the model life cycle">← prev</a>
+      <a href="09-attribute-methods-and-types.html" class="nav-btn nav-btn-next" title="Next: 09 -- Attribute methods and types: from column to Ruby object">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>08 -- Migrations and schema: evolving the database in Ruby</h1>
+<p>A database schema changes over time. Tables are created, columns are added, indexes appear, and foreign keys link tables. Active Record records each change as a migration: a Ruby class with a version number that knows how to apply the change and, usually, how to undo it. This document explains the migration Domain Specific Language (DSL), how reversibility works, how the runner tracks applied versions, and how <code>schema.rb</code> is produced.</p>
+<p>Source files are from the <code>activerecord-8.1.4</code> gem at <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib</code>. Short paths below are relative to that <code>lib</code> directory. <code>db:migrate</code> is a Rake task in Rails; the code it drives lives here.</p>
+<p>For how the connection executes the resulting Structured Query Language (SQL), see <a href="./01-connection-and-adapters.html">01-connection-and-adapters.md</a>. For how those SQL fragments are built, see <a href="./02-sql-generation-arel.html">02-sql-generation-arel.md</a>.</p>
+<h2>The migration DSL</h2>
+<p>A migration is a class that subclasses <code>ActiveRecord::Migration</code>. Its <code>change</code> method calls DSL helpers such as <code>create_table</code> and <code>add_column</code>. The same helpers appear in <code>ActiveRecord::Schema</code>, whose documentation at <code>active_record/schema.rb:13-28</code> shows the canonical shape:</p>
+<pre><code class="language-ruby">ActiveRecord::Schema[7.0].define do
+  create_table :authors do |t|
+    t.string :name, null: false
+  end
+
+  add_index :authors, :name, unique: true
+
+  create_table :posts do |t|
+    t.integer :author_id, null: false
+    t.string :subject
+    t.text :body
+    t.boolean :private, default: false
+  end
+
+  add_index :posts, :author_id
+end
+</code></pre>
+<p>The block argument <code>t</code> is a <code>TableDefinition</code>. It defines one column per method call. The column type methods are generated at <code>active_record/connection_adapters/abstract/schema_definitions.rb:331-332</code>:</p>
+<pre><code class="language-ruby">define_column_methods :bigint, :binary, :boolean, :date, :datetime, :decimal,
+  :float, :integer, :json, :string, :text, :time, :timestamp, :virtual
+</code></pre>
+<p>Each method, such as <code>t.string :name</code>, becomes a call to <code>TableDefinition#column</code> at <code>active_record/connection_adapters/abstract/schema_definitions.rb:484</code>, which stores a column specification and its options. The options you saw (<code>null: false</code>, <code>default: false</code>) become part of that specification, not part of SQL yet. SQL generation happens later in the connection adapter.</p>
+<p>The same file holds the table-level helpers. <code>index</code> at <code>active_record/connection_adapters/abstract/schema_definitions.rb:509</code> records an index on one or more columns. <code>foreign_key</code> at <code>active_record/connection_adapters/abstract/schema_definitions.rb:513</code> records a reference constraint. <code>timestamps</code> at <code>active_record/connection_adapters/abstract/schema_definitions.rb:525</code> adds the two columns <code>created_at</code> and <code>updated_at</code>. <code>references</code> at <code>active_record/connection_adapters/abstract/schema_definitions.rb:543</code> adds a <code>*_id</code> column plus an index in one call, and <code>belongs_to</code> is an alias for it.</p>
+<p>The actual SQL for each DSL call is produced by the connection adapter in <code>active_record/connection_adapters/abstract/schema_statements.rb</code>. <code>create_table</code> is at line 297, <code>create_join_table</code> at 408, <code>add_column</code> at 655, <code>add_reference</code> at 1095 (with <code>alias :add_belongs_to :add_reference</code>), <code>add_foreign_key</code> at 1205, and <code>remove_foreign_key</code> at 1247. The split matters: <code>TableDefinition</code> is data, and <code>SchemaStatements</code> is the translator that turns that data into dialect-specific SQL.</p>
+<h2>Reversibility</h2>
+<p>A migration must be able to run both ways. <code>change</code> is the short form; <code>up</code> and <code>down</code> are the explicit form. When only <code>change</code> is defined, Active Record records every DSL call and later computes the inverse.</p>
+<p>The recorder is <code>ActiveRecord::Migration::CommandRecorder</code> in <code>active_record/migration/command_recorder.rb</code>. Its job is at lines 7-9: it "records commands done during a migration and knows how to reverse those commands". The inverse lookup is <code>inverse_of</code> at <code>active_record/migration/command_recorder.rb:117-126</code>:</p>
+<pre><code class="language-ruby">def inverse_of(command, args, &amp;block)
+  method = :&quot;invert_#{command}&quot;
+  raise IrreversibleMigration, &lt;&lt;~MSG unless respond_to?(method, true)
+    This migration uses #{command}, which is not automatically reversible.
+    To make the migration reversible you can either:
+    1. Define #up and #down methods in place of the #change method.
+    2. Use the #reversible method to define reversible behavior.
+  MSG
+  send(method, args, &amp;block)
+end
+</code></pre>
+<p>Most inverses are just a swapped pair. <code>StraightReversions</code> at <code>active_record/migration/command_recorder.rb:158-176</code> maps <code>create_table</code> to <code>drop_table</code>, <code>add_column</code> to <code>remove_column</code>, <code>add_index</code> to <code>remove_index</code>, <code>add_foreign_key</code> to <code>remove_foreign_key</code>, and so on. Each mapping generates two <code>invert_*</code> methods, so <code>invert_create_table</code> returns a <code>drop_table</code> command and <code>invert_drop_table</code> returns a <code>create_table</code> command.</p>
+<p>Some inverses need more information than the forward command carries. <code>remove_column</code> needs the column's type to re-add it, so <code>invert_remove_column</code> at <code>active_record/migration/command_recorder.rb:241-246</code> raises <code>IrreversibleMigration</code> unless a type was given. <code>drop_table</code> needs a block to recreate the table, so <code>invert_drop_table</code> at lines 217-232 raises unless a block or options were given. The error message tells you exactly how to fix the migration.</p>
+<div class="mermaid">
+flowchart TD
+  A[&quot;change runs&quot;] --&gt; B[&quot;CommandRecorder records each call&quot;]
+  B --&gt; C[&quot;forward: commands replayed in order&quot;]
+  B --&gt; D[&quot;backward: revert mode records inverses&quot;]
+  D --&gt; E[&quot;inverse_of looks up invert_x&quot;]
+  E --&gt; F[&quot;found&quot;] --&gt; G[&quot;replay reversed commands&quot;]
+  E --&gt; H[&quot;not found&quot;] --&gt; I[&quot;raise IrreversibleMigration&quot;]
+
+</div>
+<h3><code>reversible</code>, <code>up_only</code>, and <code>revert</code></h3>
+<p>When the inverse is not a simple swap, <code>reversible</code> gives the two directions a shared block with a <code>dir</code> helper. It is defined at <code>active_record/migration.rb:914-917</code>:</p>
+<pre><code class="language-ruby">def reversible
+  helper = ReversibleBlockHelper.new(reverting?)
+  execute_block { yield helper }
+end
+</code></pre>
+<p>Inside the block you write <code>dir.up { ... }</code> and <code>dir.down { ... }</code>. The documentation example at <code>active_record/migration.rb:902-909</code> splits a <code>full_name</code> column into <code>first_name</code> and <code>last_name</code> on the way up and rejoins them on the way down.</p>
+<p><code>up_only</code> at <code>active_record/migration.rb:933-935</code> runs its block only when migrating up:</p>
+<pre><code class="language-ruby">def up_only(&amp;block)
+  execute_block(&amp;block) unless reverting?
+end
+</code></pre>
+<p>This is for data changes that have no meaningful reverse, such as backfilling a new column from existing rows. <code>revert</code> records the block in reverting mode, which inverts each command and reverses their order; the mechanism is <code>CommandRecorder#revert</code> at <code>active_record/migration/command_recorder.rb:83-91</code>.</p>
+<h2>The migration runtime</h2>
+<p>When <code>db:migrate</code> runs, three classes cooperate. <code>MigrationContext</code> reads the migration files and decides the direction. <code>Migrator</code> executes them in order. <code>MigrationProxy</code> wraps a file so its class is loaded lazily only when it actually runs.</p>
+<p>The flow starts at <code>MigrationContext#migrate</code> at <code>active_record/migration.rb:1242-1253</code>: with no target version it goes up, with a lower target it goes down. <code>MigrationContext#migrations</code> at <code>active_record/migration.rb:1312-1326</code> scans the migration paths, matches the filename pattern, parses the version and name, and builds one <code>MigrationProxy</code> per file, sorted by version. The filename pattern is <code>MigrationFilenameRegexp</code> at <code>active_record/migration.rb:637</code>, and the glob that finds files is <code>[0-9]<em>_</em>.rb</code> at <code>active_record/migration.rb:1379</code>.</p>
+<p><code>Migrator</code> decides which migrations to run. Its <code>runnable</code> method at <code>active_record/migration.rb:1469-1478</code> starts from the current version and, going up, rejects migrations whose version already exists in the <code>schema_migrations</code> table. Going down, it reverses the list and keeps only applied migrations.</p>
+<p>Each migration then runs inside a transaction. Read <code>active_record/migration.rb:1537-1604</code>:</p>
+<pre><code class="language-ruby">def execute_migration_in_transaction(migration)
+  return if down? &amp;&amp; !migrated.include?(migration.version.to_i)
+  return if up?   &amp;&amp;  migrated.include?(migration.version.to_i)
+
+  message = up? ? &quot;Migrating to&quot; : &quot;Reverting&quot;
+  Base.logger.info &quot;#{message} #{migration.name} (#{migration.version})&quot; if Base.logger
+
+  ddl_transaction(migration) do
+    migration.migrate(@direction)
+    record_version_state_after_migrating(migration.version)
+  end
+rescue =&gt; e
+  msg = +&quot;An error has occurred, &quot;
+  msg &lt;&lt; &quot;this and &quot; if use_transaction?(migration)
+  msg &lt;&lt; &quot;all later migrations canceled:\n\n#{e}&quot;
+  raise StandardError, msg, e.backtrace
+end
+</code></pre>
+<p><code>ddl_transaction</code> at <code>active_record/migration.rb:1594-1600</code> wraps the block in a database transaction only when <code>use_transaction?</code> is true. <code>use_transaction?</code> at lines 1602-1604 returns false if the migration calls <code>disable_ddl_transaction!</code> or if the adapter does not support Data Definition Language (DDL) transactions. Some databases, and some statements such as <code>CREATE INDEX CONCURRENTLY</code>, cannot run inside a transaction; <code>disable_ddl_transaction!</code> is the escape hatch.</p>
+<p>The whole run is guarded by an advisory lock. <code>with_advisory_lock</code> at <code>active_record/migration.rb:1610-1623</code> computes a lock identifier from a salt and the database name, takes the lock, and raises <code>ConcurrentMigrationError</code> if another process holds it. This prevents two servers from running the same migration set at once.</p>
+<div class="mermaid">
+flowchart TD
+  A[&quot;db:migrate&quot;] --&gt; B[&quot;MigrationContext.migrate&quot;]
+  B --&gt; C[&quot;scan migration files&quot;]
+  C --&gt; D[&quot;parse version and name&quot;]
+  D --&gt; E[&quot;sort by version&quot;]
+  E --&gt; F[&quot;Migrator.runnable&quot;]
+  F --&gt; G[&quot;advisory lock&quot;]
+  G --&gt; H[&quot;for each migration&quot;]
+  H --&gt; I[&quot;ddl transaction&quot;]
+  I --&gt; J[&quot;migration.migrate direction&quot;]
+  J --&gt; K[&quot;record version in schema_migrations&quot;]
+  K --&gt; L[&quot;dump schema.rb&quot;]
+
+</div>
+<h2>The <code>schema_migrations</code> table</h2>
+<p>The applied versions live in a real database table, by default named <code>schema_migrations</code>. The class that manages it is <code>SchemaMigration</code> in <code>active_record/schema_migration.rb</code>. It uses <code>version</code> as its primary key at <code>active_record/schema_migration.rb:45-47</code>. The table is created at <code>active_record/schema_migration.rb:53-61</code>:</p>
+<pre><code class="language-ruby">def create_table
+  @pool.with_connection do |connection|
+    unless connection.table_exists?(table_name)
+      connection.create_table(table_name, id: false) do |t|
+        t.string :version, **connection.internal_string_options_for_primary_key
+      end
+    end
+  end
+end
+</code></pre>
+<p><code>create_version</code> at <code>active_record/schema_migration.rb:19-25</code> inserts the version with an Arel INSERT, and <code>delete_version</code> at lines 27-34 deletes it on rollback. <code>Migrator#record_version_state_after_migrating</code> at <code>active_record/migration.rb:1575-1583</code> calls those methods after each migration, inside the same transaction. Because the version row is written in the same transaction as the schema change, a migration is all-or-nothing: if the DDL fails, the version row rolls back with it.</p>
+<p>The practical consequence: "which migrations are applied" is not a file on disk. It is a table in the database. Two databases can be at different versions while sharing the same code, and a fresh database starts empty and applies every migration in order.</p>
+<h2><code>schema.rb</code> versus SQL dumps</h2>
+<p>After migrating, Rails can regenerate <code>db/schema.rb</code>, a single Ruby file that describes the whole current schema. It is produced by <code>SchemaDumper</code> in <code>active_record/schema_dumper.rb</code>. <code>dump</code> at line 60 writes the header, extensions, types, tables, virtual tables, and trailer in that order.</p>
+<p>The header at <code>active_record/schema_dumper.rb:96-111</code> explains the file's role:</p>
+<pre><code class="language-ruby">stream.puts &lt;&lt;~HEADER
+  # This file is auto-generated from the current state of the database. Instead
+  # of editing this file, please use the migrations feature of Active Record to
+  # incrementally modify your database, and then regenerate this schema definition.
+  #
+  # This file is the source Rails uses to define your schema when running `bin/rails
+  # db:schema:load`. When creating a new database, `bin/rails db:schema:load` tends to
+  # be faster and is potentially less error prone than running all of your
+  # migrations from scratch. Old migrations may fail to apply correctly if those
+  # migrations use external dependencies or application code.
+  #
+  # It&#x27;s strongly recommended that you check this file into your version control system.
+
+  ActiveRecord::Schema[#{ActiveRecord::Migration.current_version}].define(#{define_params}) do
+HEADER
+</code></pre>
+<p>The version is formatted by <code>formatted_version</code> at <code>active_record/schema_dumper.rb:86-90</code>, which turns a timestamp like <code>20170404131909</code> into <code>2017_04_04_131909</code>. <code>tables</code> at lines 134-156 sorts the tables and dumps foreign keys last, so every referenced table exists before the constraint that points to it.</p>
+<p>Loading <code>schema.rb</code> is faster than replaying every migration. <code>ActiveRecord::Schema[version].define</code> at <code>active_record/schema.rb:49-65</code> evaluates the block against a connection, creates the <code>schema_migrations</code> table, and marks all versions up to <code>info[:version]</code> as applied with <code>assume_migrated_upto_version</code>.</p>
+<p><code>schema.rb</code> is a Ruby dump and therefore portable across database types, but it cannot express every database feature, such as triggers, custom types, or checks that the DSL does not model. When you need those, you switch the format to <code>structure.sql</code>, a raw SQL dump produced by the database's own dump tool. The choice is configured in Rails; the Ruby dump is the default, and the SQL dump is the fallback for schemas that outgrow the DSL.</p>
+<h2>The Aha Moment</h2>
+<p><strong>Aha:</strong> A migration system is a log of versioned programs plus a table that remembers which programs already ran. The clever part is not the DSL; it is that reversibility is computed, not written. You write <code>create_table</code>, and the <code>CommandRecorder</code> derives <code>drop_table</code> for you by consulting a table of inverses. The runtime then treats the whole change and its version bookkeeping as one transaction, so a half-applied migration cannot exist. <code>schema.rb</code> falls out for free because the same DSL that builds the schema can also describe it. Once you see "versioned program + version table + transactional replay", the entire feature reads as one small, honest design.</p>
+<p>Continue to <a href="./09-attribute-methods-and-types.html">09-attribute-methods-and-types.md</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

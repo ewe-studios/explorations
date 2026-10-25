@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>05 -- Persistence: from Ruby object to SQL and back -- activerecord</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/activerecord/docs</span>
+    <div class="nav-actions">
+      <a href="02-sql-generation-arel.html" class="nav-breadcrumb">02 -- SQL generation with Arel: an AST and a visitor</a><a href="03-the-model.html" class="nav-breadcrumb">03 -- The model: a class that learns its own shape</a><a href="04-query-interface.html" class="nav-breadcrumb">04 -- The query interface: a lazy immutable Relation</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="04-query-interface.html" class="nav-btn" title="Previous: 04 -- The query interface: a lazy immutable Relation">← prev</a>
+      <a href="06-associations.html" class="nav-btn nav-btn-next" title="Next: 06 -- Associations: foreign keys as Ruby objects">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>05 -- Persistence: from Ruby object to SQL and back</h1>
+<p>The query half reads rows. The persistence half writes them. This chapter follows one model instance as it moves from memory to a row in the database and back, through save, update, delete, bulk operations, locking, and transactions.</p>
+<p>The main implementation is in <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/persistence.rb</code>. Transactions are in <code>transactions.rb</code>, bulk inserts in <code>insert_all.rb</code>, and the two locking strategies in <code>locking/optimistic.rb</code> and <code>locking/pessimistic.rb</code>.</p>
+<h2>The save decision: new or update</h2>
+<p>Every save starts with one question: is this a new record? The answer comes from <code>new_record?</code>, the flag set by <code>initialize</code> and cleared by <code>_create_record</code>. <code>create_or_update</code> in <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/persistence.rb</code>:</p>
+<pre><code class="language-ruby">def create_or_update(**, &amp;block)
+  _raise_readonly_record_error if readonly?
+  return false if destroyed?
+  result = new_record? ? _create_record(&amp;block) : _update_record(&amp;block)
+  result != false
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/persistence.rb</code>, lines 923 through 928. The public <code>save</code> and <code>save!</code> are thin wrappers:</p>
+<pre><code class="language-ruby">def save(**options, &amp;block)
+  create_or_update(**options, &amp;block)
+rescue ActiveRecord::RecordInvalid
+  false
+end
+
+def save!(**options, &amp;block)
+  create_or_update(**options, &amp;block) || raise(RecordNotSaved.new(&quot;Failed to save the record&quot;, self))
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/persistence.rb</code>, lines 390 through 425. <code>save</code> swallows validation failures and returns false; <code>save!</code> re-raises them. Both run the full callback chain, described in <a href="./07-callbacks-and-validations.html">07-callbacks-and-validations.md</a>.</p>
+<div class="mermaid">
+flowchart TD
+    S[&quot;save&quot;] --&gt; C[&quot;create_or_update&quot;]
+    C --&gt; N{&quot;new_record?&quot;}
+    N --&gt;|&quot;yes&quot;| I[&quot;_create_record&quot;]
+    N --&gt;|&quot;no&quot;| U[&quot;_update_record&quot;]
+    I --&gt; IM[&quot;Arel InsertManager&quot;]
+    U --&gt; UM[&quot;Arel UpdateManager&quot;]
+    IM --&gt; CI[&quot;connection.insert&quot;]
+    UM --&gt; CU[&quot;connection.update&quot;]
+
+</div>
+<h2>INSERT</h2>
+<p><code>_create_record</code> asks for the returning columns, calls <code>_insert_record</code>, then writes the returned values back into the instance:</p>
+<pre><code class="language-ruby">def _create_record(attribute_names = self.attribute_names)
+  attribute_names = attributes_for_create(attribute_names)
+
+  self.class.with_connection do |connection|
+    returning_columns = self.class._returning_columns_for_insert(connection)
+
+    returning_values = self.class._insert_record(
+      connection,
+      attributes_with_values(attribute_names),
+      returning_columns
+    )
+
+    returning_columns.zip(returning_values).each do |column, value|
+      _write_attribute(column, type_for_attribute(column).deserialize(value)) if !_read_attribute(column)
+    end if returning_values
+  end
+
+  @new_record = false
+  @previously_new_record = true
+
+  yield(self) if block_given?
+
+  id
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/persistence.rb</code>, lines 952 through 975. Two details matter. First, <code>returning_columns</code> lets the database return generated values (a serial primary key, database defaults, triggers) so the instance is correct after the INSERT. Second, the returned values are <code>deserialize</code>d through the column type before being written.</p>
+<p>The SQL is built by <code>_insert_record</code> in the same file:</p>
+<pre><code class="language-ruby">def _insert_record(connection, values, returning) # :nodoc:
+  primary_key = self.primary_key
+  primary_key_value = nil
+
+  if prefetch_primary_key? &amp;&amp; primary_key
+    values[primary_key] ||= begin
+      primary_key_value = next_sequence_value
+      _default_attributes[primary_key].with_cast_value(primary_key_value)
+    end
+  end
+
+  im = Arel::InsertManager.new(arel_table)
+
+  if values.empty?
+    im.insert(connection.empty_insert_statement_value(primary_key))
+  else
+    im.insert(values.transform_keys { |name| arel_table[name] })
+  end
+
+  connection.insert(
+    im, &quot;#{self} Create&quot;, primary_key || false, primary_key_value,
+    returning: returning
+  )
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/persistence.rb</code>, lines 238 through 261. This is the Arel insert path from <a href="./02-sql-generation-arel.html">02-sql-generation-arel.md</a>: the attribute names become <code>arel_table[name]</code> nodes, and <code>connection.insert</code> compiles and executes the <code>InsertManager</code>. When the primary key is a sequence-based value that the adapter can prefetch, the value is fetched before the INSERT and passed along.</p>
+<h2>UPDATE</h2>
+<p><code>_update_record</code> builds an <code>UpdateManager</code> and constrains it to this specific row:</p>
+<pre><code class="language-ruby">def _update_record(values, constraints) # :nodoc:
+  constraints = constraints.map { |name, value| predicate_builder[name, value] }
+
+  default_constraint = build_default_constraint
+  constraints &lt;&lt; default_constraint if default_constraint
+
+  if current_scope = self.global_current_scope
+    constraints &lt;&lt; current_scope.where_clause.ast
+  end
+
+  um = Arel::UpdateManager.new(arel_table)
+  um.set(values.transform_keys { |name| arel_table[name] })
+  um.wheres = constraints
+
+  with_connection do |c|
+    c.update(um, &quot;#{self} Update&quot;)
+  end
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/persistence.rb</code>, lines 263 through 280. The instance-level <code>_update_record</code> (lines 932 through 948) narrows the attribute names to the dirty ones and calls this through <code>_update_row</code>, so a normal save only writes changed columns. The constraints are the primary key (or composite key), plus any <code>all_queries: true</code> default scope, so the UPDATE always addresses exactly the row that was loaded.</p>
+<p>The instance method also sets <code>@previously_new_record = false</code>, which is what makes <code>previously_new_record?</code> true only for records whose most recent save was an INSERT.</p>
+<h2>DELETE: delete versus destroy</h2>
+<p>There are two ways to remove a row, and the difference is callbacks:</p>
+<pre><code class="language-ruby">def delete
+  _delete_row if persisted?
+  @destroyed = true
+  @previously_new_record = false
+  freeze
+end
+
+def destroy
+  _raise_readonly_record_error if readonly?
+  destroy_associations
+  @_trigger_destroy_callback ||= persisted? &amp;&amp; destroy_row &gt; 0
+  @destroyed = true
+  @previously_new_record = false
+  freeze
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/persistence.rb</code>, lines 439 through 460. <code>delete</code> issues one <code>DELETE</code> statement with no callbacks. <code>destroy</code> runs <code>destroy_associations</code> (the <code>dependent:</code> handling) and the full <code>before_destroy</code>/<code>after_destroy</code> callback chain. <code>destroy</code> also checks <code>readonly?</code>. Both freeze the instance, so a deleted record cannot be mutated further.</p>
+<p>The class-level <code>_delete_record</code> mirrors <code>_update_record</code> with a <code>DeleteManager</code>:</p>
+<pre><code class="language-ruby">def _delete_record(constraints) # :nodoc:
+  constraints = constraints.map { |name, value| predicate_builder[name, value] }
+
+  default_constraint = build_default_constraint
+  constraints &lt;&lt; default_constraint if default_constraint
+
+  if current_scope = self.global_current_scope
+    constraints &lt;&lt; current_scope.where_clause.ast
+  end
+
+  dm = Arel::DeleteManager.new(arel_table)
+  dm.wheres = constraints
+
+  with_connection do |c|
+    c.delete(dm, &quot;#{self} Destroy&quot;)
+  end
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/persistence.rb</code>, lines 282 through 298.</p>
+<h2>create, update, and update_columns</h2>
+<p>The class-level <code>create</code> is <code>new</code> plus <code>save</code>:</p>
+<pre><code class="language-ruby">def create(attributes = nil, &amp;block)
+  if attributes.is_a?(Array)
+    attributes.collect { |attr| create(attr, &amp;block) }
+  else
+    object = new(attributes, &amp;block)
+    object.save
+    object
+  end
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/persistence.rb</code>, lines 33 through 41. <code>create!</code> is identical except it calls <code>save!</code>. Both return the object, whether or not it saved, so a failed <code>create</code> returns an unsaved object rather than raising.</p>
+<p><code>update</code> combines attribute assignment with save inside a transaction:</p>
+<pre><code class="language-ruby">def update(attributes)
+  with_transaction_returning_status do
+    assign_attributes(attributes)
+    save
+  end
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/persistence.rb</code>, lines 565 through 572. <code>assign_attributes</code> is the same mass-assignment used by <code>new(attributes)</code>.</p>
+<p><code>update_columns</code> is the fast path: it skips validations, callbacks, and the normal save entirely, and issues one direct UPDATE:</p>
+<pre><code class="language-ruby">def update_columns(attributes)
+  raise ActiveRecordError, &quot;cannot update a new record&quot; if new_record?
+  raise ActiveRecordError, &quot;cannot update a destroyed record&quot; if destroyed?
+  _raise_readonly_record_error if readonly?
+
+  attributes = attributes.transform_keys do |key|
+    name = key.to_s
+    name = self.class.attribute_aliases[name] || name
+    verify_readonly_attribute(name) || name
+  end
+
+  touch = attributes.delete(&quot;touch&quot;)
+  if touch
+    names = touch if touch != true
+    names = Array.wrap(names)
+    options = names.extract_options!
+    touch_updates = self.class.touch_attributes_with_time(*names, **options)
+    attributes.with_defaults!(touch_updates) unless touch_updates.empty?
+  end
+
+  update_constraints = _query_constraints_hash
+  attributes = attributes.each_with_object({}) do |(k, v), h|
+    h[k] = @attributes.write_cast_value(k, v)
+    clear_attribute_change(k)
+  end
+
+  affected_rows = self.class._update_record(
+    attributes,
+    update_constraints
+  )
+
+  affected_rows == 1
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/persistence.rb</code>, lines 620 through 652. Because callbacks and validations are bypassed, <code>updated_at</code> is not touched unless <code>touch: true</code> is passed. The method still goes through <code>_update_record</code> with the primary key constraint, and returns whether exactly one row changed.</p>
+<h2>Bulk operations</h2>
+<p><code>update_all</code> on a relation writes many rows with one statement. From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/relation.rb</code>:</p>
+<pre><code class="language-ruby">def update_all(updates)
+  raise ArgumentError, &quot;Empty list of attributes to change&quot; if updates.blank?
+
+  return 0 if @none
+
+  ...
+
+  model.with_connection do |c|
+    arel = eager_loading? ? apply_join_dependency.arel : arel()
+    arel.source.left = table
+
+    key = if model.composite_primary_key?
+      primary_key.map { |pk| table[pk] }
+    else
+      table[primary_key]
+    end
+    stmt = arel.compile_update(values, key)
+    c.update(stmt, &quot;#{model} Update All&quot;).tap { reset }
+  end
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/relation.rb</code>, lines 602 through 643, shortened. It does not instantiate models, so it skips callbacks and validations. A hash of updates is converted to bind values, an optimistic locking column is auto-incremented if present, and the statement is compiled from the relation's Arel.</p>
+<p><code>insert_all</code>, <code>insert_all!</code>, and <code>upsert_all</code> write many rows at once and skip model instantiation too. The executor is in <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/insert_all.rb</code>:</p>
+<pre><code class="language-ruby">def execute
+  return ActiveRecord::Result.empty if inserts.empty?
+
+  message = +&quot;#{model.name} &quot;
+  message &lt;&lt; &quot;Bulk &quot; if inserts.many?
+  message &lt;&lt; (on_duplicate == :update ? &quot;Upsert&quot; : &quot;Insert&quot;)
+  connection.exec_insert_all to_sql, message
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/insert_all.rb</code>, lines 48 through 55. <code>upsert_all</code> is <code>insert_all</code> with <code>on_duplicate: :update</code>; on a unique-key conflict it updates the specified columns instead of raising. The builder renders all the rows as one <code>VALUES</code> list and the connection executes a single multi-row INSERT.</p>
+<h2>touch and increment!</h2>
+<p><code>touch</code> updates only the timestamp columns (usually <code>updated_at</code>) directly, without running validations or callbacks:</p>
+<pre><code class="language-ruby">def touch(*names, time: nil)
+  _raise_record_not_touched_error unless persisted?
+  _raise_readonly_record_error if readonly?
+
+  attribute_names = timestamp_attributes_for_update_in_model
+  attribute_names = (attribute_names | names).map! do |name|
+    name = name.to_s
+    name = self.class.attribute_aliases[name] || name
+    verify_readonly_attribute(name)
+    name
+  end
+
+  unless attribute_names.empty?
+    affected_rows = _touch_row(attribute_names, time)
+    @_trigger_update_callback = affected_rows == 1
+  else
+    true
+  end
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/persistence.rb</code>, lines 825 through 843. It is commonly used to refresh a cache key after a child record changes, because it updates the parent's timestamp without touching the parent's other attributes.</p>
+<p><code>increment!</code> updates a single numeric column relative to its current value, using a SQL <code>UPDATE counters SET n = n + 1</code> style statement:</p>
+<pre><code class="language-ruby">def increment!(attribute, by = 1, touch: nil)
+  raise ActiveRecordError, &quot;cannot update a new record&quot; if new_record?
+  raise ActiveRecordError, &quot;cannot update a destroyed record&quot; if destroyed?
+
+  increment(attribute, by)
+  change = public_send(attribute) - (public_send(:&quot;#{attribute}_in_database&quot;) || 0)
+  self.class.update_counters(id, attribute =&gt; change, touch: touch)
+  public_send(:&quot;clear_#{attribute}_change&quot;)
+  self
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/persistence.rb</code>, lines 673 through 682. It computes the delta from the in-database value, so two processes incrementing the same counter do not lose each other's updates the way a plain read-modify-write would.</p>
+<h2>Optimistic locking</h2>
+<p>Optimistic locking assumes conflicts are rare, so it does not lock the row during the read. Instead, each row carries a <code>lock_version</code> integer, and every UPDATE includes the version that was read and bumps it by one. If two processes read the same version and both try to write, the second UPDATE affects zero rows, and ActiveRecord raises <code>StaleObjectError</code>.</p>
+<p>The implementation is in <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/locking/optimistic.rb</code>, which overrides <code>_update_row</code>:</p>
+<pre><code class="language-ruby">def _update_row(attribute_names, attempted_action = &quot;update&quot;)
+  return super unless locking_enabled?
+
+  begin
+    locking_column = self.class.locking_column
+    lock_attribute_was = @attributes[locking_column]
+
+    update_constraints = _query_constraints_hash
+
+    attribute_names = attribute_names.dup if attribute_names.frozen?
+    attribute_names &lt;&lt; locking_column
+
+    if self[locking_column].nil?
+      raise(&lt;&lt;-MSG.squish)
+        For optimistic locking, locking_column (&#x27;#{locking_column}&#x27;) can&#x27;t be nil.
+        Are you missing a default value or validation on &#x27;#{locking_column}&#x27;?
+      MSG
+    end
+
+    self[locking_column] += 1
+
+    affected_rows = self.class._update_record(
+      attributes_with_values(attribute_names),
+      update_constraints
+    )
+
+    if affected_rows != 1
+      raise ActiveRecord::StaleObjectError.new(self, attempted_action)
+    end
+
+    affected_rows
+
+  rescue Exception
+    @attributes[locking_column] = lock_attribute_was
+    raise
+  end
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/locking/optimistic.rb</code>, lines 92 through 129. The version bump happens in memory before the UPDATE, and the WHERE clause still carries the old version. A row that changed in between no longer matches, so the affected-row count is zero and the stale write is rejected.</p>
+<div class="mermaid">
+sequenceDiagram
+    participant A as &quot;Process A reads version 1&quot;
+    participant DB as &quot;database&quot;
+    participant B as &quot;Process B reads version 1&quot;
+    A-&gt;&gt;DB: &quot;UPDATE ... SET version=2 WHERE id=1 AND version=1&quot;
+    DB--&gt;&gt;A: &quot;1 row affected&quot;
+    B-&gt;&gt;DB: &quot;UPDATE ... SET version=2 WHERE id=1 AND version=1&quot;
+    DB--&gt;&gt;B: &quot;0 rows affected&quot;
+    B--&gt;&gt;B: &quot;raise StaleObjectError&quot;
+
+</div>
+<p>The lock column is declared with <code>self.locking_column = :lock_version</code> on the model. The value is coerced to an integer by a dedicated type so a nil default becomes 0.</p>
+<h2>Pessimistic locking</h2>
+<p>Pessimistic locking takes the opposite bet: conflicts are expected, so the row is locked in the database for the duration of the operation. <code>lock!</code> in <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/locking/pessimistic.rb</code>:</p>
+<pre><code class="language-ruby">def lock!(lock = true)
+  if self.class.current_preventing_writes
+    raise ActiveRecord::ReadOnlyError, &quot;Lock query attempted while in readonly mode&quot;
+  end
+
+  if persisted?
+    if has_changes_to_save?
+      raise(&lt;&lt;-MSG.squish)
+        Locking a record with unpersisted changes is not supported. Use
+        `save` to persist the changes, or `reload` to discard them
+        explicitly.
+        Changed attributes: #{changed.map(&amp;:inspect).join(&#x27;, &#x27;)}.
+      MSG
+    end
+
+    reload(lock: lock)
+  end
+
+  self
+end
+
+def with_lock(*args)
+  transaction_opts = args.extract_options!
+  lock = args.present? ? args.first : true
+  transaction(**transaction_opts) do
+    lock!(lock)
+    yield
+  end
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/locking/pessimistic.rb</code>, lines 69 through 104. The lock is obtained by reloading the row with a <code>FOR UPDATE</code> clause (or a dialect-specific equivalent), inside a transaction. <code>with_lock</code> wraps the lock and the block in the same transaction, so the lock is held until the block commits or rolls back.</p>
+<h2>Transactions and savepoints</h2>
+<p>Both locking strategies depend on transactions. The instance methods <code>save</code>, <code>save!</code>, <code>destroy</code>, and <code>touch</code> are all wrapped by <code>with_transaction_returning_status</code> in <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/transactions.rb</code>. That wrapper is the core of the transaction machinery:</p>
+<pre><code class="language-ruby">def with_transaction_returning_status
+  self.class.with_connection do |connection|
+    connection.pool.with_pool_transaction_isolation_level(ActiveRecord.default_transaction_isolation_level, connection.transaction_open?) do
+      status = nil
+      ensure_finalize = !connection.transaction_open?
+
+      connection.transaction do
+        add_to_transaction(ensure_finalize || has_transactional_callbacks?)
+        remember_transaction_record_state
+
+        status = yield
+        raise ActiveRecord::Rollback unless status
+      end
+      @_last_transaction_return_status = status
+      status
+    end
+  end
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/transactions.rb</code>, lines 431 through 448. Three things happen. The record registers itself with the open transaction (<code>add_to_transaction</code>), a snapshot of its state is remembered for rollback (<code>remember_transaction_record_state</code>), and the block's return value becomes a status flag: false triggers <code>ActiveRecord::Rollback</code>, which discards the transaction but does not raise.</p>
+<p>Nested transactions use savepoints. The class method <code>transaction</code> delegates to the connection's <code>transaction</code> in the same file, lines 231 through 237, passing options such as <code>requires_new: true</code>. A <code>requires_new: true</code> nested transaction emits a <code>SAVEPOINT</code> so a rollback of the inner block only undoes work since the savepoint, not the whole outer transaction. <code>isolation:</code> selects the isolation level, and <code>joinable:</code> controls whether a nested transaction reuses the open one.</p>
+<p>The record's state is restored on rollback by <code>rolledback!</code> and the commit callbacks run on <code>committed!</code>, both in the same file at lines 403 through 423. This is why a failed <code>save!</code> inside a transaction leaves the object looking as it did before the attempt.</p>
+<h2>The Aha Moment</h2>
+<p><strong>Aha:</strong> Every persistence operation is the same three-step shape: decide which rows to touch, build an Arel manager for the statement, and hand it to the connection. <code>save</code> is <code>new_record? ? insert : update</code>. <code>update_columns</code> is <code>_update_record</code> with the primary key constraint. <code>update_all</code> is the same UPDATE without instantiating models. The differences between the methods are which of the three steps they skip (callbacks, validations, instantiation, or the constraint check), not different machinery.</p>
+<p>The locking strategies are the clearest illustration. Optimistic locking changes nothing about the read; it only adds <code>lock_version</code> to the WHERE clause and checks the affected-row count after the UPDATE. Pessimistic locking changes nothing about the write; it only wraps the read in <code>SELECT ... FOR UPDATE</code> inside a transaction. Both are thin overlays on the same <code>_update_record</code> and <code>reload</code> paths, which is why they coexist with every other persistence method instead of requiring a separate API. Chapter <a href="./06-associations.html">06-associations.md</a> shows how these same save and delete paths extend to related records, and <a href="./11-query-cache-and-pool.html">11-query-cache-and-pool.md</a> covers the connection pool that serializes them.</p>
+<p>Continue to <a href="./06-associations.html">06-associations.md</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>02 -- The Enqueue Lifecycle: from `perform_later` to the adapter -- activejob</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/activejob/docs</span>
+    <div class="nav-actions">
+      <a href="00-overview.html" class="nav-breadcrumb">00 -- ActiveJob: one job interface, many queue backends</a><a href="01-the-job.html" class="nav-breadcrumb">01 -- The Job: one object, two lives</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="01-the-job.html" class="nav-btn" title="Previous: 01 -- The Job: one object, two lives">← prev</a>
+      <a href="03-execution.html" class="nav-btn nav-btn-next" title="Next: 03 -- Execution: `perform_now`, `execute`, and the nested run">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>02 -- The Enqueue Lifecycle: from <code>perform_later</code> to the adapter</h1>
+<p>Enqueueing is the short half of the job's life. This document traces the call chain from <code>perform_later</code> down to the adapter, and back up with a return value.</p>
+<p>Source files: <code>/Users/darkvoid/.gems/gems/activejob-8.1.4/lib/active_job/enqueuing.rb</code>, <code>/Users/darkvoid/.gems/gems/activejob-8.1.4/lib/active_job/core.rb</code>, <code>/Users/darkvoid/.gems/gems/activejob-8.1.4/lib/active_job/enqueue_after_transaction_commit.rb</code>, and <code>/Users/darkvoid/.gems/gems/activejob-8.1.4/lib/active_job.rb</code>.</p>
+<h2>The entry point</h2>
+<p><code>perform_later</code> is a class method. It builds the instance, enqueues it, and yields the instance to an optional block:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/enqueuing.rb, lines 51-63
+def perform_later(...)
+  job = job_or_instantiate(...)
+  enqueue_result = job.enqueue
+
+  yield job if block_given?
+
+  enqueue_result
+end
+
+def job_or_instantiate(*args, &amp;)
+  args.first.is_a?(self) ? args.first : new(*args)
+end
+</code></pre>
+<p>Two details matter. First, <code>job_or_instantiate</code> reuses an instance if you pass one (e.g. <code>MyJob.perform_later(existing_job)</code>); the retry path re-enqueues via <code>retry_job</code>, covered in <a href="./07-exceptions-retry-discard.html">07-exceptions-retry-discard.md</a>. Second, <code>perform_later</code> returns the enqueue result, not the job — a design choice explained at the end.</p>
+<h2>The instance <code>enqueue</code></h2>
+<p><code>enqueue</code> applies options, resets the success flags, and runs the enqueue callbacks around the actual push:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/enqueuing.rb, lines 82-94
+def enqueue(options = {})
+  set(options)
+  self.successfully_enqueued = false
+  self.enqueue_error = nil
+
+  raw_enqueue
+
+  if successfully_enqueued?
+    self
+  else
+    false
+  end
+end
+</code></pre>
+<p><code>set(options)</code> was covered in <a href="./01-the-job.html">01-the-job.md</a>. It writes <code>scheduled_at</code>, <code>queue_name</code>, and <code>priority</code> from <code>:wait</code>, <code>:wait_until</code>, <code>:queue</code>, and <code>:priority</code>.</p>
+<p>The private chain is three short methods:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/enqueuing.rb, lines 97-113
+def raw_enqueue
+  run_callbacks :enqueue do
+    _raw_enqueue
+  end
+end
+
+def _raw_enqueue
+  if scheduled_at
+    queue_adapter.enqueue_at self, scheduled_at.to_f
+  else
+    queue_adapter.enqueue self
+  end
+
+  self.successfully_enqueued = true
+rescue EnqueueError =&gt; e
+  self.enqueue_error = e
+end
+</code></pre>
+<p><code>run_callbacks :enqueue</code> runs the <code>before_enqueue</code>, <code>around_enqueue</code>, and <code>after_enqueue</code> hooks. <code>_raw_enqueue</code> picks <code>enqueue_at</code> when a schedule time exists, otherwise <code>enqueue</code>. It flips <code>successfully_enqueued</code> to <code>true</code> only after the adapter returns without raising.</p>
+<p>The adapter may raise <code>EnqueueError</code> to signal a failed push:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/enqueuing.rb, lines 8-8
+class EnqueueError &lt; StandardError; end
+</code></pre>
+<p>The result is captured in <code>enqueue_error</code>, not re-raised, so callers can inspect the job after a failure.</p>
+<div class="mermaid">
+sequenceDiagram
+  participant Code as &quot;Caller&quot;
+  participant Class as &quot;JobClass&quot;
+  participant Job as &quot;Job instance&quot;
+  participant CB as &quot;Callbacks&quot;
+  participant Adapter as &quot;Adapter&quot;
+
+  Code-&gt;&gt;Class: perform_later(args)
+  Class-&gt;&gt;Class: job_or_instantiate(args)
+  Class-&gt;&gt;Job: enqueue
+  Job-&gt;&gt;Job: set(options)
+  Job-&gt;&gt;Job: successfully_enqueued = false
+  Job-&gt;&gt;CB: run_callbacks :enqueue
+  CB-&gt;&gt;Adapter: enqueue(job) or enqueue_at(job, t)
+  Adapter--&gt;&gt;CB: returns
+  CB-&gt;&gt;Job: successfully_enqueued = true
+  Job--&gt;&gt;Class: self (or false)
+  Class--&gt;&gt;Code: result
+
+</div>
+<p><code>perform_later</code> calls <code>job.enqueue</code> with no arguments; options arrive only through <code>ConfiguredJob#perform_later</code>, which calls <code>job.enqueue(@options)</code>.</p>
+<h2>The job id versus the provider job id</h2>
+<p>Two identifiers exist.</p>
+<ul><li><code>job_id</code> is a Universally Unique Identifier (UUID) generated by ActiveJob in <code>initialize</code> (<code>SecureRandom.uuid</code>, <code>lib/active_job/core.rb</code> line 105). It is stable across retries and re-enqueues because it is serialized and deserialized with the job.</li><li><code>provider_job_id</code> is assigned by the adapter. The async adapter uses its own UUID. Sidekiq uses its Job ID (<code>jid</code>). Delayed Job uses its row id. It is <code>nil</code> until the adapter sets it.</li></ul>
+<p>The split lets you correlate one ActiveJob job with many backend records, or one backend record with one ActiveJob job, regardless of which backend you use.</p>
+<h2>The <code>set</code> / <code>configured_job</code> options</h2>
+<p><code>set</code> accepts four options. They map to attributes:</p>
+<table><tr><th>Option</th><th>Attribute</th><th>Where applied</th></tr><tr><td>`:wait`</td><td>`scheduled_at = wait.seconds.from_now`</td><td>`core.rb` line 176</td></tr><tr><td>`:wait_until`</td><td>`scheduled_at = wait_until`</td><td>`core.rb` line 177</td></tr><tr><td>`:queue`</td><td>`queue_name`</td><td>`core.rb` line 178</td></tr><tr><td>`:priority`</td><td>`priority` (as integer)</td><td>`core.rb` line 179</td></tr></table>
+<p>The object that carries them is <code>ConfiguredJob</code>, in <code>lib/active_job/configured_job.rb</code>. Its <code>perform_later</code> simply calls <code>job.enqueue(@options)</code>, which funnels through the same <code>set</code>:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/configured_job.rb, lines 14-21
+def perform_later(...)
+  job = @job_class.new(...)
+  enqueue_result = job.enqueue(@options)
+
+  yield job if block_given?
+
+  enqueue_result
+end
+</code></pre>
+
+<div class="mermaid">
+flowchart TD
+  A[&quot;VideoJob.set wait 5.minutes&quot;] --&gt; B[&quot;ConfiguredJob job_class VideoJob options wait&quot;]
+  B --&gt;|&quot;perform_later video&quot;| C[&quot;VideoJob.new video&quot;]
+  C --&gt; D[&quot;enqueue options&quot;]
+  D --&gt; E[&quot;set options&quot;]
+  E --&gt; F[&quot;scheduled_at = now + 5.minutes&quot;]
+  F --&gt; G[&quot;adapter.enqueue_at job scheduled_at.to_f&quot;]
+
+</div>
+<h2>Enqueue after transaction commit</h2>
+<p>A job enqueued inside an Active Record transaction is unsafe: the worker may run it before the transaction commits, and the record it needs may not exist yet. ActiveJob can defer the enqueue until after commit.</p>
+<p>The behavior is controlled per job by <code>enqueue_after_transaction_commit</code>:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/enqueuing.rb, lines 13-24
+class_attribute :enqueue_after_transaction_commit, instance_accessor: false, instance_predicate: false, default: false
+</code></pre>
+<p>The module <code>EnqueueAfterTransactionCommit</code> overrides <code>raw_enqueue</code> when the flag is on. It marks the job as successfully enqueued, snapshots the schedule time, queue, and priority, and registers an <code>ActiveRecord.after_all_transactions_commit</code> hook:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/enqueue_after_transaction_commit.rb, lines 24-47 (abridged)
+def raw_enqueue
+  if self.class.enqueue_after_transaction_commit
+    self.successfully_enqueued = true
+    deferred_scheduled_at = scheduled_at
+    deferred_queue_name = queue_name
+    deferred_priority = priority
+    ActiveRecord.after_all_transactions_commit do
+      previous_scheduled_at, previous_queue_name, previous_priority = scheduled_at, queue_name, priority
+      self.scheduled_at = deferred_scheduled_at
+      self.queue_name = deferred_queue_name
+      self.priority = deferred_priority
+      self.successfully_enqueued = false
+      super
+    ensure
+      self.scheduled_at = previous_scheduled_at
+      self.queue_name = previous_queue_name
+      self.priority = previous_priority
+    end
+    self
+  else
+    super
+  end
+end
+</code></pre>
+<p>The snapshot and restore pattern exists because the hook runs later, after the current <code>enqueue</code> call has returned, and the job object may have been reused meanwhile. The Railtie includes this module into <code>ActiveJob::Base</code> only when Active Record is loaded (<code>lib/active_job/railtie.rb</code> lines 29-35).</p>
+<p>The same module also patches <code>perform_all_later</code> to partition jobs into immediate and deferred groups:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/enqueue_after_transaction_commit.rb, lines 11-21
+def perform_all_later(*jobs)
+  jobs.flatten!
+  deferred_jobs, immediate_jobs = jobs.partition { |job| job.class.enqueue_after_transaction_commit }
+  super(immediate_jobs) if immediate_jobs.any?
+  ActiveRecord.after_all_transactions_commit { super(deferred_jobs) } if deferred_jobs.any?
+  nil
+end
+</code></pre>
+<h2>Bulk enqueue</h2>
+<p><code>ActiveJob.perform_all_later</code> pushes many jobs at once, skipping enqueue callbacks. It groups jobs by adapter and, when the adapter supports it, uses <code>enqueue_all</code> for one bulk push:</p>
+<pre><code class="language-ruby"># Source: lib/active_job.rb, lines 63-90
+def self.perform_all_later(*jobs)
+  jobs.flatten!
+  jobs.group_by(&amp;:queue_adapter).each do |queue_adapter, adapter_jobs|
+    instrument_enqueue_all(queue_adapter, adapter_jobs) do
+      if queue_adapter.respond_to?(:enqueue_all)
+        queue_adapter.enqueue_all(adapter_jobs)
+      else
+        adapter_jobs.each do |job|
+          job.successfully_enqueued = false
+          job.enqueue_error = nil
+          if job.scheduled_at
+            queue_adapter.enqueue_at(job, job.scheduled_at.to_f)
+          else
+            queue_adapter.enqueue(job)
+          end
+          job.successfully_enqueued = true
+        rescue EnqueueError =&gt; e
+          job.enqueue_error = e
+        end
+        adapter_jobs.count(&amp;:successfully_enqueued?)
+      end
+    end
+  end
+  nil
+end
+</code></pre>
+<h2>The return value</h2>
+<p><code>perform_later</code> returns the enqueue result, not the job instance. That result is:</p>
+<ul><li>the job instance, when the adapter accepted it (<code>successfully_enqueued?</code> is true), or</li><li><code>false</code>, when the adapter raised <code>EnqueueError</code> or a callback halted the enqueue.</li></ul>
+<p>The job itself is still reachable through the block form, <code>perform_later(args) { |job| ... }</code>, which is how callers inspect <code>provider_job_id</code> or <code>enqueue_error</code> after the push.</p>
+<h2>The Aha Moment</h2>
+<p><strong>Aha:</strong> The enqueue path is deliberately boring. Everything interesting — options, callbacks, transaction deferral — resolves to exactly two adapter calls: <code>enqueue(job)</code> or <code>enqueue_at(job, timestamp)</code>. The framework's job is to reduce a rich, opinionated interface down to that tiny, boring surface. That smallness is what makes each new queue backend a ten-line file instead of a rewrite. See <a href="./05-queue-adapters.html">05-queue-adapters.md</a>.</p>
+<p>Continue to <a href="./03-execution.html">03-execution.md</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

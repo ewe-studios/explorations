@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>10 -- Scoping and eager loading: narrowing queries, avoiding N+1 -- activerecord</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/activerecord/docs</span>
+    <div class="nav-actions">
+      <a href="07-callbacks-and-validations.html" class="nav-breadcrumb">07 -- Callbacks and validations: the model life cycle</a><a href="08-migrations-and-schema.html" class="nav-breadcrumb">08 -- Migrations and schema: evolving the database in Ruby</a><a href="09-attribute-methods-and-types.html" class="nav-breadcrumb">09 -- Attribute methods and types: from column to Ruby object</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="09-attribute-methods-and-types.html" class="nav-btn" title="Previous: 09 -- Attribute methods and types: from column to Ruby object">← prev</a>
+      <a href="11-query-cache-and-pool.html" class="nav-btn nav-btn-next" title="Next: 11 -- Query cache and connection pool: sharing the work">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>10 -- Scoping and eager loading: narrowing queries, avoiding N+1</h1>
+<p>A query can be narrowed with a reusable template, called a scope. A query can also fetch related rows ahead of time, called eager loading. These two features solve opposite problems. Scopes stop you from repeating WHERE clauses. Eager loading stops you from issuing one Structured Query Language (SQL) query per row in a loop. This document explains both and the machinery under each.</p>
+<p>Source files are from the <code>activerecord-8.1.4</code> gem at <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib</code>. Short paths below are relative to that <code>lib</code> directory.</p>
+<p>For how the query interface chains methods in general, see <a href="./04-query-interface.html">04-query-interface.md</a>. For how associations are declared, see <a href="./06-associations.html">06-associations.md</a>.</p>
+<h2>Named scopes</h2>
+<p>A scope is a class method that returns a relation. The <code>scope</code> macro defines such a method for you. Its implementation is at <code>active_record/scoping/named.rb:154-189</code>:</p>
+<pre><code class="language-ruby">def scope(name, body, &amp;block)
+  unless body.respond_to?(:call)
+    raise ArgumentError, &quot;The scope body needs to be callable.&quot;
+  end
+
+  if dangerous_class_method?(name)
+    raise ArgumentError, &quot;You tried to define a scope named \&quot;#{name}\&quot; &quot; \
+      &quot;on the model \&quot;#{self.name}\&quot;, but Active Record already defined &quot; \
+      &quot;a class method with the same name.&quot;
+  end
+
+  if method_defined_within?(name, Relation)
+    raise ArgumentError, &quot;You tried to define a scope named \&quot;#{name}\&quot; &quot; \
+      &quot;on the model \&quot;#{self.name}\&quot;, but ActiveRecord::Relation already defined &quot; \
+      &quot;an instance method with the same name.&quot;
+  end
+
+  extension = Module.new(&amp;block) if block
+
+  if body.respond_to?(:to_proc)
+    singleton_class.define_method(name) do |*args|
+      scope = all._exec_scope(*args, &amp;body)
+      scope = scope.extending(extension) if extension
+      scope
+    end
+  else
+    singleton_class.define_method(name) do |*args|
+      scope = body.call(*args) || all
+      scope = scope.extending(extension) if extension
+      scope
+    end
+  end
+  singleton_class.send(:ruby2_keywords, name)
+
+  generate_relation_method(name)
+end
+</code></pre>
+<p>The important line is <code>all._exec_scope(*args, &body)</code>. A scope always starts from <code>all</code> and then applies the callable inside a relation scope context. That is why scopes compose: <code>Article.published.featured</code> works because <code>published</code> returns a relation, and <code>featured</code> is also generated on <code>Relation</code> by <code>generate_relation_method</code> at line 188, so it can be called on the result.</p>
+<pre><code class="language-ruby">class Article &lt; ApplicationRecord
+  scope :published, -&gt; { where(published: true) }
+  scope :featured,  -&gt; { where(featured: true) }
+  scope :recent,    -&gt;(limit = 10) { order(created_at: :desc).limit(limit) }
+end
+
+Article.published.featured.recent(5)
+</code></pre>
+<p>The guard clauses prevent a scope from shadowing an existing <code>Relation</code> method or a dangerous class method. The body must be callable so Active Record can defer its execution until the relation is loaded, rather than running it at class definition time.</p>
+<h2>Default and current scope</h2>
+<p>A default scope is a scope that is always applied, unless you opt out. It is defined with <code>default_scope</code> and skipped with <code>unscoped</code>. <code>unscoped</code> is at <code>active_record/scoping/default.rb:50-52</code>:</p>
+<pre><code class="language-ruby">def unscoped(&amp;block)
+  block_given? ? relation.scoping(&amp;block) : relation
+end
+</code></pre>
+<p>The scopes themselves are tracked in a registry that is local to the current thread or fiber. <code>ScopeRegistry</code> is in <code>active_record/scoping.rb:75-89</code>:</p>
+<pre><code class="language-ruby">class ScopeRegistry # :nodoc:
+  class &lt;&lt; self
+    delegate :current_scope, :set_current_scope, :ignore_default_scope, :set_ignore_default_scope,
+      :global_current_scope, :set_global_current_scope, to: :instance
+
+    def instance
+      ActiveSupport::IsolatedExecutionState[:active_record_scope_registry] ||= new
+    end
+  end
+
+  def initialize
+    @current_scope        = {}
+    @ignore_default_scope = {}
+    @global_current_scope = {}
+  end
+end
+</code></pre>
+<p>The key is <code>ActiveSupport::IsolatedExecutionState</code> at line 81: the registry is stored per thread or per fiber, depending on configuration. This is why a <code>default_scope</code> in one request does not leak into another request in a multi-threaded server. The class methods <code>current_scope</code> and <code>current_scope=</code> at <code>active_record/scoping.rb:25-31</code> read and write that per-execution storage, and <code>unscoped</code> works by setting the <code>ignore_default_scope</code> flag inside a scoping block.</p>
+<pre><code class="language-ruby">class Article &lt; ApplicationRecord
+  default_scope { where(published: true) }
+end
+
+Article.all                 # SELECT * FROM articles WHERE published = true
+Article.unscoped.all        # SELECT * FROM articles
+</code></pre>
+<p>The default scope also fills attributes when building a new record, via <code>populate_with_current_scope_attributes</code> at <code>active_record/scoping.rb:46-56</code>, so <code>Article.new.published</code> is <code>true</code>. It is not applied when updating or deleting, which avoids silently changing rows you intended to target.</p>
+<h2>The N+1 problem</h2>
+<p>Associations are loaded lazily by default. This means a loop over parents that touches an association issues one extra query per parent. If you load 100 authors and then read each author's books, you issue 1 query for the authors plus 100 queries for the books. That is the N+1 problem.</p>
+<pre><code class="language-ruby">authors = Author.limit(100).to_a
+authors.each do |author|
+  puts author.books.map(&amp;:title)  # one SELECT per author
+end
+</code></pre>
+
+<div class="mermaid">
+flowchart TD
+  A[&quot;load 100 authors&quot;] --&gt; B[&quot;1 SELECT authors&quot;]
+  B --&gt; C[&quot;loop: author.books&quot;]
+  C --&gt; D[&quot;SELECT books WHERE author_id = 1&quot;]
+  C --&gt; E[&quot;SELECT books WHERE author_id = 2&quot;]
+  C --&gt; F[&quot;SELECT books WHERE author_id = 100&quot;]
+  D --&gt; G[&quot;101 total queries&quot;]
+  E --&gt; G
+  F --&gt; G
+
+</div>
+<p>Eager loading fixes this by fetching the association records ahead of time and attaching them to the parents in memory.</p>
+<h2><code>preload</code> versus <code>eager_load</code> versus <code>includes</code></h2>
+<p>There are two eager loading strategies. <code>preload</code> issues separate queries: one for the parents, one per association level using <code>IN</code> lists of primary keys. <code>eager_load</code> issues a single query with <code>LEFT OUTER JOIN</code> clauses. Both are defined in <code>active_record/relation/query_methods.rb</code>.</p>
+<p><code>preload</code> at <code>active_record/relation/query_methods.rb:322-325</code>:</p>
+<pre><code class="language-ruby">def preload(*args)
+  check_if_method_has_arguments!(__callee__, args)
+  spawn.preload!(*args)
+end
+</code></pre>
+<p><code>eager_load</code> at lines 290-293:</p>
+<pre><code class="language-ruby">def eager_load(*args)
+  check_if_method_has_arguments!(__callee__, args)
+  spawn.eager_load!(*args)
+end
+</code></pre>
+<p><code>includes</code> at lines 250-253 records the associations but does not choose a strategy yet. The choice happens at load time. When the relation has a WHERE clause or an order that references a joined table, <code>includes</code> must use <code>eager_load</code> (the JOIN), because the filter must happen in the database. Otherwise it falls back to <code>preload</code> (the separate queries). The documentation at <code>active_record/associations/preloader.rb:34-45</code> describes exactly this: a cross-table condition forces the single joined query, which produces redundant rows and performs worse at scale.</p>
+<pre><code class="language-ruby">User.includes(:posts)                              # preload strategy
+User.includes(:posts).where(posts: { title: &quot;x&quot; }) # eager_load strategy, needs the JOIN
+</code></pre>
+<p><code>references</code> at <code>active_record/relation/query_methods.rb:355-358</code> tells the relation that a string SQL fragment names a table, so <code>includes</code> will join it: <code>User.includes(:posts).where("posts.name = 'foo'").references(:posts)</code>.</p>
+<p>The actual preloading happens in <code>Relation#preload_associations</code> at <code>active_record/relation.rb:1349-1356</code>:</p>
+<pre><code class="language-ruby">def preload_associations(records) # :nodoc:
+  preload = preload_values
+  preload += includes_values unless eager_loading?
+  scope = strict_loading_value ? StrictLoadingScope : nil
+  preload.each do |associations|
+    ActiveRecord::Associations::Preloader.new(records: records, associations: associations, scope: scope).call
+  end
+end
+</code></pre>
+<p>When the strategy is <code>eager_load</code> (<code>eager_loading?</code> returns true), the JOIN query already loaded the association columns, so <code>includes_values</code> are not preloaded separately. When it is <code>preload</code>, the <code>includes_values</code> are folded into the preload list and handled by the <code>Preloader</code>.</p>
+<h2>The Preloader</h2>
+<p><code>ActiveRecord::Associations::Preloader</code> in <code>active_record/associations/preloader.rb</code> is the engine. Its constructor at lines 99-114 builds a tree of <code>Branch</code> nodes from the association argument, where a <code>Branch</code> is one association level and its children are the nested levels. <code>Batch</code> (autoloaded at line 51) loads one association for a batch of parents. The tree shape mirrors the <code>includes</code> argument shape:</p>
+<pre><code class="language-ruby">User.includes(:posts, friends: [:avatar])
+# Branch :posts, and Branch :friends with child Branch :avatar
+</code></pre>
+<p>Each batch follows the same pattern shown in the Preloader documentation at <code>active_record/associations/preloader.rb:22-31</code>: collect the primary keys from the loaded parents, then run one query with <code>WHERE foreign_key IN (...)</code>, then distribute the fetched rows onto the parents by their foreign keys. Nested levels repeat the process using the already-loaded children as their new parents.</p>
+<p>A <code>ThroughAssociation</code> (autoloaded at line 53) handles <code>has_many :through</code> by preloading the middle records first, then the target records through them.</p>
+<h2>Counter cache</h2>
+<p>Some associations are frequent targets of a <code>count</code>. A counter cache column stores that count on the parent so the count is read from a column instead of computed with <code>SELECT COUNT(*)</code>. The class methods live in <code>active_record/counter_cache.rb</code>. <code>update_counters</code> at lines 142-145 issues a single direct UPDATE for one or more ids:</p>
+<pre><code class="language-ruby">def update_counters(id, counters)
+  id = [id] if composite_primary_key? &amp;&amp; id.is_a?(Array) &amp;&amp; !id[0].is_a?(Array)
+  unscoped.where!(primary_key =&gt; id).update_counters(counters)
+end
+</code></pre>
+<p><code>increment_counter</code> and <code>decrement_counter</code> at lines 175-177 and 205-207 wrap it with <code>by: 1</code> or <code>by: -1</code>. The counter is maintained automatically during the record life cycle. <code>_create_record</code> at <code>active_record/counter_cache.rb:227-235</code> increments each counter-cached association after the INSERT:</p>
+<pre><code class="language-ruby">def _create_record(attribute_names = self.attribute_names)
+  id = super
+
+  counter_cached_association_names.each do |association_name|
+    association(association_name).increment_counters
+  end
+
+  id
+end
+</code></pre>
+<p><code>destroy_row</code> at lines 237-251 decrements them after the DELETE, unless the parent was itself destroyed through an association with a matching foreign key (in which case the association layer handles it, avoiding a double decrement). The generated SQL looks like <code>UPDATE posts SET comments_count = COALESCE(comments_count, 0) + 1 WHERE id IN (...)</code>, per the examples at <code>active_record/counter_cache.rb:130-141</code>.</p>
+<p>The counter column is declared on the <code>belongs_to</code> side: <code>belongs_to :post, counter_cache: true</code> expects a <code>comments_count</code> column on the posts table, and <code>counter_cache: :replies_count</code> names it explicitly.</p>
+<h2><code>strict_loading</code></h2>
+<p>Eager loading is opt-in, so a missed <code>includes</code> silently produces N+1 queries in production. <code>strict_loading</code> turns that silence into a loud error. It is at <code>active_record/relation/query_methods.rb:1353-1355</code>:</p>
+<pre><code class="language-ruby">def strict_loading(value = true)
+  spawn.strict_loading!(value)
+end
+</code></pre>
+<p>A record loaded through a strict-loading relation raises <code>ActiveRecord::StrictLoadingViolationError</code> (<code>active_record/errors.rb:411</code>) when its association is lazily loaded. Rails also supports <code>strict_loading_by_default</code> on a model and <code>strict_loading!(n_plus_one_only: true)</code> to warn only about collection associations, which are the usual N+1 source.</p>
+<pre><code class="language-ruby">user = User.strict_loading.first
+user.comments.to_a  # =&gt; ActiveRecord::StrictLoadingViolationError
+</code></pre>
+<p>The preloader honors the mode too: <code>preload_associations</code> passes a <code>StrictLoadingScope</code> when the relation is strict-loading, at <code>active_record/relation.rb:1352</code>, so associations preloaded along with a strict relation stay allowed.</p>
+<div class="mermaid">
+flowchart TD
+  A[&quot;User.includes posts&quot;] --&gt; B{&quot;cross-table WHERE or order?&quot;}
+  B -- &quot;yes&quot; --&gt; C[&quot;eager_load&quot;]
+  C --&gt; D[&quot;single LEFT OUTER JOIN query&quot;]
+  B -- &quot;no&quot; --&gt; E[&quot;preload&quot;]
+  E --&gt; F[&quot;SELECT users&quot;]
+  F --&gt; G[&quot;SELECT posts WHERE user_id IN ids&quot;]
+  G --&gt; H[&quot;attach posts to users in memory&quot;]
+  D --&gt; I[&quot;rows contain redundant data&quot;]
+  H --&gt; J[&quot;compact result, two round trips&quot;]
+
+</div>
+<h2>The Aha Moment</h2>
+<p><strong>Aha:</strong> Scopes and eager loading are both "defer the decision until load". A scope is a callable that Active Record evaluates against <code>all</code> inside a per-execution scope registry, which is why scopes compose and why a default scope can be unscoped. Eager loading is the same deferral for associations: <code>includes</code> records the intent, and only at load time does the relation choose between two queries with <code>IN</code> lists and one query with <code>JOIN</code>s, based on whether your WHERE clause already forced a join. N+1 is not an optimization failure; it is the default lazy behavior, and <code>strict_loading</code> exists because opt-in silence is how the problem hides. Counter caches are the same idea pushed into the schema: replace a repeated <code>COUNT</code> with a column that the INSERT and DELETE paths maintain.</p>
+<p>Continue to <a href="./11-query-cache-and-pool.html">11-query-cache-and-pool.md</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

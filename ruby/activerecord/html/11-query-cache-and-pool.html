@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>11 -- Query cache and connection pool: sharing the work -- activerecord</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/activerecord/docs</span>
+    <div class="nav-actions">
+      <a href="08-migrations-and-schema.html" class="nav-breadcrumb">08 -- Migrations and schema: evolving the database in Ruby</a><a href="09-attribute-methods-and-types.html" class="nav-breadcrumb">09 -- Attribute methods and types: from column to Ruby object</a><a href="10-scoping-and-eager-loading.html" class="nav-breadcrumb">10 -- Scoping and eager loading: narrowing queries, avoiding N+1</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="10-scoping-and-eager-loading.html" class="nav-btn" title="Previous: 10 -- Scoping and eager loading: narrowing queries, avoiding N+1">← prev</a>
+      <a href="12-the-nice-ruby-experience.html" class="nav-btn nav-btn-next" title="Next: 12 -- The nice Ruby experience: a DSL that reads like English">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>11 -- Query cache and connection pool: sharing the work</h1>
+<p>Between your model and the database sit two machines that share work. The query cache remembers the result of an identical Structured Query Language (SQL) query within one request, so it does not run twice. The connection pool shares a small set of database connections among many threads, so the server does not open one socket per thread. This document explains both, and the asynchronous query path that lets one thread run a query while another waits.</p>
+<p>Source files are from the <code>activerecord-8.1.4</code> gem at <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib</code>. Short paths below are relative to that <code>lib</code> directory.</p>
+<p>For how a connection executes SQL at all, see <a href="./01-connection-and-adapters.html">01-connection-and-adapters.md</a>. For how a relation becomes SQL, see <a href="./04-query-interface.html">04-query-interface.md</a>.</p>
+<h2>The query cache store</h2>
+<p>The query cache is a hash keyed by SQL. The store is in <code>active_record/connection_adapters/abstract/query_cache.rb</code>. The size limit is <code>DEFAULT_SIZE = 100</code> at line 9. The store's own documentation at lines 32-43 states the keys precisely: a SQL string when there are no binds, or an array <code>[SQL, binds]</code> when there are. Values are <code>ActiveRecord::Result</code> objects. Eviction is Least Recently Used (LRU).</p>
+<p>The heart is <code>compute_if_absent</code> at <code>active_record/connection_adapters/abstract/query_cache.rb:77-91</code>:</p>
+<pre><code class="language-ruby">def compute_if_absent(key)
+  check_version
+
+  return yield unless @enabled
+
+  if entry = @map.delete(key)
+    return @map[key] = entry
+  end
+
+  if @max_size &amp;&amp; @map.size &gt;= @max_size
+    @map.shift # evict the oldest entry
+  end
+
+  @map[key] ||= yield
+end
+</code></pre>
+<p>On a hit, the entry is deleted and reinserted, which moves it to the newest end of the hash and implements LRU order. On a miss, the oldest entry is evicted when the map is full, then the block executes the query and stores its result. The store is disabled unless a request explicitly enables it.</p>
+<p><code>check_version</code> at lines 99-104 is the invalidation guard. Every store in a pool shares a version counter. When any write dirties the pool, the version increments. The next cache operation sees the mismatch, clears its map, and records the new version. This is cheaper than walking every cached key to decide what a write invalidated: one version bump wipes all stores for the pool at once.</p>
+<p>The query path is <code>select_all</code> at <code>active_record/connection_adapters/abstract/query_cache.rb:263-280</code>:</p>
+<pre><code class="language-ruby">def select_all(arel, name = nil, binds = [], preparable: nil, async: false, allow_retry: false) # :nodoc:
+  arel = arel_from_relation(arel)
+
+  # If arel is locked this is a SELECT ... FOR UPDATE or somesuch.
+  # Such queries should not be cached.
+  if query_cache_enabled &amp;&amp; !(arel.respond_to?(:locked) &amp;&amp; arel.locked)
+    sql, binds, preparable, allow_retry = to_sql_and_binds(arel, binds, preparable, allow_retry)
+
+    if async
+      result = lookup_sql_cache(sql, name, binds) || super(sql, name, binds, preparable: preparable, async: async, allow_retry: allow_retry)
+      FutureResult.wrap(result)
+    else
+      cache_sql(sql, name, binds) { super(sql, name, binds, preparable: preparable, async: async, allow_retry: allow_retry) }
+    end
+  else
+    super
+  end
+end
+</code></pre>
+<p>Two details matter. First, a <code>SELECT ... FOR UPDATE</code> is never cached, because it must hit the database to take the lock. Second, <code>cache_sql</code> at lines 305-325 does the actual store lookup and, on a cache hit, instruments a <code>sql.active_record</code> notification so monitoring tools still see the query that was served from memory. <code>lookup_sql_cache</code> at lines 287-303 is the read-only variant used on the async path.</p>
+<h2><code>cache</code>, <code>uncached</code>, and executor hooks</h2>
+<p>The query cache is off by default. It is enabled per request by the Rails executor, and manually with <code>cache</code> and <code>uncached</code>. Both are class methods in <code>active_record/query_cache.rb</code>. <code>cache</code> at lines 10-22 enables the cache for a block and clears it after if it was not already enabled. <code>uncached</code> at lines 33-39 disables it for a block, restoring the previous state.</p>
+<p>The <code>dirties</code> option on <code>uncached</code> matters. Write operations normally clear all query caches for the pool, because a replica might have served a cached result that the write just made stale. The code that makes writes dirty the cache is <code>dirties_query_cache</code> at <code>active_record/connection_adapters/abstract/query_cache.rb:12-30</code>:</p>
+<pre><code class="language-ruby">def dirties_query_cache(base, *method_names)
+  method_names.each do |method_name|
+    base.class_eval &lt;&lt;-end_code, __FILE__, __LINE__ + 1
+      def #{method_name}(...)
+        if pool.dirties_query_cache
+          ActiveRecord::Base.clear_query_caches_for_current_thread
+        end
+        super
+      end
+    end_code
+  end
+end
+</code></pre>
+<p><code>exec_query</code>, <code>execute</code>, <code>insert</code>, <code>update</code>, <code>delete</code>, and the rest each clear the cache before running, at lines 13-15.</p>
+<p>The per-request wiring is <code>QueryCache::ExecutorHooks</code> at <code>active_record/query_cache.rb:42-60</code>. Its <code>run</code> method enables the query cache on every pool that does not already have it enabled, and <code>complete</code> disables and clears it. The hooks are installed with <code>ActiveSupport::Executor</code>, so every web request gets a fresh cache.</p>
+<div class="mermaid">
+flowchart TD
+  A[&quot;relation loaded&quot;] --&gt; B[&quot;select_all&quot;]
+  B --&gt; C{&quot;query_cache_enabled and not locked?&quot;}
+  C -- &quot;no&quot; --&gt; D[&quot;execute SQL&quot;]
+  C -- &quot;yes&quot; --&gt; E[&quot;build cache key from sql and binds&quot;]
+  E --&gt; F{&quot;key in store?&quot;}
+  F -- &quot;yes&quot; --&gt; G[&quot;return cached result&quot;]
+  F -- &quot;no&quot; --&gt; H[&quot;execute SQL&quot;]
+  H --&gt; I[&quot;store result&quot;]
+  I --&gt; J[&quot;return result&quot;]
+  D --&gt; K[&quot;write?&quot;]
+  K -- &quot;yes&quot; --&gt; L[&quot;bump cache version&quot;]
+  L --&gt; M[&quot;all stores clear on next use&quot;]
+
+</div>
+<h2>How the pool works</h2>
+<p>A database connection is expensive to open. The pool keeps a small set of them and hands them out to threads one at a time. The options are documented at <code>active_record/connection_adapters/abstract/connection_pool.rb:99-118</code>: <code>checkout_timeout</code> defaults to 5 seconds, <code>idle_timeout</code> to 300 seconds, <code>keepalive</code> to 600 seconds, <code>max_age</code> to infinity, and <code>max_connections</code> to 5.</p>
+<p>Checking out and checking in are explicit. <code>checkout</code> at <code>active_record/connection_adapters/abstract/connection_pool.rb:639-660</code> acquires a connection, waiting up to <code>checkout_timeout</code>, and raises <code>ActiveRecord::ConnectionTimeoutError</code> if the pool is at capacity. <code>checkin</code> at lines 667-677 returns the connection:</p>
+<pre><code class="language-ruby">def checkin(conn)
+  return if @pinned_connection.equal?(conn)
+
+  conn.lock.synchronize do
+    synchronize do
+      connection_lease.clear(conn)
+      conn.expire
+      @available.add conn
+    end
+  end
+end
+</code></pre>
+<p>A <code>Lease</code> binds a connection to the current thread or fiber. The lease registry is a weak map keyed by execution context, defined as <code>WeakThreadKeyMap</code> at <code>active_record/connection_adapters/abstract/connection_pool.rb:132-157</code>, so a dead thread's lease is not kept alive. Most application code never calls <code>checkout</code> directly; <code>with_connection</code> (at <code>connection_pool.rb:452</code>) checks out a connection for a block and checks it back in.</p>
+<p>Two maintenance methods clean up after failures. <code>reap</code> at <code>active_record/connection_adapters/abstract/connection_pool.rb:713-731</code> finds connections whose owning thread or fiber is dead, steals them, and either resets them or removes them. <code>flush</code> at lines 736-770 disconnects connections idle for at least <code>idle_timeout</code> seconds, while respecting <code>min_connections</code>. <code>stat</code> at lines 875-887 returns the pool's health in one hash:</p>
+<pre><code class="language-ruby">def stat
+  synchronize do
+    {
+      size: size,
+      connections: @connections.size,
+      busy: @connections.count { |c| c.in_use? &amp;&amp; c.owner.alive? },
+      dead: @connections.count { |c| c.in_use? &amp;&amp; !c.owner.alive? },
+      idle: @connections.count { |c| !c.in_use? },
+      waiting: num_waiting_in_queue,
+      checkout_timeout: checkout_timeout
+    }
+  end
+end
+</code></pre>
+<h2>Asynchronous queries</h2>
+<p>Normally a query blocks its thread until the database answers. <code>load_async</code> changes that: the query is scheduled on a separate thread pool, and the calling thread can do other work before asking for the result. The pool schedules the work with <code>schedule_query</code> at <code>active_record/connection_adapters/abstract/connection_pool.rb:889-892</code>:</p>
+<pre><code class="language-ruby">def schedule_query(future_result) # :nodoc:
+  @async_executor.post { future_result.execute_or_skip }
+  Thread.pass
+end
+</code></pre>
+<p>The executor is built by <code>build_async_executor</code> at lines 917-933. It is either a <code>Concurrent::ThreadPoolExecutor</code> sized per database, or the global executor, chosen by <code>ActiveRecord.async_query_executor</code>.</p>
+<p>The pending query is a <code>FutureResult</code> in <code>active_record/future_result.rb</code>. <code>execute_or_skip</code> at lines 100-122 runs on the executor thread: it checks that the result is still pending, takes a session read lock, checks out a connection, and executes the query with instrumentation buffered for later. <code>execute_or_wait</code> at lines 146-161 is the calling thread's side: if the executor has not finished, the caller itself checks out a connection and runs the query inline, so a slow executor cannot stall a result forever.</p>
+<p><code>result</code> at <code>active_record/future_result.rb:124-135</code> is the payoff:</p>
+<pre><code class="language-ruby">def result
+  execute_or_wait
+  @event_buffer&amp;.flush
+
+  if canceled?
+    raise Canceled
+  elsif @error
+    raise @error
+  else
+    @result
+  end
+end
+</code></pre>
+<p>The session model prevents leaks. <code>AsynchronousQueriesTracker::Session</code> at <code>active_record/asynchronous_queries_tracker.rb:8-29</code> holds an atomic active flag and a read-write lock. While a session is active, in-flight async queries may proceed. When the request ends, <code>finalize</code> marks it inactive; any result that was canceled raises <code>Canceled</code> from <code>future_result.rb:51</code>. The tracker's <code>run</code> and <code>complete</code> hooks at <code>asynchronous_queries_tracker.rb:36-42</code> install with the executor, mirroring the query cache hooks.</p>
+<pre><code class="language-ruby">posts = Post.where(published: true).load_async
+# do other work here
+posts.each { |post| puts post.title }  # blocks only now, if not already done
+</code></pre>
+
+<div class="mermaid">
+sequenceDiagram
+  participant M as Main thread
+  participant P as Connection pool
+  participant E as Async executor
+  participant D as Database
+  M-&gt;&gt;P: load_async builds FutureResult
+  P-&gt;&gt;E: schedule_query posts FutureResult
+  E-&gt;&gt;P: with_connection
+  P--&gt;&gt;E: lease connection
+  E-&gt;&gt;D: execute query async
+  M-&gt;&gt;M: other work
+  M-&gt;&gt;P: FutureResult.result
+  alt executor finished
+    M-&gt;&gt;M: return buffered result
+  else executor still running
+    M-&gt;&gt;P: checkout connection and run inline
+    M-&gt;&gt;D: execute query
+  end
+
+</div>
+<h2>The Aha Moment</h2>
+<p><strong>Aha:</strong> The query cache and the connection pool are both answers to "this operation is too expensive to repeat, so share it". The cache shares results: identical SQL within a request is served from a 100-entry LRU map, and writes invalidate it with one version counter instead of per-key analysis. The pool shares sockets: a <code>Lease</code> hands one connection to one thread at a time, <code>checkin</code> returns it, and <code>reap</code> recovers the ones whose owners died. Async queries add a third sharing axis: a thread pool borrows the waiting time between issuing a query and needing its result. Each layer makes a different resource reusable, and the executor hooks tie them all to the request life cycle so nothing leaks between requests.</p>
+<p>Continue to <a href="./12-the-nice-ruby-experience.html">12-the-nice-ruby-experience.md</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>04 -- The query interface: a lazy immutable Relation -- activerecord</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/activerecord/docs</span>
+    <div class="nav-actions">
+      <a href="01-connection-and-adapters.html" class="nav-breadcrumb">01 -- Connection and adapters: from database.yml to bytes on a socket</a><a href="02-sql-generation-arel.html" class="nav-breadcrumb">02 -- SQL generation with Arel: an AST and a visitor</a><a href="03-the-model.html" class="nav-breadcrumb">03 -- The model: a class that learns its own shape</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="03-the-model.html" class="nav-btn" title="Previous: 03 -- The model: a class that learns its own shape">← prev</a>
+      <a href="05-persistence.html" class="nav-btn nav-btn-next" title="Next: 05 -- Persistence: from Ruby object to SQL and back">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>04 -- The query interface: a lazy immutable Relation</h1>
+<p>A <code>Relation</code> is a recipe for a query that has not run yet. This chapter explains how chaining methods builds that recipe without executing it, how the recipe becomes SQL at enumeration, and how scopes and merging fit on top.</p>
+<p>The <code>Relation</code> class lives in <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/relation.rb</code>. Its query methods come from <code>relation/query_methods.rb</code>, its lookup methods from <code>relation/finder_methods.rb</code>, its copying behavior from <code>relation/spawn_methods.rb</code>, and its scope machinery from <code>scoping/named.rb</code> and <code>scoping/default.rb</code>.</p>
+<h2>A description, not a result</h2>
+<p>The most important fact about a <code>Relation</code> is that it does nothing when you build it:</p>
+<pre><code class="language-ruby">posts = Post.where(published: true).order(created_at: :desc).limit(10)
+# No SQL has run yet.
+</code></pre>
+<p><code>posts</code> is a value object holding a set of clauses. The query runs only when you enumerate it, fetch one record from it, or ask for a count. Enumeration goes through <code>to_ary</code>, which calls <code>records</code>, which calls <code>load</code>:</p>
+<pre><code class="language-ruby">def to_ary
+  records.dup
+end
+alias to_a to_ary
+
+def records # :nodoc:
+  load
+  @records
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/relation.rb</code>, lines 347 through 355. <code>load</code> in the same file, lines 1207 through 1214, checks <code>@loaded</code> and calls <code>exec_queries</code> once, caching the resulting array. The second call to <code>to_a</code> on the same relation returns the cache.</p>
+<p>The relation is immutable in the functional sense: every query method returns a copy, and the original is left alone. This is what makes scopes composable. <code>Post.where(published: true)</code> and <code>Post.where(published: true).order(...)</code> are two different objects; neither modifies the other.</p>
+<div class="mermaid">
+flowchart TD
+    A[&quot;Post.all&quot;] --&gt; B[&quot;where published true&quot;]
+    B --&gt; C[&quot;order created_at desc&quot;]
+    C --&gt; D[&quot;limit 10&quot;]
+    A --&gt; A2[&quot;original relation, unchanged&quot;]
+    B --&gt; B2[&quot;copy with where&quot;]
+    C --&gt; C2[&quot;copy with where and order&quot;]
+    D --&gt; D2[&quot;copy with where, order, and limit&quot;]
+
+</div>
+<h2>Value slots</h2>
+<p>A relation's entire state is a hash named <code>@values</code>, keyed by method name. The class declares which methods are multi-value, single-value, or clause methods:</p>
+<pre><code class="language-ruby">MULTI_VALUE_METHODS  = [:includes, :eager_load, :preload, :select, :group,
+                        :order, :joins, :left_outer_joins, :references,
+                        :extending, :unscope, :optimizer_hints, :annotate,
+                        :with]
+
+SINGLE_VALUE_METHODS = [:limit, :offset, :lock, :readonly, :reordering, :strict_loading,
+                        :reverse_order, :distinct, :create_with, :skip_query_cache]
+
+CLAUSE_METHODS = [:where, :having, :from]
+INVALID_METHODS_FOR_UPDATE_AND_DELETE_ALL = [:distinct, :with, :with_recursive]
+
+VALUE_METHODS = MULTI_VALUE_METHODS + SINGLE_VALUE_METHODS + CLAUSE_METHODS
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/relation.rb</code>, lines 54 through 65. The distinction matters when two relations merge. Multi-value methods accumulate (two <code>order</code> clauses both apply, and the later one wins only when explicitly reordering). Single-value methods overwrite (a second <code>limit</code> replaces the first). Clause methods wrap their input in a <code>WhereClause</code>, <code>HavingClause</code>, or <code>FromClause</code> object, not a raw array.</p>
+<p>The initializer is trivial, which is the point:</p>
+<pre><code class="language-ruby">def initialize(model, table: nil, predicate_builder: nil, values: {})
+  if table
+    predicate_builder ||= model.predicate_builder.with(TableMetadata.new(model, table))
+  else
+    table = model.arel_table
+    predicate_builder ||= model.predicate_builder
+  end
+
+  @model  = model
+  @table  = table
+  @values = values
+  @loaded = false
+  @predicate_builder = predicate_builder
+  @delegate_to_model = false
+  @future_result = nil
+  @records = nil
+  @async = false
+  @none = false
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/relation.rb</code>, lines 77 through 95. A relation is a model, a table, a predicate builder, and a hash of values. Everything else is a cache flag.</p>
+<h2>spawn: copy-on-write</h2>
+<p>Every bang method mutates in place, and every public method wraps a bang method in <code>spawn</code>. The split is in <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/relation/spawn_methods.rb</code>:</p>
+<pre><code class="language-ruby">def spawn # :nodoc:
+  already_in_scope?(model.scope_registry) ? model.all : clone
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/relation/spawn_methods.rb</code>, lines 9 through 11. <code>clone</code> calls <code>initialize_copy</code>, which duplicates <code>@values</code> and calls <code>reset</code> to clear the caches. So <code>where</code> is <code>spawn.where!(...)</code>, and only the copy is mutated. The public and bang forms are paired in <code>query_methods.rb</code>:</p>
+<pre><code class="language-ruby">def where!(opts, *rest) # :nodoc:
+  self.where_clause += build_where_clause(opts, rest)
+  self
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/relation/query_methods.rb</code>, lines 1071 through 1074. <code>build_where_clause</code> is the machinery from <a href="./02-sql-generation-arel.html">02-sql-generation-arel.md</a>: it turns a hash, string, array, or Arel node into a <code>WhereClause</code>. The <code>+=</code> on <code>WhereClause</code> concatenates predicate lists.</p>
+<p><code>limit</code> and <code>offset</code> are the simplest possible single-value methods:</p>
+<pre><code class="language-ruby">def limit!(value) # :nodoc:
+  value = Integer(value) unless value.nil?
+  self.limit_value = value
+  self
+end
+
+def offset!(value) # :nodoc:
+  self.offset_value = value
+  self
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/relation/query_methods.rb</code>, lines 1243 through 1263. The generated reader <code>limit_value</code> fetches from <code>@values</code> with a nil default, per the class-level generation loop at lines 162 through 183 of the same file.</p>
+<h2>where in all its shapes</h2>
+<p>The public <code>where</code> accepts four shapes, as shown in <code>build_where_clause</code> in <a href="./02-sql-generation-arel.html">02-sql-generation-arel.md</a>:</p>
+<ul><li>A hash: <code>where(published: true)</code> becomes equality predicates, one per key.</li><li>A string with no placeholders: <code>where("published")</code> becomes a raw SQL literal.</li><li>A string with <code>?</code> placeholders: <code>where("published_at > ?", 2.weeks.ago)</code> becomes a bound SQL literal.</li><li>An array, which is just a string-plus-arguments shape unwrapped.</li><li>An Arel node, passed through unchanged.</li></ul>
+<p>A hash value of an array becomes <code>IN</code>, a range becomes <code>BETWEEN</code>, and <code>nil</code> becomes <code>IS NULL</code>, all handled by the <code>PredicateBuilder</code> handlers. This is why the same single method covers most of the query language without the caller thinking about SQL.</p>
+<p><code>where</code> also chains by <code>AND</code>. Each call appends a <code>WhereClause</code> to the previous one. <code>or</code> is separate: <code>WhereClause#or</code> in <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/relation/where_clause.rb</code>, lines 36 through 59, computes the left-only, common, and right-only predicates, then wraps the non-common parts in an <code>Arel::Nodes::Or</code> node inside a <code>Grouping</code>. <code>rewhere</code> (query_methods.rb line 1089) removes predicates that touch the same attributes first, so it replaces rather than accumulates.</p>
+<h2>order, group, having, distinct</h2>
+<p><code>order</code> accumulates. <code>reorder</code> discards existing order and starts over; it is the order-side counterpart to <code>rewhere</code>. <code>group</code> and <code>having</code> pair up, with <code>having</code> built by the same <code>build_where_clause</code> via the alias at <code>query_methods.rb</code> line 1683. <code>distinct</code> sets a single boolean.</p>
+<p>The important subtlety is that these methods store symbols and strings, and the conversion to Arel attribute nodes happens later in <code>build_arel</code> through <code>arel_columns</code>. A string order like <code>"created_at DESC"</code> passes through as a SQL literal; a hash like <code>{ created_at: :desc }</code> is expanded to <code>ORDER BY "created_at" DESC</code>.</p>
+<h2>pluck and select</h2>
+<p><code>pluck</code> reads a single column (or several) without building model objects. It is in <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/relation/calculations.rb</code>, lines 295 through 334:</p>
+<pre><code class="language-ruby">def pluck(*column_names)
+  if @none
+    if @async
+      return Promise::Complete.new([])
+    else
+      return []
+    end
+  end
+
+  if loaded? &amp;&amp; all_attributes?(column_names)
+    result = records.pluck(*column_names)
+    if @async
+      return Promise::Complete.new(result)
+    else
+      return result
+    end
+  end
+
+  if has_include?(column_names.first)
+    relation = apply_join_dependency
+    relation.pluck(*column_names)
+  else
+    model.disallow_raw_sql!(flattened_args(column_names))
+    relation = spawn
+    columns = relation.arel_columns(column_names)
+    relation.select_values = columns
+    result = skip_query_cache_if_necessary do
+      if where_clause.contradiction? &amp;&amp; !possible_aggregation?(column_names)
+        ActiveRecord::Result.empty(async: @async)
+      else
+        model.with_connection do |c|
+          c.select_all(relation.arel, &quot;#{model.name} Pluck&quot;, async: @async)
+        end
+      end
+    end
+    result.then do |result|
+      type_cast_pluck_values(result, columns)
+    end
+  end
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/relation/calculations.rb</code>, lines 295 through 334. Three shortcuts are visible: a null relation returns an empty array immediately; an already-loaded relation plucks from the in-memory records; and a relation with an impossible WHERE clause (a contradiction, such as <code>IN ()</code>) returns an empty result without hitting the database. Otherwise it selects only the requested columns and type-casts the raw result rows.</p>
+<p><code>select</code> changes the projection. <code>Post.select(:id)</code> returns relations whose records have only <code>id</code> loaded; the other attributes raise <code>ActiveModel::MissingAttributeError</code> when read. <code>select</code> is also how calculations such as <code>count</code>, <code>sum</code>, and <code>average</code> project aggregate expressions instead of columns.</p>
+<h2>find, find_by, take, first, last</h2>
+<p>The lookup methods are thin wrappers over the query interface. From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/relation/finder_methods.rb</code>:</p>
+<pre><code class="language-ruby">def find(*args)
+  return super if block_given?
+  find_with_ids(*args)
+end
+
+def find_by(arg, *args)
+  where(arg, *args).take
+end
+
+def take(limit = nil)
+  limit ? find_take_with_limit(limit) : find_take
+end
+
+def first(limit = nil)
+  if limit
+    find_nth_with_limit(0, limit)
+  else
+    find_nth 0
+  end
+end
+
+def last(limit = nil)
+  return find_last(limit) if loaded? || has_limit_or_offset?
+
+  result = ordered_relation.limit(limit)
+  result = result.reverse_order!
+
+  limit ? result.reverse : result.first
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/relation/finder_methods.rb</code>, lines 98 through 209, shortened. <code>find</code> is for primary keys; it builds <code>WHERE id IN (...)</code> and preserves the order of the requested ids. <code>find_by</code> is just <code>where(...).take</code>. <code>first</code> and <code>last</code> apply a default order by primary key when none exists, because "first" and "last" are meaningless without an order. <code>last</code> without an explicit order reverses a primary-key-ordered relation and takes the first row of the reversal.</p>
+<p><code>none</code> is a special relation that always returns zero records. It is implemented as a contradiction:</p>
+<pre><code class="language-ruby">def none
+  spawn.none!
+end
+
+def none! # :nodoc:
+  unless @none
+    where!(&quot;1=0&quot;)
+    @none = true
+  end
+  self
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/relation/query_methods.rb</code>, lines 1310 through 1320. <code>where!("1=0")</code> adds an always-false condition, so <code>none</code> composes with the rest of the API: <code>Post.none.order(...).limit(...)</code> still returns an empty set, and scopes can return <code>none</code> instead of an empty array without breaking chaining.</p>
+<h2>Scopes and default_scope</h2>
+<p>A scope is just a class method that returns a relation. The <code>scope</code> macro stores a callable and defines a class method that runs it against <code>all</code>:</p>
+<pre><code class="language-ruby">def all(all_queries: nil)
+  scope = current_scope
+
+  if scope
+    if self == scope.model
+      scope.clone
+    else
+      relation.merge!(scope)
+    end
+  else
+    default_scoped(all_queries: all_queries)
+  end
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/scoping/named.rb</code>, lines 22 through 34. <code>all</code> is the root of every chain. It returns the current scope if one is active (inside a <code>scoping</code> block), merged into the relation if the models differ, and otherwise falls back to <code>default_scoped</code>, which applies the default scope.</p>
+<p>A default scope is a callable applied to every query on the model. <code>default_scope</code> in <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/scoping/default.rb</code>:</p>
+<pre><code class="language-ruby">def default_scope(scope = nil, all_queries: nil, &amp;block) # :doc:
+  scope = block if block_given?
+
+  if scope.is_a?(Relation) || !scope.respond_to?(:call)
+    raise ArgumentError,
+      &quot;Support for calling #default_scope without a block is removed. For example instead &quot; \
+      &quot;of `default_scope where(color: &#x27;red&#x27;)`, please use &quot; \
+      &quot;`default_scope { where(color: &#x27;red&#x27;) }`. (Alternatively you can just redefine &quot; \
+      &quot;self.default_scope.)&quot;
+  end
+
+  default_scope = DefaultScope.new(scope, all_queries)
+
+  self.default_scopes += [default_scope]
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/scoping/default.rb</code>, lines 129 through 143. A block is required, and it must return a relation. Multiple default scopes are stored and merged. <code>build_default_scope</code> (lines 145 through 170) applies each stored scope with <code>instance_exec</code> against the current relation.</p>
+<p>The escape hatch is <code>unscoped</code>, at lines 50 through 52 of the same file: it returns a fresh relation with no scopes, or, with a block, runs the block inside that unscoped context. Default scopes are powerful and dangerous, because every finder silently narrows the table.</p>
+<div class="mermaid">
+flowchart TD
+    A[&quot;Post.all&quot;] --&gt; B{&quot;current_scope present?&quot;}
+    B --&gt;|&quot;yes&quot;| C[&quot;clone current scope&quot;]
+    B --&gt;|&quot;no&quot;| D[&quot;default_scoped&quot;]
+    D --&gt; E[&quot;build_default_scope&quot;]
+    E --&gt; F[&quot;apply each default_scope block&quot;]
+    F --&gt; G[&quot;relation&quot;]
+    H[&quot;Post.unscoped&quot;] --&gt; I[&quot;fresh relation, no scopes&quot;]
+
+</div>
+<h2>Merging</h2>
+<p><code>merge</code> combines two relations. The entry is <code>merge!</code> in <code>spawn_methods.rb</code>, which delegates to <code>Relation::Merger</code> for relations. The core loop in <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/relation/merger.rb</code>:</p>
+<pre><code class="language-ruby">def merge
+  NORMAL_VALUES.each do |name|
+    value = values[name]
+    unless value.nil? || (value.blank? &amp;&amp; false != value)
+      relation.public_send(:&quot;#{name}!&quot;, *value)
+    end
+  end
+
+  relation.none! if other.null_relation?
+
+  merge_select_values
+  merge_multi_values
+  merge_single_values
+  merge_clauses
+  merge_preloads
+  merge_joins
+  merge_outer_joins
+
+  relation
+end
+</code></pre>
+<p>From <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/relation/merger.rb</code>, lines 58 through 81. Each value slot is merged with rules specific to its kind: multi-values union, single-values take the other relation's value, and clauses go through <code>WhereClause#merge</code>.</p>
+<p><code>WhereClause#merge</code> in <code>/Users/darkvoid/.gems/gems/activerecord-8.1.4/lib/active_record/relation/where_clause.rb</code>, lines 26 through 30, is the subtle part:</p>
+<pre><code class="language-ruby">def merge(other)
+  predicates = except_predicates(other.extract_attributes)
+
+  WhereClause.new(predicates | other.predicates)
+end
+</code></pre>
+<p>It removes any existing predicate that touches the same attribute as an incoming predicate, then unions the rest. So merging <code>Post.where(published: true)</code> with <code>Post.where(published: false)</code> yields only the incoming condition, not a contradictory <code>AND</code> of both. For conditions on different attributes, both survive. This is why <code>merge</code> behaves like "the other relation wins on conflicts" instead of blind concatenation.</p>
+<h2>The Aha Moment</h2>
+<p><strong>Aha:</strong> A <code>Relation</code> is a frozen description until enumeration, and the entire query API is just a disciplined way to copy a hash. Every public method is <code>spawn</code> plus a bang method, every bang method writes one slot of <code>@values</code>, and <code>@values</code> is the only thing that matters until <code>load</code> runs. The immutability and the laziness are the same mechanism: because methods copy instead of mutate, the intermediate relations are cheap to build and safe to share, so scopes, merges, and conditional chaining all compose without surprises.</p>
+<p>The proof is <code>none</code>, which is not a separate class or a special flag in the executor. It is an ordinary relation with <code>@none = true</code> and a <code>WHERE 1=0</code> clause. That is why <code>none</code> composes with <code>order</code>, <code>limit</code>, <code>merge</code>, and scopes for free: it plays by the same copy-the-hash rules as every other query. Chapter <a href="./05-persistence.html">05-persistence.md</a> shows what happens when a model instance, rather than a relation, decides to write to the database, and <a href="./10-scoping-and-eager-loading.html">10-scoping-and-eager-loading.md</a> goes deeper into scopes and eager loading.</p>
+<p>Continue to <a href="./05-persistence.html">05-persistence.md</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

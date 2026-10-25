@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>05 -- Queue Adapters: the tiny interface behind everything -- activejob</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/activejob/docs</span>
+    <div class="nav-actions">
+      <a href="02-enqueue-lifecycle.html" class="nav-breadcrumb">02 -- The Enqueue Lifecycle: from `perform_later` to the adapter</a><a href="03-execution.html" class="nav-breadcrumb">03 -- Execution: `perform_now`, `execute`, and the nested run</a><a href="04-arguments-and-serializers.html" class="nav-breadcrumb">04 -- Arguments and Serializers: how a model becomes a Global ID</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="04-arguments-and-serializers.html" class="nav-btn" title="Previous: 04 -- Arguments and Serializers: how a model becomes a Global ID">← prev</a>
+      <a href="06-callbacks.html" class="nav-btn nav-btn-next" title="Next: 06 -- Callbacks: hooks around enqueue and perform">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>05 -- Queue Adapters: the tiny interface behind everything</h1>
+<p>An adapter is the only part of ActiveJob that talks to a real queue backend. Everything else in the framework is backend-agnostic because it funnels through this interface.</p>
+<p>Source files: <code>/Users/darkvoid/.gems/gems/activejob-8.1.4/lib/active_job/queue_adapter.rb</code>, <code>/Users/darkvoid/.gems/gems/activejob-8.1.4/lib/active_job/queue_adapters.rb</code>, and everything under <code>/Users/darkvoid/.gems/gems/activejob-8.1.4/lib/active_job/queue_adapters/</code>.</p>
+<h2>The contract</h2>
+<p>The abstract adapter declares two methods that every adapter must implement, plus one helper:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/queue_adapters/abstract_adapter.rb, lines 9-24
+class AbstractAdapter
+  attr_accessor :stopping
+
+  def enqueue(job)
+    raise NotImplementedError
+  end
+
+  def enqueue_at(job, timestamp)
+    raise NotImplementedError
+  end
+
+  def stopping?
+    !!@stopping
+  end
+end
+</code></pre>
+<p>That is almost the whole contract. <code>enqueue(job)</code> pushes a job for immediate execution. <code>enqueue_at(job, timestamp)</code> pushes a job for execution after an absolute Unix timestamp. <code>stopping?</code> supports graceful shutdown for the Continuable machinery (<a href="./08-continuable.html">08-continuable.md</a>). Adapters may optionally add <code>enqueue_all(jobs)</code> for bulk pushes and <code>check_adapter</code> for load-time warnings.</p>
+<p>The interface is validated by duck typing. <code>QueueAdapter.queue_adapter=</code> accepts either a symbol (looked up in the registry) or an object that responds to <code>enqueue</code> and <code>enqueue_at</code>:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/queue_adapter.rb, lines 49-75 (abridged)
+def queue_adapter=(name_or_adapter)
+  case name_or_adapter
+  when Symbol, String
+    queue_adapter = ActiveJob::QueueAdapters.lookup(name_or_adapter).new
+    queue_adapter.try(:check_adapter)
+    assign_adapter(name_or_adapter.to_s, queue_adapter)
+  else
+    if queue_adapter?(name_or_adapter)
+      adapter_name = ActiveJob.adapter_name(name_or_adapter).underscore
+      assign_adapter(adapter_name, name_or_adapter)
+    else
+      raise ArgumentError
+    end
+  end
+end
+
+QUEUE_ADAPTER_METHODS = [:enqueue, :enqueue_at].freeze
+
+def queue_adapter?(object)
+  QUEUE_ADAPTER_METHODS.all? { |meth| object.respond_to?(meth) }
+end
+</code></pre>
+<p><code>ActiveJob.adapter_name(adapter)</code> derives the adapter name from an object (used by <code>queue_adapter=</code>), and <code>ActiveJob::Base.queue_adapter_name</code> returns the configured adapter name string (<code>queue_adapter.rb</code> lines 7-12 and 39-44).</p>
+<p>The default adapter is <code>:async</code>. The registry maps a symbol to a class by name:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/queue_adapters.rb, lines 129-137
+def lookup(name)
+  const_get(name.to_s.camelize &lt;&lt; ADAPTER)
+end
+</code></pre>
+<p>So <code>:sidekiq</code> resolves to <code>ActiveJob::QueueAdapters::SidekiqAdapter</code>.</p>
+<div class="mermaid">
+flowchart TD
+  A[&quot;queue_adapter = :sidekiq&quot;] --&gt; B[&quot;QueueAdapters.lookup :sidekiq&quot;]
+  B --&gt; C[&quot;SidekiqAdapter.new&quot;]
+  C --&gt; D[&quot;check_adapter&quot;]
+  D --&gt; E[&quot;assign_adapter&quot;]
+  E --&gt; F[&quot;job.queue_adapter&quot;]
+  F --&gt; G[&quot;enqueue / enqueue_at&quot;]
+
+</div>
+<h2>The built-in development adapters</h2>
+<p>Three adapters ship for local use.</p>
+<p>The async adapter runs jobs on an in-process thread pool via Concurrent Ruby. It is the default. It serializes the job immediately for parity with real backends, then executes it on a thread:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/queue_adapters/async_adapter.rb, lines 39-72 (abridged)
+def enqueue(job)
+  @scheduler.enqueue JobWrapper.new(job), queue_name: job.queue_name
+end
+
+def enqueue_at(job, timestamp)
+  @scheduler.enqueue_at JobWrapper.new(job), timestamp, queue_name: job.queue_name
+end
+
+class JobWrapper
+  def initialize(job)
+    job.provider_job_id = SecureRandom.uuid
+    @job_data = job.serialize
+  end
+
+  def perform
+    Base.execute @job_data
+  end
+end
+</code></pre>
+<p>Note the comment in the source: serializing even though the job stays in-process catches serialization bugs early. The scheduler defaults to up to <code>RAILS_MAX_THREADS</code> threads (<code>lib/active_job/queue_adapters/async_adapter.rb</code> lines 74-117). Pending jobs are lost on restart, which is why this adapter is for development and testing only. The adapter also exposes <code>shutdown(wait: true)</code> to gracefully stop the pool and <code>immediate=</code> (a test-suite hook) to run scheduled jobs immediately (<code>lib/active_job/queue_adapters/async_adapter.rb</code> lines 47-57).</p>
+<p>The inline adapter runs the job synchronously inside <code>enqueue</code>:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/queue_adapters/inline_adapter.rb, lines 13-22
+class InlineAdapter &lt; AbstractAdapter
+  def enqueue(job)
+    Base.execute(job.serialize)
+  end
+
+  def enqueue_at(*)
+    raise NotImplementedError, &quot;Use a queueing backend to enqueue jobs in the future...&quot;
+  end
+end
+</code></pre>
+<p>The test adapter records jobs instead of running them, and can optionally perform them. It is covered in <a href="./10-rails-integration-and-testing.html">10-rails-integration-and-testing.md</a>.</p>
+<h2>A real backend: Sidekiq</h2>
+<p>The Sidekiq adapter shows the full pattern. Enqueue pushes a serialized hash through a <code>JobWrapper</code>:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/queue_adapters/sidekiq_adapter.rb, lines 40-52
+def enqueue(job)
+  job.provider_job_id = JobWrapper.set(
+    wrapped: job.class,
+    queue: job.queue_name
+  ).perform_async(job.serialize)
+end
+
+def enqueue_at(job, timestamp)
+  job.provider_job_id = JobWrapper.set(
+    wrapped: job.class,
+    queue: job.queue_name,
+  ).perform_at(timestamp, job.serialize)
+end
+</code></pre>
+<p><code>provider_job_id</code> becomes Sidekiq's <code>jid</code>. The wrapper runs on the Sidekiq worker and hands the hash back to the framework:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/queue_adapters/sidekiq_adapter.rb, lines 85-92
+class JobWrapper
+  include Sidekiq::Worker
+
+  def perform(job_data)
+    Base.execute job_data.merge(&quot;provider_job_id&quot; =&gt; jid)
+  end
+end
+</code></pre>
+<p>The worker side of every adapter is this same one-liner: decode the backend's message into a hash and call <code>Base.execute</code>. Backburner, Resque, Delayed Job, Sneakers, and queue_classic all end in <code>Base.execute job_data</code>:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/queue_adapters/resque_adapter.rb, lines 44-51
+class JobWrapper
+  class &lt;&lt; self
+    def perform(job_data)
+      Base.execute job_data
+    end
+  end
+end
+</code></pre>
+<p>Sidekiq also implements <code>enqueue_all</code>, which uses <code>Sidekiq::Client.push_bulk</code> to push many jobs in one Redis round trip (<code>lib/active_job/queue_adapters/sidekiq_adapter.rb</code> lines 54-83).</p>
+<div class="mermaid">
+sequenceDiagram
+  participant App as &quot;Application&quot;
+  participant Adapter as &quot;SidekiqAdapter&quot;
+  participant Redis as &quot;Redis&quot;
+  participant Sidekiq as &quot;Sidekiq worker&quot;
+  participant Wrapper as &quot;JobWrapper&quot;
+  participant Base as &quot;Base.execute&quot;
+
+  App-&gt;&gt;Adapter: enqueue(job)
+  Adapter-&gt;&gt;Adapter: job.serialize
+  Adapter-&gt;&gt;Redis: perform_async(hash)
+  Redis--&gt;&gt;Adapter: jid
+  Adapter--&gt;&gt;App: provider_job_id = jid
+  Sidekiq-&gt;&gt;Wrapper: perform(job_data)
+  Wrapper-&gt;&gt;Base: execute(job_data.merge provider_job_id)
+  Base-&gt;&gt;Base: deserialize and perform_now
+
+</div>
+<h2>A database-backed backend</h2>
+<p>ActiveJob itself no longer ships a database adapter, but the same contract governs ones such as Solid Queue or Delayed Job. Delayed Job stores each job as a row in a database table:</p>
+<pre><code class="language-ruby"># Source: lib/active_job/queue_adapters/delayed_job_adapter.rb, lines 19-29
+def enqueue(job)
+  delayed_job = Delayed::Job.enqueue(JobWrapper.new(job.serialize), queue: job.queue_name, priority: job.priority)
+  job.provider_job_id = delayed_job.id
+  delayed_job
+end
+
+def enqueue_at(job, timestamp)
+  delayed_job = Delayed::Job.enqueue(JobWrapper.new(job.serialize), queue: job.queue_name, priority: job.priority, run_at: Time.at(timestamp))
+  job.provider_job_id = delayed_job.id
+  delayed_job
+end
+</code></pre>
+<p>Here <code>provider_job_id</code> is the database row id. The pattern is identical to Sidekiq: the adapter translates <code>enqueue</code> into the backend's native call and stores the backend's own identifier back on the job.</p>
+<h2>Retry and discard from the adapter's side</h2>
+<p>ActiveJob's own <code>retry_on</code> and <code>discard_on</code> do not need adapter support. They re-run the job through the ordinary <code>enqueue</code> path (see <a href="./07-exceptions-retry-discard.html">07-exceptions-retry-discard.md</a>). When ActiveJob exhausts its own retries, the exception bubbles up to the backend, and the backend's own retry machinery takes over if it has one. This is why the <code>retry_on</code> documentation says the exception is "allowed to bubble up to the underlying queuing system":</p>
+<pre><code class="language-ruby"># Source: lib/active_job/exceptions.rb, lines 16-19 (documentation)
+# If the exception keeps getting raised beyond the specified number of attempts, the exception is allowed to
+# bubble up to the underlying queuing system, which may have its own retry mechanism or place it in a
+# holding queue for inspection.
+</code></pre>
+<p>The adapter therefore has two retry layers available: ActiveJob's in-job retries (cross-backend) and the backend's own dead-letter handling (backend-specific).</p>
+<h2>The Aha Moment</h2>
+<p><strong>Aha:</strong> An adapter is ten lines of glue. The entire surface is <code>enqueue</code> and <code>enqueue_at</code> on the way in, and <code>Base.execute(job_data)</code> on the way out. Everything complicated — serialization, argument handling, callbacks, retries, instrumentation, timezones — lives in the framework, not the adapter. That is the whole economic argument for ActiveJob: backend authors only have to move a hash into their store and hand it back; all the hard, shared logic is written once.</p>
+<p>Continue to <a href="./06-callbacks.html">06-callbacks.md</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
