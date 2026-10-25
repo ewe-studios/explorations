@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>05 -- Smart HTTP: info/refs, upload-pack v0/v2, and receive-pack -- walgit</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/walgit/docs</span>
+    <div class="nav-actions">
+      <a href="02-store-crate.html" class="nav-breadcrumb">02 -- The Store Crate: Object Layout, Opaque Versions, CAS, and Leases</a><a href="03-wal-crate.html" class="nav-breadcrumb">03 -- The WAL Crate: Sync Levels, Group Commit, and the Single-Flight Publisher</a><a href="04-git-storage.html" class="nav-breadcrumb">04 -- Git Object Storage: Packs, Indexes, Refs, and Commit Graphs</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="04-git-storage.html" class="nav-btn" title="Previous: 04 -- Git Object Storage: Packs, Indexes, Refs, and Commit Graphs">← prev</a>
+      <a href="06-lfs.html" class="nav-btn nav-btn-next" title="Next: 06 -- LFS: Batch API, Transfer, Verification, and Upstream Read-Through">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>05 -- Smart HTTP: info/refs, upload-pack v0/v2, and receive-pack</h1>
+<p>The git wire protocol arrives over HTTP as three routes: <code>info/refs</code> (the advertisement), <code>git-upload-pack</code> (fetch), and <code>git-receive-pack</code> (push). walgit implements protocol v0 and v2, splits the work between the gix in-process engine and the upstream <code>git</code> binary, and narrates slow work on sideband band 2 so the client sees progress. This document follows each route through the code.</p>
+<h2>The advertisement</h2>
+<p><code>info/refs</code> first authenticates: upload-pack advertisements need read, receive-pack advertisements need write. The auth error handling is careful about what a git client can display, and deliberately returns a real 401 for invalid or expired credentials so git erases them from its credential helper. A source comment (<code>crates/walgit-server/src/smart.rs:55</code>) records the incident that motivated this — a 2026-08-22 rig where every clone failed for 50 minutes:</p>
+<pre><code class="language-rust">// Source: crates/walgit-server/src/smart.rs, lines 39-68
+    let service_param = parse_query(query, &quot;service&quot;).unwrap_or_default();
+    // Auth: read for upload-pack, write for receive-pack advertisement.
+    let is_receive = service_param == &quot;git-receive-pack&quot;;
+    let auth_result = if is_receive {
+        st.auth.require_write(headers).await
+    } else {
+        st.auth.require_read(headers).await
+    };
+    if let Err(e) = auth_result {
+        // Git clients do not display 401/403 bodies, but they do print a pkt-line `ERR` message
+        // (&quot;fatal: remote error: ...&quot;). Tell humans how to authenticate instead of leaving them
+        // with &quot;error 401&quot; — but ONLY where a retry cannot help (the account is not allowed, the
+        // verifier is down). A credential that is merely invalid/expired MUST be a real 401: that is
+        // what makes git `erase` it from its credential helpers (the in-memory cache the installer
+        // puts in front of ours), ask them again (gcloud refreshes an expired token) and retry. The
+        // 200 + ERR answer made git keep — and re-`store` — a dead cached token for the cache&#x27;s
+        // whole lifetime (rig, 2026-08-22: every clone failed for 50 minutes).
+        let has_creds = headers.contains_key(axum::http::header::AUTHORIZATION);
+        let retry_cannot_help = matches!(
+            e,
+            crate::auth::AuthError::Forbidden | crate::auth::AuthError::Unavailable
+        );
+        if is_git_client(headers) &amp;&amp; !service_param.is_empty() &amp;&amp; has_creds &amp;&amp; retry_cannot_help {
+            return Ok(git_err_response(
+                &amp;service_param,
+                &amp;auth_help_message(st, headers, &amp;e),
+            ));
+        }
+        return Err(auth_err(e));
+    }
+</code></pre>
+<p>The advertisement needs refs only, never the pack set, so it takes a refs-level sync. Protocol v2 upload-pack gets a capability advertisement; v0 (and receive-pack always) gets the classic advertisement, cached by manifest version.</p>
+<pre><code class="language-rust">// Source: crates/walgit-server/src/smart.rs, lines 141-161
+    let ver = env!(&quot;CARGO_PKG_VERSION&quot;);
+    pktline::encode_text(buf, &quot;version 2\n&quot;);
+    pktline::encode_text(buf, &amp;format!(&quot;agent=walgit/{ver}\n&quot;));
+    pktline::encode_text(buf, &quot;ls-refs=unborn\n&quot;);
+    let mut fetch = String::from(&quot;fetch=shallow wait-for-done&quot;);
+    if st.cfg.git.allow_filter {
+        fetch.push_str(&quot; filter&quot;);
+    }
+    // With sideband-all every response line is sideband-framed, which lets us
+    // narrate what the server is doing (band 2 → &quot;remote: * …&quot;) *before* the
+    // packfile section: auth, WAL sync, materialization progress. Both engines frame their sections that way.
+    fetch.push_str(&quot; sideband-all packfile-uris packfile-indexes&quot;);
+    pktline::encode_text(buf, &amp;format!(&quot;{fetch}\n&quot;));
+    pktline::encode_text(buf, &quot;server-option\n&quot;);
+    let fmt = match handle.local().object_format() {
+        walgit_git::ObjectFormat::Sha1 =&gt; &quot;sha1&quot;,
+        walgit_git::ObjectFormat::Sha256 =&gt; &quot;sha256&quot;,
+    };
+    pktline::encode_text(buf, &amp;format!(&quot;object-format={fmt}\n&quot;));
+    pktline::encode_flush(buf);
+    Ok(())
+</code></pre>
+
+<div class="mermaid">
+%%{init: {&quot;sequence&quot;: {&quot;htmlLabels&quot;: false}}}%%
+sequenceDiagram
+  participant C as &quot;git client&quot;
+  participant S as &quot;walgit serve&quot;
+  participant H as &quot;RepoHandle&quot;
+  C-&gt;&gt;S: &quot;GET info refs service git-upload-pack&quot;
+  S-&gt;&gt;S: &quot;require_read&quot;
+  S-&gt;&gt;H: &quot;sync_refs only&quot;
+  S-&gt;&gt;S: &quot;build v2 capability advert&quot;
+  S--&gt;&gt;C: &quot;200 with pkt-line advertisement&quot;
+  C-&gt;&gt;S: &quot;POST git-upload-pack command ls-refs&quot;
+  S-&gt;&gt;H: &quot;sync_refs and ls_refs cached&quot;
+  S--&gt;&gt;C: &quot;refs with peeled values&quot;
+  C-&gt;&gt;S: &quot;POST git-upload-pack command fetch&quot;
+  S-&gt;&gt;S: &quot;sync and dispatch gix or git engine&quot;
+  S--&gt;&gt;C: &quot;packfile with narration on band two&quot;
+
+</div>
+<h2>Fetch: ls-refs and fetch</h2>
+<p><code>upload_pack</code> reads the protocol, then dispatches v0 or v2. The v2 handler reads the command: <code>ls-refs</code> is served from the cached ref advertisement, and <code>fetch</code> chooses the engine. A remote-served repository (base packs read by range) uses the gix engine with an object faulter; otherwise the default <code>Auto</code> engine sends blob wants to upstream git, and everything else to gix. The response frames its sections for sideband-all so the client sees <code>remote: *</code> progress before the pack.</p>
+<h2>Push: receive-pack</h2>
+<p><code>receive_pack</code> is the write path. It authenticates for write, refuses pushes that would not survive a drain, enforces placement (a host that does not serve the repo refuses with 503 and Retry-After, naming the host that does), and can forward to a push broker (the component that relays a push between the HTTP endpoint and the store/WAL).</p>
+<pre><code class="language-rust">// Source: crates/walgit-server/src/smart.rs, lines 746-762
+    let principal = st.auth.require_write(headers).await.map_err(auth_err)?;
+    if let Some(msg) = push_url_must_be_git(st, route, headers) {
+        return refuse_push(body, headers, msg).await;
+    }
+
+    // Draining after SIGTERM: a push that starts now could not finish its
+    // publish inside the grace; refuse it with Retry-After (git: rerun).
+    if walgit_wal::tasks::shutting_down() {
+        metrics::counter!(&quot;walgit_push_refused_total&quot;, &quot;reason&quot; =&gt; &quot;draining&quot;).increment(1);
+        return refuse_push(
+            body,
+            headers,
+            &quot;walgit: this host is restarting; retry in a few seconds&quot;.into(),
+        )
+        .await
+        .map(|r| with_retry_after(r, StatusCode::SERVICE_UNAVAILABLE));
+    }
+</code></pre>
+<p>The core of the push is <code>receive_pack_process</code>. It ingests the pack with <code>git index-pack --fix-thin --rev-index</code> semantics, then checks that every pushed tip exists before anything is published — a ref-only push with a zero-object pack must still not point at an object nobody has:</p>
+<pre><code class="language-rust">// Source: crates/walgit-server/src/smart.rs, lines 1043-1089
+    let unpack_err: Option&lt;String&gt; = match &amp;ingest {
+        Ok(_) =&gt; None,
+        Err(e) =&gt; Some(format!(&quot;unpack failed: {e}&quot;)),
+    };
+
+    // Every pushed tip must exist before anything is published, pack or no
+    // pack: a ref-only push carries a zero-object pack (`ingest` is `Ok(None)`)
+    // and this block used to be skipped for it, so a ref could be published
+    // pointing at an object nobody has (#37). With `wal.check_connectivity`
+    // the walk covers the tips and everything new under them; without it the
+    // tips themselves are still looked up.
+    if unpack_err.is_none() {
+        let tips: Vec&lt;gix_hash::ObjectId&gt; = txn
+            .updates
+            .iter()
+            .filter(|u| !u.new_oid.is_empty() &amp;&amp; !is_zero_oid(&amp;u.new_oid))
+            .filter_map(|u| gix_hash::ObjectId::from_hex(u.new_oid.as_bytes()).ok())
+            .collect();
+        if !tips.is_empty() {
+            let verdict: Result&lt;(), String&gt; = if st.cfg.wal.check_connectivity {
+                local
+                    .check_connectivity_async(&amp;tips, true)
+                    .instrument(tracing::info_span!(
+                        &quot;receive.connectivity&quot;,
+                        tips = tips.len()
+                    ))
+                    .await
+                    .map_err(|e| format!(&quot;connectivity: {e}&quot;))
+            } else {
+                let repo = local.clone();
+                let tips = tips.clone();
+                tokio::task::spawn_blocking(move || {
+                    tips.iter()
+                        .find(|t| !repo.has_object(t))
+                        .map_or(Ok(()), |t| Err(format!(&quot;missing object {t}&quot;)))
+                })
+                .await
+                .map_err(|e| ApiError::Internal(format!(&quot;tip check: {e}&quot;)))?
+            };
+            if let Err(msg) = verdict {
+                // Every refusal names the reason on each ref: `unpack ng`
+                // alone makes git print &quot;remote failed to report status&quot;.
+                tracing::warn!(repo = %route_id, error = %msg, &quot;receive-pack: tip check failed&quot;);
+                metrics::counter!(&quot;walgit_push_refused_total&quot;, &quot;reason&quot; =&gt; &quot;connectivity&quot;)
+                    .increment(1);
+                return Ok(refusal_report(&amp;caps, &amp;txn, &amp;msg).await);
+            }
+</code></pre>
+<p>The receive-pack request parsing is a separate module in <code>walgit-git</code>. It parses the command pkt-lines, the capability string on the first command, shallow announcements, and the optional push-options section, then positions a <code>PrefixedReader</code> at the pack bytes. The report-status response frames <code>unpack ok</code>/<code>unpack ng</code> and per-ref <code>ok</code>/<code>ng</code> lines, optionally sideband-framed.</p>
+<div class="mermaid">
+%%{init: {&quot;flowchart&quot;: {&quot;htmlLabels&quot;: false}}}%%
+flowchart TD
+  RP[&quot;receive_pack&quot;] --&gt; AUTH[&quot;require_write&quot;]
+  AUTH --&gt; DRAIN{&quot;shutting down&quot;}
+  DRAIN --&gt;|&quot;yes&quot;| REFUSE[&quot;503 Retry-After&quot;]
+  DRAIN --&gt;|&quot;no&quot;| PLACE{&quot;placement serves&quot;}
+  PLACE --&gt;|&quot;no&quot;| REFUSE
+  PLACE --&gt;|&quot;yes&quot;| PARSE[&quot;parse commands caps push-options&quot;]
+  PARSE --&gt; INGEST[&quot;ingest_pack index-pack&quot;]
+  INGEST --&gt; CONN[&quot;check_connectivity tips&quot;]
+  CONN --&gt; POLICY[&quot;evaluate push policy&quot;]
+  POLICY --&gt; PUB[&quot;publish_push_synced CAS&quot;]
+  PUB --&gt; REPORT[&quot;report_status ok ng per ref&quot;]
+  REPORT --&gt; CLIENT[&quot;git client&quot;]
+
+</div>
+<h2>The Aha Moment</h2>
+<p><strong>Aha:</strong> Smart HTTP is where the "receive-pack is walgit, upload-pack is git" split becomes concrete. Walgit owns the push because a push is a state change that must pass through the manifest CAS; it uses git only to index the incoming pack and check connectivity. It delegates fetch to git or gix because fetch is a read that either engine can serve from the local bare repository. The protocol details — capability strings, sideband framing, atomic transactions, push options — are all just the edges of that one ownership rule.</p>
+<p>The LFS routes, which reuse the same auth and static-object serving, are next in <a href="./06-lfs.html">06-lfs.md</a>. The JSON API that the web UI and SDK build on is in <a href="./07-json-api-sdk.html">07-json-api-sdk.md</a>.</p>
+<p>Continue to <a href="./06-lfs.html">06-lfs.md</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>06 -- Workflows and Cron: durable steps and schedules -- celld</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/celld/docs</span>
+    <div class="nav-actions">
+      <a href="03-durability.html" class="nav-breadcrumb">03 -- Durability: how a write survives a failure</a><a href="04-workers-execution.html" class="nav-breadcrumb">04 -- Workers: V8 isolates and stateless execution</a><a href="05-kv-queues-d1-r2.html" class="nav-breadcrumb">05 -- KV, Queues, D1, R2: the storage bindings</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="05-kv-queues-d1-r2.html" class="nav-btn" title="Previous: 05 -- KV, Queues, D1, R2: the storage bindings">← prev</a>
+      <a href="07-static-assets.html" class="nav-btn nav-btn-next" title="Next: 07 -- Static Assets: serving files from the bucket">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>06 -- Workflows and Cron: durable steps and schedules</h1>
+<p>Workflows and Cron Triggers are the two services that turn the cell model into time-driven behavior. A Workflow instance is a Durable Object under the script-scoped class <code>__Workflow.<script_name></code>, with each durable step recorded in the cell. A Cron Trigger is a reserved cell named <code>.cron:<script></code> whose alarm is the next fire time.</p>
+<h2>Cron</h2>
+<p>The reserved class name starts with a dot so it cannot collide with an exported JavaScript class. Ownership of that cell is a compare-and-swap (CAS) on its name. The cell is keyed on the script name only, so a deploy can change the schedule without stranding the alarm the old schedule armed:</p>
+<pre><code class="language-rust">// Source: crates/logic/cron.rs, lines 27-43
+/// The class name of the reserved cell that carries a script&#x27;s schedule.
+///
+/// A leading `.` is inside `cell::valid_cell_scope`&#x27;s charset but is not a
+/// legal start for a JavaScript identifier, so no exported class can collide
+/// with the reserved namespace. That is the whole reason the name is punctuated
+/// rather than pretty.
+pub const RESERVED_CLASS: &amp;str = &quot;.cron&quot;;
+
+/// The one cell that owns a script&#x27;s cron schedule.
+///
+/// Keyed on the script and nothing else — not the expressions, not a hash of
+/// them. Ownership CAS on this one name is what makes a
+/// cron fire once per fleet rather than once per node, and a stable name is
+/// what lets a deploy change the schedule without stranding the alarm the old
+/// schedule armed.
+pub fn reserved_cell(script_name: &amp;str) -&gt; String {
+    format!(&quot;{RESERVED_CLASS}:{script_name}&quot;)
+}
+</code></pre>
+<p>When the cell arms its alarm, it walks forward to the next fire time. The lookahead bound is one full Gregorian cycle of 400 years, which is a proof and not an estimate:</p>
+<pre><code class="language-rust">// Source: crates/logic/cron.rs, lines 45-59
+/// How far ahead `next_after` walks before it calls an expression
+/// unsatisfiable.
+///
+/// One Gregorian cycle. The calendar repeats exactly every 400 years, so a walk
+/// of 146097 consecutive days sees every (month, day-of-month, day-of-week)
+/// combination that can ever occur: an expression with no match in that window
+/// has none at all, and the bound is a proof rather than an estimate. Estimates
+/// were tried and were wrong twice over — `0 0 29 2 *` waits eight years, not
+/// four, when a century skips its leap year (2096-02-29 to 2104-02-29 is 2921
+/// days), and `0 0 * 2 SUN#5` needs a 29-day February that starts on a Sunday,
+/// which is 28 years apart. Undershooting is not a late fire but a silent
+/// retirement: `next_across` returns `None`, so the cell deletes its alarm. The
+/// full walk costs about a hundred thousand cheap iterations and only an
+/// unsatisfiable expression ever pays it, once, at arm time.
+const MAX_LOOKAHEAD_DAYS: usize = 146_097;
+</code></pre>
+
+<div class="mermaid">
+%%{init: {&quot;flowchart&quot;: {&quot;htmlLabels&quot;: false}}}%%
+flowchart TD
+    Schedule[&quot;Cron expressions&quot;] --&gt;|&quot;next_after&quot;| Next[&quot;Next fire time&quot;]
+    Next --&gt;|&quot;arm alarm&quot;| Wake[&quot;Wake entry in bucket&quot;]
+    Wake --&gt;|&quot;minute arrives&quot;| Fire[&quot;Fire handler&quot;]
+    Fire --&gt;|&quot;rearm&quot;| Next
+
+</div>
+<h2>The wake index</h2>
+<p>An alarm is not a timer inside the node. It is a wake entry object in the bucket, keyed by minute bucket, cell, and publication id:</p>
+<pre><code class="language-rust">// Source: crates/logic/wake.rs, lines 234-238
+pub const ENTRY_PREFIX: &amp;str = &quot;wake/entries/&quot;;
+
+pub fn entry_key(due_ms: i64, cell: &amp;str, id: PublicationId) -&gt; String {
+    format!(&quot;{ENTRY_PREFIX}{}/{cell}/{id}&quot;, minute_bucket(due_ms))
+}
+</code></pre>
+
+<div class="mermaid">
+%%{init: {&quot;flowchart&quot;: {&quot;htmlLabels&quot;: false}}}%%
+flowchart TD
+    Root[&quot;wake/entries/&quot;] --&gt; Minute[&quot;minute bucket&quot;]
+    Minute --&gt; Cell[&quot;cell&quot;]
+    Cell --&gt; Id[&quot;publication id&quot;]
+
+</div>
+<p>When an alarm fires and the delivery fails, the retry backs off exponentially. A failure that counts against the limit eventually abandons the alarm, while a shed under pressure backs off but never reaches the ceiling:</p>
+<pre><code class="language-rust">// Source: crates/logic/alarm.rs, lines 21-34
+pub fn alarm_retry(
+    now_ms: Ms,
+    retry: i64,
+    counted_retry: i64,
+    counts_against_limit: bool,
+) -&gt; Option&lt;Ms&gt; {
+    if counts_against_limit &amp;&amp; counted_retry &gt;= RETRY_CEILING {
+        None
+    } else {
+        let shift = retry.clamp(0, MAX_BACKOFF_SHIFT) as u32;
+        let at_ms = now_ms.saturating_add(BACKOFF_BASE_MS * (1_i64 &lt;&lt; shift));
+        Some(at_ms)
+    }
+}
+</code></pre>
+<h2>Workflows</h2>
+<p>A Workflow is a sequence of durable steps. Each step runs once even if the node restarts, because the step's result and the next step's input are stored in the workflow cell. The workflow class is script-scoped: the instance already carries its script, so the reserved cell key includes the script name.</p>
+<h2>Cross-References</h2>
+<ul><li><a href="05-kv-queues-d1-r2.html">05 -- KV, Queues, D1, R2</a> — the storage bindings.</li><li><a href="07-static-assets.html">07 -- Static Assets</a> — the content-addressed file</li></ul>
+<p>  store.</p>
+<h2>The Aha Moment</h2>
+<p><strong>Aha:</strong> a cron trigger is not a scheduler process. It is a Durable Object named <code>.cron:<script></code> whose alarm is the next fire time, and the alarm is a wake entry object in the bucket keyed by minute. There is no central ticker; the bucket's key layout is the schedule. And because the lookahead walk proves unsatisfiability over one 400-year cycle, a schedule that can never fire is retired once, deterministically.</p>
+<p>Continue to <a href="07-static-assets.html">07-static-assets.md</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

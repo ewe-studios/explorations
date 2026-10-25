@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>01 -- The stream model: subscribe, unsubscribe, and the broker tracker -- anycable-delivery</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/anycable-delivery/docs</span>
+    <div class="nav-actions">
+      <a href="00-the-delivery-question.html" class="nav-breadcrumb">00 -- The delivery question: what ordered and at-least-once actually mean here</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="00-the-delivery-question.html" class="nav-btn" title="Previous: 00 -- The delivery question: what ordered and at-least-once actually mean here">← prev</a>
+      <a href="02-hub-fanout-send-queue.html" class="nav-btn nav-btn-next" title="Next: 02 -- The sharded hub and the per-connection send queue: one goroutine preserves per-stream order">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>01 -- The stream model: subscribe, unsubscribe, and the broker tracker</h1>
+<p>A stream in AnyCable-Go is just a string name. There is no stream object, no stream owner, and no per-stream state outside the broker. A stream exists only as a key in two places: the hub's per-gate subscription maps, and the broker's history map. A session becomes a subscriber when the remote procedure call (RPC) application returns a stream name, and it stops being one when the application stops that stream.</p>
+<h2>Where subscriptions come from</h2>
+<p>The RPC application does not tell the server about streams up front. It returns stream names in the result of a <code>subscribe</code>, <code>perform</code>, or <code>unsubscribe</code> RPC call. The node applies those names to the hub and to the broker:</p>
+<pre><code class="language-go">// Source: node/node.go, lines 1041-1049
+	if reply.Streams != nil {
+		isDirty = true
+
+		for _, stream := range reply.Streams {
+			streamId := n.broker.Subscribe(stream)
+			n.hub.SubscribeSession(s, streamId, msg.Identifier)
+			s.subscriptions.AddChannelStream(msg.Identifier, streamId)
+		}
+	}
+</code></pre>
+<p>Three things happen for each returned stream, in this order: the broker's reference tracker is incremented, the hub records the session-to-stream edge, and the session's own subscription state records the stream under the channel identifier. The same <code>msg.Identifier</code> can own several streams.</p>
+<p>Unsubscribing is the reverse. When the session disconnects, every stream it held is released through the same tracker:</p>
+<pre><code class="language-go">// Source: node/node.go, lines 919-933
+func (n *Node) unsubscribeSessionStreams(s *Session) {
+	s.smu.Lock()
+	allStreams := s.subscriptions.ToMap()
+	s.smu.Unlock()
+
+	for _, streams := range allStreams {
+		for _, stream := range streams {
+			n.broker.Unsubscribe(stream)
+		}
+	}
+
+	if len(allStreams) &gt; 0 {
+		s.Log.Debug(&quot;unsubscribed from broker streams&quot;, &quot;channels&quot;, len(allStreams))
+	}
+}
+</code></pre>
+<h2>The reference tracker gates pub/sub</h2>
+<p>The broker keeps a reference count per stream. Only the first local subscriber subscribes to the stream's pub/sub channel, and only the last one unsubscribes. This is what makes the broker architecture scale: a node receives cross-node messages only for streams that have at least one local session.</p>
+<pre><code class="language-go">// Source: broker/broker.go, lines 92-137
+type StreamsTracker struct {
+	store map[string]uint64
+
+	mu sync.Mutex
+}
+
+func NewStreamsTracker() *StreamsTracker {
+	return &amp;StreamsTracker{store: make(map[string]uint64)}
+}
+
+func (s *StreamsTracker) Add(name string) (isNew bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.store[name]; !ok {
+		s.store[name] = 1
+		return true
+	}
+
+	s.store[name]++
+	return false
+}
+
+func (s *StreamsTracker) Has(name string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, ok := s.store[name]
+
+	return ok
+}
+
+func (s *StreamsTracker) Remove(name string) (isLast bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.store[name]; !ok {
+		return false
+	}
+
+	if s.store[name] == 1 {
+		delete(s.store, name)
+		return true
+	}
+
+	s.store[name]--
+	return false
+}
+</code></pre>
+<p>The memory broker wraps that tracker:</p>
+<pre><code class="language-go">// Source: broker/memory.go, lines 329-347
+func (b *Memory) Subscribe(stream string) string {
+	isNew := b.tracker.Add(stream)
+
+	if isNew {
+		b.broadcaster.Subscribe(stream)
+	}
+
+	return stream
+}
+
+func (b *Memory) Unsubscribe(stream string) string {
+	isLast := b.tracker.Remove(stream)
+
+	if isLast {
+		b.broadcaster.Unsubscribe(stream)
+	}
+
+	return stream
+}
+</code></pre>
+<p><code>broadcaster</code> here is the pub/sub subscriber (Redis (an in-memory data store) or NATS (an open-source messaging system)). So the pub/sub subscription follows the local head count, not the hub. This is the mechanism behind "only interested nodes receive the stream".</p>
+<div class="mermaid">
+%%{init: {&quot;flowchart&quot;: {&quot;htmlLabels&quot;: false}}}%%
+flowchart TD
+  S[&quot;Subscribe stream&quot;] --&gt; A[&quot;tracker.Add&quot;]
+  A --&gt;|&quot;count was zero&quot;| N[&quot;pub/sub Subscribe once&quot;]
+  A --&gt;|&quot;count above zero&quot;| X[&quot;no pub/sub call&quot;]
+  U[&quot;Unsubscribe stream&quot;] --&gt; R[&quot;tracker.Remove&quot;]
+  R --&gt;|&quot;count reaches zero&quot;| Y[&quot;pub/sub Unsubscribe once&quot;]
+  R --&gt;|&quot;count still above zero&quot;| Z[&quot;no pub/sub call&quot;]
+
+</div>
+<h2>The hub side of a subscription</h2>
+<p>The hub records two maps: sessions by identifier, and per-session the list of stream and identifier pairs. The subscribe path registers the session if it is not yet registered:</p>
+<pre><code class="language-go">// Source: hub/hub.go, lines 276-291
+func (h *Hub) SubscribeSession(session HubSession, stream string, identifier string) {
+	h.gates[index(stream, h.gatesNum)].Subscribe(session, stream, identifier)
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	sid := session.GetID()
+
+	if _, ok := h.sessions[sid]; !ok {
+		h.sessions[sid] = NewHubSessionInfo(session)
+	}
+
+	h.sessions[sid].AddStream(stream, identifier)
+
+	h.log.With(&quot;sid&quot;, sid).Debug(&quot;subscribed&quot;, &quot;identifier&quot;, common.FilteredIdentifier(identifier), &quot;stream&quot;, stream)
+}
+</code></pre>
+<p>The gate subscription itself is a nested map: stream, then session, then identifier. One session can appear under one stream several times, once per identifier, which is why the inner map holds <code>map[string]bool</code>.</p>
+<div class="mermaid">
+%%{init: {&quot;flowchart&quot;: {&quot;htmlLabels&quot;: false}}}%%
+flowchart LR
+  C[&quot;Client sends subscribe&quot;] --&gt; N[&quot;Node Subscribe&quot;]
+  N --&gt; R[&quot;RPC Subscribe call&quot;]
+  R --&gt; S[&quot;CommandResult with Streams&quot;]
+  S --&gt; B[&quot;broker.Subscribe per stream&quot;]
+  S --&gt; H[&quot;hub.SubscribeSession per stream&quot;]
+  S --&gt; T[&quot;subscriptions.AddChannelStream&quot;]
+  B --&gt;|&quot;first local subscriber&quot;| P[&quot;pub/sub Subscribe on the stream channel&quot;]
+  H --&gt; G[&quot;gate map: stream then session then identifier&quot;]
+
+</div>
+<h2>The no-RPC stream controller</h2>
+<p>There is a second controller that does not call Ruby at all. It resolves a stream name directly from the subscription identifier, verifies a signature if required, and returns the stream to subscribe to. This is the path used by the "streams" mode, Turbo, and CableReady:</p>
+<pre><code class="language-go">// Source: streams/controller.go, lines 55-95
+func (c *Controller) Subscribe(ctx context.Context, sid string, env *common.SessionEnv, ids string, identifier string) (*common.CommandResult, error) {
+	request, stream, err := c.VerifiedStream(identifier)
+
+	if err != nil {
+		c.log.With(&quot;identifier&quot;, common.FilteredIdentifier(identifier)).Debug(&quot;subscription failed&quot;, &quot;error&quot;, err)
+
+		return &amp;common.CommandResult{
+				Status:        common.FAILURE,
+				Transmissions: []string{common.RejectionMessage(identifier)},
+			},
+			err
+	}
+
+	if request.SignedStreamName != &quot;&quot; {
+		c.log.With(&quot;identifier&quot;, common.FilteredIdentifier(identifier)).Debug(&quot;subscribed verified&quot;, &quot;stream&quot;, stream)
+	} else {
+		c.log.With(&quot;identifier&quot;, common.FilteredIdentifier(identifier)).Debug(&quot;&quot;, &quot;stream&quot;, stream)
+	}
+
+	var state map[string]string
+
+	if request.whisper {
+		state = make(map[string]string)
+		state[common.WHISPER_STREAM_STATE] = stream
+	}
+
+	if request.presence {
+		if state == nil {
+			state = make(map[string]string)
+		}
+		state[common.PRESENCE_STREAM_STATE] = stream
+	}
+
+	return &amp;common.CommandResult{
+		Status:             common.SUCCESS,
+		Transmissions:      []string{common.ConfirmationMessage(identifier)},
+		Streams:            []string{stream},
+		DisconnectInterest: -1,
+		IState:             state,
+	}, nil
+}
+</code></pre>
+<p>The important detail for delivery: even in this mode, the result is a <code>CommandResult.Streams</code> list, and the node feeds it through the same <code>handleCommandReply</code> loop shown above. So every subscription converges on the same hub and broker path regardless of whether Ruby or the stream controller produced the stream name.</p>
+<h2>The Aha Moment</h2>
+<p><strong>Aha:</strong> The stream is not a first-class object; it is a name that exists only as a count in the broker tracker and as a key in the hub's nested maps. The broker reference count is the load-bearing part: it is what decides whether a node receives a stream's cross-node traffic, and it is shared by every subscription path, RPC or not. Ordering is decided later, in the hub fan-out; here the code only decides membership.</p>
+<h2>Cross-References</h2>
+<ul><li><a href="./02-hub-fanout-send-queue.html">02-hub-fanout-send-queue.md</a> — what happens once a session is in the gate map.</li><li><a href="./03-cross-node-broadcasts.html">03-cross-node-broadcasts.md</a> — the pub/sub channel the tracker subscribes to.</li><li><a href="./05-session-resume-offsets.html">05-session-resume-offsets.md</a> — how these same subscription maps are restored on reconnect.</li></ul>
+<p>Continue to <a href="./02-hub-fanout-send-queue.html">02-hub-fanout-send-queue.md</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>02 -- The Store Crate: Object Layout, Opaque Versions, CAS, and Leases -- walgit</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/walgit/docs</span>
+    <div class="nav-actions">
+      <a href="00-object-store-repository.html" class="nav-breadcrumb">00 -- Object Store as Repository: the WAL and the Manifest CAS</a><a href="01-proto-keys.html" class="nav-breadcrumb">01 -- The Proto Contract: Manifest, Log Entries, and Bucket Keys</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="01-proto-keys.html" class="nav-btn" title="Previous: 01 -- The Proto Contract: Manifest, Log Entries, and Bucket Keys">← prev</a>
+      <a href="03-wal-crate.html" class="nav-btn nav-btn-next" title="Next: 03 -- The WAL Crate: Sync Levels, Group Commit, and the Single-Flight Publisher">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>02 -- The Store Crate: Object Layout, Opaque Versions, CAS, and Leases</h1>
+<p><code>walgit-store</code> is the only crate that talks to a bucket. It defines an <code>ObjectStore</code> trait with exactly the primitives walgit needs to build linearizable coordination (a system is linearizable when every operation appears to happen atomically at one instant, the linearization point) on top of Amazon S3, Google Cloud Storage (GCS), or an in-memory store for tests: versioned reads, conditional writes, conditional deletes, range reads, streaming bodies, and prefix listing. Everything above this crate treats object versions as opaque tokens and never parses them.</p>
+<h2>The trait</h2>
+<p>The store trait is deliberately small. A backend implements <code>get</code>, <code>head</code>, <code>put</code>, <code>delete</code>, <code>list</code>, <code>list_prefixes</code>, and a few optional acceleration hooks:</p>
+<pre><code class="language-rust">// Source: crates/walgit-store/src/lib.rs, lines 198-217
+#[async_trait::async_trait]
+pub trait ObjectStore: Send + Sync + &#x27;static {
+    /// Human-readable backend id for logs/metrics (&quot;gcs&quot;, &quot;s3&quot;, &quot;memory&quot;).
+    fn backend(&amp;self) -&gt; &amp;&#x27;static str;
+    /// Whether this store is a prefixing wrapper. Used to avoid duplicate
+    /// operation spans when prefixes are nested.
+    fn is_prefixed(&amp;self) -&gt; bool {
+        false
+    }
+
+    async fn get(&amp;self, key: &amp;str, opts: GetOptions) -&gt; Result&lt;GetResult&gt;;
+
+    /// Metadata only. `Ok(None)` if absent.
+    async fn head(&amp;self, key: &amp;str) -&gt; Result&lt;Option&lt;ObjectMeta&gt;&gt;;
+
+    async fn put(&amp;self, key: &amp;str, body: PutBody, opts: PutOptions) -&gt; Result&lt;ObjectMeta&gt;;
+
+    /// Delete. `if_version` = CAS delete. Deleting an absent object is `Ok(())`
+    /// when unconditional and `NotFound` when conditional.
+    async fn delete(&amp;self, key: &amp;str, if_version: Option&lt;Version&gt;) -&gt; Result&lt;()&gt;;
+</code></pre>
+<p>The <code>Version</code> type is an opaque string wrapper. It is a GCS generation, an S3 or rustfs (an S3-compatible store for local dev and CI) <code>ETag</code> (entity tag), or a counter in the memory backend, and callers only ever compare it for equality. <code>PutMode</code> encodes the three write forms:</p>
+<pre><code class="language-rust">// Source: crates/walgit-store/src/lib.rs, lines 108-117
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum PutMode {
+    /// Unconditional overwrite.
+    #[default]
+    Overwrite,
+    /// Only if the object does not exist (if-generation-match: 0 / If-None-Match: *).
+    Create,
+    /// Only if the current version equals the given one (CAS).
+    Update(Version),
+}
+</code></pre>
+<p>A <code>Create</code> maps to the object store's if-absent semantics; an <code>Update(version)</code> maps to a conditional write whose failure surfaces as <code>StoreError::PreconditionFailed</code>. That single error type is what the whole CAS machinery keys off.</p>
+<div class="mermaid">
+%%{init: {&quot;flowchart&quot;: {&quot;htmlLabels&quot;: false}}}%%
+flowchart TD
+  P[&quot;PutMode&quot;] --&gt; O[&quot;Overwrite&quot;]
+  P --&gt; C[&quot;Create if absent&quot;]
+  P --&gt; U[&quot;Update on version CAS&quot;]
+  G[&quot;get opts&quot;] --&gt; R[&quot;range&quot;]
+  G --&gt; INM[&quot;if_none_match&quot;]
+  G --&gt; IM[&quot;if_match&quot;]
+  V[&quot;Version&quot;] --&gt; V1[&quot;GCS generation&quot;]
+  V --&gt; V2[&quot;S3 ETag&quot;]
+  V --&gt; V3[&quot;memory counter&quot;]
+
+</div>
+<h2>The CAS loop</h2>
+<p>The generic compare-and-swap lives in <code>coord.rs</code> as <code>cas_update</code>: a read-modify-write loop that re-reads on <code>PreconditionFailed</code> and backs off with jitter on <code>Retryable</code>.</p>
+<pre><code class="language-rust">// Source: crates/walgit-store/src/coord.rs, lines 63-105
+    let mut attempts: u32 = 0;
+    loop {
+        let current = get_message::&lt;T&gt;(store, key).await?;
+        let new = match f(current.as_ref().map(|(_, t)| t)) {
+            Ok(None) =&gt; return Ok(None),
+            Ok(Some(new)) =&gt; new,
+            Err(e) =&gt; return Err(e),
+        };
+        let mode = match &amp;current {
+            Some((meta, _)) =&gt; PutMode::Update(meta.version.clone()),
+            None =&gt; PutMode::Create,
+        };
+        let encoded = new.encode_to_vec();
+        match store.put_bytes(key, encoded, mode).await {
+            Ok(meta) =&gt; return Ok(Some((meta, new))),
+            Err(StoreError::PreconditionFailed { .. }) =&gt; {
+                attempts += 1;
+                if attempts &gt; max_retries {
+                    return Err(CoordError::RetriesExhausted {
+                        key: key.to_string(),
+                        attempts,
+                    });
+                }
+                // re-read on next iteration
+            }
+            Err(StoreError::Retryable(_)) =&gt; {
+                attempts += 1;
+                if attempts &gt; max_retries {
+                    return Err(CoordError::RetriesExhausted {
+                        key: key.to_string(),
+                        attempts,
+                    });
+                }
+                let d = crate::util::backoff(
+                    attempts - 1,
+                    Duration::from_millis(5),
+                    Duration::from_millis(100),
+                );
+                tokio::time::sleep(d).await;
+            }
+            Err(e) =&gt; return Err(CoordError::Store(e)),
+        }
+    }
+</code></pre>
+
+<div class="mermaid">
+%%{init: {&quot;flowchart&quot;: {&quot;htmlLabels&quot;: false}}}%%
+flowchart TD
+  S[&quot;start&quot;] --&gt; RD[&quot;read current object and version&quot;]
+  RD --&gt; F[&quot;compute new value&quot;]
+  F --&gt; MODE{&quot;current present&quot;}
+  MODE --&gt;|&quot;no&quot;| CR[&quot;put Create&quot;]
+  MODE --&gt;|&quot;yes&quot;| UP[&quot;put Update version&quot;]
+  CR --&gt; RES{&quot;result&quot;}
+  UP --&gt; RES
+  RES --&gt;|&quot;ok&quot;| DONE[&quot;return meta and value&quot;]
+  RES --&gt;|&quot;PreconditionFailed&quot;| INC[&quot;attempts plus one&quot;]
+  INC --&gt; CHK{&quot;attempts over max&quot;}
+  CHK --&gt;|&quot;no&quot;| RD
+  CHK --&gt;|&quot;yes&quot;| ERR[&quot;RetriesExhausted&quot;]
+  RES --&gt;|&quot;Retryable&quot;| SLEEP[&quot;backoff sleep&quot;]
+  SLEEP --&gt; RD
+
+</div>
+<p>The manifest CAS in the WAL crate is a specialization of this loop with extra verification between re-reads; the generic form is what makes the semantics testable in isolation.</p>
+<h2>Leases</h2>
+<p>The only cross-instance mutex is a lease: a protobuf object under <code>leases/<name>.pb</code> acquired by <code>Create</code>, or by <code>Update</code> over an expired lease, and renewed by a CAS heartbeat. The heartbeat increments the epoch and CAS-extends the expiry; a <code>PreconditionFailed</code> means someone stole it.</p>
+<pre><code class="language-rust">// Source: crates/walgit-store/src/coord.rs, lines 203-221
+    pub async fn heartbeat(&amp;mut self, ttl: Duration) -&gt; Result&lt;(), CoordError&gt; {
+        let now = SystemTime::now();
+        self.epoch += 1;
+        let lease = make_lease(&amp;self.holder, &amp;self.purpose, now, ttl, self.epoch);
+        let encoded = lease.encode_to_vec();
+        match self
+            .store
+            .put_bytes(&amp;self.key, encoded, PutMode::Update(self.version.clone()))
+            .await
+        {
+            Ok(meta) =&gt; {
+                self.version = meta.version;
+                self.expires_at = now + ttl;
+                Ok(())
+            }
+            Err(StoreError::PreconditionFailed { .. }) =&gt; Err(CoordError::LeaseLost),
+            Err(e) =&gt; Err(CoordError::Store(e)),
+        }
+    }
+</code></pre>
+<p>There is a small clock-skew grace: <code>LEASE_SKEW_TOLERANCE</code> is two seconds (<code>crates/walgit-store/src/coord.rs:23</code>), so a holder whose clock is slightly ahead does not have its lease ripped away while still active. A background heartbeat task calls this every interval until the guard is released or the lease is lost. On drop, the guard performs a best-effort CAS delete inside a Tokio runtime.</p>
+<div class="mermaid">
+%%{init: {&quot;sequence&quot;: {&quot;htmlLabels&quot;: false}}}%%
+sequenceDiagram
+  participant A as &quot;holder A&quot;
+  participant B as &quot;object store&quot;
+  participant C as &quot;contender C&quot;
+  A-&gt;&gt;B: &quot;put lease Create&quot;
+  B--&gt;&gt;A: &quot;ok version one&quot;
+  A-&gt;&gt;B: &quot;put lease Update version one heartbeat&quot;
+  B--&gt;&gt;A: &quot;ok version two&quot;
+  C-&gt;&gt;B: &quot;put lease Update version one&quot;
+  B--&gt;&gt;C: &quot;PreconditionFailed&quot;
+  C-&gt;&gt;C: &quot;wait until expiry plus skew&quot;
+  C-&gt;&gt;B: &quot;put lease Update version two&quot;
+  B--&gt;&gt;C: &quot;ok version three&quot;
+  A-&gt;&gt;B: &quot;put lease Update version two&quot;
+  B--&gt;&gt;A: &quot;LeaseLost&quot;
+
+</div>
+<p>The heartbeat task notices <code>LeaseLost</code>, marks the guard released, and stops. This is exactly the machinery the maintainer uses to ensure only one host runs compaction for a repository at a time.</p>
+<h2>The Aha Moment</h2>
+<p><strong>Aha:</strong> The store crate is where the "no leader" claim actually lands. Everything walgit needs for coordination is three store primitives — conditional write, conditional read, conditional delete — plus an opaque version token. The object store already provides those as native, strongly-consistent operations (S3 <code>ETag</code> preconditions, GCS generations). walgit does not build a consensus layer; it just names the object-store primitive precisely and puts the burden of linearizability (a system is linearizable when every operation appears to happen atomically at one instant, the linearization point) on a service that already guarantees it for one key at a time.</p>
+<p>The WAL crate turns these primitives into publishing, sync levels, and the single-flight group commit, covered next in <a href="./03-wal-crate.html">03-wal-crate.md</a>. The manifest messages those loops serialize are in <a href="./01-proto-keys.html">01-proto-keys.md</a>.</p>
+<p>Continue to <a href="./03-wal-crate.html">03-wal-crate.md</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

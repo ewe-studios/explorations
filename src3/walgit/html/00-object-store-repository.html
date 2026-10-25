@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>00 -- Object Store as Repository: the WAL and the Manifest CAS -- walgit</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/walgit/docs</span>
+    <div class="nav-actions">
+      
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      
+      <a href="01-proto-keys.html" class="nav-btn nav-btn-next" title="Next: 01 -- The Proto Contract: Manifest, Log Entries, and Bucket Keys">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>00 -- Object Store as Repository: the WAL and the Manifest CAS</h1>
+<p>walgit turns a plain object-store bucket into a git server. There is no database to hold refs, no leader to elect, and no local disk that matters. The bucket IS the repository, and the single linearization point (a system is linearizable when every operation appears to happen atomically at one instant, the linearization point) in the whole system is a tiny protobuf (protocol buffers) file called <code>manifest.pb</code> that is rewritten with a compare-and-swap (CAS). This document explains that model: the object layout, the write path, the read path, and the invariants that keep every instance consistent.</p>
+<h2>The shape of the system</h2>
+<p>The README states the premise directly:</p>
+<pre><code class="language-text"># Source: README.md (source repo), lines 3-6
+walgit hosts git repositories with **no database, no leader and no local state that matters**. You run a
+single binary, point it at an S3 or GCS bucket, and you have: smart HTTP (v0/v2) fetch and push, Git LFS, a browsing web UI, a JSON API with an SDK, per-repository push policy,
+webhooks — and a server that scales to repositories **larger than the machine it runs on**. Every machine that
+runs walgit is a disposable cache; the bucket is the repository.
+</code></pre>
+<p>The acronyms here expand to Simple Storage Service (S3), Google Cloud Storage (GCS), Hypertext Transfer Protocol (HTTP), Git Large File Storage (LFS), and JavaScript Object Notation (JSON); TTL is time to live.</p>
+<p>Everything for one repository lives under <code>repos/<owner>/<repo>/</code>. The proto crate fixes those keys as constants, so every instance agrees on where objects are without any coordination:</p>
+<pre><code class="language-rust">// Source: crates/walgit-proto/src/lib.rs, lines 23-34
+pub mod keys {
+    /// Prefix for a repository, always with trailing slash.
+    pub fn repo_prefix(owner: &amp;str, name: &amp;str) -&gt; String {
+        format!(&quot;repos/{owner}/{name}/&quot;)
+    }
+    pub const MANIFEST: &amp;str = &quot;manifest.pb&quot;;
+    pub const LOG_DIR: &amp;str = &quot;log/&quot;;
+    pub const WAL_DIR: &amp;str = &quot;wal/&quot;;
+    pub const CHECKPOINTS_DIR: &amp;str = &quot;checkpoints/&quot;;
+    pub const LEASES_DIR: &amp;str = &quot;leases/&quot;;
+    pub const BUNDLES_DIR: &amp;str = &quot;bundles/&quot;;
+    pub const BUNDLE_LIST: &amp;str = &quot;bundles/list.pb&quot;;
+</code></pre>
+
+<div class="mermaid">
+%%{init: {&quot;flowchart&quot;: {&quot;htmlLabels&quot;: false}}}%%
+flowchart TD
+  R[&quot;repos owner repo&quot;] --&gt; M[&quot;manifest.pb&quot;]
+  R --&gt; L[&quot;log seq.pb&quot;]
+  R --&gt; W[&quot;wal checksum.pack and idx&quot;]
+  R --&gt; C[&quot;checkpoints seq&quot;]
+  R --&gt; LE[&quot;leases name.pb&quot;]
+  R --&gt; P[&quot;policy.json&quot;]
+  R --&gt; LF[&quot;lfs objects aa bb oid&quot;]
+  M --&gt; M1[&quot;head_seq&quot;]
+  M --&gt; M2[&quot;log_segments&quot;]
+  M --&gt; M3[&quot;packs&quot;]
+  M --&gt; M4[&quot;checkpoint&quot;]
+  W --&gt; W1[&quot;immutable&quot;]
+  L --&gt; L1[&quot;immutable&quot;]
+  M --&gt; M5[&quot;mutable&quot;]
+
+</div>
+<p>Three things stand out. First, <code>wal/<checksum>.pack</code>, <code>.idx</code>, <code>.rev</code>, <code>.bitmap</code>, and <code>.commit-graph</code> are immutable and content-addressed: their names are their checksums, so a write can never corrupt an existing object. Second, the log segments under <code>log/<seq>.pb</code> are also immutable once a later entry commits. Third, the only mutable control objects are <code>manifest.pb</code> and the leases (plus the policy and settings objects, which are CAS'd independently). The README compresses this into the layout that matters:</p>
+<pre><code class="language-text"># Source: README.md (source repo), lines 89-94
+**The repository is a WAL in the bucket.** Under `repos/&lt;owner&gt;/&lt;repo&gt;/`: `manifest.pb` (tiny, CAS-rewritten:
+head sequence, the live pack set, checkpoint pointer, settings — *the linearization point*), `log/&lt;seq&gt;.pb`
+(immutable entries: PUSH, COMPACT, CHECKPOINT, SETTINGS), `wal/&lt;checksum&gt;.pack|.idx|.rev|.bitmap|.commit-graph`
+(immutable, content-addressed packs with their side-files), `checkpoints/&lt;seq&gt;/` (folded ref snapshot + pack
+inventory so a cold start is snapshot + tail), `leases/` (CAS with TTL — the only cross-instance
+mutex), `policy.json`, `lfs/objects/`, `events/cursor.json`.
+</code></pre>
+<h2>The write path: claim, upload, CAS</h2>
+<p>A push is not visible until the manifest moves. The writer first ingests the pack, checks connectivity and policy, uploads the immutable pack and its index, then claims a log slot with a conditional create and finally CASes the manifest. The slot claim is where the "log entry is immutable once committed" property is enforced. A slot at <code>head_seq + 1</code> is claimed by a <code>Create</code> (fail if present); if another writer already put a file there but never moved the manifest, the slot is an orphan and can be burned after a short grace:</p>
+<pre><code class="language-rust">// Source: crates/walgit-wal/src/publish.rs, lines 243-277
+    let mut seq = head_seq + 1;
+    let mut burned: Vec&lt;(String, walgit_store::Version)&gt; = Vec::new();
+    loop {
+        let key = keys::log_segment_key(seq);
+        let encoded = encode(seq);
+        let (mut entries, consumed) = frame::decode_entries(&amp;encoded)
+            .map_err(|error| WalError::Corrupt(format!(&quot;candidate log: {error}&quot;)))?;
+        if consumed != encoded.len() || entries.is_empty() {
+            return Err(WalError::Corrupt(&quot;incomplete candidate log&quot;.into()));
+        }
+        // Content-based version tokens can repeat after delete/recreate. A
+        // fresh nonce prevents a delayed delete from matching a later attempt.
+        if let Some(first) = entries.first_mut() {
+            first.meta.insert(
+                &quot;walgit.publication_nonce&quot;.into(),
+                uuid::Uuid::new_v4().to_string(),
+            );
+        }
+        let bytes = frame::encode_entries(&amp;entries);
+        match store
+            .put(&amp;key, PutBody::Bytes(bytes.clone()), PutMode::Create.into())
+            .await
+        {
+            Ok(meta) =&gt; {
+                return Ok(ClaimOutcome::Claimed(LogSlot {
+                    key,
+                    version: meta.version,
+                    first_seq: seq,
+                    bytes,
+                    burned,
+                }));
+            }
+            Err(StoreError::PreconditionFailed { .. }) =&gt; {}
+            Err(e) =&gt; return Err(WalError::Store(e)),
+        }
+</code></pre>
+
+<div class="mermaid">
+%%{init: {&quot;sequence&quot;: {&quot;htmlLabels&quot;: false}}}%%
+sequenceDiagram
+  participant G as &quot;git client&quot;
+  participant S as &quot;walgit serve&quot;
+  participant B as &quot;object store&quot;
+  G-&gt;&gt;S: &quot;POST git-receive-pack with pack bytes&quot;
+  S-&gt;&gt;S: &quot;index-pack then check connectivity and policy&quot;
+  S-&gt;&gt;B: &quot;PUT wal pack and idx immutable&quot;
+  S-&gt;&gt;B: &quot;PUT log seq pb Create&quot;
+  B--&gt;&gt;S: &quot;PreconditionFailed if slot taken&quot;
+  S-&gt;&gt;B: &quot;CAS manifest head_seq&quot;
+  B--&gt;&gt;S: &quot;412 on manifest conflict&quot;
+  S-&gt;&gt;S: &quot;re-sync and re-verify every old value&quot;
+  S-&gt;&gt;B: &quot;CAS manifest again&quot;
+  B--&gt;&gt;G: &quot;ok report-status&quot;
+
+</div>
+<p>The key property: a crash between the log PUT and the manifest CAS leaves an orphan slot, never a visible half-commit. The manifest CAS is the commit. A 412 (precondition failed) means another writer won; the loser re-reads the manifest, re-validates every ref's old value, and retries. This is documented in the README as the push contract.</p>
+<h2>The read path: revalidate first, then apply what changed</h2>
+<p>Every read starts with a conditional GET on <code>manifest.pb</code>. If the version is unchanged the server serves from its local cache with no further work. If it changed, the server applies the new log entries. The freshness check lives in the WAL (write-ahead log) crate:</p>
+<pre><code class="language-rust">// Source: crates/walgit-wal/src/sync.rs, lines 90-114
+pub(crate) async fn freshness_check(
+    store: &amp;Prefixed,
+    known: Option&lt;&amp;Version&gt;,
+) -&gt; Result&lt;SyncOutcome, WalError&gt; {
+    let outcome = match known {
+        Some(v) =&gt; match get_message_if_changed::&lt;Manifest&gt;(store, keys::MANIFEST, v).await? {
+            None =&gt; Ok(SyncOutcome::Unchanged),
+            Some((meta, manifest)) =&gt; Ok(SyncOutcome::Changed {
+                meta_version: meta.version,
+                manifest: std::sync::Arc::new(manifest),
+            }),
+        },
+        None =&gt; match get_message::&lt;Manifest&gt;(store, keys::MANIFEST).await? {
+            None =&gt; Err(WalError::NotFound),
+            Some((meta, manifest)) =&gt; Ok(SyncOutcome::Changed {
+                meta_version: meta.version,
+                manifest: std::sync::Arc::new(manifest),
+            }),
+        },
+    }?;
+    if let SyncOutcome::Changed { manifest, .. } = &amp;outcome {
+        crate::validate_manifest(manifest)?;
+    }
+    Ok(outcome)
+}
+</code></pre>
+<p>The conditional GET (usually a 304 Not Modified answer from the object store) is why reads are consistent without coordination: there is no "eventually". A replica that has never seen a repository reads the log and has it; a replica that has seen it revalidates on every read.</p>
+<h2>The invariants</h2>
+<p>The README closes with the invariants worth memorising:</p>
+<pre><code class="language-text"># Source: README.md (source repo), lines 183-194
+* The manifest CAS is the only commit point; everything before it is invisible, everything after it is
+  idempotent and replayable.
+* Immutable objects are content-addressed; mutable control objects are explicitly named in `AGENTS.md` (manifest, leases, settings-related control and caches).
+* Every read revalidates against the bucket first; there is no &quot;eventually&quot;.
+* Local disk is a cache. Memory is a cache. The bucket is the repository.
+* Placement is configured, never inferred; refs-level reads work everywhere, object work only where placed.
+* The maintainer&#x27;s output is a pure function of (config, WAL); missing is just &quot;not built yet&quot;.
+* Cost must not scale with ref count on any hot path, nor with pack size on a machine too small for the pack.
+* Long work is a task: discoverable, attachable, narrated.
+* Correct is not sufficient: every protocol change is judged on round trips to the bucket (`docs/ROUNDTRIPS.md`).
+</code></pre>
+<h2>The Aha Moment</h2>
+<p><strong>Aha:</strong> A git server is usually a consistency problem — three-phase commit, a database mapping repos to machines, a fixed replica set. walgit deletes the problem by noticing that a git push is already an append to a log, and that an object store already gives you an atomic compare-and-swap. One conditional write on <code>manifest.pb</code> becomes the consensus. Everything else — packs, indexes, refs, caches — is either an immutable content-addressed object that can be replayed, or a local cache that can be thrown away. The whole server is just the machinery that keeps that one write correct and everything else re-derivable from it.</p>
+<p>The proto types that the manifest and log entries serialize to are the subject of <a href="./01-proto-keys.html">01-proto-keys.md</a>, and the store primitives that make the CAS real are in <a href="./02-store-crate.html">02-store-crate.md</a>.</p>
+<p>Continue to <a href="./01-proto-keys.html">01-proto-keys.md</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

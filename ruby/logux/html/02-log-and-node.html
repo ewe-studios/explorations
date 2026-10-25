@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>02 -- The log and the node: storage plus synchronization -- logux</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/logux/docs</span>
+    <div class="nav-actions">
+      <a href="00-what-is-logux.html" class="nav-breadcrumb">00 -- Logux: one action log, two directions</a><a href="01-action-and-meta.html" class="nav-breadcrumb">01 -- The action and its meta: a fact with a position</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="01-action-and-meta.html" class="nav-btn" title="Previous: 01 -- The action and its meta: a fact with a position">← prev</a>
+      <a href="03-wire-protocol.html" class="nav-btn nav-btn-next" title="Next: 03 -- The wire protocol: a small message alphabet">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>02 -- The log and the node: storage plus synchronization</h1>
+<p><code>@logux/core</code> has two kinds of machinery. The <code>Log</code> stores actions. The <code>BaseNode</code>, <code>ClientNode</code>, and <code>ServerNode</code> synchronize a log with a remote node. This document covers both.</p>
+<h2>The Log</h2>
+<p>The <code>Log</code> constructor takes a <code>nodeId</code> and a <code>store</code>. The store implements the <code>LogStore</code> contract. <code>MemoryStore</code> is the in-memory implementation.</p>
+<pre><code class="language-js">// Source: logux-core/log/index.js, lines 114-135
+export class Log {
+  constructor(opts = {}) {
+    if (process.env.NODE_ENV !== &#x27;production&#x27;) {
+      if (typeof opts.nodeId === &#x27;undefined&#x27;) {
+        throw new Error(&#x27;Expected node ID&#x27;)
+      }
+      if (typeof opts.store !== &#x27;object&#x27;) {
+        throw new Error(&#x27;Expected store&#x27;)
+      }
+      if (opts.nodeId.includes(&#x27; &#x27;)) {
+        throw new Error(&#x27;Space is prohibited in node ID&#x27;)
+      }
+    }
+
+    this.nodeId = opts.nodeId
+
+    this.lastTime = 0
+
+    this.store = opts.store
+
+    this.emitter = createNanoEvents()
+  }
+</code></pre>
+<p>The node identifier cannot contain a space, because the action ID uses the space to separate the time part from the node identifier.</p>
+<p><code>Log#add</code> accepts a single action or a batch. It runs every <code>preadd</code> first, then writes actions with reasons to the store in one call. This lets the store write a batch in one transaction.</p>
+<pre><code class="language-js">// Source: logux-core/log/index.js, lines 137-159
+  async add(input, inputMeta = {}) {
+    let wasBatched = Array.isArray(input)
+    let entries = wasBatched ? input : [[input, inputMeta]]
+
+    // Every `preadd` is called before the write, since the store needs
+    // the final reasons of all actions to know what to write. As a result,
+    // `add` of the first action is called after `preadd` of the last one.
+    let newIds = []
+    let writing = []
+    let checking = []
+    for (let i = 0; i &lt; entries.length; i++) {
+      let [action, meta = {}] = entries[i]
+      let newId = prepare(this, action, meta)
+      newIds.push(newId)
+      entries[i] = [action, meta]
+      if (meta.reasons.length &gt; 0) {
+        writing.push(entries[i])
+      } else if (!newId) {
+        // Actions without reasons are not stored, but an action with the same
+        // ID could be stored before with a reason
+        checking.push(meta.id)
+      }
+    }
+</code></pre>
+<h2>The MemoryStore and the order</h2>
+<p><code>MemoryStore</code> keeps <code>entries</code> sorted by <code>isFirstOlder</code>. When a new entry arrives, <code>addEntry</code> inserts it before the first entry that is not older, so the array stays in log order.</p>
+<pre><code class="language-js">// Source: logux-core/memory-store/index.js, lines 107-134
+function addEntry(store, action, meta) {
+  let entry = [action, meta]
+  let id = meta.id
+
+  let list = store.entries
+  for (let i = 0; i &lt; list.length; i++) {
+    let [, otherMeta] = list[i]
+    if (id === otherMeta.id) {
+      return false
+    } else if (!isFirstOlder(otherMeta, meta)) {
+      forEachIndex(meta, index =&gt; {
+        checkIndex(store, index)
+        let indexList = store.indexes[index].entries
+        let j = indexList.findIndex(item =&gt; !isFirstOlder(item[1], meta))
+        indexList.splice(j, 0, entry)
+      })
+      list.splice(i, 0, entry)
+      return insert(store, entry)
+    }
+  }
+
+  forEachIndex(meta, index =&gt; {
+    checkIndex(store, index)
+    store.indexes[index].entries.push(entry)
+  })
+  list.push(entry)
+  return insert(store, entry)
+}
+</code></pre>
+<p><code>isFirstOlder</code> compares <code>time</code> first, then the node identifier, then the encoded time part of the identifier. It is the deterministic tie-break rule.</p>
+<pre><code class="language-js">// Source: logux-core/is-first-older/index.js, lines 3-41
+export function isFirstOlder(firstMeta, secondMeta) {
+  if (firstMeta &amp;&amp; !secondMeta) {
+    return false
+  } else if (!firstMeta &amp;&amp; secondMeta) {
+    return true
+  }
+
+  if (typeof firstMeta === &#x27;string&#x27;) {
+    firstMeta = { id: firstMeta, time: idToTime(firstMeta) }
+  }
+  if (typeof secondMeta === &#x27;string&#x27;) {
+    secondMeta = { id: secondMeta, time: idToTime(secondMeta) }
+  }
+
+  if (firstMeta.time &gt; secondMeta.time) {
+    return false
+  } else if (firstMeta.time &lt; secondMeta.time) {
+    return true
+  }
+
+  let first = firstMeta.id.split(&#x27; &#x27;)
+  let second = secondMeta.id.split(&#x27; &#x27;)
+
+  if (first[1] &gt; second[1]) {
+    return false
+  } else if (first[1] &lt; second[1]) {
+    return true
+  }
+
+  let firstIdTime = fromCompat(first[0])
+  let secondIdTime = fromCompat(second[0])
+  if (firstIdTime &gt; secondIdTime) {
+    return false
+  } else if (firstIdTime &lt; secondIdTime) {
+    return true
+  }
+
+  return false
+}
+</code></pre>
+<h2>The node state machine</h2>
+<p><code>BaseNode</code> owns the synchronization. It reads the store's last-synced watermarks, listens to the connection, and keeps a state: <code>disconnected</code>, <code>connecting</code>, <code>sending</code>, or <code>synchronized</code>. It also declares the protocol versions (<code>minProtocol</code>/<code>localProtocol</code>, both 7).</p>
+<pre><code class="language-js">// Source: logux-core/base-node/index.js, lines 41-49
+export class BaseNode {
+  constructor(nodeId, log, connection, options = {}) {
+    this.remoteNodeId = undefined
+    this.remoteProtocol = undefined
+    this.remoteSubprotocol = undefined
+
+    this.minProtocol = 7
+    this.localProtocol = 7
+    this.localNodeId = nodeId
+</code></pre>
+<p>The node initializes by loading the watermarks and the last <code>added</code> value from the store. On a fresh process, these resume where the previous process left off.</p>
+<pre><code class="language-js">// Source: logux-core/base-node/index.js, lines 166-176
+  async initialize() {
+    let [synced, added] = await Promise.all([
+      this.log.store.getLastSynced(),
+      this.log.store.getLastAdded()
+    ])
+    this.initialized = true
+    this.lastSent = synced.sent
+    this.lastReceived = synced.received
+    this.lastAddedCache = added
+    if (this.connection.connected) this.onConnect()
+  }
+</code></pre>
+<p>When the log adds actions, the node listens to the <code>batch</code> event and calls <code>onAdd</code>. That method filters the actions through <code>onSend</code> and sends them as a <code>sync</code> message.</p>
+<pre><code class="language-js">// Source: logux-core/base-node/index.js, lines 182-212
+  async onAdd(entries) {
+    // `ready` message reports the cache, so it should be updated
+    // even for the actions, which we will not send
+    for (let [, meta] of entries) {
+      if (this.lastAddedCache &lt; meta.added) {
+        this.lastAddedCache = meta.added
+      }
+    }
+
+    if (!this.authenticated) return
+
+    let added
+    let sending = []
+    for (let entry of entries) {
+      let meta = entry[1]
+      if (this.received &amp;&amp; this.received[meta.id]) {
+        delete this.received[meta.id]
+        continue
+      }
+
+      if (typeof meta.added !== &#x27;undefined&#x27;) {
+        if (typeof added === &#x27;undefined&#x27; || meta.added &gt; added) {
+          added = meta.added
+        }
+      }
+      sending.push(entry)
+    }
+
+    if (sending.length === 0) return
+
+    if (this.options.onSend) {
+</code></pre>
+<p><code>ClientNode</code> and <code>ServerNode</code> add defaults on top of <code>BaseNode</code>. The client fixes time and sends the <code>connect</code> message first. The server never fixes time.</p>
+<pre><code class="language-js">// Source: logux-core/client-node/index.js, lines 3-17
+const DEFAULT_OPTIONS = {
+  fixTime: true,
+  ping: 10000,
+  timeout: 70000
+}
+
+export class ClientNode extends BaseNode {
+  constructor(nodeId, log, connection, options = {}) {
+    super(nodeId, log, connection, {
+      ...options,
+      fixTime: options.fixTime ?? DEFAULT_OPTIONS.fixTime,
+      ping: options.ping ?? DEFAULT_OPTIONS.ping,
+      timeout: options.timeout ?? DEFAULT_OPTIONS.timeout
+    })
+  }
+</code></pre>
+
+<pre><code class="language-js">// Source: logux-core/server-node/index.js, lines 9-24
+export class ServerNode extends BaseNode {
+  constructor(nodeId, log, connection, options = {}) {
+    super(nodeId, log, connection, {
+      ...options,
+      ping: options.ping ?? DEFAULT_OPTIONS.ping,
+      timeout: options.timeout ?? DEFAULT_OPTIONS.timeout
+    })
+
+    if (this.options.fixTime) {
+      throw new Error(
+        &#x27;Logux Server could not fix time. Set opts.fixTime for Client node.&#x27;
+      )
+    }
+
+    this.state = &#x27;connecting&#x27;
+  }
+</code></pre>
+<h2>How the pieces connect</h2>
+<div class="mermaid">
+%%{init: {&quot;flowchart&quot;: {&quot;htmlLabels&quot;: false}}}%%
+flowchart TD
+  A[&quot;Your code&quot;] --&gt;|&quot;log.add&quot;| B[&quot;Log&quot;]
+  B --&gt; C[&quot;LogStore MemoryStore&quot;]
+  B --&gt;|&quot;batch event&quot;| D[&quot;BaseNode&quot;]
+  D --&gt;|&quot;onSend filter&quot;| E[&quot;Connection&quot;]
+  E --&gt;|&quot;sync message&quot;| F[&quot;Remote node&quot;]
+  F --&gt; G[&quot;Remote LogStore&quot;]
+
+</div>
+<p>The state changes as actions move.</p>
+<div class="mermaid">
+%%{init: {&quot;sequence&quot;: {&quot;htmlLabels&quot;: false}}}%%
+sequenceDiagram
+  participant N as &quot;Node&quot;
+  participant C as &quot;Connection&quot;
+  N-&gt;&gt;N: &quot;state = disconnected&quot;
+  C-&gt;&gt;N: &quot;connecting event&quot;
+  N-&gt;&gt;N: &quot;state = connecting&quot;
+  C-&gt;&gt;N: &quot;connect event&quot;
+  N-&gt;&gt;N: &quot;sendConnect&quot;
+  C-&gt;&gt;N: &quot;connected handshake reply&quot;
+  N-&gt;&gt;N: &quot;syncSince lastSent&quot;
+  N-&gt;&gt;N: &quot;sendSync&quot;
+  N-&gt;&gt;N: &quot;state = sending&quot;
+  C-&gt;&gt;N: &quot;ready message&quot;
+  N-&gt;&gt;N: &quot;state = synchronized&quot;
+
+</div>
+<h2>Cross-References</h2>
+<ul><li><a href="./01-action-and-meta.html">01-action-and-meta.md</a> — the entries this log stores.</li><li><a href="./03-wire-protocol.html">03-wire-protocol.md</a> — the messages the node sends and receives.</li><li><a href="./05-offline-connect-reconnect.html">05-offline-connect-reconnect.md</a> — how the watermarks make sync resumable.</li></ul>
+<h2>The Aha Moment</h2>
+<p><strong>Aha:</strong> The node is a translator between the log and the wire. It does not store anything itself. It owns three numbers: <code>lastSent</code>, <code>lastReceived</code>, and <code>lastAddedCache</code>. Those numbers are the entire sync state. Everything else is derived: the state string, the "sending" flag, and the decision to skip an action that came back as a duplicate.</p>
+<p>Continue to <a href="./03-wire-protocol.html">03-wire-protocol.md</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>03 -- Durability: how a write survives a failure -- celld</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/celld/docs</span>
+    <div class="nav-actions">
+      <a href="00-overview.html" class="nav-breadcrumb">00 -- Overview: a distributed Durable Objects daemon</a><a href="01-the-cell.html" class="nav-breadcrumb">01 -- The Cell: one Durable Object, one SQLite database</a><a href="02-logic-executor-split.html" class="nav-breadcrumb">02 -- Logic and Executor: the decision core and the effect shell</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="02-logic-executor-split.html" class="nav-btn" title="Previous: 02 -- Logic and Executor: the decision core and the effect shell">← prev</a>
+      <a href="04-workers-execution.html" class="nav-btn nav-btn-next" title="Next: 04 -- Workers: V8 isolates and stateless execution">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>03 -- Durability: how a write survives a failure</h1>
+<p>celld promises a recovery point objective of zero (RPO = 0): a response that reached a client proves the writes behind it, so no acknowledged write can be lost in a crash. The mechanism is an output gate, not a faster disk. A response leaves the node only after the write that produced it is proven durable.</p>
+<p>Every channel that can reveal a write to the outside world is a variant of the <code>Channel</code> type. A response, a <code>fetch</code>, a WebSocket frame, a service call, a Queue batch, and even the <code>storage.sync()</code> promise all take a ticket through the same gate:</p>
+<pre><code class="language-rust">// Source: crates/logic/types.rs, lines 417-450
+pub enum Channel {
+    /// The answer to the cell event itself: an HTTP response, a cell RPC
+    /// reply, or a peer-served reply. A response whose body streams takes one
+    /// ticket for its head and one more for each chunk, because a chunk the
+    /// producer makes after the release can reveal a later write.
+    Response,
+    /// `fetch()` from a handler to a third party.
+    Fetch,
+    /// A frame from a `webSocketMessage` handler, captured by the host and
+    /// released from the cell&#x27;s barrier queue.
+    WsHibernatable,
+    /// A frame on a socket the isolate opened and polls itself. It cannot be
+    /// captured, because the handler may be awaiting the reply to the very
+    /// frame being held, so it waits on a durability ticket instead.
+    WsSelf,
+    /// A service-binding call, `env.NAME.fetch()` or its RPC form.
+    Service,
+    /// A call to another cell: its `fetch` or one of its RPC methods.
+    CellRpc,
+    /// An operation that changes an application R2 bucket.
+    R2,
+    /// A connection, write, TLS upgrade, or shutdown on a raw TCP socket.
+    Tcp,
+    /// A leased Queue batch leaving its broker for a consumer Worker.
+    Queue,
+    /// The promise `storage.sync()` returns to the handler. Nothing leaves
+    /// the process on this route, but the application treats the settled
+    /// promise as a durability statement and acts on it through routes the
+    /// gate cannot hold: a log line, local work, or the next checkpoint. A
+    /// promise that settles before the proof lets the application discard a
+    /// recovery path it still needs. So the promise takes the same ticket an
+    /// egress takes, and its release is the promise settling.
+    Sync,
+}
+</code></pre>
+<p>The <code>Tcp</code> route is a raw TCP socket: a connection, a write, a TLS (Transport Layer Security) upgrade, or a shutdown.</p>
+<p>There are two proof mechanisms. The fleet's follower ensemble arbitrates a takeover, while the bucket only stores. A bucket proof must therefore verify ownership before any reveal, and a fleet proof does not need that extra read:</p>
+<pre><code class="language-rust">// Source: crates/logic/types.rs, lines 475-478
+pub enum ProofSource {
+    Fleet,
+    Bucket,
+}
+</code></pre>
+<h2>The write path</h2>
+<p>A handler writes to the cell's SQLite database. The output gate opens a write barrier. The LTX log replicates to the fleet bucket. When a proof lands, the gate releases the response.</p>
+<div class="mermaid">
+%%{init: {&quot;flowchart&quot;: {&quot;htmlLabels&quot;: false}}}%%
+flowchart TD
+    Handler[&quot;Handler&quot;] --&gt;|&quot;write&quot;| Db[&quot;SQLite database&quot;]
+    Db --&gt; Gate[&quot;Output gate barrier&quot;]
+    Gate --&gt;|&quot;replicate&quot;| Ltx[&quot;LTX log&quot;]
+    Ltx --&gt; Bucket[&quot;Fleet bucket&quot;]
+    Bucket --&gt;|&quot;proof&quot;| Gate
+    Gate --&gt;|&quot;release&quot;| Client[&quot;Client response&quot;]
+
+</div>
+<p>The output gate checks authority at release time, not only at request start. A handler can start under a live node lease and reach its output after that lease expired. Releasing then would reveal work that a successor owner may already have replaced:</p>
+<pre><code class="language-rust">// Source: crates/logic/output_gate.rs, lines 92-113
+    pub(crate) fn output(
+        &amp;mut self,
+        request: RequestId,
+        channel: Channel,
+        position: Option&lt;u64&gt;,
+        observed: Option&lt;u64&gt;,
+        epoch: Option&lt;Epoch&gt;,
+        effects: &amp;mut Vec&lt;Effect&gt;,
+    ) {
+        let held = Held { request, channel };
+        // Authority is checked here, not only at request start: a handler can
+        // start under a live node lease and reach its output after that lease
+        // expired. Releasing then would reveal work a successor owner can
+        // already have replaced.
+        if !self.node_authoritative() {
+            effects.push(Effect::Release {
+                request,
+                channel,
+                result: Err(RequestError::NodeFenced),
+            });
+            return;
+        }
+</code></pre>
+<p>A queued write may wait for a proof while the node keeps proving other writes. The wait is budgeted, so a sustained overload cannot make a client wait forever:</p>
+<pre><code class="language-rust">// Source: crates/logic/durability.rs, lines 55-76
+pub const QUEUED_BUDGETS: u64 = 6;
+
+/// The monotonic ms at which this wait gives up, given what the node has done
+/// so far. Recomputed on every wake, so a proof landing elsewhere on the node
+/// or the cell&#x27;s own capture beginning moves the deadline forward.
+pub fn proof_deadline(wait: &amp;ProofWait, progress: &amp;ProofProgress) -&gt; u64 {
+    if progress.capture_seq &gt;= wait.ticket {
+        // In flight: the fixed budget, from the capture that covers this
+        // write. A capture cannot cover a ticket taken after it, so the
+        // `max` only guards a clock read that raced the ticket.
+        return progress
+            .capture_started_ms
+            .max(wait.started_ms)
+            .saturating_add(wait.budget_ms);
+    }
+    // Queued: one budget after the node&#x27;s last proof, bounded in total.
+    let anchor = progress.node_proof_ms.max(wait.started_ms);
+    let cap = wait
+        .started_ms
+        .saturating_add(wait.budget_ms.saturating_mul(QUEUED_BUDGETS));
+    anchor.saturating_add(wait.budget_ms).min(cap)
+}
+</code></pre>
+<h2>Fencing with epochs</h2>
+<p>A takeover does not rely on a leader. Ownership is a conditional write on <code>cells/<cell>/own.json</code>, guarded by an etag that carries the epoch. A node that loses the cell cannot pass the condition again, and its LTX writes go to its old epoch prefix, which the new owner ignores.</p>
+<div class="mermaid">
+%%{init: {&quot;flowchart&quot;: {&quot;htmlLabels&quot;: false}}}%%
+flowchart LR
+    A[&quot;Node A, epoch 1&quot;] --&gt;|&quot;compare-and-swap (CAS) own.json etag 1&quot;| Bucket[&quot;Fleet bucket&quot;]
+    B[&quot;Node B, epoch 2&quot;] --&gt;|&quot;CAS own.json etag 2&quot;| Bucket
+    A --&gt;|&quot;LTX to e1 prefix&quot;| Old[&quot;cells/cell/ltx/e1/&quot;]
+    B --&gt;|&quot;LTX to e2 prefix&quot;| New[&quot;cells/cell/ltx/e2/&quot;]
+
+</div>
+<h2>Cross-References</h2>
+<ul><li><a href="02-logic-executor-split.html">02 -- Logic and Executor</a> — the deterministic</li></ul>
+<p>  core that makes the gate testable.</p>
+<ul><li><a href="04-workers-execution.html">04 -- Workers</a> — the handlers whose responses the</li></ul>
+<p>  gate releases.</p>
+<h2>The Aha Moment</h2>
+<p><strong>Aha:</strong> durability here is not about fsync alone. It is an output gate. A response leaves the node only after the write behind it is proven in the bucket or the follower ensemble. That is how a self-hosted system reaches RPO = 0: the client never saw a write that can vanish.</p>
+<p>Continue to <a href="04-workers-execution.html">04-workers-execution.md</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

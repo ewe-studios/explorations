@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>04 -- Broker history and replay: the offset is a cursor, not a sort -- anycable-delivery</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/anycable-delivery/docs</span>
+    <div class="nav-actions">
+      <a href="01-stream-model-subscriptions.html" class="nav-breadcrumb">01 -- The stream model: subscribe, unsubscribe, and the broker tracker</a><a href="02-hub-fanout-send-queue.html" class="nav-breadcrumb">02 -- The sharded hub and the per-connection send queue: one goroutine preserves per-stream order</a><a href="03-cross-node-broadcasts.html" class="nav-breadcrumb">03 -- Cross-node broadcasts: NATS and Redis pub/sub bound ordering</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="03-cross-node-broadcasts.html" class="nav-btn" title="Previous: 03 -- Cross-node broadcasts: NATS and Redis pub/sub bound ordering">← prev</a>
+      <a href="05-session-resume-offsets.html" class="nav-btn nav-btn-next" title="Next: 05 -- Session resume and offsets: the client drives its own catch-up">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>04 -- Broker history and replay: the offset is a cursor, not a sort</h1>
+<p>The broker keeps a bounded per-stream history and assigns each message a monotonic offset. That offset is what makes at-least-once possible, but it is important to be precise about how: the offset never reorders delivery. It is a cursor a client uses to ask "what came after N". This document reads the history code and shows exactly where a replay can succeed and where it fails with a gap.</p>
+<h2>What the broker keeps</h2>
+<p>The memory broker stores one <code>memstream</code> per stream. The hot cache is not a file and not a ring buffer: it is a growable Go slice of pointers to entries, kept in heap memory. The stream holds a monotonic offset counter, a low watermark, the stored entries, and the retention settings:</p>
+<pre><code class="language-go">// Source: broker/memory.go, lines 16-32
+type entry struct {
+	timestamp int64
+	offset    uint64
+	data      string
+}
+
+type memstream struct {
+	offset   uint64
+	deadline int64
+	// The lowest available offset in the stream
+	low   uint64
+	data  []*entry
+	ttl   int64
+	limit int
+
+	mu sync.RWMutex
+}
+</code></pre>
+<p>The retention settings come from the broker config. The defaults are 100 messages or 300 seconds per stream:</p>
+<pre><code class="language-go">// Source: broker/config.go, lines 21-32
+func NewConfig() Config {
+	return Config{
+		// 5 minutes by default
+		HistoryTTL: 5 * 60,
+		// 100 msgs by default
+		HistoryLimit: 100,
+		// 5 minutes by default
+		SessionsTTL: 5 * 60,
+		// 15 seconds by default
+		PresenceTTL: 15,
+	}
+}
+</code></pre>
+<p>Every registered message bumps the offset by one. The offset is strictly increasing for a stream. The counter field starts at zero and is incremented before use, so the first assigned offset is 1; offset 0 is the "stream is empty" sentinel:</p>
+<pre><code class="language-go">// Source: broker/memory.go, lines 34-51
+func (ms *memstream) add(data string) uint64 {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+
+	ts := time.Now().Unix()
+
+	ms.offset++
+
+	entry := &amp;entry{
+		offset:    ms.offset,
+		timestamp: ts,
+		data:      data,
+	}
+
+	ms.appendEntry(entry)
+
+	return ms.offset
+}
+</code></pre>
+<h2>How the broker runs: a struct plus one goroutine, no file</h2>
+<p>The broker is not a file and not a goroutine: it is a plain Go struct held by the server process, and the hot cache lives in heap memory. The <code>Memory</code> broker holds the per-stream map, the session cache, and the presence state, each behind its own lock:</p>
+<pre><code class="language-go">// Source: broker/memory.go, lines 236-251
+type Memory struct {
+	broadcaster    Broadcaster
+	presenter      Presenter
+	config         *Config
+	tracker        *StreamsTracker
+	epoch          string
+	streams        map[string]*memstream
+	sessions       map[string]*sessionEntry
+	expireSessions *utils.PriorityQueue[string, int64]
+
+	presence *presenceState
+
+	streamsMu  sync.RWMutex
+	sessionsMu sync.RWMutex
+	epochMu    sync.RWMutex
+}
+</code></pre>
+<p><code>Start</code> does one thing: it launches a single background goroutine, the expire loop. <code>Shutdown</code> is a no-op for the memory broker because all of its state is in process:</p>
+<pre><code class="language-go">// Source: broker/memory.go, lines 296-304
+func (b *Memory) Start(done chan (error)) error {
+	go b.expireLoop()
+
+	return nil
+}
+
+func (b *Memory) Shutdown(ctx context.Context) error {
+	return nil
+}
+</code></pre>
+<p>The expire loop wakes once per second and calls <code>expire</code>. That sweeps every stream, drops entries past the retention window, deletes any stream whose deadline has passed, and then expires the session cache and the presence state. The stream deadline is refreshed on every append to ten times the retention window, so an idle stream lives ten times longer than its history does; that keeps the offset counter valid across gaps in traffic without renumbering:</p>
+<pre><code class="language-go">// Source: broker/memory.go, lines 680-713
+func (b *Memory) expireLoop() {
+	for {
+		time.Sleep(time.Second)
+		b.expire()
+	}
+}
+
+func (b *Memory) expire() {
+	b.streamsMu.Lock()
+
+	toDelete := []string{}
+
+	now := time.Now().Unix()
+
+	for name, stream := range b.streams {
+		stream.expire()
+
+		if stream.deadline &lt; now {
+			toDelete = append(toDelete, name)
+		}
+	}
+
+	for _, name := range toDelete {
+		delete(b.streams, name)
+	}
+
+	b.streamsMu.Unlock()
+
+	// sessions expiration
+	b.expireSessionsCache()
+
+	// presence expiration
+	b.expirePresence()
+}
+</code></pre>
+<p>So the answer to "is it a goroutine or a file" is: neither. The broker is an object in the server process; its only background goroutine is this once-a-second expiry sweeper. Nothing is written to disk.</p>
+<h2>The two limits: count and age</h2>
+<p>Appending is where the count limit is applied. When the stored entries exceed the limit, the oldest entry is dropped and the low watermark moves up to the new oldest entry:</p>
+<pre><code class="language-go">// Source: broker/memory.go, lines 92-107
+func (ms *memstream) appendEntry(entry *entry) {
+	ms.data = append(ms.data, entry)
+
+	if len(ms.data) &gt; ms.limit {
+		ms.data = ms.data[1:]
+		ms.low = ms.data[0].offset
+	}
+
+	if ms.low == 0 {
+		ms.low = ms.data[0].offset
+	}
+
+	// Update memstream expiration deadline on every added item
+	// We keep memstream alive for 10 times longer than ttl (so we can re-use it and its offset)
+	ms.deadline = time.Now().Add(time.Duration(ms.ttl*10) * time.Second).Unix()
+}
+</code></pre>
+<p>The age limit is applied lazily by <code>expire</code>, which drops every entry older than the time-to-live (TTL) and moves the low watermark to the first surviving entry:</p>
+<pre><code class="language-go">// Source: broker/memory.go, lines 109-138
+func (ms *memstream) expire() {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+
+	cutIndex := 0
+
+	now := time.Now().Unix()
+	deadline := now - ms.ttl
+
+	for _, entry := range ms.data {
+		if entry.timestamp &lt; deadline {
+			cutIndex++
+			continue
+		}
+
+		break
+	}
+
+	if cutIndex &lt; 0 {
+		return
+	}
+
+	ms.data = ms.data[cutIndex:]
+
+	if len(ms.data) &gt; 0 {
+		ms.low = ms.data[0].offset
+	} else {
+		ms.low = 0
+	}
+}
+</code></pre>
+<p>Both limits move the low watermark. That is the single most important detail for at-least-once: the broker forgets from the front, so a client that asks for an offset below the low watermark cannot be replayed.</p>
+<div class="mermaid">
+%%{init: {&quot;flowchart&quot;: {&quot;htmlLabels&quot;: false}}}%%
+flowchart LR
+  A[&quot;add: offset increments&quot;] --&gt; B[&quot;appendEntry: trim to limit&quot;]
+  B --&gt; C[&quot;low watermark moves up&quot;]
+  E[&quot;expire: drop entries older than TTL&quot;] --&gt; C
+  C --&gt; G[&quot;gap: offsets below low are gone&quot;]
+
+</div>
+<h2>Assigning offsets at broadcast time</h2>
+<p>The broker's broadcast handler is where a message becomes history. If the message is transient, it is re-published without being stored and carries no offset:</p>
+<pre><code class="language-go">// Source: broker/memory.go, lines 306-320
+func (b *Memory) HandleBroadcast(msg *common.StreamMessage) (err error) {
+	if msg.Meta != nil &amp;&amp; msg.Meta.Transient {
+		b.broadcaster.Broadcast(msg)
+		return
+	}
+
+	offset := b.add(msg.Stream, msg.Data)
+
+	msg.Epoch = b.GetEpoch()
+	msg.Offset = offset
+
+	b.broadcaster.Broadcast(msg)
+
+	return
+}
+</code></pre>
+<p>So whisper (a private message routed to a single connection) and presence (a join or leave event for a stream) bypass history. They are delivered to currently connected sessions only, and a reconnecting client cannot recover them.</p>
+<h2>The replay query</h2>
+<p><code>HistoryFrom</code> is the replay operation. It checks the epoch, finds the stream, and filters everything after the requested offset:</p>
+<pre><code class="language-go">// Source: broker/memory.go, lines 349-378
+func (b *Memory) HistoryFrom(name string, epoch string, offset uint64) ([]common.StreamMessage, error) {
+	bepoch := b.GetEpoch()
+
+	if bepoch != epoch {
+		return nil, fmt.Errorf(&quot;unknown epoch: %s, current: %s&quot;, epoch, bepoch)
+	}
+
+	stream := b.get(name)
+
+	if stream == nil {
+		return nil, errors.New(&quot;stream not found&quot;)
+	}
+
+	history := []common.StreamMessage{}
+
+	err := stream.filterByOffset(offset, func(entry *entry) {
+		history = append(history, common.StreamMessage{
+			Stream: name,
+			Data:   entry.data,
+			Offset: entry.offset,
+			Epoch:  bepoch,
+		})
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return history, nil
+}
+</code></pre>
+<p>The filter itself is the gap check. If the requested offset is below the low watermark, the request is refused with an error. That is the exact point where at-least-once stops being possible:</p>
+<pre><code class="language-go">// Source: broker/memory.go, lines 140-163
+func (ms *memstream) filterByOffset(offset uint64, callback func(e *entry)) error {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+
+	if ms.low &gt; offset {
+		return fmt.Errorf(&quot;requested offset couldn&#x27;t be found: %d, lowest: %d&quot;, offset, ms.low)
+	}
+
+	if ms.low == 0 {
+		return fmt.Errorf(&quot;stream is empty&quot;)
+	}
+
+	start := (offset - ms.low) + 1
+
+	if start &gt; uint64(len(ms.data)) {
+		return fmt.Errorf(&quot;requested offset couldn&#x27;t be found: %d, latest: %d&quot;, offset, ms.data[len(ms.data)-1].offset)
+	}
+
+	for _, v := range ms.data[start:] {
+		callback(v)
+	}
+
+	return nil
+}
+</code></pre>
+
+<div class="mermaid">
+%%{init: {&quot;sequence&quot;: {&quot;htmlLabels&quot;: false}}}%%
+sequenceDiagram
+    participant C as &quot;Client&quot;
+    participant N as &quot;Node&quot;
+    participant B as &quot;Broker history&quot;
+    C-&gt;&gt;N: &quot;history offset=41 epoch=e1&quot;
+    N-&gt;&gt;B: &quot;HistoryFrom(stream, e1, 41)&quot;
+    alt &quot;low watermark &lt;= 41&quot;
+        B--&gt;&gt;N: &quot;entries 42..latest&quot;
+        N--&gt;&gt;C: &quot;replay messages&quot;
+    else &quot;low watermark &gt; 41&quot;
+        B--&gt;&gt;N: &quot;error: requested offset not found&quot;
+        N--&gt;&gt;C: &quot;reject_history&quot;
+    end
+
+</div>
+<h2>The three broker backends: legacy, memory, and NATS</h2>
+<p>The <code>Broker</code> interface has three implementations, chosen by the <code>broker.adapter</code> setting. The runner builds the broker with a plain switch:</p>
+<pre><code class="language-go">// Source: cli/runner_options.go, lines 162-183
+func WithDefaultBroker() Option {
+	return WithBroker(func(br broker.Broadcaster, pr broker.Presenter, c *config.Config, l *slog.Logger) (broker.Broker, error) {
+		if c.Broker.Adapter == &quot;&quot; || c.Broker.Adapter == &quot;none&quot; {
+			return broker.NewLegacyBroker(br), nil
+		}
+
+		switch c.Broker.Adapter {
+		case &quot;memory&quot;:
+			b := broker.NewMemoryBroker(br, pr, &amp;c.Broker)
+			return b, nil
+		case &quot;nats&quot;:
+			// TODO: Figure out a better place for this hack.
+			// We don&#x27;t want to enable JetStream by default (if NATS is used only for pub/sub),
+			// currently, we only need it when NATS is used as a broker.
+			c.EmbeddedNats.JetStream = true
+			b := broker.NewNATSBroker(br, &amp;c.Broker, &amp;c.NATS, l)
+			return b, nil
+		default:
+			return nil, errorx.IllegalArgument.New(&quot;Unsupported broker adapter: %s&quot;, c.Broker.Adapter)
+		}
+	})
+}
+</code></pre>
+<p>So there are three backends, and only three:</p>
+<ul><li><code>none</code> (or an empty string) is <code>LegacyBroker</code>, the no-operation broker. It</li></ul>
+<p>  forwards through the broadcaster but keeps no history, no session cache, and   no presence: <code>HistoryFrom</code> and <code>Peak</code> return a "not supported" error, the   presence methods return "not supported", and the session methods are silent   no-ops that return nil. This is the version-1 behaviour, where messages carry   no offset.</p>
+<ul><li><code>memory</code> is the <code>Memory</code> broker described above: an in-process, in-heap hot</li></ul>
+<p>  cache, one per node.</p>
+<ul><li><code>nats</code> is the <code>NATS</code> broker, described next. NATS is an open-source messaging</li></ul>
+<p>  system, and JetStream is its built-in persistence layer; this backend stores   history in JetStream and keeps a local <code>Memory</code> mirror.</p>
+<p>There is deliberately no Redis (an in-memory data store) broker backend. Redis appears in AnyCable-Go as the publish/subscribe (pub/sub) layer and as the <code>redisx</code> stream broadcaster, never as the broker's hot cache. The factory rejects any other adapter with an "unsupported broker adapter" error.</p>
+<h2>The NATS broker: JetStream as the store, a local mirror for replay</h2>
+<p>The NATS broker keeps no local per-stream history of its own for <code>Peak</code>; it returns nothing:</p>
+<pre><code class="language-go">// Source: broker/nats.go, lines 487-489
+func (n *NATS) Peak(stream string) (*common.StreamMessage, error) {
+	return nil, nil
+}
+</code></pre>
+<p>Publishing goes to a JetStream stream, and JetStream's sequence number becomes the offset:</p>
+<pre><code class="language-go">// Source: broker/nats.go, lines 511-530
+func (n *NATS) add(stream string, data string) (uint64, error) {
+	err := n.ensureStreamExists(stream)
+
+	if err != nil {
+		return 0, errorx.Decorate(err, &quot;failed to create JetStream Stream&quot;)
+	}
+
+	ctx := context.Background()
+	key := streamPrefix + stream
+
+	// Touch on publish to make sure that the subsequent history fetch will return the latest messages
+	n.streamSync.touch(stream)
+	ack, err := n.js.Publish(ctx, key, []byte(data))
+
+	if err != nil {
+		return 0, errorx.Decorate(err, &quot;failed to publish message to JetStream&quot;)
+	}
+
+	return ack.Sequence, nil
+}
+</code></pre>
+<p>Replay in the NATS broker is indirect: the node keeps a local <code>Memory</code> broker, and a JetStream consumer copies messages into it. <code>HistoryFrom</code> first forces the local mirror to sync, then delegates to the memory broker:</p>
+<pre><code class="language-go">// Source: broker/nats.go, lines 367-375
+func (n *NATS) HistoryFrom(stream string, epoch string, offset uint64) ([]common.StreamMessage, error) {
+	err := n.Ready(jetstreamReadyTimeout)
+	if err != nil {
+		return nil, err
+	}
+
+	n.streamSync.sync(stream)
+	return n.local.HistoryFrom(stream, epoch, offset)
+}
+</code></pre>
+<p>The consumer copies each JetStream message into the local memory broker, preserving the JetStream sequence as the offset:</p>
+<pre><code class="language-go">// Source: broker/nats.go, lines 599-616
+func (n *NATS) consumeMessage(stream string, msg jetstream.Msg) {
+	n.streamSync.touch(stream)
+
+	meta, err := msg.Metadata()
+	if err != nil {
+		n.log.Error(&quot;failed to get JetStream message metadata&quot;, &quot;error&quot;, err)
+		return
+	}
+
+	seq := meta.Sequence.Stream
+	ts := meta.Timestamp
+
+	_, err = n.local.Store(stream, msg.Data(), seq, ts)
+	if err != nil {
+		n.log.Error(&quot;failed to store message in local broker&quot;, &quot;error&quot;, err)
+		return
+	}
+}
+</code></pre>
+<p>So the NATS broker reuses the same <code>memstream</code> replay machinery; the JetStream stream is the durable store, and the local mirror is a synced cache.</p>
+<h2>The Aha Moment</h2>
+<p><strong>Aha:</strong> At-least-once in AnyCable-Go is a bounded replay promise, not an unbounded one. The offset is strictly increasing and the replay query is exact, but the history is capped by both count and age, so the broker continuously forgets from the front. A client that falls behind by more than the retention window gets a refusal, not a silent gap: <code>filterByOffset</code> returns "requested offset couldn't be found". The offset labels the gap; it does not close it.</p>
+<h2>Cross-References</h2>
+<ul><li><a href="./03-cross-node-broadcasts.html">03-cross-node-broadcasts.md</a> — how the offset is assigned at registration time.</li><li><a href="./05-session-resume-offsets.html">05-session-resume-offsets.md</a> — the client protocol that calls <code>HistoryFrom</code>.</li><li><a href="./06-where-the-guarantee-holds.html">06-where-the-guarantee-holds.md</a> — the history-expiry gap as a documented break.</li></ul>
+<p>Continue to <a href="./05-session-resume-offsets.html">05-session-resume-offsets.md</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>05 -- The decorated adapter stack: memoize, instrument, enforce -- flipper</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/flipper/docs</span>
+    <div class="nav-actions">
+      <a href="02-adapter-storage-contract.html" class="nav-breadcrumb">02 -- The adapter contract: memory as the reference</a><a href="03-groups-percentage-rollouts.html" class="nav-breadcrumb">03 -- Groups and percentage rollouts: targeting many actors</a><a href="04-gate-layer.html" class="nav-breadcrumb">04 -- The gate layer: how a check is evaluated</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="04-gate-layer.html" class="nav-btn" title="Previous: 04 -- The gate layer: how a check is evaluated">← prev</a>
+      <a href="06-activerecord-redis-adapters.html" class="nav-btn nav-btn-next" title="Next: 06 -- Two real adapters: ActiveRecord and Redis">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>05 -- The decorated adapter stack: memoize, instrument, enforce</h1>
+<p>Flipper's power comes from wrapping adapters. A decorator adapter takes another adapter, adds one behavior, and exposes the same eleven-method contract. You stack them like an onion. The <code>AdapterBuilder</code> assembles the stack:</p>
+<pre><code class="language-ruby"># Source: lib/flipper/adapter_builder.rb, lines 10-18
+class AdapterBuilder
+  def initialize(&amp;block)
+    @stack = []
+
+    # Default to memory adapter
+    store Flipper::Adapters::Memory
+
+    block.arity == 0 ? instance_eval(&amp;block) : block.call(self) if block
+  end
+</code></pre>
+<p><code>store</code> sets the innermost adapter. <code>use</code> pushes a wrapper onto the stack. <code>to_adapter</code> folds the wrappers over the store, outermost first:</p>
+<pre><code class="language-ruby"># Source: lib/flipper/adapter_builder.rb, lines 40-42
+def to_adapter
+  @stack.reverse.inject(@store.call) { |adapter, wrapper| wrapper.call(adapter) }
+end
+</code></pre>
+
+<div class="mermaid">
+%%{init: {&quot;flowchart&quot;: {&quot;htmlLabels&quot;: false}}}%%
+flowchart LR
+  A[&quot;store Memory&quot;] --&gt; B[&quot;use Memoizable&quot;]
+  B --&gt; C[&quot;use Instrumented&quot;]
+  C --&gt; D[&quot;use Strict&quot;]
+  D --&gt; E[&quot;to_adapter&quot;]
+  E --&gt; F[&quot;Strict wraps Instrumented wraps Memoizable wraps Memory&quot;]
+
+</div>
+<p><code>Flipper::Configuration</code> drives the same builder for the global instance. <code>adapter</code> reads or sets the store; <code>use</code> adds a wrapper; <code>default</code> sets the block that builds the DSL:</p>
+<pre><code class="language-ruby"># Source: lib/flipper/configuration.rb, lines 25-31
+def adapter(&amp;block)
+  if block_given?
+    @builder.store(block)
+  else
+    @builder.to_adapter
+  end
+end
+</code></pre>
+<h2>Memoizable: cache per request</h2>
+<p>The DSL wraps your adapter in <code>Memoizable</code> by default (<code>lib/flipper/dsl.rb</code> line 25: <code>adapter = Adapters::Memoizable.new(adapter) if memoize</code>). When memoization is on, <code>get</code> caches each feature's values:</p>
+<pre><code class="language-ruby"># Source: lib/flipper/adapters/memoizable.rb, lines 54-60
+def get(feature)
+  if memoizing?
+    cache.fetch(key_for(feature.key)) { cache[key_for(feature.key)] = @adapter.get(feature) }
+  else
+    @adapter.get(feature)
+  end
+end
+</code></pre>
+<p>Memoization is off by default and turned on per request by the middleware. Any write expires the relevant cache entry:</p>
+<pre><code class="language-ruby"># Source: lib/flipper/adapters/memoizable.rb, lines 133-144
+def memoize=(value)
+  cache.clear
+  @memoize = value
+end
+
+def memoizing?
+  !!@memoize
+end
+</code></pre>
+<p>This means one request can ask <code>enabled?</code> for the same feature many times but hit the underlying store once.</p>
+<h2>Instrumented: events on every operation</h2>
+<p><code>Instrumented</code> wraps an adapter and emits an event for each operation. The event name is <code>"adapter_operation.flipper"</code>, and the payload carries the operation, adapter name, feature name, gate name, and the value being written:</p>
+<pre><code class="language-ruby"># Source: lib/flipper/adapters/instrumented.rb, lines 116-128
+def enable(feature, gate, thing)
+  default_payload = {
+    operation: :enable,
+    adapter_name: @adapter.name,
+    feature_name: feature.name,
+    gate_name: gate.name,
+    thing_value: thing.value,
+  }
+
+  @instrumenter.instrument(InstrumentationName, default_payload) do |payload|
+    payload[:result] = @adapter.enable(feature, gate, thing)
+  end
+end
+</code></pre>
+<p>The instrumenter is pluggable. The default is <code>Instrumenters::Noop</code>, which just yields:</p>
+<pre><code class="language-ruby"># Source: lib/flipper/instrumenters/noop.rb, lines 3-7
+class Noop
+  def self.instrument(_name, payload = {})
+    yield payload if block_given?
+  end
+end
+</code></pre>
+<p>Pass <code>ActiveSupport::Notifications</code> (via the Rails engine) or a custom instrumenter to receive the events.</p>
+<div class="mermaid">
+%%{init: {&quot;sequence&quot;: {&quot;htmlLabels&quot;: false}}}%%
+sequenceDiagram
+  participant Caller as &quot;Feature#enable&quot;
+  participant Inst as &quot;Instrumented&quot;
+  participant Instr as &quot;Instrumenter&quot;
+  participant Inner as &quot;Inner adapter&quot;
+
+  Caller-&gt;&gt;Inst: enable(feature, gate, thing)
+  Inst-&gt;&gt;Instr: instrument(name, payload)
+  Instr-&gt;&gt;Inner: run block, inner.enable
+  Inner--&gt;&gt;Instr: true
+  Instr--&gt;&gt;Inst: payload[:result] = true
+  Inst--&gt;&gt;Caller: true
+
+</div>
+<h2>Strict and ActorLimit: enforce rules</h2>
+<p><code>Strict</code> is a wrapper that raises when you check a feature that was never added, so typos fail loudly instead of silently returning false. The handler can be <code>:raise</code>, <code>:warn</code>, a proc, or <code>:noop</code>:</p>
+<pre><code class="language-ruby"># Source: lib/flipper/adapters/strict.rb, lines 59-71
+def assert_feature_exists(feature)
+  return if self.class.sync_mode
+  return if @adapter.features.include?(feature.key)
+
+  case handler
+  when Proc then handler.call(feature)
+  when :warn then warn NotFound.new(feature.key).message
+  when :noop, false, nil
+   # noop
+  else # truthy or :raise
+   raise NotFound.new(feature.key)
+  end
+end
+</code></pre>
+<p><code>ActorLimit</code> is another wrapper that raises when a feature's actor gate would exceed a limit, protecting adapters that slow down with thousands of rows:</p>
+<pre><code class="language-ruby"># Source: lib/flipper/adapters/actor_limit.rb, lines 39-45
+def enable(feature, gate, resource)
+  if gate.is_a?(Flipper::Gates::Actor) &amp;&amp; !self.class.sync_mode &amp;&amp; over_limit?(feature)
+    raise LimitExceeded, &quot;Actor limit of #{@limit} exceeded for feature #{feature.key}. See https://www.flippercloud.io/docs/features/actors#limitations&quot;
+  else
+    super
+  end
+end
+</code></pre>
+<p>Each wrapper has its own thread-local sync mode that suspends enforcement while a background sync brings local state in line with a remote source, so sync does not trip its own guardrails.</p>
+<h2>Cross-References</h2>
+<ul><li>The base <code>Wrapper</code> class and the full set of decorators (failover, failsafe, dual write, read-only) are summarized in <a href="./09-composition.html">09-composition.md</a>.</li><li>The Rails engine wires Memoizable, Strict, and ActorLimit for you: <a href="./09-composition.html">09-composition.md</a>.</li></ul>
+<h2>The Aha Moment</h2>
+<p><strong>Aha:</strong> Behavior is added by wrapping, not by subclassing the store. <code>Memoizable</code>, <code>Instrumented</code>, <code>Strict</code>, and <code>ActorLimit</code> are each an object with the same adapter interface that holds another adapter and forwards to it, doing one extra thing on the way. The <code>AdapterBuilder</code> is the proof: <code>use</code> pushes a wrapper and <code>store</code> sets the base, and <code>to_adapter</code> folds them into one object — so configuration is literally a list of <code>use</code> calls, and the printed <code>adapter_stack</code> string shows that list back to you.</p>
+<p>Continue to <a href="./06-activerecord-redis-adapters.html">06-activerecord-redis-adapters.md</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

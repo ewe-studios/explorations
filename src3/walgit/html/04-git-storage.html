@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>04 -- Git Object Storage: Packs, Indexes, Refs, and Commit Graphs -- walgit</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/walgit/docs</span>
+    <div class="nav-actions">
+      <a href="01-proto-keys.html" class="nav-breadcrumb">01 -- The Proto Contract: Manifest, Log Entries, and Bucket Keys</a><a href="02-store-crate.html" class="nav-breadcrumb">02 -- The Store Crate: Object Layout, Opaque Versions, CAS, and Leases</a><a href="03-wal-crate.html" class="nav-breadcrumb">03 -- The WAL Crate: Sync Levels, Group Commit, and the Single-Flight Publisher</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="03-wal-crate.html" class="nav-btn" title="Previous: 03 -- The WAL Crate: Sync Levels, Group Commit, and the Single-Flight Publisher">← prev</a>
+      <a href="05-smart-http.html" class="nav-btn nav-btn-next" title="Next: 05 -- Smart HTTP: info/refs, upload-pack v0/v2, and receive-pack">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>04 -- Git Object Storage: Packs, Indexes, Refs, and Commit Graphs</h1>
+<p>walgit does not reimplement git object storage; it drives git (the real <code>git</code> binary and the gix Rust library) over the layout the WAL defines. This document covers how refs are applied, how packs and their side-files are materialized, how loose objects are written for the remote reader, and how a commit-graph layer is produced so history can be walked without pack data.</p>
+<h2>Refs: packed-refs as the working set</h2>
+<p>The ref state is a name-sorted snapshot plus a symbolic <code>HEAD</code>. After a push commits, the transaction is applied to the local repository with <code>git update-ref --stdin</code> for normal refs and a direct <code>HEAD</code> file write for symbolic refs. The cached snapshot is then patched in memory rather than rebuilt, so applying a small transaction is cheap:</p>
+<pre><code class="language-rust">// Source: crates/walgit-git/src/lib.rs, lines 1359-1416
+    fn patch_snapshot(
+        &amp;self,
+        base: &amp;RefSnapshotData,
+        txns: &amp;[walgit_proto::v1::RefTransaction],
+    ) -&gt; Result&lt;RefSnapshotData, GitError&gt; {
+        let mut refs = base.refs.clone();
+        let mut head_target = base.head_target.clone();
+        let mut repo: Option&lt;gix::Repository&gt; = None;
+        for u in txns.iter().flat_map(|t| t.updates.iter()) {
+            if !u.new_symbolic_target.is_empty() {
+                if u.name == &quot;HEAD&quot; {
+                    head_target.clone_from(&amp;u.new_symbolic_target);
+                }
+                continue;
+            }
+            let delete = u.new_oid.is_empty() || u.new_oid.chars().all(|c| c == &#x27;0&#x27;);
+            let pos = refs.binary_search_by(|r| r.name.as_str().cmp(u.name.as_str()));
+            match (pos, delete) {
+                (Ok(i), true) =&gt; {
+                    refs.remove(i);
+                }
+                (Err(_), true) =&gt; {}
+                (pos, false) =&gt; {
+                    let mut peeled = u.new_peeled.clone();
+                    if peeled.is_empty() &amp;&amp; u.name.starts_with(&quot;refs/tags/&quot;) {
+                        if repo.is_none() {
+                            repo = Some(gix::Repository::from(
+                                &amp;gix::ThreadSafeRepository::open(&amp;self.inner.path).map_err(ge)?,
+                            ));
+                        }
+                        let r = repo.as_ref().ok_or_else(|| {
+                            GitError::InvalidInput(
+                                &quot;repository unavailable while peeling tag&quot;.into(),
+                            )
+                        })?;
+                        if let Ok(oid) = gix_hash::ObjectId::from_hex(u.new_oid.as_bytes()) {
+                            peeled = peel_tag(r, oid)
+                                .map(|p| p.to_hex().to_string())
+                                .unwrap_or_default();
+                        }
+                    }
+                    let entry = Ref {
+                        name: u.name.clone(),
+                        oid: u.new_oid.clone(),
+                        peeled,
+                    };
+                    match pos {
+                        Ok(i) =&gt; {
+                            *refs.get_mut(i).ok_or_else(|| {
+                                GitError::InvalidInput(&quot;ref search index out of bounds&quot;.into())
+                            })? = entry;
+                        }
+                        Err(i) =&gt; refs.insert(i, entry),
+                    }
+                }
+            }
+        }
+        Ok(RefSnapshotData { refs, head_target })
+    }
+</code></pre>
+<p>For a large ref set or a cold start, the cheaper path is to rewrite <code>packed-refs</code> once from an in-memory map and remove loose refs, rather than run many <code>git update-ref</code> commands. The offline apply is used on the refs-first sync where <code>git update-ref</code> would refuse missing objects:</p>
+<pre><code class="language-rust">// Source: crates/walgit-git/src/lib.rs, lines 1476-1529
+    pub fn apply_ref_txns_offline(
+        &amp;self,
+        txns: &amp;[&amp;walgit_proto::v1::RefTransaction],
+    ) -&gt; Result&lt;(), GitError&gt; {
+        let span = tracing::info_span!(
+            &quot;git.apply_ref_txns_offline&quot;,
+            repo = %self.inner.id,
+            n_txns = txns.len(),
+        );
+        let _enter = span.enter();
+        let snap = self.refs()?;
+        let mut head_target = snap.head_target;
+        let mut map: BTreeMap&lt;String, Ref&gt; =
+            snap.refs.into_iter().map(|r| (r.name.clone(), r)).collect();
+        let repo = self.gix();
+        for txn in txns {
+            for u in &amp;txn.updates {
+                validate_ref_update(u)?;
+                if !u.new_symbolic_target.is_empty() {
+                    if u.name == &quot;HEAD&quot; {
+                        head_target.clone_from(&amp;u.new_symbolic_target);
+                    }
+                    continue;
+                }
+                let new_zero = u.new_oid.is_empty() || u.new_oid.chars().all(|c| c == &#x27;0&#x27;);
+                if new_zero {
+                    map.remove(&amp;u.name);
+                    continue;
+                }
+                let peeled = if !u.new_peeled.is_empty() {
+                    u.new_peeled.clone()
+                } else if u.name.starts_with(&quot;refs/tags/&quot;) {
+                    gix_hash::ObjectId::from_hex(u.new_oid.as_bytes())
+                        .ok()
+                        .and_then(|oid| peel_tag(&amp;repo, oid))
+                        .map(|p| p.to_hex().to_string())
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                map.insert(
+                    u.name.clone(),
+                    Ref {
+                        name: u.name.clone(),
+                        oid: u.new_oid.clone(),
+                        peeled,
+                    },
+                );
+            }
+        }
+        let data = RefSnapshotData {
+            refs: map.into_values().collect(),
+            head_target,
+        };
+</code></pre>
+
+<div class="mermaid">
+%%{init: {&quot;flowchart&quot;: {&quot;htmlLabels&quot;: false}}}%%
+flowchart TD
+  TXN[&quot;RefTransaction&quot;] --&gt; PATCH[&quot;patch_snapshot in memory&quot;]
+  TXN --&gt; OFFLINE[&quot;apply_ref_txns_offline rewrite packed-refs once&quot;]
+  TXN --&gt; UPD[&quot;git update-ref stdin&quot;]
+  PATCH --&gt; CACHE[&quot;refs_cache&quot;]
+  OFFLINE --&gt; CACHE
+  UPD --&gt; CACHE
+  CACHE --&gt; LS[&quot;ls_refs and advertise refs&quot;]
+  CACHE --&gt; HEAD[&quot;HEAD symbolic file&quot;]
+
+</div>
+<h2>Packs and side-files</h2>
+<p>A pack in the bucket is <code>wal/<checksum>.pack</code> plus side-files that share the checksum: <code>.idx</code> (the index), <code>.rev</code> (reverse index), <code>.bitmap</code> (for reachability), and <code>.commit-graph</code> (a commit-graph layer). When a manifest advertises a new side-file for a pack already installed locally, the sync downloads only the missing side-file. Materialization on a fresh instance downloads pack and index via striped range reads (the subject of <a href="./10-scaling.html">10-scaling.md</a>).</p>
+<p>The commit-graph side-file is produced by running real git and copying the newest split layer to the pack's name:</p>
+<pre><code class="language-rust">// Source: crates/walgit-git/src/lib.rs, lines 2357-2386
+    pub async fn write_pack_commit_graph(
+        &amp;self,
+        checksum: &amp;gix_hash::oid,
+        changed_paths: bool,
+    ) -&gt; Result&lt;u64, GitError&gt; {
+        let mut args = vec![&quot;commit-graph&quot;, &quot;write&quot;, &quot;--reachable&quot;, &quot;--split=replace&quot;];
+        if changed_paths {
+            args.push(&quot;--changed-paths&quot;);
+        }
+        let out = self.git(&amp;args).await?;
+        if !out.status.success() {
+            return Err(GitError::Subprocess {
+                cmd: &quot;git commit-graph write&quot;.into(),
+                status: out.status.code(),
+                stderr: String::from_utf8_lossy(&amp;out.stderr).into_owned(),
+            });
+        }
+        let layers = self.commit_graph_chain()?;
+        let Some(hash) = layers.last() else {
+            return Err(GitError::InvalidInput(
+                &quot;commit-graph write produced no layer&quot;.into(),
+            ));
+        };
+        let src = self.commit_graphs_dir().join(format!(&quot;graph-{hash}.graph&quot;));
+        let dst = self.pack_path(checksum).with_extension(&quot;commit-graph&quot;);
+        let tmp = dst.with_extension(&quot;commit-graph.tmp&quot;);
+        std::fs::copy(&amp;src, &amp;tmp).map_err(GitError::Io)?;
+        rename_atomic(&amp;tmp, &amp;dst)?;
+        Ok(std::fs::metadata(&amp;dst).map_or(0, |m| m.len()))
+    }
+</code></pre>
+<p>The side-file is then installed as the base layer of the repository's split commit-graph chain, so <code>git log</code> walks commits without touching pack data.</p>
+<div class="mermaid">
+%%{init: {&quot;sequence&quot;: {&quot;htmlLabels&quot;: false}}}%%
+sequenceDiagram
+  participant M as &quot;materialize&quot;
+  participant L as &quot;local repo&quot;
+  participant G as &quot;git&quot;
+  participant B as &quot;object store&quot;
+  M-&gt;&gt;B: &quot;GET pack and idx by range&quot;
+  M-&gt;&gt;L: &quot;install pack idx rev bitmap&quot;
+  M-&gt;&gt;G: &quot;commit-graph write reachable split replace&quot;
+  G--&gt;&gt;M: &quot;newest layer hash&quot;
+  M-&gt;&gt;L: &quot;rename layer to pack commit-graph&quot;
+  M-&gt;&gt;L: &quot;install as base of chain&quot;
+
+</div>
+<h2>Loose objects for the remote reader</h2>
+<p>When a repository is served remotely (packs too large for the machine), the gix engine asks for the base objects a tree diff needs. Those objects are read by range and written into the local loose store so the rest of the engine and stock git tooling see them:</p>
+<pre><code class="language-rust">// Source: crates/walgit-git/src/lib.rs, lines 1550-1584
+    pub fn write_loose_object(
+        &amp;self,
+        kind: gix_object::Kind,
+        oid: &amp;gix_hash::oid,
+        data: &amp;[u8],
+    ) -&gt; Result&lt;(), GitError&gt; {
+        use gix_object::Write as _;
+        let hex = oid.to_hex().to_string();
+        let path = self
+            .inner
+            .path
+            .join(&quot;objects&quot;)
+            .join(
+                hex.get(..2)
+                    .ok_or_else(|| GitError::InvalidInput(&quot;short object ID&quot;.into()))?,
+            )
+            .join(
+                hex.get(2..)
+                    .ok_or_else(|| GitError::InvalidInput(&quot;short object ID&quot;.into()))?,
+            );
+        if path.exists() {
+            return Ok(());
+        }
+        let store = gix_odb::loose::Store::at(
+            self.inner.path.join(&quot;objects&quot;),
+            gix_odb::loose::Options {
+                object_hash: oid.kind(),
+                ..Default::default()
+            },
+        );
+        store
+            .write_buf_with_known_id(kind, data, oid.to_owned())
+            .map_err(GitError::Gix)?;
+        Ok(())
+    }
+</code></pre>
+<p>This is idempotent: an existing object is left alone. The object is written with its known identity, so a corrupt write would be detected by the hash.</p>
+<h2>The Aha Moment</h2>
+<p><strong>Aha:</strong> walgit keeps the two git implementations honest by making the on-disk repository a plain bare git repository. The WAL is the source of truth, but the local cache is a real <code>.git</code> directory with <code>packed-refs</code>, loose objects, and a commit-graph chain. That is why upstream <code>git</code> can do upload-pack and repack unchanged, and why the gix remote reader can fault objects into the loose store and then let stock tooling read them. The clever part is not replacing git; it is choosing which parts git is allowed to run locally and which must go through the object store.</p>
+<p>The smart HTTP endpoints that dispatch to those two engines are the next document, <a href="./05-smart-http.html">05-smart-http.md</a>. The sync levels that decide which packs are local versus remote are in <a href="./03-wal-crate.html">03-wal-crate.md</a>.</p>
+<p>Continue to <a href="./05-smart-http.html">05-smart-http.md</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

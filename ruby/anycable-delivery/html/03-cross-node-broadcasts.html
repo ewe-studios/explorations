@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>03 -- Cross-node broadcasts: NATS and Redis pub/sub bound ordering -- anycable-delivery</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/anycable-delivery/docs</span>
+    <div class="nav-actions">
+      <a href="00-the-delivery-question.html" class="nav-breadcrumb">00 -- The delivery question: what ordered and at-least-once actually mean here</a><a href="01-stream-model-subscriptions.html" class="nav-breadcrumb">01 -- The stream model: subscribe, unsubscribe, and the broker tracker</a><a href="02-hub-fanout-send-queue.html" class="nav-breadcrumb">02 -- The sharded hub and the per-connection send queue: one goroutine preserves per-stream order</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="02-hub-fanout-send-queue.html" class="nav-btn" title="Previous: 02 -- The sharded hub and the per-connection send queue: one goroutine preserves per-stream order">← prev</a>
+      <a href="04-broker-history-replay.html" class="nav-btn nav-btn-next" title="Next: 04 -- Broker history and replay: the offset is a cursor, not a sort">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>03 -- Cross-node broadcasts: NATS and Redis pub/sub bound ordering</h1>
+<p>A single node preserves per-stream order because one goroutine drives the whole fan-out. Across nodes there is no such chain. The broadcast and pub/sub layers introduce concurrent producers, and that is where the ordering guarantee dissolves. This document traces both delivery regimes and says precisely what the pub/sub engines do and do not promise.</p>
+<h2>The two entry points into a node</h2>
+<p>The node exposes two handlers. <code>HandleBroadcast</code> is for single-node broadcasters and passes the message through the broker so it gets an offset. <code>HandlePubSub</code> is for fan-out broadcasters and skips the broker entirely:</p>
+<pre><code class="language-go">// Source: node/node.go, lines 212-240
+func (n *Node) HandleBroadcast(raw []byte) error {
+	msg, err := common.PubSubMessageFromJSON(raw)
+
+	if err != nil {
+		n.metrics.CounterIncrement(metricsUnknownBroadcast)
+		n.log.Warn(&quot;failed to parse pubsub message&quot;, &quot;data&quot;, logger.CompactValue(raw), &quot;error&quot;, err)
+		return nil
+	}
+
+	n.metrics.CounterIncrement(metricsPublications)
+
+	switch v := msg.(type) {
+	case common.StreamMessage:
+		n.log.Debug(&quot;handle broadcast message&quot;, &quot;payload&quot;, &amp;v)
+		return n.broker.HandleBroadcast(&amp;v)
+	case []*common.StreamMessage:
+		n.log.Debug(&quot;handle batch-broadcast message&quot;, &quot;payload&quot;, &amp;v)
+		for _, el := range v {
+			if batchErr := n.broker.HandleBroadcast(el); batchErr != nil {
+				return errorx.Decorate(batchErr, &quot;failed to broadcast batch&quot;)
+			}
+		}
+	case common.RemoteCommandMessage:
+		n.log.Debug(&quot;handle remote command&quot;, &quot;command&quot;, &amp;v)
+		return n.broker.HandleCommand(&amp;v)
+	}
+
+	return nil
+}
+</code></pre>
+
+<pre><code class="language-go">// Source: node/node.go, lines 243-262
+func (n *Node) HandlePubSub(raw []byte) {
+	msg, err := common.PubSubMessageFromJSON(raw)
+
+	if err != nil {
+		n.metrics.CounterIncrement(metricsUnknownBroadcast)
+		n.log.Warn(&quot;failed to parse pubsub message&quot;, &quot;data&quot;, logger.CompactValue(raw), &quot;error&quot;, err)
+		return
+	}
+
+	switch v := msg.(type) {
+	case common.StreamMessage:
+		n.Broadcast(&amp;v)
+	case []*common.StreamMessage:
+		for _, el := range v {
+			n.Broadcast(el)
+		}
+	case common.RemoteCommandMessage:
+		n.ExecuteRemoteCommand(&amp;v)
+	}
+}
+</code></pre>
+<p>Both end in <code>n.Broadcast</code>, which is the hub entry:</p>
+<pre><code class="language-go">// Source: node/node.go, lines 863-867
+func (n *Node) Broadcast(msg *common.StreamMessage) {
+	n.metrics.CounterIncrement(metricsBroadcastMsg)
+	n.log.Debug(&quot;incoming broadcast message&quot;, &quot;payload&quot;, msg)
+	n.hub.BroadcastMessage(msg)
+}
+</code></pre>
+<p>The difference: <code>HandleBroadcast</code> goes through the broker, which stamps the offset and then re-publishes; <code>HandlePubSub</code> goes straight to the hub.</p>
+<h2>Legacy fan-out: no broker, no offset, at-most-once</h2>
+<p>The legacy Redis (an in-memory data store) broadcaster subscribes to a single Redis channel and calls <code>HandlePubSub</code> on every message. Because every node is subscribed to the same channel, every node receives every message independently:</p>
+<pre><code class="language-go">// Source: broadcast/legacy_redis.go, lines 152-155
+		OnMessage: func(m rueidis.PubSubMessage) {
+			s.log.Debug(&quot;received pubsub message&quot;)
+			s.node.HandlePubSub([]byte(m.Message))
+		},
+</code></pre>
+<p>The legacy NATS (an open-source messaging system) broadcaster does the same over NATS core publish/subscribe. A message published while a node is disconnected is lost; Redis Pub/Sub and NATS core are fire-and-forget. The docs say this explicitly:</p>
+<pre><code class="language-text"># Source: docs/broadcasting.md, line 78
+Note that since all AnyCable server receive each publication, we cannot use [broker](./broker.md) to provide stream history support when using Redis Pub/Sub.
+</code></pre>
+<h2>The broker architecture: register once, re-publish</h2>
+<p>With the <code>http</code> or <code>redisx</code> broadcaster, only one node receives the publication. That node registers it in the broker, which assigns an offset and re-publishes over the pub/sub layer so the other nodes can deliver it. The Redis pub/sub subscriber receives on the stream-named channel and calls <code>n.Broadcast</code>:</p>
+<pre><code class="language-go">// Source: pubsub/redis.go, lines 255-271
+		OnMessage: func(m rueidis.PubSubMessage) {
+			msg, err := common.PubSubMessageFromJSON([]byte(m.Message))
+
+			if err != nil {
+				s.log.Warn(&quot;failed to parse pubsub message&quot;, &quot;data&quot;, logger.CompactValue(m.Message), &quot;error&quot;, err)
+				return
+			}
+
+			switch v := msg.(type) {
+			case common.StreamMessage:
+				s.log.With(&quot;channel&quot;, m.Channel).Debug(&quot;received broadcast message&quot;)
+				s.node.Broadcast(&amp;v)
+			case common.RemoteCommandMessage:
+				s.log.With(&quot;channel&quot;, m.Channel).Debug(&quot;received remote command&quot;)
+				s.node.ExecuteRemoteCommand(&amp;v)
+			}
+		},
+</code></pre>
+<p>The NATS subscriber is the same shape:</p>
+<pre><code class="language-go">// Source: pubsub/nats.go, lines 155-173
+func (s *NATSSubscriber) handleMessage(m *nats.Msg) {
+	msg, err := common.PubSubMessageFromJSON(m.Data)
+
+	if err != nil {
+		s.log.Warn(&quot;failed to parse pubsub message&quot;, &quot;data&quot;, logger.CompactValue(m.Data), &quot;error&quot;, err)
+		return
+	}
+
+	switch v := msg.(type) {
+	case common.StreamMessage:
+		s.log.With(&quot;channel&quot;, m.Subject).Debug(&quot;received broadcast message&quot;)
+		s.node.Broadcast(&amp;v)
+	case common.RemoteCommandMessage:
+		s.log.With(&quot;channel&quot;, m.Subject).Debug(&quot;received remote command&quot;)
+		s.node.ExecuteRemoteCommand(&amp;v)
+	default:
+		s.log.With(&quot;channel&quot;, m.Subject).Warn(&quot;received unknown message&quot;, &quot;data&quot;, logger.CompactValue(m.Data))
+	}
+}
+</code></pre>
+<h2>Redis Streams ingestion: the one real at-least-once hop</h2>
+<p>The <code>redisx</code> broadcaster consumes publications from a Redis Stream through a consumer group. Each node joins the group with its own random consumer name, so each stream entry is delivered to exactly one node. The read uses <code>XREADGROUP</code> with the <code>></code> identifier, which reads only entries never delivered to the group:</p>
+<pre><code class="language-go">// Source: redis/streamer.go, lines 245-266
+func (s *Streamer) readFromStream(blockTime int64) ([]rueidis.XRangeEntry, error) {
+	streamRes := s.client.Do(context.Background(),
+		s.client.B().Xreadgroup().Group(s.group, s.consumerName).Block(blockTime).Streams().Key(s.stream).Id(&quot;&gt;&quot;).Build(),
+	)
+
+	res, _ := streamRes.AsXRead()
+	err := streamRes.Error()
+
+	if err != nil &amp;&amp; !rueidis.IsRedisNil(err) {
+		return nil, err
+	}
+
+	if res == nil {
+		return nil, nil
+	}
+
+	if messages, ok := res[s.stream]; ok {
+		return messages, nil
+	}
+
+	return nil, nil
+}
+</code></pre>
+<p>After the handler succeeds, the message is acknowledged and deleted. If the handler fails, the message is left pending and later reclaimed:</p>
+<pre><code class="language-go">// Source: redis/streamer.go, lines 296-315
+func (s *Streamer) handleRange(messages []rueidis.XRangeEntry) {
+	for _, message := range messages {
+		s.log.Debug(&quot;received message&quot;)
+
+		if err := s.handler(message.FieldValues); err == nil {
+			ackRes := s.client.DoMulti(context.Background(),
+				s.client.B().Xack().Key(s.stream).Group(s.group).Id(message.ID).Build(),
+				s.client.B().Xdel().Key(s.stream).Id(message.ID).Build(),
+			)
+
+			ackErr := ackRes[0].Error()
+
+			if ackErr != nil {
+				s.log.Error(&quot;failed to ack message&quot;, &quot;error&quot;, ackErr)
+			}
+		} else {
+			s.log.Error(&quot;Redis stream handler failed&quot;, &quot;error&quot;, err)
+		}
+	}
+}
+</code></pre>
+<p>Reclaim uses <code>XAUTOCLAIM</code> on entries that have been pending longer than the block time. This is the mechanism that makes a crash recoverable:</p>
+<pre><code class="language-go">// Source: redis/streamer.go, lines 268-294
+func (s *Streamer) autoclaimMessages(blockTime int64) ([]rueidis.XRangeEntry, error) {
+	claimRes := s.client.Do(context.Background(),
+		s.client.B().Xautoclaim().Key(s.stream).Group(s.group).Consumer(s.consumerName).MinIdleTime(fmt.Sprintf(&quot;%d&quot;, blockTime)).Start(&quot;0-0&quot;).Build(),
+	)
+
+	arr, err := claimRes.ToArray()
+
+	if err != nil &amp;&amp; !rueidis.IsRedisNil(err) {
+		return nil, err
+	}
+
+	if arr == nil {
+		return nil, nil
+	}
+
+	if len(arr) &lt; 2 {
+		return nil, fmt.Errorf(&quot;autoclaim failed: got %d elements, wanted 2&quot;, len(arr))
+	}
+
+	ranges, err := arr[1].AsXRange()
+
+	if err != nil {
+		return nil, err
+	}
+
+	return ranges, nil
+}
+</code></pre>
+<p>This gives at-least-once from the Ruby application to a node: a message is acknowledged only after the node handled it, and an unacknowledged message is reclaimed by another consumer. The cost is duplicates: if a node handled a message but crashed before the acknowledgement, another node will handle it again.</p>
+<h2>Why cross-node ordering breaks</h2>
+<p>The broker re-publish path has concurrent publishers. Two stream entries A then B are assigned by the consumer group to two different nodes. Node 1 publishes A to pub/sub; node 2 publishes B to pub/sub. There is no coordination between them, so node 2 can publish B before node 1 publishes A. A third node then sees B before A.</p>
+<div class="mermaid">
+%%{init: {&quot;sequence&quot;: {&quot;htmlLabels&quot;: false}}}%%
+sequenceDiagram
+    participant RS as &quot;Redis Stream&quot;
+    participant N1 as &quot;Node 1&quot;
+    participant N2 as &quot;Node 2&quot;
+    participant N3 as &quot;Node 3&quot;
+    RS-&gt;&gt;N1: &quot;entry A&quot;
+    RS-&gt;&gt;N2: &quot;entry B&quot;
+    N2-&gt;&gt;N3: &quot;B published&quot;
+    N1-&gt;&gt;N3: &quot;A published&quot;
+    N3--&gt;&gt;N3: &quot;delivers B then A&quot;
+
+</div>
+<p>Redis Pub/Sub preserves the order in which <code>PUBLISH</code> commands reach Redis, but the concurrent publishers destroy the original stream order before it reaches Redis. NATS core publish/subscribe makes no total-order promise across publishers at all. The offsets the broker assigned are monotonic and correct, but no node ever sorts messages by offset before delivering them.</p>
+<div class="mermaid">
+%%{init: {&quot;flowchart&quot;: {&quot;htmlLabels&quot;: false}}}%%
+flowchart TD
+  P[&quot;Ruby publishes to Redis Stream&quot;] --&gt; C[&quot;Consumer group splits entries&quot;]
+  C --&gt; N1[&quot;Node 1 registers A&quot;]
+  C --&gt; N2[&quot;Node 2 registers B&quot;]
+  N1 --&gt; R[&quot;Re-publish to pub/sub&quot;]
+  N2 --&gt; R
+  R --&gt; D[&quot;Each node delivers in arrival order&quot;]
+
+</div>
+<p>One more boundary worth stating precisely: the consumer group is created with <code>Id("$")</code>, so a brand-new group starts at the current end of the stream:</p>
+<pre><code class="language-go">// Source: redis/streamer.go, lines 183-198
+	// First, create a consumer group for the stream
+	err = s.client.Do(context.Background(),
+		s.client.B().XgroupCreate().Key(s.stream).Group(s.group).Id(&quot;$&quot;).Mkstream().Build(),
+	).Error()
+
+	if err != nil {
+		if redisErr, ok := rueidis.IsRedisErr(err); ok {
+			if strings.HasPrefix(redisErr.Error(), &quot;BUSYGROUP&quot;) {
+				s.log.Debug(&quot;Redis consumer group already exists&quot;)
+			} else {
+				s.log.Error(&quot;failed to create consumer group&quot;, &quot;error&quot;, err)
+				s.maybeReconnect()
+				return
+			}
+		}
+	}
+</code></pre>
+<p>That means the "deliver once a server is available" promise in the docs holds only once the group already exists. On the very first boot against a stream that already contains a backlog, a fresh group skips the pre-existing entries.</p>
+<h2>The Aha Moment</h2>
+<p><strong>Aha:</strong> The at-least-once hop and the ordering hop are different hops with different guarantees. Redis Streams gives at-least-once from Ruby to a node via consumer-group acknowledgements, but the re-publish over Redis or NATS pub/sub is a fire-and-forget fan-out with concurrent producers, so the total order of a stream is already lost before a third node ever sees the messages. Offsets are assigned correctly at registration time and then ignored by delivery.</p>
+<h2>Cross-References</h2>
+<ul><li><a href="./00-the-delivery-question.html">00-the-delivery-question.md</a> — the two regimes and their guarantees.</li><li><a href="./04-broker-history-replay.html">04-broker-history-replay.md</a> — the offsets assigned in the register step.</li><li><a href="./06-where-the-guarantee-holds.html">06-where-the-guarantee-holds.md</a> — the duplicates this reclaim produces.</li></ul>
+<p>Continue to <a href="./04-broker-history-replay.html">04-broker-history-replay.md</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
