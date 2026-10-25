@@ -518,6 +518,7 @@ def build(project_dir: str):
         'zcoder': "Parallel-first AI coding harness in Rust. A terminal UI client talks to a self-spawning daemon over a Unix socket; the daemon owns SQLite persistence and a single-writer executor that drives model calls via genai.",
         'proa': "Rust server-side rendering framework. Compiles Rust-authored HTML templates to pre-escaped byte sequences at compile time, streams over a chained-bump buffer, and hydrates interactive islands via the RSJS Rust-to-JavaScript compiler.",
         'durable-execution': "Resonate's durable-execution runtime. One primitive (the durable promise), a pure kernel, two ports, and a push model: the full Python engine in code/final, from the programming model to the conformance catalogue.",
+        'divkit': "Yandex's Server-Driven UI framework. One JSON card renders as native views on iOS, Android, Web, and Flutter. 192 JSON Schema files are the single source of truth; a Python generator compiles them into four renderers' models and three builders' classes.",
     }
     desc = descriptions.get(project_name, f"Documentation for {project_name}.")
 

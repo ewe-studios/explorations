@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>21 -- Rendering and Patch: from JSON to a view, and how a fragment updates it -- divkit</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/divkit/docs</span>
+    <div class="nav-actions">
+      <a href="18-tooling.html" class="nav-breadcrumb">18 -- Tooling: editor, Figma plugin, and the compatibility matrix</a><a href="19-data-flow.html" class="nav-breadcrumb">19 -- One card end to end: JSON to a tap, a tap to a re-render</a><a href="20-cross-cutting.html" class="nav-breadcrumb">20 -- Cross-cutting: the idioms, the production concerns, and the recipe</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="20-cross-cutting.html" class="nav-btn" title="Previous: 20 -- Cross-cutting: the idioms, the production concerns, and the recipe">← prev</a>
+      <a href="22-web-rendering-hydration.html" class="nav-btn nav-btn-next" title="Next: 22 -- Web: rendering, hydration, and communication">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>21 -- Rendering and Patch: from JSON to a view, and how a fragment updates it</h1>
+<p>Every document before this one explains one layer. This document joins two layers into one continuous trace, because they are one mechanism on every platform. First: how a JSON card becomes a view, stage by stage. Second: how a fragment — a <em>patch</em> — reaches an already-rendered card and changes only the part it names, without rebuilding the whole tree. The three renderers (iOS, Android, Web) answer the same two questions with different machinery, and the differences are the interesting part. This document reads the exact source of each answer.</p>
+<h1>The pipeline, once, with three endings</h1>
+<p>A card travels the same four stages on every platform. The first two stages are shared in spirit; the last two are where the platforms diverge:</p>
+<div class="mermaid">
+flowchart TB
+    JSON[&quot;card JSON (templates + card / div-data)&quot;] --&gt; P[&quot;1. parse: JSON -&gt; generated model tree&quot;]
+    P --&gt; R[&quot;2. resolve: templates, @{...} expressions, variables&quot;]
+    R --&gt; M[&quot;3. model -&gt; block / widget / component tree&quot;]
+    M --&gt; V[&quot;4. layout + attach to a native view&quot;]
+    V --&gt; IOS[&quot;iOS: Block tree -&gt; BlockView (UIView)&quot;]
+    V --&gt; AND[&quot;Android: DivBlock tree -&gt; Div2View (View)&quot;]
+    V --&gt; WEB[&quot;Web: Svelte component tree -&gt; DOM&quot;]
+
+</div>
+<p>Stage 1 and stage 2 are identical in idea because the schema from <a href="./09-schema.html">09-schema.md</a> is the single source of truth: all three parsers are generated from the same 192 JSON Schema files, so they all turn <code>div-data</code> into a tree of element models, all resolve the <code>templates</code> envelope from <a href="./02-div-format.html">02-div-format.md</a>, and all bind <code>@{}</code> expressions from <a href="./06-variables-expressions.html">06-variables-expressions.md</a> to a per-path variable store.</p>
+<p>The divergence starts at stage 3, and it is deliberate (the idiom from <a href="./20-cross-cutting.html">20-cross-cutting.md</a>: hand geometry to the platform). iOS has no flexbox in <code>UIView</code>, so it compiles the model into its own <code>LayoutKit</code> <code>Block</code> tree, then into <code>BlockView</code>. Android has <code>ViewGroup</code> and <code>LayoutParams</code>, so it compiles the model into a <code>DivBlock</code> tree and binds it onto recycled platform views. The web compiles the model into Svelte components and lets CSS flexbox do the arithmetic.</p>
+<p>The iOS stage-3 source is the seam from <a href="./10-ios-architecture.html">10-ios-architecture.md</a>:</p>
+<pre><code class="language-swift">// divkit-ios/DivKit/DivBlockModeling.swift (whole file)
+public protocol DivBlockModeling {
+  var id: String? { get }
+  static var type: String { get }
+  func makeBlock(context: DivBlockModelingContext) throws -&gt; Block
+}
+</code></pre>
+<p><code>DivData.makeBlock(context:)</code> walks the resolved model and returns a <code>Block</code> tree; <code>DivView.update(block:)</code> then turns that tree into a <code>BlockView</code>. The Android stage-3 equivalent is a visitor that creates or reuses a native view:</p>
+<pre><code class="language-kotlin">// divkit/client/android/div/.../core/view2/DivViewCreator.kt (excerpt — create)
+fun create(div: Div, resolver: ExpressionResolver): View {
+    return if (validator.validate(div, resolver)) {
+        visit(div, resolver).apply { background = NoOpDrawable }
+    } else {
+        Space(context)
+    }
+}
+
+override fun defaultVisit(data: Div, resolver: ExpressionResolver): View =
+    viewPool.obtain(viewTag(data, resolver))
+</code></pre>
+<p><code>defaultVisit</code> does not construct a view; it asks a <code>ViewPool</code> for one, keyed by a per-element-type tag. That is the first optimization, and it runs on the very first render, not just on update.</p>
+<h1>The patch: one contract, three engines</h1>
+<p>A patch is not a diff. It is a list of <em>id-keyed subtree replacements</em>. The server names an element by its <code>id</code> and supplies the new subtree that takes its place. The shape is the same on all three platforms because it is generated from one schema, <code>div-patch.json</code>. On iOS the generated model is:</p>
+<pre><code class="language-swift">// divkit-ios/DivKit/generated_sources/DivPatch.swift (excerpt — the contract)
+public final class DivPatch: Sendable {
+  @frozen
+  public enum Mode: String, CaseIterable, Sendable {
+    case transactional = &quot;transactional&quot;
+    case partial = &quot;partial&quot;
+  }
+  public final class Change: Sendable {
+    public let id: String
+    public let items: [Div]?
+  }
+  public let changes: [Change] // at least 1 elements
+  public let mode: Expression&lt;Mode&gt; // default value: partial
+  public let onAppliedActions: [DivAction]?
+  public let onFailedActions: [DivAction]?
+}
+</code></pre>
+<p>The same contract in the web client is a TypeScript interface:</p>
+<pre><code class="language-ts">// divkit/client/web/divkit/typings/common.d.ts (excerpt — the contract)
+export interface PatchChange {
+    id: string;
+    items?: DivBase[];
+}
+export interface Patch {
+    templates?: Record&lt;string, DivBase&gt;;
+    patch: {
+        mode?: &#x27;transactional&#x27; | &#x27;partial&#x27;;
+        changes: PatchChange[];
+        on_applied_actions?: Action[];
+        on_failed_actions?: Action[];
+    };
+}
+</code></pre>
+<p>Two details matter for the whole document. <code>mode</code> picks the semantics: in <code>partial</code> mode every change that finds its target applies and the rest are silently skipped; in <code>transactional</code> mode the patch is all-or-nothing — it applies only if <em>every</em> change finds a valid target, otherwise it runs <code>on_failed_actions</code> and changes nothing. And <code>on_applied_actions</code> / <code>on_failed_actions</code> are themselves actions, so a patch can chain further behavior after it succeeds or fails.</p>
+<p>Every renderer applies this by <em>rewriting the data</em>, not by mutating a live view. The three-tier pattern is: (1) produce a new immutable model tree where only the changed branches are new, (2) decide whether the change is small enough to keep the existing views, and (3) reconfigure or recycle the surviving views in place. The rest of this document walks those three tiers on each platform.</p>
+<h1>Tier 1 — the immutable rewrite</h1>
+<h2>iOS</h2>
+<p>The patch is applied to <code>DivData</code>, producing a new <code>DivData</code>. The entry point is <code>applyPatchWithActions</code>, which records which element ids actually changed so it can run the right callback and reset the changed elements' triggers:</p>
+<pre><code class="language-swift">// divkit-ios/DivKit/Extensions/DivData/DivDataPatchExtensions.swift (excerpt)
+public func applyPatchWithActions(
+  _ patch: DivPatch,
+  context: DivBlockModelingContext
+) -&gt; DivData {
+  var changedElementIds: [String] = []
+  let callbacks = Callbacks(elementChanged: { id in changedElementIds.append(id) })
+  let patchedData = applyPatch(patch, callbacks: callbacks)
+
+  let allChangesApplied = changedElementIds.count == patch.changes.count
+  let isTransactional = patch.resolveMode(context.expressionResolver) == .transactional
+  let isPatchApplied = !isTransactional || allChangesApplied
+
+  if isPatchApplied {
+    for id in changedElementIds {
+      context.triggersStorage?.reset(elementId: id)
+    }
+  }
+  let actions = isPatchApplied ? patch.onAppliedActions : patch.onFailedActions
+  actions?.forEach { action in
+    context.actionHandler?.handle(action, path: ..., source: .callback, sender: nil)
+  }
+  return isPatchApplied ? patchedData : self
+}
+</code></pre>
+<p>The rewrite itself is a recursive walk with three per-shape rules. A <em>leaf</em> element (text, image, input, and the others with no children) either matches the patch id and returns the single replacement item, or returns itself unchanged. A <em>list</em> element (container, grid, gallery, pager) splices matched children out of its <code>items</code>. A <em>state</em> or <em>tabs</em> element rewrites its nested states or tab bodies. The key line for the data-level optimization is that an unchanged branch returns <code>self</code> — the same element instance. The generated element models (<code>DivContainer</code>, <code>DivText</code>, and the rest) are classes (<code>public final class DivContainer: DivBase</code>), so the unchanged sub-trees are <em>shared references</em>, not copies:</p>
+<pre><code class="language-swift">// divkit-ios/DivKit/Extensions/DivData/DivDataPatchExtensions.swift (excerpt)
+fileprivate func applySingleItemPatch(_ patch: DivPatch, callbacks: DivPatchCallbacks) -&gt; Div {
+  if let id, let change = patch.getChange(id: id) {
+    guard let items = change.items, items.count == 1 else {
+      DivKitLogger.error(&quot;Patch contains multiple items, but single item is expected: \(id)&quot;)
+      return self
+    }
+    callbacks.elementChanged(id)
+    return items[0]
+  }
+  return applyPatchToChildren(patch, callbacks: callbacks)
+}
+</code></pre>
+<h2>Android</h2>
+<p>Android applies the patch at the same data level, but keeps a <em>copies map</em> so that repeated patching does not re-parse the same unchanged branches. The <code>DivPatchApply</code> class walks the generated <code>Div</code> tree, matches by id through a <code>DivPatchMap</code>, and returns either a new <code>List<DivData.State></code> or <code>null</code> when a transactional patch could not be fully applied:</p>
+<pre><code class="language-kotlin">// divkit/client/android/div-data/.../internal/patch/DivPatchApply.kt (excerpt)
+private fun Div.applyPatch(resolver: ExpressionResolver): List&lt;Div&gt; {
+    val divId = value().id
+    if (divId != null &amp;&amp; patch.patches.containsKey(divId)) return applyPatchForSingleDiv()
+
+    val previousApplicationCount = applicationCount
+    val updated = when (this) {
+        is Div.Container -&gt; applyPatch(value, resolver)
+        is Div.Grid -&gt; applyPatch(value, resolver)
+        is Div.Gallery -&gt; applyPatch(value, resolver)
+        is Div.Pager -&gt; applyPatch(value, resolver)
+        is Div.State -&gt; applyPatch(value, resolver)
+        is Div.Tabs -&gt; applyPatch(value, resolver)
+        is Div.Custom -&gt; applyPatch(value, resolver)
+        is Div.GifImage, is Div.Image, /* ... leaves ... */ is Div.Video -&gt; this
+    }
+    if (applicationCount == previousApplicationCount) return listOf(this)
+    copies[value()] = updated.value()
+    return listOf(updated)
+}
+</code></pre>
+<p>The <code>copies: MutableMap<DivBase, DivBase></code> records which old branches map to which new ones, so the framework can release the old and retain the new without walking the whole tree again. <code>DivPatchMap</code> is the id index — a flat <code>Map<String, List<Div>></code> built once from <code>patch.changes</code>, so every id lookup in the walk is O(1).</p>
+<p>The transactional gate is at the top of the walk:</p>
+<pre><code class="language-kotlin">// divkit/client/android/div-data/.../internal/patch/DivPatchApply.kt (excerpt)
+if (patch.mode.evaluate(resolver) == DivPatch.Mode.TRANSACTIONAL
+    &amp;&amp; appliedPatches.size != patch.patches.size) {
+    return null
+}
+</code></pre>
+<h2>Web</h2>
+<p>The web has no persistent model tree to rewrite. Its "data" is the reactive state of a Svelte component tree, so the rewrite is a targeted mutation of one component's local <code>items</code> store. The engine keeps <code>parentOfMap</code>, an index from an element <code>id</code> to the <em>parent</em> component's mutation methods:</p>
+<pre><code class="language-ts">// divkit/client/web/divkit/src/components/Root.svelte (excerpt — the index)
+const parentOfMap: Map&lt;string, ParentMethods&gt; = new Map();
+
+function registerParentOf(id: string, methods: ParentMethods): void {
+    parentOfMap.set(id, methods);
+}
+</code></pre>
+<p><code>ParentMethods</code> is two members — <code>replaceWith</code> and <code>isSingleMode</code> — declared in <code>src/context/root.ts</code>. Each container-ish component (<code>Outer.svelte</code>) registers every child id it owns, so the patch applies as a flat lookup:</p>
+<pre><code class="language-ts">// divkit/client/web/divkit/src/components/Root.svelte (excerpt — applyPatchInternal)
+json.patch.changes.forEach(change =&gt; {
+    const methods = parentOfMap.get(change.id);
+    if (methods) {
+        methods.replaceWith(change.id, change.items);
+    }
+});
+execAnyActions(json.patch?.on_applied_actions);
+</code></pre>
+<h1>Tier 2 — the replaceable gate</h1>
+<p>The second tier is the decision: can the existing views survive the change, or must the subtree be rebuilt? All three renderers ask this by comparing the old model to the new model, and the comparison is <em>value equality</em>, not identity.</p>
+<h2>iOS: <code>canConfigureBlockView</code> and <code>isBestViewForReuse</code></h2>
+<p>iOS does not diff two <code>DivData</code> trees. It re-models the whole patched <code>DivData</code> into a fresh <code>Block</code> tree, and relies on two facts: <code>Block</code> is an <code>AnyObject</code>-constrained protocol that exposes structural equality through <code>equals(_:)</code>, and each <code>BlockView</code> remembers the <code>Block</code> that produced it. The gate runs when the new <code>Block</code> tree meets the existing <code>BlockView</code> tree, in <code>DivView.update(block:)</code>:</p>
+<pre><code class="language-swift">// divkit-ios/DivKit/Views/DivView.swift (excerpt — the gate)
+if let blockView, block.canConfigureBlockView(blockView) {
+  block.configureBlockView(blockView, observer: self, ...)
+} else {
+  blockView = block.makeBlockView(observer: self, renderingDelegate: renderingDelegate)
+}
+</code></pre>
+<p><code>canConfigureBlockView</code> is a type check: a <code>ContainerBlock</code> can reconfigure a <code>ContainerBlockView</code>, a <code>TextBlock</code> can reconfigure a <code>TextBlockView</code>, and so on. The recursive version of the same gate lives in <code>LayoutKit</code>, in <code>Array+UIViewRenderable.swift</code>, and is the real engine of incremental re-render:</p>
+<pre><code class="language-swift">// divkit-ios/LayoutKit/LayoutKit/UI/Blocks/Array+UIViewRenderable.swift (excerpt)
+private func calculateReusability(
+  _ views: [BlockView],
+  blocks: [UIViewRenderable]
+) -&gt; ReuseResult {
+  var orphanViews = views
+  var reusableViews = [Int: BlockView](minimumCapacity: blocks.count)
+  for (blockIndex, block) in blocks.enumerated() {
+    let reusableView = orphanViews.enumerated()
+      .first { block.isBestViewForReuse($0.element) }
+    if let (viewIndex, view) = reusableView {
+      orphanViews.remove(at: viewIndex)
+      reusableViews[blockIndex] = view
+    }
+  }
+  // ... second pass uses canConfigureBlockView for same-type reuse ...
+}
+</code></pre>
+<p>Two passes, two strengths of match. <code>isBestViewForReuse</code> is the strong match: in <code>DecoratingBlock</code> it compares the view's previous source block to the new block by value (<code>sourceBlock == self</code>), so a view whose block did not change is reused without any reconfiguration. The second pass falls back to <code>canConfigureBlockView</code> (same type, so the view can be reconfigured). Any view that matches neither is removed from its superview. This is why a patch that changes one text field reconfigures one <code>TextBlockView</code> and leaves every sibling <code>BlockView</code> untouched.</p>
+<h2>Android: <code>DivComparator</code> and <code>propertiesHash</code></h2>
+<p>Android has two gates at two levels of ambition. The cheap gate, <code>DivComparator.areDivsReplaceable</code>, decides whether the <em>whole</em> new <code>DivBlock</code> tree is structurally replaceable by the old one — same Java class, same overlap/wrap flags, same child count recursively:</p>
+<pre><code class="language-kotlin">// divkit/client/android/div/.../core/view2/animations/DivComparator.kt (excerpt)
+fun areDivsReplaceable(
+    old: DivBlock?,
+    new: DivBlock?,
+    reporter: DivComparatorReporter? = null,
+): Boolean {
+    if (old?.div?.javaClass != new?.div?.javaClass) {
+        reporter?.onComparisonDifferentClasses()
+        return false
+    }
+    if (old == null || new == null || old === new) {
+        return true
+    }
+    return areValuesReplaceable(old, new, reporter) &amp;&amp;
+        areChildrenReplaceable(extractChildren(old), extractChildren(new), reporter)
+}
+</code></pre>
+<p>If it returns <code>true</code>, <code>DivViewBindingController</code> takes the <em>simple rebind</em> path: it binds the new <code>DivBlock</code> onto the existing root view in place, without touching the child views (<code>rebind</code> → <code>divBinder.bind(getChildAt(0), newDivBlock, this)</code>). That is the Android analog of iOS reconfiguring a <code>BlockView</code> in place.</p>
+<p>If the gate fails but the feature flag is on, Android escalates to the <em>complex rebind</em>, a true tree diff. Its equality is a hash: <code>Token.isCombinable</code> compares <code>divHash == other.divHash && div.type == other.div.type</code>, where <code>divHash</code> is <code>item.div.propertiesHash()</code>. Two divs with the same hash and type can share one view, so the diff reuses an <code>ExistingToken</code> (an old view) for a <code>NewToken</code> (a new subtree) instead of recreating it:</p>
+<pre><code class="language-kotlin">// divkit/client/android/div/.../core/view2/reuse/Token.kt (whole file)
+internal abstract class Token(
+    val item: DivBlock,
+    val childIndex: Int,
+) {
+    val divHash: Int = item.div.propertiesHash()
+    val div = item.div
+
+    fun isCombinable(other: Token): Boolean {
+        return divHash == other.divHash &amp;&amp; div.type == other.div.type
+    }
+}
+</code></pre>
+<h2>Web: the id index</h2>
+<p>The web gate is the simplest because the index already did the work: the patch applies only where <code>parentOfMap</code> holds the id. There is no tree comparison and no hash. The only extra check is <code>isSingleMode</code>, which records that a parent accepts exactly one replacement item (a single-slot element), so a patch that supplies two items to a single-slot parent is rejected in transactional mode before anything is mutated.</p>
+<h1>Tier 3 — reconfigure, recycle, or recreate</h1>
+<p>The third tier is what actually happens to a view that survived the gate.</p>
+<h2>iOS: reconfigure in place, or make a new view</h2>
+<p><code>configureBlockView</code> writes the new model into the surviving view. The <code>ContainerBlockView.configure</code> method is the canonical example: it checks whether the model changed at all, and if it did, it reuses its child views via the same <code>reused(with:)</code> pass, then re-runs layout:</p>
+<pre><code class="language-swift">// divkit-ios/LayoutKit/LayoutKit/UI/Blocks/ContainerBlock+UIViewRenderableBlock.swift (excerpt)
+func configure(model: Model, observer: ..., overscrollDelegate: ..., renderingDelegate: ...) {
+  guard model != modelAndLastLayoutSize.model || observer !== self.observer,
+        !preventLayoutAndConfig
+  else { return }
+
+  applyAccessibilityFromScratch(model.accessibility)
+  modelAndLastLayoutSize = (model: model, lastLayoutSize: nil)
+  self.observer = observer
+  ...
+  preventLayoutAndConfig = true
+  blockViews = blockViews.reused(
+    with: model.children.map(\.content),
+    attachTo: self,
+    observer: observer,
+    ...
+  )
+  preventLayoutAndConfig = false
+  setNeedsLayout()
+  ...
+}
+</code></pre>
+<p>The guard <code>model != modelAndLastLayoutSize.model</code> is the last line of defense: if the patch did not actually change this container's resolved properties, the whole method returns early and nothing re-lays-out.</p>
+<h2>Android: bind in place, recycle via the pool, release the removed</h2>
+<p>The simple rebind binds the new model onto the existing view, element by element. The fast path inside <code>DivBinder.bind</code> skips the work entirely when the complex-rebind pass already declared the node reusable:</p>
+<pre><code class="language-kotlin">// divkit/client/android/div/.../core/view2/DivBinder.kt (excerpt — the fast path)
+fun bind(view: View, divBlock: DivBlock, divView: Div2View) = suppressExpressionErrors {
+    divView.currentRebindReusableList?.pop(divBlock.div)?.let {
+        return@suppressExpressionErrors
+    }
+    // ... per-type binder: bindText, bindImage, bindContainer, ...
+}
+</code></pre>
+<p>The complex rebind (<code>RebindTaskImpl</code>) walks the old and new trees, pairs combinable tokens, and classifies the result into five collections: <code>bindingPoints</code> (nodes whose children changed, so they must be re-bound), <code>idsToBind</code> (same id and class but changed values), <code>aloneExisting</code>, <code>aloneNew</code>, and <code>aloneIds</code>. <code>rebind()</code> releases <code>aloneExisting</code> and <code>aloneIds</code>, then binds <code>bindingPoints</code> and <code>idsToBind</code>:</p>
+<pre><code class="language-kotlin">// divkit/client/android/div/.../core/view2/reuse/RebindTask.kt (excerpt — rebind)
+bindingPoints.forEach {
+    if (bindingPoints.contains(it.parentToken)) return@forEach
+    val divBlock = it.view.divBlock ?: return@forEach
+    divBinder.bind(it.view, divBlock, div2View)
+}
+idsToBind.forEach {
+    if (bindingPoints.contains(it.parentToken)) return@forEach
+    val divBlock = it.view.divBlock ?: return@forEach
+    divBinder.bind(it.view, divBlock, div2View)
+}
+</code></pre>
+<p>Removed subtrees are released back to the <code>ViewPool</code>, which is the other half of Android's optimization. <code>DivViewCreator.create</code> never constructs a view by hand for the pooled types; it calls <code>viewPool.obtain(tag)</code>, and the pool keeps a per-tag capacity (tunable via <code>ViewPreCreationProfile</code>) so a list can recycle views instead of allocating them.</p>
+<h2>Web: Svelte reactivity mutates one component</h2>
+<p>The web's tier 3 is Svelte 5's fine-grained reactivity. <code>Outer.svelte.replaceWith</code> finds the target item in its local <code>parentOf</code> array, splices the new items into a copy, and writes the copy back through <code>replaceItems</code>:</p>
+<pre><code class="language-ts">// divkit/client/web/divkit/src/components/utilities/Outer.svelte (excerpt — replaceWith)
+function replaceWith(id: string, items?: DivBase[]): void {
+    if (!Array.isArray(parentOf) || !replaceItems) return;
+
+    if (parentOfSimpleMode) {
+        const newItemsLen = Array.isArray(items) ? items.length : 0;
+        if (newItemsLen !== 1) return;
+    }
+
+    const index = parentOf.findIndex(item =&gt; item?.id === id);
+    const newItems = parentOf.slice();
+    newItems.splice(index, 1, ...(items || [] as DivBase[]).map(it =&gt; ({
+        json: it,
+        id: it?.id as string | undefined
+    })));
+
+    parentOf = newItems;
+    replaceItems(newItems.map(it =&gt; it?.json));
+}
+</code></pre>
+<p>Writing <code>parentOf = newItems</code> (and calling <code>replaceItems</code>) invalidates only the Svelte subscriptions that read that component's <code>items</code>. The unaffected components are never re-rendered, because Svelte tracks dependencies per component, not per tree. This is the web answer to iOS's <code>Block</code> value equality and Android's <code>propertiesHash</code>: instead of diffing, it points the patch at one component and lets the reactive runtime do the minimal re-render.</p>
+<h1>When the patch lands: batching and threading</h1>
+<p>The last difference is <em>when</em> and <em>on which thread</em> the three tiers run.</p>
+<p>iOS batches. A patch arrives as a <code>DivCardUpdateReason.patch</code>, and <code>RunLoopCardUpdateAggregator</code> accumulates reasons and flushes them once per run loop. Ten reasons in one frame become one re-model:</p>
+<pre><code class="language-swift">// divkit-ios/DivKit/RunLoopCardUpdateAggregator.swift (excerpt — the merge)
+extension [DivCardUpdateReason] {
+  fileprivate func merge() -&gt; [DivCardUpdateReason] {
+    var cards: [DivCardID: Set&lt;DivVariableName&gt;] = [:]
+    let reasons: [DivCardUpdateReason] = compactMap {
+      switch $0 {
+      case let .variable(affectedCards):
+        for (key, value) in affectedCards { cards[key] = cards[key]?.union(value) ?? value }
+        return nil
+      case .patch, .timer, .state, .external:
+        return $0
+      }
+    }
+    return reasons + (cards.isEmpty ? [] : [.variable(cards)])
+  }
+}
+</code></pre>
+<p><code>DivBlockProvider.update(reasons:)</code> then consumes the batch, applies every <code>.patch</code> for its card via <code>applyPatchWithActions</code>, and re-models once.</p>
+<p>Android threads. Binding runs through a <code>BindingDispatcher</code> onto a background binding thread, with a generation counter so a newer request cancels an older one; <code>DivAsyncBindingController</code> wraps that in the <code>setDataAsync</code> / <code>applyPatchAsync</code> API and reports binding phases. The dispatcher's <code>MainThreadTaskPolicy</code> decides whether a concurrent update is deferred or replaces the pending one (<code>DEFER</code> when the data is unchanged, <code>REPLACE</code> when a new document arrived).</p>
+<p>The web is synchronous. <code>applyPatch</code> mutates the Svelte store on the calling thread, and Svelte schedules the resulting DOM updates in its own microtask batch, so many synchronous mutations collapse into one DOM pass.</p>
+<div class="mermaid">
+flowchart TB
+    subgraph IOS[&quot;iOS (DivKit + LayoutKit)&quot;]
+        I1[&quot;DivPatch -&gt; applyPatchWithActions&quot;] --&gt; I2[&quot;new DivData (unchanged branches shared)&quot;]
+        I2 --&gt; I3[&quot;makeBlock -&gt; new Block tree (classes, structural equality)&quot;]
+        I3 --&gt; I4[&quot;canConfigureBlockView / isBestViewForReuse&quot;]
+        I4 --&gt;|&quot;match&quot;| I5[&quot;configureBlockView in place&quot;]
+        I4 --&gt;|&quot;no match&quot;| I6[&quot;makeBlockView + remove orphan&quot;]
+    end
+    subgraph AND[&quot;Android (div-data + div)&quot;]
+        A1[&quot;DivPatchApply + DivPatchMap&quot;] --&gt; A2[&quot;new DivData (copies map)&quot;]
+        A2 --&gt; A3[&quot;DivComparator.areDivsReplaceable&quot;]
+        A3 --&gt;|&quot;replaceable&quot;| A4[&quot;rebind: DivBinder.bind in place&quot;]
+        A3 --&gt;|&quot;not&quot;| A5[&quot;complexRebind: RebindTaskImpl token diff&quot;]
+        A5 --&gt; A6[&quot;bindingPoints bound; rest reuse / ViewPool recycle&quot;]
+    end
+    subgraph WEB[&quot;Web (Svelte)&quot;]
+        W1[&quot;applyPatchInternal&quot;] --&gt; W2[&quot;parentOfMap id -&gt; ParentMethods&quot;]
+        W2 --&gt; W3[&quot;Outer.svelte.replaceWith splices items&quot;]
+        W3 --&gt; W4[&quot;Svelte fine-grained reactivity: one component re-renders&quot;]
+    end
+
+</div>
+<h1>The Aha Moment</h1>
+<p><strong>Aha:</strong> All three renderers optimize a patch with the <em>same three-tier recipe</em>, and the recipe is independent of the platform's geometry. Tier one is an <em>immutable rewrite</em>: a patch never mutates a live view; it produces a new model tree where only the named branch is new (iOS shares the unchanged element instances, Android keeps a <code>copies</code> map, the web splices one component's <code>items</code> array). Tier two is a <em>value-equality gate</em> that asks "can the old views survive?" (iOS <code>canConfigureBlockView</code> / <code>isBestViewForReuse</code>, Android <code>DivComparator</code> and <code>propertiesHash</code>, the web's <code>parentOfMap</code> id index). Tier three is <em>reconfigure-or-recycle</em>: survivors are reconfigured in place, removed ones are recycled, and only the changed nodes are rebuilt (iOS <code>configureBlockView</code>, Android <code>DivBinder.bind</code> over the <code>ViewPool</code>, Svelte's per-component reactivity). The reason DivKit ships the same optimization three times instead of once is the same reason it exists at all: the <em>contract</em> — the JSON patch — is portable, but the <em>machinery</em> that makes it fast is not. A server author sends one <code>{ changes: [{ id, items }] }</code> document, and iOS, Android, and the web each translate it into their own tier-one rewrite, tier-two gate, and tier-three reconfigure, converging on the same outcome: a fragment updates only the part of the screen it names.</p>
+<h1>Cross-References</h1>
+<ul><li>The JSON-to-view pipeline on iOS, and the <code>DivBlockModeling</code> seam: <a href="./10-ios-architecture.html">10-ios-architecture.md</a>.</li><li>The <code>Block</code>/<code>BlockView</code> value equality that tier two leans on: <a href="./11-layoutkit.html">11-layoutkit.md</a>.</li><li>The patch/update path already sketched for iOS (images, preloading, reasons): <a href="./12-ios-rendering.html">12-ios-rendering.md</a>.</li><li>The web <code>TYPE_MAP</code>, Svelte stores, and the React wrapper: <a href="./13-web-client.html">13-web-client.md</a>.</li><li>The Android <code>DivViewCreator</code>/<code>DivBinder</code>/<code>ViewPool</code> and action dispatch: <a href="./14-android-client.html">14-android-client.md</a>.</li><li>The immutable-data and reason-based update idioms this document instantiates: <a href="./20-cross-cutting.html">20-cross-cutting.md</a>.</li><li>The schema that generates <code>DivPatch</code> and its <code>mode</code>/<code>changes</code> on every platform: <a href="./09-schema.html">09-schema.md</a>.</li></ul>
+<p>Continue to <a href="./22-web-rendering-hydration.html">22-web-rendering-hydration.md</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

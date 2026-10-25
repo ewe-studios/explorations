@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>24 -- Native rendering optimization: the tricks that make it fast -- divkit</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/divkit/docs</span>
+    <div class="nav-actions">
+      <a href="21-rendering-and-patch.html" class="nav-breadcrumb">21 -- Rendering and Patch: from JSON to a view, and how a fragment updates it</a><a href="22-web-rendering-hydration.html" class="nav-breadcrumb">22 -- Web: rendering, hydration, and communication</a><a href="23-live-sync-sandbox.html" class="nav-breadcrumb">23 -- The Sandbox and Live Sync: one editor, two native renders</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="23-live-sync-sandbox.html" class="nav-btn" title="Previous: 23 -- The Sandbox and Live Sync: one editor, two native renders">← prev</a>
+      <a href="25-issues-prs-delivery.html" class="nav-btn nav-btn-next" title="Next: 25 -- Issues, pull requests, bundle size, and server delivery">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>24 -- Native rendering optimization: the tricks that make it fast</h1>
+<p>The DivKit renderers for iOS and Android share one contract: JSON (JavaScript Object Notation) becomes a card, and a card becomes a native view. <a href="./21-rendering-and-patch.html">21-rendering-and-patch.md</a> traces that path. This document covers what sits <em>behind</em> it: the optimizations that make the path fast. The renderers are fast because they do three things. They reuse views instead of making new ones. They skip work whose input did not change. They batch many small changes into one pass and move the pass off the main thread where they can.</p>
+<p>Each trick has a WHY and a mechanism. The WHY is what it avoids. The mechanism is the exact code. iOS and Android solve the same problems with different machinery, so the document reads them side by side.</p>
+<h1>View reuse and recycling</h1>
+<p>Creating a native view is expensive. It allocates memory, builds the widget's internal state, and runs its first layout. A renderer that made a new view for every re-render would spend most of its time allocating, not drawing. Both clients therefore treat a view as a <em>reusable shell</em>: make it once, then write new data into it many times. The shell is recycled by type.</p>
+<h2>iOS: two passes over the old views</h2>
+<p>iOS reuses at the subtree level. A container has a list of child blocks and a list of child views already on screen. When the blocks change, the container does not throw the views away. It matches each new block to an old view, and it removes only the views that match nothing. The engine is <code>calculateReusability</code> in <code>LayoutKit/LayoutKit/UI/Blocks/Array+UIViewRenderable.swift</code>:</p>
+<pre><code class="language-swift">private func calculateReusability(
+  _ views: [BlockView],
+  blocks: [UIViewRenderable]
+) -&gt; ReuseResult {
+  var orphanViews = views
+  var reusableViews = [Int: BlockView](minimumCapacity: blocks.count)
+  for (blockIndex, block) in blocks.enumerated() {
+    let reusableView = orphanViews
+      .enumerated()
+      .first { block.isBestViewForReuse($0.element) }
+    if let (viewIndex, view) = reusableView {
+      orphanViews.remove(at: viewIndex)
+      reusableViews[blockIndex] = view
+    }
+  }
+
+  let reusability: [(UIViewRenderable, BlockView?)] = blocks
+    .enumerated()
+    .map { blockIndex, block in
+      if let view = reusableViews[blockIndex] {
+        return (block, view)
+      }
+      let reusableView = orphanViews
+        .enumerated()
+        .first { block.canConfigureBlockView($0.element) }
+      if let (index, view) = reusableView {
+        orphanViews.remove(at: index)
+        return (block, view)
+      }
+      return (block, nil)
+    }
+
+  return ReuseResult(
+    reusability: reusability,
+    orphanViews: orphanViews
+  )
+}
+</code></pre>
+<p>Read the two loops as two strengths of match. The first loop asks <code>isBestViewForReuse(_:)</code>. That is the <em>strong</em> match. The second loop asks <code>canConfigureBlockView(_:)</code>. That is the <em>weak</em> match: same type, so the view can be reconfigured. A block that matches neither makes a new view. The views left in <code>orphanViews</code> at the end are removed from their superview. The caller, <code>reused(with:attachTo:observer:overscrollDelegate:renderingDelegate:)</code>, then runs <code>configureBlockViewWithReporting</code> on each matched view and <code>makeBlockView</code> on each unmatched block.</p>
+<p>The strong match is where the real saving is. The default <code>isBestViewForReuse</code> in <code>LayoutKit/LayoutKit/UI/Blocks/UIViewRenderable.swift</code> just falls back to <code>canConfigureBlockView</code>. <code>DecoratingBlock</code> overrides it to compare by value, not by type, in <code>LayoutKit/LayoutKit/UI/Blocks/DecoratingBlock+UIViewRenderableBlock.swift</code>:</p>
+<pre><code class="language-swift">func isBestViewForReuse(_ view: BlockView) -&gt; Bool {
+  guard let view = view as? DecoratingView,
+        let sourceBlock = view.model.source.value as? DecoratingBlock else {
+    return false
+  }
+
+  return isPreceded(by: sourceBlock) || sourceBlock == self
+}
+</code></pre>
+<p>The <code>==</code> operator (defined in <code>LayoutKit/LayoutKit/Blocks/Block.swift</code>) first checks identity with <code>===</code> and then calls <code>Block.equals(_:)</code> for structural equality. So a view whose block did not change at all is reused without reconfiguration. This is why <a href="./21-rendering-and-patch.html">21-rendering-and-patch.md</a> can say a patch that changes one text field touches one view: every sibling whose block is equal by value is picked by the strong match and left alone.</p>
+<p>The gallery adds a second layer of reuse on top of this. A gallery is a <code>UICollectionView</code>. Each block has a <code>reuseId</code> (<code>LayoutKit/LayoutKit/Blocks/Block.swift</code>, default <code>defaultReuseId</code>). <code>CollectionCellRegistrator</code> registers one cell class per distinct <code>reuseId</code>, and <code>GenericCollectionViewDataSource.cellForItemAt</code> calls <code>collectionView.dequeueReusableCell(withReuseIdentifier: model.reuseId, ...)</code>. So a long gallery scrolls with the platform's own cell recycling, and the cell content itself reuses the <code>BlockView</code> inside it.</p>
+<h2>Android: the pool and the profile</h2>
+<p>Android reuses at the single-view level. <code>DivViewCreator</code> never calls a widget constructor directly for the pooled types. Its <code>defaultVisit</code> asks a <code>ViewPool</code> for a view by a per-element tag:</p>
+<pre><code class="language-kotlin">override fun defaultVisit(data: Div, resolver: ExpressionResolver): View =
+    viewPool.obtain(viewTag(data, resolver))
+</code></pre>
+<p>The tags and their capacities come from a <code>ViewPreCreationProfile</code> (<code>div/src/main/java/com/yandex/div/internal/viewpool/ViewPreCreationProfile.kt</code>):</p>
+<pre><code class="language-kotlin">data class ViewPreCreationProfile(
+    val id: String? = null,
+    val text: PreCreationModel = PreCreationModel(20),
+    val image: PreCreationModel = PreCreationModel(20),
+    val gifImage: PreCreationModel = PreCreationModel(3),
+    val overlapContainer: PreCreationModel = PreCreationModel(8),
+    val linearContainer: PreCreationModel = PreCreationModel(12),
+    // ... one PreCreationModel per element type ...
+)
+</code></pre>
+<p><code>DivViewCreator.init</code> registers every tag with its factory and capacity. The profile is tunable: a card that is mostly images can allocate more image views up front. The pool itself, <code>AdvanceViewPool</code> (<code>div/src/main/java/com/yandex/div/internal/viewpool/AdvanceViewPool.kt</code>), keeps one <code>Channel</code> per tag. A channel holds a <code>BlockingQueue</code> of pre-made views. On <code>obtain</code>, the channel polls the queue; if the queue is empty it waits up to <code>MAX_WAITING_TIME</code> (16 milliseconds) for a background pre-creation request, then falls back to the factory. After every obtain it calls <code>requestViewCreation()</code> to refill the pool back to capacity. So the pool both serves and replenishes.</p>
+<p>The capacity is not only hand-tuned. <code>ViewPreCreationProfileRepository</code> loads a profile persisted per identifier, and <code>ViewPreCreationProfileOptimizer.optimize</code> adjusts each <code>PreCreationModel.capacity</code> from the previous session's obtain statistics: if a tag repeatedly blocked (its queue ran dry), capacity rises; if a tag was never exhausted, capacity falls. This is adaptive pre-allocation, not a static guess.</p>
+<h2>Android: the gallery and pager prebind the first screen</h2>
+<p>A gallery is a <code>RecyclerView</code>, so it already recycles. The extra DivKit trick is <em>prebinding</em>: before the first layout, the binder builds and binds the first visible holders on the background binding thread, so they are ready when the view attaches. <code>CollectionPrebinding</code> (<code>div/src/main/java/com/yandex/div/core/view2/divs/CollectionPrebinding.kt</code>) does this. Its <code>prepare</code> runs only when the collection is not yet attached and the binding dispatcher is collecting main-thread actions, and it caps the work at <code>MAX_PREPARED_ITEMS</code> (8). The prepared holders are held by a <code>PreparedCollectionViewHoldersPool</code> until their binding actions run or a newer generation cancels them. The gallery binder triggers it at <code>DivGalleryBinder.kt</code> with <code>itemBinding.prepare(initialPosition)</code>, and the pager binder at <code>DivPagerBinder.kt</code> with <code>itemBinding.prepare()</code>.</p>
+<p>The WHY for prebinding: the first frame of a gallery otherwise waits for both binding and layout on the main thread. Prebinding moves the binding to the background and detaches it from layout, so the first frame is shorter.</p>
+<div class="mermaid">
+flowchart TB
+    subgraph IOS[&quot;iOS (LayoutKit)&quot;]
+        A1[&quot;new child blocks&quot;] --&gt; A2[&quot;calculateReusability&quot;]
+        A2 --&gt; A3{&quot;isBestViewForReuse? (value equal)&quot;}
+        A3 --&gt;|&quot;yes&quot;| A4[&quot;keep view, no reconfigure&quot;]
+        A3 --&gt;|&quot;no&quot;| A5{&quot;canConfigureBlockView? (same type)&quot;}
+        A5 --&gt;|&quot;yes&quot;| A6[&quot;keep view, reconfigure in place&quot;]
+        A5 --&gt;|&quot;no&quot;| A7[&quot;makeBlockView; orphan removed&quot;]
+    end
+    subgraph AND[&quot;Android (div)&quot;]
+        B1[&quot;DivViewCreator.visit&quot;] --&gt; B2[&quot;viewPool.obtain(tag)&quot;]
+        B2 --&gt; B3[&quot;AdvanceViewPool.Channel poll queue&quot;]
+        B3 --&gt;|&quot;empty&quot;| B4[&quot;wait 16 ms, then factory&quot;]
+        B3 --&gt;|&quot;hit&quot;| B5[&quot;recycle view&quot;]
+        B4 --&gt; B6[&quot;requestViewCreation refills pool&quot;]
+        B5 --&gt; B6
+    end
+
+</div>
+<h1>Layout caching and short-circuit</h1>
+<p>The second class of optimization avoids work whose result is already known. Reuse avoids <em>creating</em> views; short-circuit avoids <em>reconfiguring and re-laying-out</em> views whose model did not change.</p>
+<h2>iOS: <code>LayoutCaching</code>, the model cache, and reference equality</h2>
+<p><code>LayoutKit</code> memoizes layout. The protocol <code>LayoutCaching</code> (<code>LayoutKit/LayoutKit/Blocks/LayoutCaching.swift</code>) exposes <code>laidOut(for:)</code>, and its result is a <code>LaidOutBlock</code> that freezes the size, so the measure pass never runs twice for the same size. Text measurement, the most expensive single measure, has its own cache in <code>LayoutKit/LayoutKit/Blocks/TextBlock.swift</code>:</p>
+<pre><code class="language-swift">private var cachedIntrinsicWidth: CGFloat?
+private var cachedIntrinsicHeight: (width: CGFloat, height: CGFloat)?
+</code></pre>
+<p><code>intrinsicContentWidth</code> returns <code>cachedIntrinsicWidth</code> when it is set, and <code>calculateTextIntrinsicContentHeight(for:)</code> returns the cached height when the width is approximately equal. Text is measured once per size, not once per render.</p>
+<p>The view side has two short-circuits, both in <code>LayoutKit/LayoutKit/UI/Blocks/ContainerBlock+UIViewRenderableBlock.swift</code>. The container stores <code>modelAndLastLayoutSize</code> and a <code>preventLayoutAndConfig</code> flag. The <code>configure</code> entry is guarded:</p>
+<pre><code class="language-swift">func configure(
+  model: Model,
+  observer: ElementStateObserver?,
+  overscrollDelegate: ScrollDelegate?,
+  renderingDelegate: RenderingDelegate?
+) {
+  guard model != modelAndLastLayoutSize.model ||
+    observer !== self.observer,
+    !preventLayoutAndConfig
+  else {
+    return
+  }
+  ...
+}
+</code></pre>
+<p>If the model is unchanged and the observer is unchanged, the whole reconfigure returns early. Nothing re-lays-out. The <code>Model</code> type conforms to <code>ReferenceEquatable</code> (<code>LayoutKit/LayoutKit/UI/Blocks/ReferenceEquatable.swift</code>), whose <code>==</code> is identity on a <code>Variable<AnyObject?></code> source:</p>
+<pre><code class="language-swift">extension ReferenceEquatable {
+  static func ==(lhs: Self, rhs: Self) -&gt; Bool {
+    assert(lhs.source.value != nil || rhs.source.value != nil)
+    return lhs.source.value === rhs.source.value
+  }
+}
+</code></pre>
+<p>So the <code>model != modelAndLastLayoutSize.model</code> check is a pointer comparison on the source block, not a field-by-field walk. The <code>layoutSubviews</code> path has the same guard: it returns when <code>preventLayoutAndConfig</code> is set or when <code>bounds.size == lastLayoutSize</code>, so a view laid out once at a size is not laid out again at the same size. <code>preventLayoutAndConfig</code> exists because <code>blockViews.reused</code> mutates the hierarchy, which can trigger <code>layoutSubviews</code> re-entrantly; the flag stops that re-entrancy from re-running layout during a reconfigure.</p>
+<h2>Android: the <code>DivComparator</code> gate and the reusable-list fast path</h2>
+<p>Android's short-circuit is a gate before binding. <code>DivComparator.areDivsReplaceable</code> (<code>div/src/main/java/com/yandex/div/core/view2/animations/DivComparator.kt</code>) decides whether the whole new <code>DivBlock</code> tree can reuse the old view structure: same Java class, same overlap/wrap flags, same child count, recursively. If it returns <code>true</code>, <code>DivViewBindingController.applyBindingStrategy</code> takes the <code>rebind</code> path and binds the new model onto the existing views in place, without touching child views. If it returns <code>false</code>, the controller falls to <code>isComplexRebindEnabled && complexRebind(...)</code>, a true tree diff (the <code>RebindTaskImpl</code> token walk from <a href="./21-rendering-and-patch.html">21-rendering-and-patch.md</a>), and finally to <code>updateNow</code>, a full rebuild.</p>
+<p>The innermost short-circuit is one line in <code>DivBinder.bind</code> (<code>div/src/main/java/com/yandex/div/core/view2/DivBinder.kt</code>):</p>
+<pre><code class="language-kotlin">fun bind(view: View, divBlock: DivBlock, divView: Div2View) = suppressExpressionErrors {
+    divView.currentRebindReusableList?.pop(divBlock.div)?.let {
+        return@suppressExpressionErrors
+    }
+    ...
+}
+</code></pre>
+<p>During a complex rebind, <code>RebindTaskImpl</code> fills a <code>ReusableTokenList</code> with <code>ExistingToken</code> objects whose subtree is already up to date. <code>pop</code> removes one by hash and returns it; the presence of the token means "this node and its children are already bound, skip". The hash is <code>item.div.propertiesHash()</code>, and <code>Token.isCombinable</code> compares <code>divHash == other.divHash && div.type == other.div.type</code>. Two nodes with the same properties hash and type can share one view. This is the Android analog of iOS value equality: both avoid re-binding an unchanged subtree, iOS by comparing block values, Android by comparing a properties hash.</p>
+<div class="mermaid">
+flowchart TB
+    D[&quot;new DivData / DivBlock&quot;] --&gt; G{&quot;DivComparator.areDivsReplaceable?&quot;}
+    G --&gt;|&quot;yes&quot;| R[&quot;rebind: DivBinder.bind in place, no child work&quot;]
+    G --&gt;|&quot;no&quot;| C{&quot;isComplexRebindEnabled and complexRebind succeeds?&quot;}
+    C --&gt;|&quot;yes&quot;| T[&quot;RebindTaskImpl token diff&quot;]
+    T --&gt; P[&quot;bindingPoints + idsToBind rebound&quot;]
+    T --&gt; F[&quot;reusable tokens popped in DivBinder.bind -&gt; skip&quot;]
+    C --&gt;|&quot;no&quot;| U[&quot;updateNow: full rebuild&quot;]
+
+</div>
+<h1>Batching and threading</h1>
+<p>A single interaction can cause many small changes: ten <code>set_variable</code> writes, two patches, a timer tick. The renderers collapse these into one re-render, and they run the re-render where it is cheapest.</p>
+<h2>iOS: one re-render per run loop</h2>
+<p>iOS batches at the reason level. A change is a <code>DivCardUpdateReason</code> (<code>DivKit/DivCardUpdateReason.swift</code>): <code>.patch</code>, <code>.timer</code>, <code>.state</code>, <code>.variable([DivCardID: Set<DivVariableName>])</code>, or <code>.external</code>. The <code>RunLoopCardUpdateAggregator</code> (<code>DivKit/RunLoopCardUpdateAggregator.swift</code>) collects reasons into a <code>batch</code> under a lock and schedules one <code>flushUpdateActions</code> per main-run-loop turn. The merge step collapses many variable writes into one reason:</p>
+<pre><code class="language-swift">extension [DivCardUpdateReason] {
+  fileprivate func merge() -&gt; [DivCardUpdateReason] {
+    var cards: [DivCardID: Set&lt;DivVariableName&gt;] = [:]
+
+    let reasons: [DivCardUpdateReason] = compactMap {
+      switch $0 {
+      case let .variable(affectedCards):
+        for (key, value) in affectedCards {
+          cards[key] = cards[key]?.union(value) ?? value
+        }
+        return nil
+      case .patch, .timer, .state, .external:
+        return $0
+      }
+    }
+
+    return reasons + (cards.isEmpty ? [] : [.variable(cards)])
+  }
+}
+</code></pre>
+<p>Ten variable writes for the same card become one <code>.variable</code> reason with a union of variable names. The card re-models once, not ten times. <code>DivBlockProvider.update(reasons:)</code> (<code>DivKit/Views/DivBlockProvider.swift</code>) then checks <code>needUpdateBlock(reasons:)</code> to skip reasons that do not name this card, applies any patches, and re-runs <code>divData.makeBlock(context:)</code> once. Because <code>Block</code> compares by value (the previous section), the unchanged subtrees reuse their views, so the one re-model is also a minimal re-render.</p>
+<h2>Android: a background binding thread with generations</h2>
+<p>Android batches and threads at the bind level. <code>BindingDispatcher</code> (<code>div/src/main/java/com/yandex/div/core/util/binding/BindingDispatcher.kt</code>) runs binding tasks on a single background thread owned by <code>BindingThreadExecutor</code> (a thread pool of exactly one thread). Tasks run first-in-first-out, and the dispatcher keeps a <code>bindingGeneration</code> counter. <code>cancelPendingTasks()</code> increments the generation, drops queued cancellable tasks, and invalidates the running one. A task checks <code>isUpToDate()</code> (its generation equals the current one) before and after entering the critical section, so a superseded bind never publishes its result to the main thread. This is the Android answer to "many updates, one winner": the newest update replaces the older pending one, and the older one is discarded, not applied.</p>
+<p>The main thread is protected by <code>BindingCriticalSection</code> (<code>div/src/main/java/com/yandex/div/core/util/binding/BindingCriticalSection.kt</code>). A main-thread call that arrives while the background bind holds the section must not block (it would deadlock). <code>BindingDispatcher.withLock</code> uses a <code>MainThreadTaskPolicy</code> (<code>div/src/main/java/com/yandex/div/core/util/binding/MainThreadTaskPolicy.kt</code>):</p>
+<pre><code class="language-kotlin">internal enum class MainThreadTaskPolicy {
+    REJECT,
+    DEFER,
+    REPLACE,
+}
+</code></pre>
+<p><code>REJECT</code> reports the failure and returns a fallback (used by <code>applyPatch</code>, which must not run against data bound later). <code>DEFER</code> queues the call to run after all pending tasks (used by <code>setVariable</code>, <code>handleAction</code>, state switches). <code>REPLACE</code> cancels the pending <code>DATA</code> tasks and runs the call on the binding thread (used by <code>setData</code>, where the new document replaces the pending bind). The critical section itself can <code>transferToCurrentThread()</code>: a bind enters the section on the background thread and posts its continuation to the main thread, which takes over ownership. This cross-thread ownership is the reason the background bind and the main-thread user interface (UI) update can share one lock without deadlocking.</p>
+<p>The asynchronous application programming interface (API) sits on top: <code>DivAsyncBindingController</code> (<code>div/src/main/java/com/yandex/div/core/view2/DivAsyncBindingController.kt</code>) wraps <code>setDataAsync</code>, <code>setDataAsyncWithPhases</code>, and <code>applyPatchAsync</code>. Each request records the generation it was created under, and <code>replaceBindingRequest</code> cancels the previous request. A request has one terminal phase (<code>APPLIED</code>, <code>CANCELLED</code>, or <code>FAILED</code>), and the phases report the bind's progress to the host.</p>
+<div class="mermaid">
+flowchart TB
+    M[&quot;main thread: setData / applyPatch / setVariable&quot;] --&gt; P{&quot;policy?&quot;}
+    P --&gt;|&quot;REJECT&quot;| RJ[&quot;report lock fail, return fallback&quot;]
+    P --&gt;|&quot;DEFER&quot;| DF[&quot;queue MainThreadCall after pending tasks&quot;]
+    P --&gt;|&quot;REPLACE&quot;| RP[&quot;cancelPendingTasks: generation++&quot;]
+    RP --&gt; BT[&quot;binding thread runs new bind&quot;]
+    DF --&gt; BT
+    BT --&gt; GEN{&quot;task.isUpToDate()?&quot;}
+    GEN --&gt;|&quot;no&quot;| DROP[&quot;discard, never publish&quot;]
+    GEN --&gt;|&quot;yes&quot;| POST[&quot;post continuation to main thread, transferToCurrentThread&quot;]
+
+</div>
+<h1>Preloading and caching</h1>
+<p>The expensive resources are images. Both clients fetch them before the frame needs them, and both reuse the holders they already have.</p>
+<h2>iOS: preloading and the holder cache layers</h2>
+<p><code>DivDataResourcesPreloader</code> (<code>DivKit/ResourcesPreloader/DivDataResourcesPreloader.swift</code>) walks the model tree and warms the cache. <code>downloadStaticResources(for:maxPrefetchedImageCount:)</code> fetches only the static (non-expression) image uniform resource locators (URLs), which is safe before any expression context exists; <code>DivBlockProvider.update(divData:)</code> calls it with <code>maxPrefetchedImageCount: 50</code>. <code>downloadResources(for:filter:context:completion:)</code> walks every state and child, collecting image, video, and extension URLs, and fetches them through the same <code>URLResourceRequesting</code> interface the renderer uses. The <code>filter</code> is <code>all</code> or <code>onlyRequired</code> (only the URLs an element marks as required for its layout). The traversal reuses the renderer's <code>flatMap</code>, including <code>item_builder</code> loops and <code>div-state</code> trees, so it discovers the URLs a dynamically generated subtree will need.</p>
+<p>The holder cache is layered in <code>DivImageHolderFactory</code> (<code>DivKit/Images/DivImageHolderFactory.swift</code>). <code>withAssets()</code> adds a local asset layer for <code>divkit-asset://</code> URLs. <code>withInMemoryCache(imageCountLimit:)</code> memoizes a holder by URL plus placeholder key. <code>withBackgroundModeling()</code> makes the factory safe to call on a background thread. The layer that matters for re-renders is <code>withCache(_:)</code>:</p>
+<pre><code class="language-swift">public func withCache(_ cachedImageHolders: [ImageHolder]) -&gt; DivImageHolderFactory {
+  if cachedImageHolders.isEmpty {
+    return self
+  }
+  return CachedImageHolderFactory(
+    imageHolderFactory: self,
+    cachedImageHolders: cachedImageHolders
+  )
+}
+</code></pre>
+<p><code>CachedImageHolderFactory.make</code> looks for a cached holder whose <code>reused(with:placeholder:remoteImageURL:)</code> is non-nil, and returns it instead of fetching. The source of those cached holders is the previous render: <code>DivBlockProvider.makeCurrentContext()</code> calls <code>divKitComponents.makeContext(viewId: id, cachedImageHolders: block.getImageHolders(), ...)</code>. <code>block.getImageHolders()</code> walks the current block tree and returns every <code>ImageHolder</code> it already has. So a re-render that touches the same image reuses the same holder and never re-fetches it. <code>DivKitComponents.makeContext</code> wires this by calling <code>imageHolderFactory.withCache(cachedImageHolders)</code>.</p>
+<p>A smaller cache of the same shape is <code>DivAccessibilityElementsStorage</code> (<code>DivKit/DivAccessibilityElementsStorage.swift</code>). It records the ordered chain of accessibility element IDs once per render, and <code>getOrderedIds()</code> replays that order on later renders, so the accessibility tree is not recomputed from the view hierarchy every time.</p>
+<h2>Android: image preloading and adapter diffing</h2>
+<p>Android's preloading is <code>DivImagePreloader</code> (<code>div/src/main/java/com/yandex/div/core/view2/DivImagePreloader.kt</code>). Its <code>PreloadVisitor</code> walks a <code>Div</code> subtree and calls <code>imageLoader.loadImage(...)</code> with <code>DivImagePriority.IMAGES_PRIORITY_PRELOAD</code>, honoring a <code>DivPreloader.PreloadFilter</code> (<code>ONLY_PRELOAD_REQUIRED_FILTER</code> by default). The same filter decides whether a background or content image is preloaded.</p>
+<p>The gallery and pager get a second form of caching: <code>DivCollectionAdapter</code> (<code>div/src/main/java/com/yandex/div/core/view2/divs/DivCollectionAdapter.kt</code>) diffs item lists. <code>getItemViewType</code> uses the element's <code>reuseId</code> hash as the view type, and <code>setItems</code> runs <code>DiffUtil.calculateDiff</code> with <code>areItemsTheSame</code> comparing <code>reuseId</code> values (falling back to content equality) and <code>areContentsTheSame</code> comparing two <code>Div</code> values by expression value. The result is a minimal set of insert/remove/move updates, so scrolling and re-rendering a list never rebinds items that did not change.</p>
+<p>Per-card runtime objects are cached by <code>DivDataComponentStore</code> (<code>div/src/main/java/com/yandex/div/core/DivDataComponentStore.kt</code>), a <code>@DivScope</code> map from a <code>DivDataTag</code> string to a <code>DivDataComponent</code>. <code>getOrPut</code> builds the component once per tag and reuses it on later renders of the same tag. The component holds the runtime stores, view-state stores, error collectors, state manager, and visibility dispatcher, so re-rendering a card does not rebuild its runtime state.</p>
+<h1>Constant-folded expressions</h1>
+<p>Expressions are the biggest per-frame cost on Android: a field like <code>width</code> can be an expression such as <code>@{variable}</code>, and evaluating it walks the expression engine. Most fields are not expressions. They are literals. Android detects those at parse time and turns them into a value that needs no evaluation.</p>
+<p>The core is <code>Expression.ConstantExpression</code> (<code>div-data/src/main/java/com/yandex/div/json/expressions/Expression.kt</code>):</p>
+<pre><code class="language-kotlin">open class ConstantExpression&lt;T : Any&gt;(val value: T) : Expression&lt;T&gt;() {
+
+    override val rawValue
+        get() = value as Any
+
+    override fun evaluate(resolver: ExpressionResolver): T = value
+
+    override fun observe(resolver: ExpressionResolver, callback: (T) -&gt; Unit): Disposable {
+        return Disposable.NULL
+    }
+    ...
+}
+</code></pre>
+<p>A literal parses into <code>ConstantExpression</code>, whose <code>evaluate</code> returns the stored value and whose <code>observe</code> subscribes to nothing. The runtime check <code>Expression<T>.isConstant()</code> (<code>div-data/src/main/java/com/yandex/div/json/expressions/Expressions.kt</code>) is simply <code>this is Expression.ConstantExpression<T></code>. So a constant is evaluated once, at parse time, and never again per frame.</p>
+<p>The composite helpers use that check. <code>DivDataExtensions.kt</code> (<code>div/src/main/java/com/yandex/div/core/util/DivDataExtensions.kt</code>) defines <code>isConstant()</code> and <code>equalsToConstant()</code> for every structured field: <code>DivSize</code>, <code>DivEdgeInsets</code>, <code>DivBorder</code>, <code>DivShadow</code>, <code>DivTransform</code>, <code>DivBackground</code>, and the rest. Each <code>isConstant</code> recursively checks its sub-fields with <code>isConstant()</code> or <code>isConstantOrNull()</code>. <code>DivSize?.isConstant()</code> is typical:</p>
+<pre><code class="language-kotlin">internal fun DivSize?.isConstant(): Boolean {
+    return when (this) {
+        null -&gt; true
+
+        is DivSize.Fixed -&gt; value.value.isConstant() &amp;&amp; value.unit.isConstant()
+
+        is DivSize.MatchParent -&gt; {
+            value.weight.isConstantOrNull()
+                &amp;&amp; value.minSize?.value.isConstantOrNull()
+                &amp;&amp; value.minSize?.unit.isConstantOrNull()
+                &amp;&amp; value.maxSize?.value.isConstantOrNull()
+                &amp;&amp; value.maxSize?.unit.isConstantOrNull()
+        }
+
+        is DivSize.WrapContent -&gt; { /* ... same pattern ... */ }
+    }
+}
+</code></pre>
+<p>The binders use these two directions. A binder can skip subscribing to a field that <code>isConstant()</code> (there is nothing to observe), and it can compare two models by <code>equalsToConstant()</code> (constant values compared by raw value, not by expression re-evaluation). The WHY: the bind path stops paying the expression engine for values that never change, and the diff path compares literals as plain values.</p>
+<h1>Instrumentation</h1>
+<p>Fast is not enough. The renderers must show <em>where</em> the time goes, so a slow card can be fixed.</p>
+<h2>Android: histograms around measure, layout, draw, and bind</h2>
+<p><code>Div2View</code> (<code>div/src/main/java/com/yandex/div/core/view2/Div2View.kt</code>) wraps every platform callback with a start and a finish on its <code>Div2ViewHistogramReporter</code>:</p>
+<pre><code class="language-kotlin">override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+    histogramReporter.onMeasureStarted()
+    super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+    histogramReporter.onMeasureFinished()
+}
+
+override fun draw(canvas: Canvas) {
+    drawWasSkipped = false
+    histogramReporter.onDrawStarted()
+    super.draw(canvas)
+    histogramReporter.onDrawFinished()
+    drawWasSkipped = true
+}
+</code></pre>
+<p><code>onLayout</code> and <code>dispatchDraw</code> are wrapped the same way. The reporter (<code>div-histogram/src/main/java/com/yandex/div/histogram/Div2ViewHistogramReporter.kt</code>) records <code>bindingStartedTime</code>, <code>bindingPausedTime</code>, <code>rebindingStartedTime</code>, and the measure/layout/draw times as uptime deltas. <code>onBindingFinished</code> reports a <code>DIV_BINDING_HISTOGRAM</code> duration (accounting for a pause/resume pair), and the draw finish reports render metrics (<code>DIV_RENDER_TOTAL</code>, <code>DIV_RENDER_MEASURE</code>, <code>DIV_RENDER_LAYOUT</code>, <code>DIV_RENDER_DRAW</code>) through the configured <code>HistogramReporter</code>. The pause/resume pair matters because a bind can be deferred until the view attaches (<code>bindOnAttachEnabled</code>); the histogram subtracts that wait so the bind duration measures only the bind.</p>
+<p><code>DivViewBindingController</code> adds the bind-level markers: <code>updateNow</code> calls <code>onBindingStarted()</code> on the first bind and <code>onRebindingStarted()</code> / <code>onRebindingFinished()</code> on later ones, and <code>beginBinding</code> calls <code>onRenderStarted()</code>. So the reporter separates first bind, rebind, measure, layout, and draw into distinct histograms.</p>
+<h2>iOS: render time in <code>DivBlockProvider</code></h2>
+<p>iOS measures the model pass, not the platform callbacks. <code>DivBlockProvider</code> (<code>DivKit/Views/DivBlockProvider.swift</code>) holds three <code>TimeMeasure</code> values: <code>divDataParsingTime</code>, <code>renderTime</code>, and <code>templateParsingTime</code>. The render is timed around <code>makeBlock</code>:</p>
+<pre><code class="language-swift">block = try measurements.renderTime.updateMeasure {
+  try divData.makeBlock(
+    context: context
+  )
+}
+</code></pre>
+<p>The parsing is timed the same way in <code>parseDivDataWithTemplates</code> with <code>measurements.divDataParsingTime.updateMeasure</code>. <code>debugParams.processMeasurements</code> then hands the per-card values to the host. iOS separates the cost of parsing a card from the cost of turning it into a block tree, which is the part that runs on every re-render.</p>
+<h1>The Aha Moment</h1>
+<p><strong>Aha:</strong> Every optimization in this document is a form of <em>memoization, keyed by value</em>. iOS reuses a view when the new block <code>equals</code> the old one. Android skips a bind when the new node's <code>propertiesHash</code> matches a reusable token. The container skips re-layout when <code>model != modelAndLastLayoutSize.model</code> is false, and that check is a pointer comparison on the source block. Text is measured once per size and cached. A constant expression is a <code>ConstantExpression</code> whose <code>evaluate</code> returns a stored value. The reason all of this works is the invariant from <a href="./12-ios-rendering.html">12-ios-rendering.md</a> and <a href="./21-rendering-and-patch.html">21-rendering-and-patch.md</a>: <strong>a card is immutable data, and a change produces a new <code>DivData</code> or a new <code>DivBlock</code> tree where the unchanged branches are shared.</strong> Because unchanged branches are the same object (iOS) or carry the same value hash (Android), equality is cheap, and cheap equality is what lets every layer above it skip work. The renderers do not diff the screen; they diff values, and they only touch the views whose values changed.</p>
+<h1>Cross-References</h1>
+<ul><li>The iOS <code>Block</code> value equality and the measure/layout engine these caches sit on: <a href="./11-layoutkit.html">11-layoutkit.md</a>.</li><li>The iOS patch, preloading, and reason-batching path that re-runs this machinery: <a href="./12-ios-rendering.html">12-ios-rendering.md</a>.</li><li>The Android <code>DivViewCreator</code>/<code>DivBinder</code>/<code>ViewPool</code> split and the create/bind contract: <a href="./14-android-client.html">14-android-client.md</a>.</li><li>The three-tier replaceable-gate recipe that the reuse and short-circuit tricks instantiate: <a href="./21-rendering-and-patch.html">21-rendering-and-patch.md</a>.</li></ul>
+<p>Continue to <a href="./25-issues-prs-delivery.html">25-issues-prs-delivery.md</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
