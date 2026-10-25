@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>09 -- Caddy Server: the Go production server -- durable-streams</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/durable-streams/docs</span>
+    <div class="nav-actions">
+      <a href="06-json-mode.html" class="nav-breadcrumb">06 -- JSON Mode: message boundaries and array flattening</a><a href="07-forking.html" class="nav-breadcrumb">07 -- Forking: branching a stream at an offset</a><a href="08-store-layer.html" class="nav-breadcrumb">08 -- Store Layer: memory, file, segments, and offsets</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="08-store-layer.html" class="nav-btn" title="Previous: 08 -- Store Layer: memory, file, segments, and offsets">← prev</a>
+      <a href="10-cloudflare-server.html" class="nav-btn nav-btn-next" title="Next: 10 -- Cloudflare Server: one Durable Object per stream">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>09 -- Caddy Server: the Go production server</h1>
+<p>The production server is a Caddy plugin. It registers an HTTP (Hypertext Transfer Protocol) handler module and a Caddyfile directive, so a Caddy instance can serve Durable Streams alongside any other routes. The module ID is <code>http.handlers.durable_streams</code>.</p>
+<pre><code class="language-go">// Source: packages/caddy-plugin/module.go, lines 16-19
+func init() {
+	caddy.RegisterModule(Handler{})
+	httpcaddyfile.RegisterHandlerDirective(&quot;durable_streams&quot;, parseCaddyfile)
+}
+</code></pre>
+
+<pre><code class="language-go">// Source: packages/caddy-plugin/module.go, lines 46-52
+// CaddyModule returns the Caddy module information
+func (Handler) CaddyModule() caddy.ModuleInfo {
+	return caddy.ModuleInfo{
+		ID:  &quot;http.handlers.durable_streams&quot;,
+		New: func() caddy.Module { return new(Handler) },
+	}
+}
+</code></pre>
+<h2>Provisioning and configuration</h2>
+<p>Caddy calls <code>Provision</code> once at startup. It applies defaults (30-second long-poll timeout, 60-second SSE (Server-Sent Events) reconnect interval, 100 file handles) and picks the store: an in-memory store when <code>data_dir</code> is empty, or a file-backed store otherwise.</p>
+<pre><code class="language-go">// Source: packages/caddy-plugin/module.go, lines 55-74
+func (h *Handler) Provision(ctx caddy.Context) error {
+	h.logger = ctx.Logger()
+
+	// Set defaults
+	if h.MaxFileHandles == 0 {
+		h.MaxFileHandles = 100
+	}
+	if h.LongPollTimeout == 0 {
+		h.LongPollTimeout = caddy.Duration(30 * time.Second)
+	}
+	if h.SSEReconnectInterval == 0 {
+		h.SSEReconnectInterval = caddy.Duration(60 * time.Second)
+	}
+
+	// Initialize store
+	if h.DataDir == &quot;&quot; {
+		// Use in-memory store for testing
+		h.store = store.NewMemoryStore()
+		h.logger.Info(&quot;using in-memory store (no data_dir configured)&quot;)
+	} else {
+</code></pre>
+<p>The Caddyfile syntax maps subdirectives to fields.</p>
+<pre><code class="language-go">// Source: packages/caddy-plugin/module.go, lines 139-151
+func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
+	for d.Next() {
+		for d.NextBlock(0) {
+			switch d.Val() {
+			case &quot;data_dir&quot;:
+				if !d.Args(&amp;h.DataDir) {
+					return d.ArgErr()
+				}
+			case &quot;max_file_handles&quot;:
+				var val string
+				if !d.Args(&amp;val) {
+					return d.ArgErr()
+				}
+</code></pre>
+
+<div class="mermaid">
+%%{init: {&quot;flowchart&quot;: {&quot;htmlLabels&quot;: false}}}%%
+flowchart TD
+    A[&quot;Caddyfile durable_streams directive&quot;] --&gt; B[&quot;Handler Provision&quot;]
+    B --&gt; C{&quot;data_dir set?&quot;}
+    C --&gt;|&quot;no&quot;| D[&quot;Memory store&quot;]
+    C --&gt;|&quot;yes&quot;| E[&quot;File store&quot;]
+    B --&gt; F[&quot;Defaults: 30s long-poll, 60s SSE&quot;]
+    D --&gt; G[&quot;ServeHTTP&quot;]
+    E --&gt; G
+
+</div>
+
+<div class="mermaid">
+%%{init: {&quot;sequence&quot;: {&quot;htmlLabels&quot;: false}}}%%
+sequenceDiagram
+    participant C as &quot;Client&quot;
+    participant H as &quot;Handler ServeHTTP&quot;
+    participant S as &quot;Store&quot;
+    C-&gt;&gt;H: &quot;HTTP request&quot;
+    H-&gt;&gt;H: &quot;Route by method&quot;
+    H-&gt;&gt;S: &quot;Store operation&quot;
+    S--&gt;&gt;H: &quot;Result plus offset&quot;
+    H--&gt;&gt;C: &quot;HTTP response with Stream headers&quot;
+
+</div>
+<h2>The HTTP handler</h2>
+<p><code>ServeHTTP</code> is the request router. It sets CORS (Cross-Origin Resource Sharing) and browser security headers, handles preflight, and dispatches each HTTP method to its handler. The stream path is simply the URL path.</p>
+<pre><code class="language-go">// Source: packages/caddy-plugin/handler.go, lines 51-105
+// ServeHTTP implements caddyhttp.MiddlewareHandler
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
+	// Set CORS headers
+	w.Header().Set(&quot;Access-Control-Allow-Origin&quot;, &quot;*&quot;)
+	w.Header().Set(&quot;Access-Control-Allow-Methods&quot;, &quot;GET, POST, PUT, DELETE, HEAD, OPTIONS&quot;)
+	w.Header().Set(&quot;Access-Control-Allow-Headers&quot;, &quot;Content-Type, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, If-None-Match, Producer-Id, Producer-Epoch, Producer-Seq, Stream-Forked-From, Stream-Fork-Offset, Stream-Fork-Sub-Offset, Authorization&quot;)
+	w.Header().Set(&quot;Access-Control-Expose-Headers&quot;, &quot;Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Stream-Closed, ETag, Location, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq&quot;)
+
+	// Browser security headers (Protocol Section 10.7)
+	w.Header().Set(&quot;X-Content-Type-Options&quot;, &quot;nosniff&quot;)
+	w.Header().Set(&quot;Cross-Origin-Resource-Policy&quot;, &quot;cross-origin&quot;)
+
+	// Handle preflight
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return nil
+	}
+
+	// Check webhook routes before normal stream handling
+	if h.webhookRoutes != nil {
+		if h.webhookRoutes.HandleRequest(w, r) {
+			return nil
+		}
+	}
+
+	// Extract stream path from URL
+	streamPath := r.URL.Path
+
+	h.logger.Debug(&quot;handling request&quot;,
+		zap.String(&quot;method&quot;, r.Method),
+		zap.String(&quot;path&quot;, streamPath),
+		zap.String(&quot;query&quot;, r.URL.RawQuery))
+
+	var err error
+	switch r.Method {
+	case http.MethodPut:
+		err = h.handleCreate(w, r, streamPath)
+	case http.MethodHead:
+		err = h.handleHead(w, r, streamPath)
+	case http.MethodGet:
+		err = h.handleRead(w, r, streamPath)
+	case http.MethodPost:
+		err = h.handleAppend(w, r, streamPath)
+	case http.MethodDelete:
+		err = h.handleDelete(w, r, streamPath)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return nil
+	}
+
+	if err != nil {
+		h.writeError(w, err)
+	}
+	return nil
+}
+</code></pre>
+<h2>Protocol headers as constants</h2>
+<p>The handler names every protocol header as a constant, including the idempotent producer headers and the fork headers. Responses echo these header names, and the CORS expose list makes them readable from browsers.</p>
+<pre><code class="language-go">// Source: packages/caddy-plugin/handler.go, lines 21-45
+// Protocol header names
+const (
+	HeaderStreamNextOffset      = &quot;Stream-Next-Offset&quot;
+	HeaderStreamCursor          = &quot;Stream-Cursor&quot;
+	HeaderStreamUpToDate        = &quot;Stream-Up-To-Date&quot;
+	HeaderStreamSeq             = &quot;Stream-Seq&quot;
+	HeaderStreamTTL             = &quot;Stream-TTL&quot;
+	HeaderStreamExpiresAt       = &quot;Stream-Expires-At&quot;
+	HeaderStreamClosed          = &quot;Stream-Closed&quot;
+	HeaderStreamSSEDataEncoding = &quot;Stream-SSE-Data-Encoding&quot;
+
+	// Idempotent producer headers
+	HeaderProducerId          = &quot;Producer-Id&quot;
+	HeaderProducerEpoch       = &quot;Producer-Epoch&quot;
+	HeaderProducerSeq         = &quot;Producer-Seq&quot;
+	HeaderProducerExpectedSeq = &quot;Producer-Expected-Seq&quot;
+	HeaderProducerReceivedSeq = &quot;Producer-Received-Seq&quot;
+)
+
+// Fork headers (request headers only — not set on responses)
+const (
+	HeaderStreamForkedFrom    = &quot;Stream-Forked-From&quot;
+	HeaderStreamForkOffset    = &quot;Stream-Fork-Offset&quot;
+	HeaderStreamForkSubOffset = &quot;Stream-Fork-Sub-Offset&quot;
+)
+</code></pre>
+<h2>How requests map to store operations</h2>
+<p>Each method handler maps one protocol operation to store calls. <code>handleCreate</code> maps PUT to <code>store.Create</code>; <code>handleRead</code> maps GET to <code>store.Read</code> and <code>store.WaitForMessages</code> for long-poll; <code>handleAppend</code> maps POST to <code>store.Append</code>; <code>handleDelete</code> maps DELETE to <code>store.Delete</code>. The handlers translate store errors into HTTP status codes and set response headers from the returned offsets. Live modes use the cursor functions to keep cursors monotonic, and <code>handleSSE</code> loops on <code>store.Read</code> plus <code>store.WaitForMessages</code> until the reconnect timer or stream closure.</p>
+<h2>The Aha Moment</h2>
+<p><strong>Aha:</strong> The Caddy plugin is a pure translation layer. Its handlers add no protocol logic of their own — every operation is a store call plus header plumbing. That separation is why the same store backs three different surfaces (catch-up, long-poll, SSE) and why testing the handler is mostly testing the store. The protocol lives in the store; the HTTP handler just names it.</p>
+<h2>Cross-References</h2>
+<ul><li><a href="08-store-layer.html">08-store-layer.md</a> — the store interface this handler drives.</li><li><a href="02-catch-up-reads.html">02-catch-up-reads.md</a> — the read path in detail.</li><li><a href="03-live-tailing.html">03-live-tailing.md</a> — the SSE loop this handler runs.</li></ul>
+<p>Continue to <a href="10-cloudflare-server.html">10-cloudflare-server.md</a></p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

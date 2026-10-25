@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>15 -- Yjs CRDT Sync and AI SDK Transports: resumable chat over the same byte streams -- durable-streams</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/durable-streams/docs</span>
+    <div class="nav-actions">
+      <a href="12-durable-state.html" class="nav-breadcrumb">12 -- Durable State: structured events over streams</a><a href="13-stream-db.html" class="nav-breadcrumb">13 -- StreamDB: a reactive database in a stream</a><a href="14-stream-fs.html" class="nav-breadcrumb">14 -- StreamFS: a filesystem in a stream</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="14-stream-fs.html" class="nav-btn" title="Previous: 14 -- StreamFS: a filesystem in a stream">← prev</a>
+      <a href="16-clients-conformance-deployment.html" class="nav-btn nav-btn-next" title="Next: 16 -- The Ten Clients, Conformance Suites, and CDN Fan-Out: one protocol, many languages, one edge">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>15 -- Yjs CRDT Sync and AI SDK Transports: resumable chat over the same byte streams</h1>
+<p>Two higher-level integrations share the same trick: they turn an asynchronous producer (a Conflict-free Replicated Data Type (CRDT) update stream, or an Artificial Intelligence (AI) token stream) into a durable stream and hand the reader a Uniform Resource Locator (URL) instead of a connection object. The Yjs package (<code>packages/y-durable-streams</code>) syncs Yjs documents over Hypertext Transfer Protocol (HTTP) streams. The two transport packages (<code>@durable-streams/aisdk-transport</code> for the Vercel AI Software Development Kit (SDK) and <code>@durable-streams/tanstack-ai-transport</code> for TanStack AI) make chat sessions resumable. Neither client manages offsets directly; the base protocol's read semantics do that work.</p>
+<h2>The Yjs wire protocol</h2>
+<p>A Yjs document is one update stream. Snapshot discovery uses a sentinel offset: a client asks for <code>offset=snapshot</code> and the server redirects to either a compacted snapshot URL or the beginning of the stream. This keeps a fast reconnect path from replaying the whole history.</p>
+<p>````text</p>
+<h1>Source: packages/y-durable-streams/YJS-PROTOCOL.md, lines 213-232</h1>
+<p>GET {document-url}?offset=snapshot</p>
+<pre><code class="language-">#### Response (snapshot exists)
+
+</code></pre>
+<p>HTTP/1.1 307 Temporary Redirect Location: {document-url}?offset=4782_snapshot Cache-Control: private, max-age=5</p>
+<pre><code class="language-">#### Response (no snapshot)
+
+</code></pre>
+<p>HTTP/1.1 307 Temporary Redirect Location: {document-url}?offset=-1 Cache-Control: private, max-age=5</p>
+<pre><code class="language-">When a snapshot exists, the server **MUST** redirect to the snapshot URL. When no snapshot exists, the server **MUST** redirect to `offset=-1` which uses standard Durable Streams behavior (read from beginning).
+````
+
+Awareness — presence data such as cursors and selections — is another stream addressed by a query parameter rather than a new path. It is ephemeral and is delivered over Server-Sent Events (SSE). The protocol specifies a one-hour time-to-live (TTL) for awareness streams, but the current implementation does not set a `Stream-TTL` header, so they live until deleted.
+
+## lib0 framing: the load-bearing detail
+
+Yjs updates are binary. The idempotent producer batches appends by concatenating bytes, so each update must be length-prefixed or the concatenation is unparseable. The provider frames with lib0&#x27;s variable-length encoding on the way out, and reads the same framing on the way in.
+
+```ts
+// Source: packages/y-durable-streams/src/yjs-provider.ts, lines 682-699
+  private static frameUpdate(data: Uint8Array): Uint8Array {
+    const encoder = encoding.createEncoder()
+    encoding.writeVarUint8Array(encoder, data)
+    return encoding.toUint8Array(encoder)
+  }
+
+  /**
+   * Apply lib0-framed updates from the server.
+   */
+  private applyUpdates(data: Uint8Array): void {
+    if (data.length === 0) return
+
+    const decoder = decoding.createDecoder(data)
+    while (decoding.hasContent(decoder)) {
+      const update = decoding.readVarUint8Array(decoder)
+      Y.applyUpdate(this.doc, update, `server`)
+    }
+  }
+</code></pre>
+<p>The write side shows why framing exists: the comment states the exact failure it prevents. A local document update is framed before it enters the producer's batching queue.</p>
+<pre><code class="language-ts">// Source: packages/y-durable-streams/src/yjs-provider.ts, lines 728-745
+  private handleDocumentUpdate = (
+    update: Uint8Array,
+    origin: unknown
+  ): void =&gt; {
+    if (origin === `server`) return
+    const producer = this._ctx?.producer
+    if (!producer || !this.connected) return
+
+    // Mark as unsynced - will become true when our write echoes back
+    this.synced = false
+
+    // Frame update with lib0 encoding before appending.
+    // This is critical because the IdempotentProducer batches multiple appends
+    // by concatenating bytes. Without framing, concatenated raw Yjs updates
+    // would be invalid. With framing, each update is length-prefixed so
+    // concatenation produces valid lib0-framed data.
+    producer.append(YjsProvider.frameUpdate(update))
+  }
+</code></pre>
+<h2>Server-side compaction</h2>
+<p>The Yjs server is a proxy in front of a base Durable Streams server. After each successful write it counts the update bytes, and once they cross the one-megabyte default threshold it triggers the compactor to merge updates into a snapshot and record the snapshot offset in an index stream.</p>
+<pre><code class="language-ts">// Source: packages/y-durable-streams/src/server/yjs-server.ts, lines 852-872
+    // Track for compaction on success
+    if (dsResponse.status &gt;= 200 &amp;&amp; dsResponse.status &lt; 300) {
+      if (!this.documentStates.has(stateKey)) {
+        this.documentStates.set(stateKey, {
+          snapshotOffset: null,
+          updatesSizeBytes: 0,
+          compacting: false,
+        })
+      }
+      const state = this.documentStates.get(stateKey)!
+      state.updatesSizeBytes += body.length
+
+      // Trigger compaction if thresholds met
+      if (this.shouldTriggerCompaction(state)) {
+        this.compactor
+          .triggerCompaction(route.service, route.docPath)
+          .catch((err) =&gt; {
+            console.error(`[YjsServer] Compaction error:`, err)
+          })
+      }
+    }
+</code></pre>
+
+<div class="mermaid">
+%%{init: {&quot;flowchart&quot;: {&quot;htmlLabels&quot;: false}}}%%
+flowchart TD
+    A[&quot;Document updates stream&quot;] --&gt; B[&quot;Client GET offset snapshot&quot;]
+    B --&gt; C{&quot;Snapshot exists&quot;}
+    C --&gt;|&quot;yes&quot;| D[&quot;307 to offset underscore snapshot&quot;]
+    C --&gt;|&quot;no&quot;| E[&quot;307 to offset minus one&quot;]
+    D --&gt; F[&quot;Apply snapshot then read updates&quot;]
+    E --&gt; F
+    F --&gt; G[&quot;lib0 varint framing&quot;]
+    G --&gt; H[&quot;Client POST framed update&quot;]
+    H --&gt; A
+    A --&gt; I[&quot;Server counts update bytes&quot;]
+    I --&gt; J{&quot;Above one megabyte threshold&quot;}
+    J --&gt;|&quot;yes&quot;| K[&quot;Compactor merges into snapshot&quot;]
+    K --&gt; L[&quot;Index stream records snapshot offset&quot;]
+    A --&gt; M[&quot;Awareness stream via query parameter&quot;]
+    M --&gt; N[&quot;Ephemeral one hour TTL over SSE&quot;]
+
+</div>
+<h2>The AI SDK transports</h2>
+<p>The Vercel AI SDK transport's client is small: it posts messages to the caller's Application Programming Interface (API) route, takes the stream URL from the <code>Location</code> header or the JavaScript Object Notation (JSON) body, and reads it back as UI message chunks over SSE with JSON mode on.</p>
+<pre><code class="language-ts">// Source: packages/aisdk-transport/src/client.ts, lines 79-91
+async function readUiMessageChunksFromDurableStream(
+  streamUrl: string,
+  abortSignal?: AbortSignal
+): Promise&lt;ReadableStream&lt;UIMessageChunk&gt;&gt; {
+  const streamResponse = await stream&lt;UIMessageChunk&gt;({
+    url: streamUrl,
+    live: `sse`,
+    json: true,
+    signal: abortSignal,
+  })
+
+  return toReadableStream(streamResponse.jsonStream())
+}
+</code></pre>
+<p>The server side owns the stream lifecycle. In immediate mode it returns <code>201</code> with the read URL and lets the write continue in a background task (registered with <code>waitUntil</code> on worker runtimes). In await mode it drains the source and closes the stream before responding.</p>
+<pre><code class="language-ts">// Source: packages/aisdk-transport/src/server.ts, lines 122-139
+  const backgroundTask = writer.catch((error) =&gt; {
+    console.error(`Durable stream write failed`, error)
+  })
+  options.waitUntil?.(backgroundTask)
+
+  const responseHeaders = new Headers({
+    Location: readUrl,
+    &quot;Cache-Control&quot;: `no-store`,
+  })
+
+  if (options.exposeLocationHeader !== false) {
+    responseHeaders.set(`Access-Control-Expose-Headers`, `Location`)
+  }
+
+  return Response.json(
+    { streamUrl: readUrl },
+    { status: 201, headers: responseHeaders }
+  )
+</code></pre>
+<p>The TanStack AI transport adds one more step: on first subscribe it folds streamed chunks into a message snapshot before yielding live chunks, so a reconnect that starts at offset zero can still reconstruct message history and then continue incrementally.</p>
+<pre><code class="language-ts">// Source: packages/tanstack-ai-transport/src/client.ts, lines 80-114
+      const emitSnapshot = options.emitSnapshotOnSubscribe !== false
+      const shouldEmitSnapshot = emitSnapshot &amp;&amp; state.offset === undefined
+      let hasEmittedSnapshot = !shouldEmitSnapshot
+      let snapshotMessages: Array&lt;any&gt; = []
+
+      for await (const batch of readJsonBatchesFromStream(
+        streamResponse,
+        abortSignal
+      )) {
+        state.offset = batch.offset
+        if (abortSignal?.aborted) break
+
+        if (!hasEmittedSnapshot) {
+          snapshotMessages = applyChunksToMessages(
+            snapshotMessages,
+            batch.items
+          )
+
+          if (!batch.upToDate) {
+            continue
+          }
+
+          hasEmittedSnapshot = true
+          yield {
+            type: `MESSAGES_SNAPSHOT`,
+            messages: snapshotMessages,
+          }
+          continue
+        }
+
+        for (const chunk of batch.items) {
+          if (abortSignal?.aborted) break
+          yield chunk
+        }
+      }
+</code></pre>
+
+<div class="mermaid">
+%%{init: {&quot;sequence&quot;: {&quot;htmlLabels&quot;: false}}}%%
+sequenceDiagram
+    participant C as &quot;Browser useChat&quot;
+    participant A as &quot;API route&quot;
+    participant S as &quot;Durable Streams server&quot;
+    C-&gt;&gt;A: &quot;POST chat with messages&quot;
+    A-&gt;&gt;S: &quot;PUT create stream&quot;
+    A-&gt;&gt;A: &quot;toDurableStreamResponse writes chunks&quot;
+    A--&gt;&gt;C: &quot;201 Location read URL plus streamUrl&quot;
+    C-&gt;&gt;S: &quot;GET stream live sse json true&quot;
+    S--&gt;&gt;C: &quot;UIMessageChunk batches&quot;
+    C-&gt;&gt;C: &quot;reconnect reads from saved offset&quot;
+
+</div>
+<h2>The Aha Moment</h2>
+<p><strong>Aha:</strong> Yjs sync and AI chat transport are the same shape: a producer turns its output into a durable stream and gives the reader a URL, and resumability falls out of offset reads. The one piece that is easy to miss is Yjs's lib0 varint framing — it exists not for the wire but for the idempotent producer, which concatenates batched appends and would otherwise emit invalid binary. The transport clients, in contrast, need no framing at all because JSON mode already delimits messages; they only need to remember an offset and re-subscribe.</p>
+<h2>Cross-References</h2>
+<ul><li><a href="03-live-tailing.html">03-live-tailing.md</a> — the SSE and long-poll reads both integrations subscribe with.</li><li><a href="05-idempotent-producers.html">05-idempotent-producers.md</a> — why the producer concatenates appends and forces lib0 framing.</li><li><a href="06-json-mode.html">06-json-mode.md</a> — the JSON stream mode the AI transports use for chunk boundaries.</li><li><a href="11-durable-proxy.html">11-durable-proxy.md</a> — the server-side create-and-pipe pattern these transports re-implement.</li><li><a href="02-catch-up-reads.html">02-catch-up-reads.md</a> — what the TanStack snapshot fold does before <code>upToDate</code>.</li></ul>
+<p>Continue to <a href="16-clients-conformance-deployment.html">16-clients-conformance-deployment.md</a></p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

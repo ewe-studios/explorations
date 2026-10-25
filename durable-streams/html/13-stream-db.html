@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>13 -- StreamDB: a reactive database in a stream -- durable-streams</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/durable-streams/docs</span>
+    <div class="nav-actions">
+      <a href="10-cloudflare-server.html" class="nav-breadcrumb">10 -- Cloudflare Server: one Durable Object per stream</a><a href="11-durable-proxy.html" class="nav-breadcrumb">11 -- Durable Proxy: resumable AI token streams</a><a href="12-durable-state.html" class="nav-breadcrumb">12 -- Durable State: structured events over streams</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="12-durable-state.html" class="nav-btn" title="Previous: 12 -- Durable State: structured events over streams">← prev</a>
+      <a href="14-stream-fs.html" class="nav-btn nav-btn-next" title="Next: 14 -- StreamFS: a filesystem in a stream">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>13 -- StreamDB: a reactive database in a stream</h1>
+<p>StreamDB is a reactive, type-safe database backed by a single Durable Stream. It maps Durable State change events onto TanStack DB collections, so readers get filtering, joins, aggregation, and live queries that update incrementally. There is no separate <code>@durable-streams/stream-db</code> package: StreamDB lives inside the <code>state</code> package at <code>packages/state/src/stream-db.ts</code> and is published under the <code>@durable-streams/state/db</code> subpath.</p>
+<p>Collection identifiers are namespaced by stream URL. This matters because two streams that each define a <code>users</code> collection must not collapse into one logical source inside TanStack DB.</p>
+<pre><code class="language-ts">// Source: packages/state/src/stream-db.ts, lines 175-180
+export function getStreamDBCollectionId(
+  streamUrl: string,
+  collectionName: string
+): string {
+  return `stream-db:${streamUrl}:${collectionName}`
+}
+</code></pre>
+<h2>From change events to collections</h2>
+<p>An <code>EventDispatcher</code> routes each change event to the collection registered for its entity type. It stamps the primary key and a global sequence number onto the value, converts <code>upsert</code> into insert or update, and normalizes replayed inserts into updates so live reconnects stay idempotent.</p>
+<pre><code class="language-ts">// Source: packages/state/src/stream-db.ts, lines 296-330
+    // Set the primary key field on the value object from the event key
+    ;(value as any)[handler.primaryKey] = event.key
+
+    // Stamp global insertion order for cross-collection sorting
+    ;(value as any)._seq = this.seq++
+
+    // Begin transaction on first write to this handler
+    if (!this.pendingHandlers.has(handler)) {
+      handler.begin()
+      this.pendingHandlers.add(handler)
+    }
+
+    // Handle upsert by converting to insert or update
+    if (operation === `upsert`) {
+      const keys = this.existingKeys.get(event.type)
+      const existing = keys?.has(event.key)
+      operation = existing ? `update` : `insert`
+    }
+
+    const keys = this.existingKeys.get(event.type)
+
+    // Live stream reconnects can replay an already-synced insert for the same
+    // row. Normalize that case to update so observation replays remain
+    // idempotent instead of tripping TanStack DB&#x27;s duplicate-key path.
+    if (operation === `insert` &amp;&amp; keys?.has(event.key)) {
+      operation = `update`
+    } else if (operation === `insert` &amp;&amp; typeof event.key === `string`) {
+      const existingValue = handler.read(event.key)
+      if (
+        existingValue &amp;&amp;
+        deepEquals(this.comparableRow(existingValue), this.comparableRow(value))
+      ) {
+        operation = `update`
+      }
+    }
+</code></pre>
+<p>Each collection is a TanStack DB <code>createCollection</code> whose sync config registers a handler with the dispatcher. Garbage collection is disabled on the collections, because all of them must be recovered together from the single log.</p>
+<pre><code class="language-ts">// Source: packages/state/src/stream-db.ts, lines 631-651
+  for (const [name, definition] of Object.entries(state)) {
+    // eslint-disable-next-line prefer-const -- self-referential: collection.get() used in its own sync config
+    let collection: Collection&lt;object, string&gt; = createCollection({
+      id: getStreamDBCollectionId(streamIdentity, name),
+      schema: definition.schema as StandardSchemaV1&lt;object&gt;,
+      getKey: (item: any) =&gt; String(item[definition.primaryKey]),
+      sync: createStreamSyncConfig(
+        definition.type,
+        dispatcher,
+        definition.primaryKey,
+        (key) =&gt; collection.get(key) as object | undefined
+      ),
+      startSync: true, // Start syncing immediately
+      // Disable GC - we manage lifecycle via db.close()
+      // DB would otherwise clean up the collections independently of each other, we
+      // cant recover one and not the others from a single log.
+      gcTime: 0,
+    })
+
+    collectionInstances[name] = collection
+  }
+</code></pre>
+<h2>The consumer</h2>
+<p><code>createStreamDB</code> is synchronous: it builds the collections but does not connect. <code>preload()</code> starts the stream consumer, which reads the stream as JavaScript Object Notation (JSON) in the configured live mode — long-poll, Server-Sent Events (SSE), or none — and feeds each batch to the dispatcher. A batch marked up-to-date commits the pending writes and resolves the preload promise.</p>
+<pre><code class="language-ts">// Source: packages/state/src/stream-db.ts, lines 675-727
+  const startConsumer = async (): Promise&lt;void&gt; =&gt; {
+    if (consumerStarted) return
+    consumerStarted = true
+
+    // Start streaming (this is where the connection actually happens)
+    streamResponse = await stream.stream&lt;StateEvent&gt;({
+      live,
+      json: true,
+      signal: abortController.signal,
+    })
+    // StreamDB consumes batches via subscribeJson(); it does not await the
+    // session&#x27;s closed promise. Swallow that terminal rejection so aborting
+    // the live session during db.close() doesn&#x27;t surface as an unhandled
+    // rejection after the real error has already been routed elsewhere.
+    void streamResponse.closed.catch((err) =&gt; {
+      if (isAbortLikeError(err)) {
+        return undefined
+      }
+      const error = err instanceof Error ? err : new Error(String(err))
+      console.error(`[StreamDB] Stream consumer closed unexpectedly:`, error)
+      dispatcher.rejectAll(error)
+      return undefined
+    })
+    lastConsumedOffset = streamResponse.offset
+
+    // Process events as they come in
+    streamResponse.subscribeJson((batch) =&gt; {
+      try {
+        lastConsumedOffset = batch.offset
+        onBeforeBatch?.(batch)
+
+        for (const event of batch.items) {
+          if (isChangeEvent(event)) {
+            dispatcher.dispatchChange(event, batch.offset)
+            onEvent?.(event)
+          } else if (isControlEvent(event)) {
+            dispatcher.dispatchControl(event)
+          }
+        }
+
+        onBatch?.(batch)
+
+        if (batch.upToDate || dispatcher.ready) {
+          dispatcher.markUpToDate()
+        }
+      } catch (error) {
+        console.error(`[StreamDB] Error processing batch:`, error)
+        dispatcher.rejectAll(error as Error)
+        abortController.abort()
+      }
+      return Promise.resolve()
+    })
+  }
+</code></pre>
+<h2>Transaction confirmation and optimistic actions</h2>
+<p>A transaction identifier is the bridge between "I appended" and "everyone saw it". A writer appends an event with a <code>txid</code> header, then calls <code>awaitTxId</code>, which resolves only when the event comes back through the stream and is committed. Optimistic actions use this for confirmation: apply the change locally, append to the stream, and wait for the round trip.</p>
+<pre><code class="language-ts">// Source: packages/state/src/stream-db.ts, lines 760-780
+  if (actionsFactory) {
+    const actionDefs = actionsFactory({ db, stream })
+    const wrappedActions: Record&lt;
+      string,
+      ReturnType&lt;typeof createOptimisticAction&gt;
+    &gt; = {}
+    for (const [name, def] of Object.entries(actionDefs)) {
+      wrappedActions[name] = createOptimisticAction({
+        onMutate: def.onMutate,
+        mutationFn: def.mutationFn,
+      })
+    }
+
+    Object.defineProperty(db, `actions`, {
+      value: wrappedActions,
+      enumerable: true,
+      configurable: false,
+      writable: false,
+    })
+    return db as any
+  }
+</code></pre>
+
+<div class="mermaid">
+%%{init: {&quot;flowchart&quot;: {&quot;htmlLabels&quot;: false}}}%%
+flowchart TD
+    A[&quot;JSON stream batch&quot;] --&gt; B[&quot;subscribeJson&quot;]
+    B --&gt; C{&quot;event kind&quot;}
+    C --&gt;|&quot;change&quot;| D[&quot;dispatchChange&quot;]
+    C --&gt;|&quot;control&quot;| E[&quot;dispatchControl&quot;]
+    D --&gt; F[&quot;Route by event type to collection handler&quot;]
+    F --&gt; G[&quot;Stamp primary key and sequence&quot;]
+    G --&gt; H[&quot;upsert converted to insert or update&quot;]
+    H --&gt; I[&quot;handler.write buffered&quot;]
+    I --&gt; J[&quot;batch upToDate commits handlers&quot;]
+    E --&gt;|&quot;reset&quot;| K[&quot;truncate all collections&quot;]
+    J --&gt; L[&quot;markReady collections&quot;]
+    L --&gt; M[&quot;reactive useLiveQuery queries&quot;]
+
+</div>
+
+<div class="mermaid">
+%%{init: {&quot;sequence&quot;: {&quot;htmlLabels&quot;: false}}}%%
+sequenceDiagram
+    participant W as &quot;Writer&quot;
+    participant S as &quot;Durable Stream&quot;
+    participant D as &quot;StreamDB consumer&quot;
+    W-&gt;&gt;W: &quot;action onMutate updates collection&quot;
+    W-&gt;&gt;S: &quot;append change event with txid&quot;
+    S--&gt;&gt;D: &quot;batch containing the event&quot;
+    D-&gt;&gt;D: &quot;dispatchChange and markUpToDate commit&quot;
+    D--&gt;&gt;W: &quot;awaitTxId resolves&quot;
+    W-&gt;&gt;W: &quot;mutationFn completes&quot;
+
+</div>
+<h2>The Aha Moment</h2>
+<p><strong>Aha:</strong> StreamDB does not add a second database; it re-broadcasts the same log into TanStack DB collections. The stream's offset order becomes the collections' write order, and a transaction identifier turns "did my append land?" into a promise resolved by the echo of that append coming back through the live read. Confirmation is just the stream talking to itself, not a separate acknowledgement channel.</p>
+<h2>Cross-References</h2>
+<ul><li><a href="12-durable-state.html">12-durable-state.md</a> — the event vocabulary these collections consume.</li><li><a href="02-catch-up-reads.html">02-catch-up-reads.md</a> — what <code>preload()</code> does until up-to-date.</li><li><a href="01-stream-model.html">01-stream-model.md</a> — append-only order that gives collections their write order.</li></ul>
+<p>Continue to <a href="14-stream-fs.html">14-stream-fs.md</a></p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

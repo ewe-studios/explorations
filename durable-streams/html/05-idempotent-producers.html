@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>05 -- Idempotent Producers: exactly-once via producerId, epoch, seq -- durable-streams</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/durable-streams/docs</span>
+    <div class="nav-actions">
+      <a href="02-catch-up-reads.html" class="nav-breadcrumb">02 -- Catch-up Reads: offset-based replay over GET</a><a href="03-live-tailing.html" class="nav-breadcrumb">03 -- Live Tailing: long-poll and SSE</a><a href="04-appends.html" class="nav-breadcrumb">04 -- Appends: bytes, content types, and the write path</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="04-appends.html" class="nav-btn" title="Previous: 04 -- Appends: bytes, content types, and the write path">← prev</a>
+      <a href="06-json-mode.html" class="nav-btn nav-btn-next" title="Next: 06 -- JSON Mode: message boundaries and array flattening">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>05 -- Idempotent Producers: exactly-once via producerId, epoch, seq</h1>
+<p>Durable Streams supports Kafka-style idempotent producers for exactly-once writes. A client that retries an append is deduplicated by the server instead of writing duplicate data. The identity is a three-part tuple carried in headers.</p>
+<pre><code class="language-text"># Source: PROTOCOL.md, lines 378-393
+- `Producer-Id: &lt;string&gt;`
+  - Client-supplied stable identifier (e.g., &quot;order-service-1&quot;, UUID)
+  - **MUST** be a non-empty string; empty values result in `400 Bad Request`
+  - Identifies the logical producer across restarts
+
+- `Producer-Epoch: &lt;integer&gt;`
+  - Client-declared epoch, starting at 0
+  - Increment on producer restart to establish a new session
+  - Server validates that epoch is monotonically non-decreasing
+  - **MUST** be a non-negative integer ≤ 2^53-1 (for JavaScript interoperability)
+
+- `Producer-Seq: &lt;integer&gt;`
+  - Monotonically increasing sequence number per epoch
+  - Starts at 0 for each new epoch
+  - Applies per-batch (per HTTP request), not per-message
+  - **MUST** be a non-negative integer ≤ 2^53-1 (for JavaScript interoperability)
+</code></pre>
+<h2>Validation logic</h2>
+<p>The epoch is client-declared but server-validated. A stale epoch is fenced with <code>403 Forbidden</code>; a same-epoch sequence that was already seen is a duplicate; a gap is a <code>409 Conflict</code>.</p>
+<pre><code class="language-text"># Source: PROTOCOL.md, lines 405-426
+# Epoch validation (client-declared, server-validated)
+if epoch &lt; state.epoch:
+  → 403 Forbidden
+  → Headers: Producer-Epoch: &lt;current epoch&gt;
+
+if epoch &gt; state.epoch:
+  if seq != 0:
+    → 400 Bad Request (new epoch must start at seq=0)
+  → Accept: update state.epoch = epoch, state.lastSeq = 0
+  → 200 OK (new epoch established)
+
+# Same epoch: sequence validation
+if seq &lt;= state.lastSeq:
+  → 204 No Content (duplicate, idempotent success)
+
+if seq == state.lastSeq + 1:
+  → Accept, update state.lastSeq = seq
+  → 200 OK
+
+if seq &gt; state.lastSeq + 1:
+  → 409 Conflict
+  → Headers: Producer-Expected-Seq: &lt;lastSeq + 1&gt;, Producer-Received-Seq: &lt;seq&gt;
+</code></pre>
+
+<div class="mermaid">
+%%{init: {&quot;flowchart&quot;: {&quot;htmlLabels&quot;: false}}}%%
+flowchart TD
+    A[&quot;Append with epoch seq&quot;] --&gt; B{&quot;epoch below state?&quot;}
+    B --&gt;|&quot;yes&quot;| C[&quot;403 Forbidden stale epoch&quot;]
+    B --&gt;|&quot;no&quot;| D{&quot;epoch above state?&quot;}
+    D --&gt;|&quot;yes, seq 0&quot;| E[&quot;Accept new epoch 200 OK&quot;]
+    D --&gt;|&quot;yes, seq not 0&quot;| F[&quot;400 Bad Request&quot;]
+    D --&gt;|&quot;same epoch&quot;| G{&quot;seq compared to lastSeq&quot;}
+    G --&gt;|&quot;at or below&quot;| H[&quot;204 No Content duplicate&quot;]
+    G --&gt;|&quot;equal lastSeq plus 1&quot;| I[&quot;Accept append 200 OK&quot;]
+    G --&gt;|&quot;above lastSeq plus 1&quot;| J[&quot;409 Conflict gap&quot;]
+
+</div>
+<h2>The reference validation function</h2>
+<p>The Cloudflare server extracts validation into a pure function. It returns a proposed state but does not mutate anything — the caller commits the state only after the append succeeds, so a failed append never advances the producer.</p>
+<pre><code class="language-ts">// Source: packages/server-cloudflare/src/producer.ts, lines 32-89
+export function validateProducer(
+  state: ProducerState | undefined,
+  producerId: string,
+  epoch: number,
+  seq: number,
+  now: number
+): ProducerValidationResult {
+  // New producer - accept only if seq is 0
+  if (!state) {
+    if (seq !== 0) {
+      return { status: `sequence_gap`, expectedSeq: 0, receivedSeq: seq }
+    }
+    return {
+      status: `accepted`,
+      isNew: true,
+      producerId,
+      proposedState: { epoch, lastSeq: 0, lastUpdated: now },
+    }
+  }
+
+  // Epoch validation (client-declared, server-validated)
+  if (epoch &lt; state.epoch) {
+    return { status: `stale_epoch`, currentEpoch: state.epoch }
+  }
+
+  if (epoch &gt; state.epoch) {
+    // New epoch must start at seq=0
+    if (seq !== 0) {
+      return { status: `invalid_epoch_seq` }
+    }
+    return {
+      status: `accepted`,
+      isNew: true,
+      producerId,
+      proposedState: { epoch, lastSeq: 0, lastUpdated: now },
+    }
+  }
+
+  // Same epoch: sequence validation
+  if (seq &lt;= state.lastSeq) {
+    return { status: `duplicate`, lastSeq: state.lastSeq }
+  }
+
+  if (seq === state.lastSeq + 1) {
+    return {
+      status: `accepted`,
+      isNew: false,
+      producerId,
+      proposedState: { epoch, lastSeq: seq, lastUpdated: now },
+    }
+  }
+
+  return {
+    status: `sequence_gap`,
+    expectedSeq: state.lastSeq + 1,
+    receivedSeq: seq,
+  }
+}
+</code></pre>
+<p>The Go file store implements the same rules inline.</p>
+<pre><code class="language-go">// Source: packages/caddy-plugin/store/file_store.go, lines 582-637
+	// Epoch validation (client-declared, server-validated)
+	if epoch &lt; state.Epoch {
+		// Stale epoch - zombie fencing
+		return AppendResult{
+			ProducerResult: ProducerResultNone,
+			CurrentEpoch:   state.Epoch,
+		}, nil, ErrStaleEpoch
+	}
+
+	if epoch &gt; state.Epoch {
+		// New epoch - must start at seq=0
+		if seq != 0 {
+			return AppendResult{
+				ProducerResult: ProducerResultNone,
+			}, nil, ErrInvalidEpochSeq
+		}
+		// Accept new epoch
+		newState := &amp;ProducerState{
+			Epoch:       epoch,
+			LastSeq:     0,
+			LastUpdated: time.Now().Unix(),
+		}
+		return AppendResult{
+			ProducerResult: ProducerResultAccepted,
+			LastSeq:        0,
+		}, newState, nil
+	}
+
+	// Same epoch - sequence validation
+	if seq &lt;= state.LastSeq {
+		// Duplicate - idempotent success
+		return AppendResult{
+			ProducerResult: ProducerResultDuplicate,
+			LastSeq:        state.LastSeq,
+		}, nil, nil
+	}
+
+	if seq == state.LastSeq+1 {
+		// Accept - update state
+		newState := &amp;ProducerState{
+			Epoch:       epoch,
+			LastSeq:     seq,
+			LastUpdated: time.Now().Unix(),
+		}
+		return AppendResult{
+			ProducerResult: ProducerResultAccepted,
+			LastSeq:        seq,
+		}, newState, nil
+	}
+
+	// seq &gt; lastSeq + 1 - gap detected
+	return AppendResult{
+		ProducerResult: ProducerResultNone,
+		ExpectedSeq:    state.LastSeq + 1,
+		ReceivedSeq:    seq,
+	}, nil, ErrProducerSeqGap
+</code></pre>
+<h2>Bootstrap, restart, and auto-claim</h2>
+<p>A producer starts at epoch 0 and sequence 0. On restart, the client increments the epoch and resets the sequence. If the producer has no persisted epoch (an ephemeral serverless worker), it can use the auto-claim flow: receive the current server epoch on a <code>403</code>, then retry with a higher epoch.</p>
+<pre><code class="language-ts">// Source: packages/client/src/idempotent-producer.ts, lines 764-782
+    if (response.status === 403) {
+      // Stale epoch
+      const currentEpochStr = response.headers.get(PRODUCER_EPOCH_HEADER)
+      const currentEpoch = currentEpochStr
+        ? parseInt(currentEpochStr, 10)
+        : epoch
+
+      if (this.#autoClaim) {
+        // Auto-claim: retry with epoch+1
+        const newEpoch = currentEpoch + 1
+        this.#epoch = newEpoch
+        this.#nextSeq = 1 // This batch will use seq 0
+
+        // Retry with new epoch, starting at seq 0
+        return this.#doSendBatch(batch, 0, newEpoch)
+      }
+
+      throw new StaleEpochError(currentEpoch)
+    }
+</code></pre>
+
+<div class="mermaid">
+%%{init: {&quot;sequence&quot;: {&quot;htmlLabels&quot;: false}}}%%
+sequenceDiagram
+    participant P as &quot;Producer&quot;
+    participant S as &quot;Server&quot;
+    P-&gt;&gt;S: &quot;epoch 0 seq 0&quot;
+    S--&gt;&gt;P: &quot;403 Producer-Epoch 5&quot;
+    P-&gt;&gt;S: &quot;epoch 6 seq 0&quot;
+    S--&gt;&gt;P: &quot;200 OK new epoch established&quot;
+
+</div>
+<h2>Concurrency and atomicity</h2>
+<p>The protocol requires servers to serialize validation plus append per <code>(stream, producerId)</code> pair, because HTTP (Hypertext Transfer Protocol) requests can arrive out of order. Without serialization, sequence 1 arriving before sequence 0 would cause a false gap. The Go store holds a per-producer lock around the append; the client uses an <code>AsyncQueue</code> with pipelining and a <code>maxInFlight</code> bound, and on a <code>409</code> gap it waits for the earlier sequences to complete and retries. For persistence, the protocol recommends committing producer state and the log append in one transaction.</p>
+<h2>Producer state cleanup</h2>
+<p>In-memory stores may expire producer state after a time-to-live (TTL) window; persistent stores retain it as long as the stream data exists. The client cleans its own sequence-state map as batches complete, keeping only the last few sequences to handle late <code>409</code> retries.</p>
+<h2>The Aha Moment</h2>
+<p><strong>Aha:</strong> Exactly-once is two cheap comparisons layered on top of append. The client declares an epoch and a sequence; the server compares them to its last accepted pair. Because the tuple is the deduplication key, a retry of the same request is indistinguishable from the original — no handshake, no transaction needed on the client, and the same rule works across the Go, Cloudflare, and Node servers.</p>
+<h2>Cross-References</h2>
+<ul><li><a href="04-appends.html">04-appends.md</a> — the append path these headers extend.</li><li><a href="07-forking.html">07-forking.md</a> — why producer state does not cross fork boundaries.</li><li><a href="10-cloudflare-server.html">10-cloudflare-server.md</a> — how the Durable Object commits producer state.</li></ul>
+<p>Continue to <a href="06-json-mode.html">06-json-mode.md</a></p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
