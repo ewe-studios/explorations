@@ -157,7 +157,7 @@ Internal control channels use a Hash-based Message Authentication Code (HMAC) ov
 
 ## Edge cache for the REST surface
 
-For the opt-in REST routes, the Worker stores responses in `caches.default`. The cache key folds in the values of every header listed in `Vary`, because the platform cache honours only `Accept-Encoding`. A response with a `Vary` that the key does not cover is not stored. The write uses `waitUntil` (`rest-edge-cache.ts:1-45,254`).
+For the opt-in Representational State Transfer (REST) routes, the Worker stores responses in `caches.default`. The cache key folds in the values of every header listed in `Vary`, because the platform cache honours only `Accept-Encoding`. A response with a `Vary` that the key does not cover is not stored. The write uses `waitUntil` (`rest-edge-cache.ts:1-45,254`).
 
 ## Where to go next
 

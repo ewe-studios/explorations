@@ -10,7 +10,7 @@ Lunora has four kinds of migration. Each runs in a different place. This page ex
 |------|-----------|--------------|------|
 | Shard schema | Inside each shard, on first use after a wake | Any dispatch | `runShardMigrations`, `ctx-db-migrations.ts` |
 | Data migration (`defineMigration`) | Inside each shard, resumable | Admin call, fanned out | `data-migration.ts:643` |
-| Global tables | D1 or Hyperdrive, batched DDL | First access | `ctx-db-global-provisioning.ts` |
+| Global tables | D1 or Hyperdrive, batched data definition language (DDL) | First access | `ctx-db-global-provisioning.ts` |
 | D1 Structured Query Language (SQL) migration files | D1, by a runner | `lunora migrate` | `d1/src/migration-runner.ts:377` |
 | Durable Object classes | Cloudflare | `wrangler deploy` | `reconcile-bindings.ts:190-205` |
 
@@ -39,7 +39,7 @@ Details:
 - A removed index is dropped from a ledger table `__lunora_framework_indexes`. Framework indexes are tracked, so an index the schema no longer declares can be dropped without touching a user's own index (`ctx-db-migrations.ts:288`).
 - Companion tables (`__agg_*`, `__rank_*`, `__fts_*`, geo) are created with `IF NOT EXISTS`. They never reshape an existing table, so a rebuild marker table `__lunora_companion_state` records when a rebuild is needed (`ctx-db-migrations.ts:513-560`).
 - A unique index over existing duplicates cannot be created. The code returns the blocked indexes, keeps going, and refuses user dispatch with an error naming them. The retry is limited to once per `BLOCKED_MIGRATION_RETRY_MS` (5,000 ms, `packages/codegen/src/emit/shard.ts:1027`). An admin data migration that removes the duplicates resets the clock (`packages/codegen/src/emit/shard.ts:1160-1195`).
-- Each cold start re-runs the idempotent DDL. The flag `migrated` is in memory and resets on hibernation. This costs catalog reads on every wake.
+- Each cold start re-runs the idempotent data definition language (DDL). The flag `migrated` is in memory and resets on hibernation. This costs catalog reads on every wake.
 - Index creation on the change log is isolated so that a slow build cannot block boot.
 
 ### The schema ledger
@@ -99,7 +99,7 @@ sequenceDiagram
 
 ## D1 migration files
 
-For D1, `MigrationRunner` applies ordered SQL files.
+For D1, `MigrationRunner` applies ordered Structured Query Language (SQL) files.
 
 - Tracking table `__drizzle_migrations` with `hash` (UNIQUE) and `version` (a unique index). The table shape is borrowed from Drizzle, but the runner decides by version, not by Drizzle's timestamp rule, so the two are not interchangeable (`migration-runner.ts:30-50`).
 - Every refusal is decided before the first migration runs. If a migration was already applied from different SQL, the run throws `MIGRATION_DRIFT` (the recorded and current SHA-256 are in the message). Nothing is half applied.
@@ -118,7 +118,7 @@ Covered in [Sharding design](04-sharding-design.md). The data move is manual, wi
 
 ## Point-in-time recovery as a migration safety net
 
-Native recovery reaches back 30 days, in place. `lunora backup` writes NDJSON snapshots to R2 for off-platform recovery. The docs advise a snapshot before a shard key change.
+Native recovery reaches back 30 days, in place. `lunora backup` writes newline-delimited JavaScript Object Notation (NDJSON) snapshots to R2 for off-platform recovery. The docs advise a snapshot before a shard key change.
 
 ## Aha moments
 

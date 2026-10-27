@@ -122,7 +122,7 @@ Frames between owner and relay (`relay.ts:152-336`) include `relay_attach`, `rel
 
 **Aha: only identity-uniform shapes are multicast.** One delta is correct for all subscribers only if row-level security gives every subscriber the same view. `isShapeRelayUniform` probes the shape with a `Proxy` identity that returns a distinct value for any claim the `where` reads. A shape that is not uniform gets a per-socket proxy poke instead (`relay-hub.ts:863`, `relay.ts:266-282`).
 
-The control channel is `/_lunora/relay`, signed with the HMAC secret. If `LUNORA_RELAY_SECRET` is unset, the relay channel falls back to legacy network trust (`shared/relay-signature.ts:44-58`). The replica and registry channels refuse instead.
+The control channel is `/_lunora/relay`, signed with the hash-based message authentication code (HMAC) secret. If `LUNORA_RELAY_SECRET` is unset, the relay channel falls back to legacy network trust (`shared/relay-signature.ts:44-58`). The replica and registry channels refuse instead.
 
 Gaps marked `ponytail:` in `relay-hub.ts`: fixed time limits for relay calls (lines 79 and 86), fan-out to every relay on a miss (line 706), a publish that lands while a relay's first subscribe is in flight can be missed (line 720), and in-memory entries lost on hibernation (line 2154).
 
@@ -152,7 +152,7 @@ The bookmark sink is per dispatch (`DispatchBookmark`, `shard-do.ts:1158-1170`).
 
 | Cache | Scope | Size or time to live (TTL) | Invalidation | Source |
 |-------|-------|-------------|--------------|--------|
-| Reactive query cache | One shard, in memory | 1,000 entries, 4 MB | Row dependencies; never evicts a watched entry | `reactive-cache.ts:30-34` |
+| Reactive query cache | One shard, in memory | 1,000 entries, 4 megabytes (MB) | Row dependencies; never evicts a watched entry | `reactive-cache.ts:30-34` |
 | Per-socket result memo | One socket | 8 MB per result, 32 MB memo total, env overrides | Byte-equal results are not pushed | `shard-do.ts:1420,1428` |
 | Shape diff cache | One flush | Discarded after the flush | New every flush | `shape-diff-cache.ts` |
 | Relay probe cache | One Worker isolate | 5 s, 4,096 entries | TTL | `create-worker.ts:2560,2568` |
@@ -171,7 +171,7 @@ The reactive cache lives in object memory and dies on hibernation. The comment s
 | Owner read | Latest committed | Same object |
 | Replica read with `minSeq` | At least as new as the caller's last write | `appliedSeq >= minSeq`, else 421 |
 | Replica read without `minSeq` | Up to `LUNORA_REPLICA_MAX_STALENESS_MS` (1,000 ms) behind | `syncedAtMs` |
-| Global table, with bookmark | Read-your-writes | Sessions API |
+| Global table, with bookmark | Read-your-writes | Sessions application programming interface (API) |
 | Global table, without bookmark | May read an older replica | `first-unconstrained` |
 | Across shards | No transaction, no atomic multi-shard write | Non-goal |
 | Live client | Monotonic, gap detected | Poke checkpoints, watermark |

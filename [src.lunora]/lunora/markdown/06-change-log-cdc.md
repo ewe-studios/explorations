@@ -167,7 +167,7 @@ Facts from the file header (`ctx-db-commit-seq.ts:1-80`):
 - It is stored inside `__doc__`, not as a column, so no `ALTER TABLE` is needed (`COMMIT_SEQ_FIELD = "_commitSeq"`, line 94).
 - It is ordered, not gapless.
 - It is per shard. `.global()` tables reject `.commitOrdered()`.
-- It does not survive a PITR restore. The counter row rolls back with the data. A consumer at 5 can skip writes 3, 4, 5 after the restore. The file says to use `cdcSync` for a feed that must survive a restore.
+- It does not survive a point-in-time recovery (PITR) restore. The counter row rolls back with the data. A consumer at 5 can skip writes 3, 4, 5 after the restore. The file says to use `cdcSync` for a feed that must survive a restore.
 - A hard delete is invisible. Pair the table with `.softDelete()`.
 - A bounded page can end inside a commit group, so a consumer must checkpoint only on a sequence it has seen whole.
 
@@ -186,7 +186,7 @@ A `.global()` table has its own `__cdc_log` in D1 or in the Hyperdrive database.
 | Read replicas | `servePull`, `replica.ts:398` |
 | Warehouse connectors | `/_lunora/admin/connector/sync`, `data-movement-admin-routes.ts` |
 | Export tap with durable cursor | `runExportTap`, `export-tap.ts` |
-| Replay for PITR | `applyCdcChanges`, `ctx-db-cdc.ts:819` |
+| Replay for point-in-time recovery (PITR) | `applyCdcChanges`, `ctx-db-cdc.ts:819` |
 
 The connector cursor is an opaque base64url token with `{v: 1, s: {shard: seq}, g: globalSeq}` (`connector-cdc.ts:19-30`). It carries no per-shard epoch. The handler comment says why: the connector page has no error channel, so an epoch refusal would look like "caught up" (`data-movement-admin-routes.ts:253-262`). The handler folds only `shard.changes` and ignores `shard.error` (`data-movement-admin-routes.ts:290-310`). So a shard that times out or refuses a forked cursor adds no changes, keeps its old cursor, and can leave the page with `hasMore: false`. The export tap is stricter: it records a failure and sets `hasMore = true` (`export-tap.ts:221-240`).
 

@@ -47,7 +47,7 @@ The shard key is chosen by the caller. The client library takes it as an option 
 const messages = useQuery(api.messages.list, { channelId }, { shardKey: channelId });
 ```
 
-The remote procedure call (RPC) envelope has an optional `shardKey` string. The WebSocket upgrade reads `?shard=` from the URL (`create-worker.ts:4422`). When nothing is given, the key is the default shard, `__root__` (`create-worker.ts:2893`). The import tool derives the key from the row: `String(doc[field])`, or `JSON.stringify` for a non-string value (`packages/runtime/src/import-stream.ts:73-83`).
+The remote procedure call (RPC) envelope has an optional `shardKey` string. The WebSocket upgrade reads `?shard=` from the uniform resource locator (URL) (`create-worker.ts:4422`). When nothing is given, the key is the default shard, `__root__` (`create-worker.ts:2893`). The import tool derives the key from the row: `String(doc[field])`, or `JSON.stringify` for a non-string value (`packages/runtime/src/import-stream.ts:73-83`).
 
 ### What the Durable Object does not check
 
@@ -96,7 +96,7 @@ Source: `shard-do.ts:13193-13246`, `shard-registry-do.ts:328-363`, `runtime/src/
 
 Design points:
 
-- **One storage key per pair.** Each `(table, shardKey)` is stored under `s:<table>\0<shardKey>`. An earlier design stored the whole map in one value and hit the 2 MB value limit near 50,000 keys. The fix is explained in the class comment (`shard-registry-do.ts:28-39`).
+- **One storage key per pair.** Each `(table, shardKey)` is stored under `s:<table>\0<shardKey>`. An earlier design stored the whole map in one value and hit the 2 megabytes (MB) value limit near 50,000 keys. The fix is explained in the class comment (`shard-registry-do.ts:28-39`).
 - **Persist first.** `handleRegister` does `storage.put` before it changes the in-memory map (`shard-registry-do.ts:352`). A failed write cannot leave a false entry.
 - **Key size.** A storage key above 2,048 bytes is refused with 400 (`MAX_STORAGE_KEY_BYTES`, `shard-registry-do.ts:94`).
 - **Signed requests.** The registry refuses every request when `LUNORA_RELAY_SECRET` is unset. The signature covers method, path, query and body, because `GET /list` has no body (`shared/shard-registry-frame.ts:11-15`). The body is read with a 64 KiB cap before the signature check (`MAX_REQUEST_BYTES`, `shard-registry-do.ts:70`).
@@ -171,7 +171,7 @@ The page says: "This is not an online migration." The export is paginated live r
 
 | Limit | Value | Source |
 |-------|-------|--------|
-| SQLite per object | 10 GB | `limits.mdx` |
+| SQLite per object | 10 gigabytes (GB) | `limits.mdx` |
 | Requests per object | about 1,000 per second | `limits.mdx` |
 | WebSockets per object | about 32,000 hibernated | `limits.mdx` |
 | Objects per account | unlimited | `limits.mdx` |

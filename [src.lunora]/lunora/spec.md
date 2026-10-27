@@ -66,7 +66,7 @@ Lunora is a backend framework for Cloudflare. A Durable Object with its own SQLi
 | 17 | 16-glossary.md | DONE |
 | 18 | exploration.md | DONE |
 | 19 | Grandfather review | DONE (citations checked by script; some items not verified, see exploration.md) |
-| 20 | Generate HTML | DONE |
+| 20 | Generate HyperText Markup Language (HTML) | DONE |
 
 ## 6. Build System
 
@@ -79,7 +79,7 @@ Run `python3 -I build.py .` inside this directory. It writes `html/`. Run `pytho
 3. Clear articulation.
 4. Mermaid diagrams (minimum 2 per document).
 5. Good visual assets.
-6. Generated HTML.
+6. Generated HyperText Markup Language (HTML).
 7. Cross-references.
 8. Source path references.
 9. Aha moments.
@@ -93,4 +93,4 @@ A reader can explain the Lunora design, decide what to copy and what to avoid, a
 
 ## 9. Resume Point
 
-All documents are written. To continue: re-run the citation check on any changed chapter, then rebuild the HTML.
+All documents are written. To continue: re-run the citation check on any changed chapter, then rebuild the HyperText Markup Language (HTML).

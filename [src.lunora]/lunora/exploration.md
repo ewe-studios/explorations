@@ -26,7 +26,7 @@ flowchart LR
 
 ## Cloudflare services used
 
-Durable Objects (with SQLite and WebSocket hibernation), Workers, D1, Hyperdrive, R2, Workers KV (key-value store), Queues, Workflows, Cron Triggers, Analytics Engine, Pipelines with R2 SQL (Structured Query Language), Vectorize, Workers AI with AI Gateway, and service bindings. The page [Cloudflare services](markdown/02-cloudflare-services.md) has one section for each.
+Durable Objects (with SQLite and WebSocket hibernation), Workers, D1, Hyperdrive, R2, Workers KV (a key-value store), Queues, Workflows, Cron Triggers, Analytics Engine, Pipelines with R2 SQL (Structured Query Language), Vectorize, Workers AI (artificial intelligence) with AI Gateway, and service bindings. The page [Cloudflare services](markdown/02-cloudflare-services.md) has one section for each.
 
 ## Sharding in one minute
 
@@ -87,7 +87,7 @@ Strong core idea, careful handling of Cloudflare edge cases. The weak points sit
 - The code has 59 packages. `AGENTS.md` says 58.
 - The docs say routing is by schema. In the code the client passes `shardKey`.
 - The docs say actions run in the Worker. In the code they run on the shard.
-- Analytics Engine blob size is 5,120 bytes in the code. A doc says 16 KB.
+- Analytics Engine blob size is 5,120 bytes in the code. A doc says 16 kilobytes (KB).
 
 ## Grandfather review
 

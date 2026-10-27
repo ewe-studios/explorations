@@ -78,7 +78,7 @@ The shard key is a client option (`{ shardKey: channelId }`). I found no check t
 
 ### 2. No resharding, no online migration
 
-Changing the key is stop-writes, export, deploy, import, clear. The export is paginated live reads, not a snapshot, so a write during the window can be lost. The docs say it is not online. A hot key that outgrows one object (10 GB, about 1,000 requests per second) has no split path.
+Changing the key is stop-writes, export, deploy, import, clear. The export is paginated live reads, not a snapshot, so a write during the window can be lost. The docs say it is not online. A hot key that outgrows one object (10 gigabytes (GB), about 1,000 requests per second) has no split path.
 
 ### 3. Hidden write amplification (inference)
 
@@ -114,7 +114,7 @@ No cross-shard transaction. A mutation touching a shard table and a global table
 
 ### 10. Internal channel authentication is basic
 
-The HMAC covers the body with no nonce or time stamp, so a captured frame can be replayed by anyone who can reach the namespace. The relay channel accepts unsigned frames when no secret is set (`shared/relay-signature.ts:44-58`).
+The hash-based message authentication code (HMAC) covers the body with no nonce or time stamp, so a captured frame can be replayed by anyone who can reach the namespace. The relay channel accepts unsigned frames when no secret is set (`shared/relay-signature.ts:44-58`).
 
 ### 11. Replica limits
 

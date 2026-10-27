@@ -123,7 +123,7 @@ The receiver backs this up. The shard declines a second delivery of a live dedup
 
 A dispatch counts as success only on an explicit 2xx. A 404 or 401 retries, because the receiver may be missing or restarting. Defaults: 5 retries (`MAX_RETRY_ATTEMPTS`), first backoff 30,000 ms doubling (`RETRY_BASE_DELAY_MS`). After that the record moves under `dead:`. It is never deleted silently (`scheduler-do.ts:128-144`).
 
-The dispatch target comes from `env.LUNORA_ORIGIN_URL`, never from the request body, to prevent server-side request forgery. The body is signed with HMAC `x-lunora-scheduler-signature` when `LUNORA_SCHEDULER_SECRET` is set, else bearer-authenticated by the admin token (`scheduler-do.ts:769-800,1397`).
+The dispatch target comes from `env.LUNORA_ORIGIN_URL`, never from the request body, to prevent server-side request forgery. The body is signed with hash-based message authentication code (HMAC) `x-lunora-scheduler-signature` when `LUNORA_SCHEDULER_SECRET` is set, else bearer-authenticated by the admin token (`scheduler-do.ts:769-800,1397`).
 
 ### Workpools
 
@@ -135,7 +135,7 @@ A pool name with `maxConcurrency` limits parallel jobs. The count is in a `pool:
 
 ### Producer checks
 
-Before any call: batch at most 100 messages, delay at most 43,200 s, and the body may not carry the key `$lunora.requeued$` (`create-queues.ts:18,27,40-50`; `requeue-envelope.ts:21`). Cloudflare's byte limits (128 KB per message, 256 KB per batch) are left to the platform. Measuring them would serialize every body twice.
+Before any call: batch at most 100 messages, delay at most 43,200 s, and the body may not carry the key `$lunora.requeued$` (`create-queues.ts:18,27,40-50`; `requeue-envelope.ts:21`). Cloudflare's byte limits (128 kilobytes (KB) per message, 256 KB per batch) are left to the platform. Measuring them would serialize every body twice.
 
 ### Consumer: `dispatchQueueBatch`
 
@@ -144,7 +144,7 @@ The consumer wraps every message and the batch in a `Proxy` (`queue/src/dispatch
 - `ack` and `retry` are recorded and then forwarded. Any other property is read with `Reflect.get(target, property, target)`. A host object throws "illegal invocation" if read with a proxy as `this`.
 - Each message gets `message.run`, pinned to that message. A call carries `messageId` and `dedupId = <messageId>#<n>`. The counter `n` restarts for every delivery, so a redelivery reproduces the same ids and the dedup table serves a call already done. The two ids must differ, because the table is keyed by identity and mutation id without the function path. Two calls with one id would return the first call's cached result for the second (`packages/queue/src/dispatch.ts:215-243`).
 - A deterministic failure is attributed to its message, so a poison message leaves the batch without sinking the others.
-- A declined delivery (409 from the claim) on the last attempt is re-enqueued as a copy inside a sealed envelope. The body is under 128 KiB. It is signed with a MAC keyed by the admin token. A copy is unwrapped only if the MAC verifies. The copy keeps the original id and body, so deduplication still works (`requeue-envelope.ts:21-72`, `packages/queue/src/dispatch.ts:196`).
+- A declined delivery (409 from the claim) on the last attempt is re-enqueued as a copy inside a sealed envelope. The body is under 128 KiB. It is signed with a message authentication code (MAC) keyed by the admin token. A copy is unwrapped only if the MAC verifies. The copy keeps the original id and body, so deduplication still works (`requeue-envelope.ts:21-72`, `packages/queue/src/dispatch.ts:196`).
 
 Defaults from `@lunora/dispatch`: dispatch timeout 30,000 ms, queue max retries 3, decline retry delay 900 s (`create-dispatch-runner.ts:31,226,223`).
 

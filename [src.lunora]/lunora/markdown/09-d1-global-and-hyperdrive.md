@@ -29,7 +29,7 @@ A global table has one column per declared field. This differs from shard tables
 
 D1 has no interactive transactions. So a write is one conditional statement. Patch, replace and delete use `UPDATE ... SET ..., _version = COALESCE(_version, 0) + 1 WHERE id IS ? AND _version IS ? RETURNING id`. The `IS` compare is NULL-safe. An empty `RETURNING` set means a concurrent writer won, and the store raises `ConflictError` of kind `occ` (`sql-store/src/ctx-db.ts:2586-2650`). MySQL has no `RETURNING`, so it reads the affected-row count. The retry loop for `patchIf` and operator patches is bounded: `OCC_RETRY_ATTEMPTS = 16` (`packages/sql-store/src/ctx-db.ts:1520`).
 
-The guard column is one parameter wide. An earlier design bound one parameter per column and crossed D1's 100-parameter limit at 50 fields (`shared/occ-version-column.ts:1-26`). The version is bumped in SQL: `COALESCE(_version, 0) + 1`. Inserts leave it NULL.
+The guard column is one parameter wide. An earlier design bound one parameter per column and crossed D1's 100-parameter limit at 50 fields (`shared/occ-version-column.ts:1-26`). The version is bumped in Structured Query Language (SQL): `COALESCE(_version, 0) + 1`. Inserts leave it NULL.
 
 D1 is the single writer for each of its databases. The comment in the capability matrix says "concurrent callers stay atomic although D1 calls do not hold the Durable Object's input gate" (`cloudflare.ts:39-42`).
 
@@ -53,7 +53,7 @@ sequenceDiagram
 
 The code splits reads from writes for retry:
 
-- `all` and `first` retry, but only if the SQL starts with `select`, `pragma` or `explain` (`READ_ONLY_STATEMENT`, `retry.ts:112-122`). A `WITH` statement is excluded.
+- `all` and `first` retry, but only if the Structured Query Language (SQL) starts with `select`, `pragma` or `explain` (`READ_ONLY_STATEMENT`, `retry.ts:112-122`). A `WITH` statement is excluded.
 - `run` never retries. D1 errors do not say whether the write applied.
 - `all` also runs `UPDATE ... RETURNING`, so the test is on the SQL text, not the method name.
 
@@ -76,7 +76,7 @@ D1 bills rows scanned, not rows returned. A missing index can raise the bill a t
 
 ## Provisioning
 
-Creating tables one statement at a time cost about nine round trips per table. A 42-table schema needed 368 calls, and the first request waited about a minute. `ctx-db-global-provisioning.ts` reads the catalog in at most two queries, plans DDL in memory and sends it through `batch`, which is atomic on D1. Anything it cannot decide in memory goes to the sequential path (`ctx-db-global-provisioning.ts:1-30`). The result is memoized per `provisionScope`, an object that outlives the request, such as the D1 binding (`sql-store/src/ctx-db.ts:369`). The comment warns that a per-request object shares nothing and "looks exactly like not passing it".
+Creating tables one statement at a time cost about nine round trips per table. A 42-table schema needed 368 calls, and the first request waited about a minute. `ctx-db-global-provisioning.ts` reads the catalog in at most two queries, plans data definition language (DDL) in memory and sends it through `batch`, which is atomic on D1. Anything it cannot decide in memory goes to the sequential path (`ctx-db-global-provisioning.ts:1-30`). The result is memoized per `provisionScope`, an object that outlives the request, such as the D1 binding (`sql-store/src/ctx-db.ts:369`). The comment warns that a per-request object shares nothing and "looks exactly like not passing it".
 
 ## Point-read batching
 

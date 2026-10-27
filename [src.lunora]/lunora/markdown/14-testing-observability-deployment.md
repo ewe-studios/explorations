@@ -40,7 +40,7 @@ Two suites define what a host must do: `packages/platform/src/conformance/suite.
 | Batch cap | `lint:batch-cap` | drift of the shared batch limit |
 | Templates | `test:templates` | scaffolds install, build, typecheck |
 | End to end | `e2e` | Playwright |
-| Non-JS SDKs | `sdks/run-all.sh` | 8 SDK conformance suites |
+| Non-JS software development kits (SDKs) | `sdks/run-all.sh` | 8 software development kit (SDK) conformance suites |
 
 The unit tests use fakes from `@lunora/testing`: `fake-scheduler`, `fake-queues`, `fake-topics`, `fake-secret-values`, `node-sqlite`, and a recorded model for agents.
 
@@ -104,7 +104,7 @@ Per function: calls, errors, conflicts, latency, scanned tables, index hits. The
 
 ### Studio and advisors
 
-`pnpm dev` serves Studio: data browser, SQL console, logs, traces, Issues (errors grouped by fingerprint), time travel, architecture view, and advisors. The advisor package ships static lints and runtime lints. The runtime lints include `hot_shard` and `fan_out_breadth`. The Studio's shard-traffic read uses `orchestrateShardTraffic`.
+`pnpm dev` serves Studio: data browser, Structured Query Language (SQL) console, logs, traces, Issues (errors grouped by fingerprint), time travel, architecture view, and advisors. The advisor package ships static lints and runtime lints. The runtime lints include `hot_shard` and `fan_out_breadth`. The Studio's shard-traffic read uses `orchestrateShardTraffic`.
 
 ## Deployment
 
@@ -133,7 +133,7 @@ The sample app `examples/team-chat/wrangler.jsonc` adds `"observability": { "ena
 - A Durable Object binding appears when the entry exports the class, because wrangler refuses a binding for a class that is not exported.
 - Imports of `@lunora/auth`, `scheduler`, `storage`, `payment` are only hints.
 - A `.global()` schema drives the `DB` binding.
-- Lunora writes only what it can create. Workers KV (key-value store) ids, Hyperdrive ids and Vectorize indexes need the operator.
+- Lunora writes only what it can create. Workers KV (a key-value store) ids, Hyperdrive ids and Vectorize indexes need the operator.
 - It records what it wrote in `package.json` under `lunora` (`queueTuning`, `crons`, `services`), so it can take its own entries out again and never touches hand-written ones.
 - It adds a Durable Object migration tag for missing classes.
 
@@ -143,7 +143,7 @@ The sample app `examples/team-chat/wrangler.jsonc` adds `"observability": { "ena
 
 | Name | Where | Purpose |
 |------|-------|---------|
-| `LUNORA_RELAY_SECRET` | Worker secret on Worker and all Durable Objects | HMAC for relay, replica, registry channels |
+| `LUNORA_RELAY_SECRET` | Worker secret on Worker and all Durable Objects | hash-based message authentication code (HMAC) for relay, replica, registry channels |
 | `LUNORA_ADMIN_TOKEN` | Worker secret | Admin routes, scheduler fallback auth |
 | `LUNORA_SCHEDULER_SECRET` | Worker secret | Sign scheduler dispatch |
 | `LUNORA_ORIGIN_URL` | var | Scheduler callback target |
@@ -155,7 +155,7 @@ The sample app `examples/team-chat/wrangler.jsonc` adds `"observability": { "ena
 | `LUNORA_REPLICA_*` | vars | Replica tuning |
 | `LUNORA_ALARM_REARM_LIMIT`, `LUNORA_SCHEDULE_RATE_LIMIT` | vars | Breakers |
 
-`lunora dev` generates the relay secret into `.dev.vars`. For production use `lunora env push` or `wrangler secret put`. Environment variables share a 5 KB total limit (`limits.mdx`).
+`lunora dev` generates the relay secret into `.dev.vars`. For production use `lunora env push` or `wrangler secret put`. Environment variables share a 5 kilobytes (KB) total limit (`limits.mdx`).
 
 ### Jurisdiction and residency
 

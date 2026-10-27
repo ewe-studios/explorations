@@ -12,9 +12,9 @@ Lunora keeps data in four places: Durable Object SQLite, D1 or Hyperdrive, R2, a
 |------|-------|-----------|------------------------|
 | Shard SQLite (hot) | Root and `.shardBy()` tables, change log, caches, idempotency, metrics | Mutations inside a transaction | Change log rows move to R2 (archive). Tables move only by manual export and import |
 | D1 or Postgres/MySQL | `.global()` tables and the global change log | Writes from any shard, one statement or one `batch` | No automatic move. Log rows are deleted by time |
-| R2 (cold) | Files, upload state, change log segments, NDJSON backups, log archive | Storage facade, retention sweep, backup cron, Pipelines | Segments are never deleted by Lunora |
+| R2 (cold) | Files, upload state, change log segments, newline-delimited JavaScript Object Notation (NDJSON) backups, log archive | Storage facade, retention sweep, backup cron, Pipelines | Segments are never deleted by Lunora |
 | Queues | In-flight background messages | `ctx.queues.send` | Dead letter queue after retries |
-| Durable Object Workers KV (key-value store) application programming interface (API) | Scheduler jobs, registry entries, secret values | Scheduler, registry | No |
+| Durable Object Workers KV (a key-value store) application programming interface (API) | Scheduler jobs, registry entries, secret values | Scheduler, registry | No |
 | Workers KV | App data through `ctx.kv` | The app | No |
 
 Source: `architecture.mdx` (data tiers), `cloudflare.ts:112-124`.
@@ -139,13 +139,13 @@ R2 is never cleaned by Lunora. "The archive grows without bound by design". The 
 
 ### Backups
 
-The cron backup streams every shard's rows into one NDJSON object under `backups/lunora-backup-<id>.ndjson`, with a sidecar `.manifest.json` that holds bytes, rows, a SHA-256 and the table list (`backup-layout.ts:60-91`). Facts:
+The cron backup streams every shard's rows into one newline-delimited JavaScript Object Notation (NDJSON) object under `backups/lunora-backup-<id>.ndjson`, with a sidecar `.manifest.json` that holds bytes, rows, a SHA-256 and the table list (`backup-layout.ts:60-91`). Facts:
 
 - The snapshot is capped at 24 MiB of NDJSON (`MAX_SCHEDULED_BACKUP_BYTES`, `scheduled-backup.ts`). The comment admits the rows are already in memory before the first check, so this is not a memory bound.
 - Retention removes at most 200 snapshots per run, 8 deletions at a time (`MAX_PRUNE_DELETES`, `PRUNE_DELETE_CONCURRENCY`), and only sidecars that carry its own cron expression in metadata.
 - The command line tool writes the same layout to the same bucket.
 
-For anything larger, the answer is the change data capture (CDC) tap, the replay path, or native PITR (30 days).
+For anything larger, the answer is the change data capture (CDC) tap, the replay path, or native point-in-time recovery (PITR) (30 days).
 
 ### Resumable uploads
 

@@ -70,7 +70,7 @@ sequenceDiagram
 | Durable Object SQLite | `shard-engine` | Every shard-local table and the change log | Core |
 | D1 | `d1`, `sql-store` | `.global()` tables | Core when `.global()` is used |
 | R2 | `storage`, `shard-engine`, `runtime` | Files, change log archive, backups, uploads | Optional |
-| Workers KV (key-value store) | `bindings` | `ctx.kv` facade for apps | Optional |
+| Workers KV (a key-value store) | `bindings` | `ctx.kv` facade for apps | Optional |
 | Queues | `queue` | Background work, topics, requeue | Optional |
 | Hyperdrive | `hyperdrive` | Postgres or MySQL as a `.global()` backend | Optional |
 | Workflows | `workflow`, `agent` | Durable multi-step jobs and agents | Optional |
@@ -78,7 +78,7 @@ sequenceDiagram
 | Analytics Engine | `bindings`, `runtime` | App events and function metrics | Optional |
 | Service bindings | `config`, `do` | Shared shard registry across Workers | Optional |
 | Vectorize | `bindings`, `ai` | Vector search | Optional |
-| Workers AI and AI Gateway | `ai`, `agent` | Models and cost telemetry | Optional |
+| Workers AI (artificial intelligence) and AI Gateway | `ai`, `agent` | Models and cost telemetry | Optional |
 | Pipelines, R2 SQL (Structured Query Language) | `bindings`, `runtime` | Log archive | Optional |
 | Others | see end of page | Images, Browser, Containers, Email, Access, Secrets Store | Optional |
 
@@ -130,11 +130,11 @@ Fields are read with `json_extract(__doc__, '$.field')`. Secondary indexes are e
 
 Why a JSON column: a schema change that adds a field needs no `ALTER TABLE`. The cost is that indexes need expression paths and big documents cost more bytes per write. See [Tricks](12-optimizations-and-tricks.md).
 
-The shard SQL layer works around Cloudflare statement limits. The documentation table lists them (`apps/docs/src/content/docs/limits.mdx`): 5 terms in a compound `SELECT`, 100 bound parameters, a 50-byte `LIKE` pattern, 100 columns, 2 MB per row, 100 KB per statement. The change log code chunks `IN` lists at 90 names (`ctx-db-cdc.ts:174`).
+The shard Structured Query Language (SQL) layer works around Cloudflare statement limits. The documentation table lists them (`apps/docs/src/content/docs/limits.mdx`): 5 terms in a compound `SELECT`, 100 bound parameters, a 50-byte `LIKE` pattern, 100 columns, 2 megabytes (MB) per row, 100 kilobytes (KB) per statement. The change log code chunks `IN` lists at 90 names (`ctx-db-cdc.ts:174`).
 
 ## D1
 
-D1 is a Cloudflare SQL database. Lunora uses it for `.global()` tables: data that must be readable from every shard. The adapter uses the D1 Sessions application programming interface (API) with a bookmark.
+D1 is a Cloudflare Structured Query Language (SQL) database. Lunora uses it for `.global()` tables: data that must be readable from every shard. The adapter uses the D1 Sessions application programming interface (API) with a bookmark.
 
 ```ts
 // packages/d1/src/d1-client.ts:195
@@ -150,16 +150,16 @@ The constant `D1_FIRST_UNCONSTRAINED` is `"first-unconstrained"` (`d1-client.ts:
 
 R2 is Cloudflare object storage. Lunora uses it in four ways.
 
-1. File storage with signed URLs (`packages/storage`). A 16 MiB cap exists for buffered streams (`create-storage.ts:58`).
+1. File storage with signed uniform resource locators (URLs) (`packages/storage`). A 16 MiB cap exists for buffered streams (`create-storage.ts:58`).
 2. Resumable uploads, with upload state kept as conditional-put objects in the same bucket (`r2-binding-upload-storage.ts:1-60`). Parts are 5 MiB (`R2_PART_SIZE`, `r2-upload-part-writer.ts`).
 3. The change log archive under `cdc/{shard}/{epoch}/{seq}.json` (`ctx-db-cdc-archive.ts:106,116`). See [Change log](06-change-log-cdc.md) and [Storage tiers](08-storage-tiers-and-archive.md).
 4. Snapshot backups under `backups/` (`packages/runtime/src/backup-layout.ts:18`).
 
 ## Workers KV
 
-KV is a global key-value store. Lunora does not use it in the core data path. It exposes `ctx.kv` to applications through `createKv`. The wrapper checks the KV limits before the call: 512-byte keys, 1000 keys per list page, 1,024 bytes of metadata (`packages/bindings/src/kv/create-kv.ts:17-27`).
+key-value (KV) is a global key-value store. Lunora does not use it in the core data path. It exposes `ctx.kv` to applications through `createKv`. The wrapper checks the KV limits before the call: 512-byte keys, 1000 keys per list page, 1,024 bytes of metadata (`packages/bindings/src/kv/create-kv.ts:17-27`).
 
-Do not confuse this with the key-value API of Durable Object storage. Lunora uses that API in `SchedulerDO`, `ShardRegistryDO` and the secret value store.
+Do not confuse this with the key-value application programming interface (API) of Durable Object storage. Lunora uses that API in `SchedulerDO`, `ShardRegistryDO` and the secret value store.
 
 ## Queues
 
@@ -191,9 +191,9 @@ The generated Worker has a `scheduled()` entry. It walks a generated map named `
 
 Analytics Engine stores sampled time-series data. Lunora has two writers.
 
-The first is `analyticsEngineSink`. It writes one data point for each RPC call: index `[functionPath]`, five string blobs, four numeric doubles (`packages/runtime/src/observability-sinks.ts:477-500`). The call is fire-and-forget and wrapped in `try/catch`.
+The first is `analyticsEngineSink`. It writes one data point for each remote procedure call (RPC) call: index `[functionPath]`, five string blobs, four numeric doubles (`packages/runtime/src/observability-sinks.ts:477-500`). The call is fire-and-forget and wrapped in `try/catch`.
 
-The second is `ctx.analytics`. It enforces Analytics Engine limits before the write: 20 blobs, 20 doubles, 1 index, 16 KB of blobs, 96 bytes of index (`packages/bindings/src/analytics/create-analytics.ts:3-30`). There is also an Analytics SQL reader (`bindings/src/analytics-sql`).
+The second is `ctx.analytics`. It enforces Analytics Engine limits before the write: 20 blobs, 20 doubles, 1 index, 16 kilobytes (KB) of blobs, 96 bytes of index (`packages/bindings/src/analytics/create-analytics.ts:3-30`). There is also an Analytics SQL (Structured Query Language) reader (`bindings/src/analytics-sql`).
 
 ## Service bindings
 
@@ -201,11 +201,11 @@ A service binding lets one Worker call another Worker without the public interne
 
 ## Vectorize, Workers AI, AI Gateway, AI Search
 
-Vectorize stores embeddings. Lunora syncs vectors after a commit, never inside the transaction. The reason is that Vectorize cannot roll back (`shard-do.ts:4222-4254`, `deferAfterCommit`). Workers AI runs models. When the gateway variables are set, calls go through AI Gateway, which adds token and cost telemetry (`packages/ai/src/gateway.ts:1-12`). AI Search is read through the `ai_search_namespaces` binding and is remote-only (`cloudflare.ts:133`).
+Vectorize stores embeddings. Lunora syncs vectors after a commit, never inside the transaction. The reason is that Vectorize cannot roll back (`shard-do.ts:4222-4254`, `deferAfterCommit`). Workers AI (artificial intelligence) runs models. When the gateway variables are set, calls go through AI Gateway, which adds token and cost telemetry (`packages/ai/src/gateway.ts:1-12`). AI Search is read through the `ai_search_namespaces` binding and is remote-only (`cloudflare.ts:133`).
 
 ## Pipelines and R2 SQL
 
-`pipelineLogSink` sends log records to a Cloudflare Pipeline. The pipeline writes to R2 Data Catalog (Apache Iceberg). The admin route reads the logs back with R2 SQL on the server, because the API token must not reach a browser (`cloudflare.ts:172-176`, `observability-sinks.ts:563`). `ctx.pipelines.send` wraps the binding; it always passes an array (`bindings/src/pipelines/create-pipelines.ts`).
+`pipelineLogSink` sends log records to a Cloudflare Pipeline. The pipeline writes to R2 Data Catalog (Apache Iceberg). The admin route reads the logs back with R2 SQL (Structured Query Language) on the server, because the application programming interface (API) token must not reach a browser (`cloudflare.ts:172-176`, `observability-sinks.ts:563`). `ctx.pipelines.send` wraps the binding; it always passes an array (`bindings/src/pipelines/create-pipelines.ts`).
 
 ## Other services in the code
 
@@ -217,7 +217,7 @@ Vectorize stores embeddings. Lunora syncs vectors after a commit, never inside t
 | Email (`send_email`) | `packages/mail/src/cloudflare-transport.ts:1-45`. The binding sends to one verified recipient only |
 | Cloudflare Access | `packages/cloudflare-access`, `cloudflare.ts:204` |
 | Secrets Store | `cloudflare.ts:182`, `infer-bindings.ts:386` |
-| Cache API (`caches.default`) | `packages/runtime/src/rest-edge-cache.ts:1-40` |
+| Cache application programming interface (API) (`caches.default`) | `packages/runtime/src/rest-edge-cache.ts:1-40` |
 | Version metadata | `CF_VERSION_METADATA` read in `shard-do.ts:12187` |
 | Worker loaders | `cloudflare.ts:86` (a binding validated by config) |
 | Artifacts | `bindings/src/artifacts`, `cloudflare.ts:160` |

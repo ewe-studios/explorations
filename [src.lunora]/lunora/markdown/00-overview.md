@@ -38,12 +38,12 @@ The packages fall into groups. Only the first three groups matter for sharding a
 | Group | Packages | Job |
 |-------|----------|-----|
 | Contracts | `platform`, `platform-cloudflare` | Host-neutral interfaces and the Cloudflare adapter |
-| Engine | `shard-engine`, `sql-store`, `d1`, `hyperdrive` | SQL, change log, replicas, relays, global tables |
+| Engine | `shard-engine`, `sql-store`, `d1`, `hyperdrive` | Structured Query Language (SQL), change log, replicas, relays, global tables |
 | Runtime | `do`, `runtime`, `server`, `values`, `wire`, `errors` | Durable Object class, Worker, builders, validators |
 | Async | `scheduler`, `queue`, `workflow`, `dispatch` | Alarms, Queues, Workflows, at-least-once dispatch |
-| Storage and bindings | `storage`, `bindings`, `ai`, `container`, `browser` | R2, Workers KV (key-value store), Analytics Engine, Vectorize, AI, Containers |
+| Storage and bindings | `storage`, `bindings`, `ai`, `container`, `browser` | R2, Workers KV (a key-value store), Analytics Engine, Vectorize, artificial intelligence (AI), Containers |
 | Tooling | `codegen`, `cli`, `vite`, `config`, `advisor`, `studio`, `testing` | Build, deploy, lint, local admin, tests |
-| Clients | `client`, `react`, `vue`, `solid`, `svelte`, `angular`, `react-native` | Browser and mobile SDKs |
+| Clients | `client`, `react`, `vue`, `solid`, `svelte`, `angular`, `react-native` | Browser and mobile software development kits (SDKs) |
 | Add-ons | `auth`, `mail`, `payment`, `notify`, `ratelimit`, `flags`, `privacy` and more | Optional features |
 
 Lines of TypeScript, without test files, for the packages that matter most: `do` 24,249; `shard-engine` 36,967; `runtime` 22,385; `sql-store` 10,082; `replica` 5,428; `scheduler` 4,272; `queue` 1,764; `d1` 2,649; `hyperdrive` 1,559; `platform-cloudflare` 992 (counted with `wc -l` on `src/**/*.ts` excluding `*.test.ts`).
@@ -106,7 +106,7 @@ Source: `packages/do/src/shard-do.ts:8525` (`handleFetchCloudflare`), `shard-do.
 |-------|--------------------|------------|
 | Package count | 58 (`AGENTS.md`) | 59 directories in `packages/` |
 | Shard routing | "codegen re-addresses `ctx.db.messages.*`" (`concepts/sharding.mdx`) | The client sends `shardKey` in the remote procedure call (RPC) envelope. The Durable Object does not check that a row field equals its own name. See [Sharding design](04-sharding-design.md) |
-| Analytics blob size | "5120 bytes" in the sink comment (`packages/runtime/src/observability-sinks.ts:430`) | 16 KB in `bindings/src/analytics/create-analytics.ts` |
+| Analytics blob size | "5120 bytes" in the sink comment (`packages/runtime/src/observability-sinks.ts:430`) | 16 kilobytes (KB) in `bindings/src/analytics/create-analytics.ts` |
 
 ## Where to go next
 

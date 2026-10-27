@@ -256,7 +256,7 @@ Opt-in `--lazy-functions`. A real app of about 1,000 functions and 130 tables fe
 
 ### 48. Size and startup budgets in continuous integration
 
-`worker-size.json` and `worker-startup.json` store baselines. The startup file gates on module count and bytes (deterministic) and prints CPU time as advice only.
+`worker-size.json` and `worker-startup.json` store baselines. The startup file gates on module count and bytes (deterministic) and prints central processing unit (CPU) time as advice only.
 
 ### 49. Lazy schema migration
 

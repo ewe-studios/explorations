@@ -104,7 +104,7 @@ const runSerialized: ShardHost["runSerialized"] = async (function_) => {
 
 **Trick 2: the original error survives.** The platform rolls back correctly but hands back a flattened copy of the error. A `LunoraError` copy would look like an unknown fault and be hidden from the client. The adapter saves the original, and re-throws it. It attaches the platform error as `cause` (`cloudflare-host.ts:114,202`).
 
-**Trick 3: no raw transaction SQL.** The Workers runtime forbids `BEGIN`, `COMMIT` and `SAVEPOINT` inside a Durable Object. The adapter always uses `storage.transaction` (`cloudflare-host.ts:185-201`, and the explanation at `shard-do.ts:4160-4185`). The synchronous variant `transactionSync` does not wait for an async handler, so it is not used.
+**Trick 3: no raw transaction Structured Query Language (SQL).** The Workers runtime forbids `BEGIN`, `COMMIT` and `SAVEPOINT` inside a Durable Object. The adapter always uses `storage.transaction` (`cloudflare-host.ts:185-201`, and the explanation at `shard-do.ts:4160-4185`). The synchronous variant `transactionSync` does not wait for an async handler, so it is not used.
 
 ### Gate and transaction in order
 
