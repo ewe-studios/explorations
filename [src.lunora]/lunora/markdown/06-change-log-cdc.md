@@ -6,6 +6,38 @@ title: The Change Log: __cdc_log, Epochs and Commit Sequence
 
 Every shard can keep an append-only log of its writes. The table is `__cdc_log`. The log feeds subscriptions, read replicas, warehouse connectors, point-in-time replay and the archive in R2. This page explains the table, its cursors, the epoch that detects a forked timeline, the commit sequence `_commitSeq`, and the retention rules. The R2 archive and the order of writes are in [Storage tiers](08-storage-tiers-and-archive.md).
 
+## Words before you start
+
+- **Change data capture (CDC).** Recording every write as a row in a log, so that other programs can follow the changes.
+- **Sequence number (`seq`).** The position of one log row. It starts low and only grows.
+- **Cursor.** The `seq` that a reader has processed. The reader asks for "changes after my cursor".
+- **Consumer.** Any reader of the log: a live subscriber, a read replica, a warehouse connector or the archive.
+- **Post-image.** The full document after a write. A log row stores it in `doc`.
+- **Compaction.** Setting `doc` to NULL on old log rows. The key stays, the content goes.
+- **Trim.** Deleting old log rows.
+- **Floor.** The oldest `seq` that is still stored. A cursor below the floor cannot be served from the table.
+- **Epoch.** A random label for one timeline of the log. Consumers keep it with the cursor.
+- **Fork.** Two different histories that share the same first part. A restore creates one.
+- **Witness.** A fact from outside the SQLite file that proves a fork, for example a consumer cursor that is higher than the log.
+- **Re-seed.** Take a fresh full copy of the data and start the cursor again. A consumer does this when its cursor is no longer valid.
+- **Retention.** The rule for how much log to keep.
+
+The next picture shows why a cursor alone is not enough.
+
+```mermaid
+sequenceDiagram
+    participant C as Consumer (cursor 120, epoch E1)
+    participant S as Shard (log up to 120, epoch E1)
+    Note over S: operator restores the shard to the moment of seq 50
+    Note over S: the whole file reverts. The log now ends at 50 and the epoch is still E1
+    S->>S: new writes get seq 51, 52 ... 60 (a different history)
+    C->>S: changes after 120, epoch E1
+    S-->>C: refused: cursor 120 is above the high-watermark 60 (CDC_TIMELINE_FORKED)
+    C->>S: re-seed: full copy, new epoch
+```
+
+If the new writes had passed seq 120 before the consumer came back, the cursor would look valid and the fork would stay hidden. This is the "Silent" state below.
+
 ## It is opt-in
 
 Change data capture (CDC) is off by default. The app builder has `.cdc(enabled = true)`. The comment says it "costs a changelog row per write, which an app using none of the above should not pay" (`packages/codegen/src/emit/app-builder.ts:140-147`). A shard-local `defineShape` needs it. Without it, `shape_subscribe` is refused with `SHAPE_REQUIRES_CDC`. Replicas need it too: a shard with no log refuses the replica control channel with 409 (`replica.ts:325`).
@@ -70,11 +102,11 @@ A compacted row is refused rather than served because "a doc-less insert/update 
 
 ## The epoch: detecting a forked timeline
 
-`__cdc_meta` holds one row with an `epoch` string (a random UUID). A consumer stores `(epoch, cursor)`. It resumes only when both match (`ctx-db-cdc.ts:714-757`).
+`__cdc_meta` holds one row with an `epoch` string (a random universally unique identifier (UUID)). A consumer stores `(epoch, cursor)`. It resumes only when both match (`ctx-db-cdc.ts:714-757`).
 
 Why the cursor alone is not enough: after a reset or a restore, `AUTOINCREMENT` starts low again. A client with a high old cursor would be told "resumable" on an unrelated timeline.
 
-The hard case is native point-in-time recovery (PITR). A restore reverts the whole SQLite file. That includes `__cdc_meta`. So the epoch comes back to its old value, and nothing inside the shard can see the fork. Lunora uses witnesses from outside SQLite:
+The hard case is native point-in-time recovery (PITR). A restore reverts the whole SQLite file. Cloudflare says the restore covers all stored data of the object, including key-value data (`durable-objects/api/sqlite-storage-api.mdx`, the section on point-in-time recovery). [Cloudflare services](02-cloudflare-services.md), section "Point-in-time recovery", explains the platform calls. That includes `__cdc_meta`. So the epoch comes back to its old value, and nothing inside the shard can see the fork. Lunora uses witnesses from outside SQLite:
 
 1. **A consumer cursor** above the high-watermark on the same epoch. Handled in `evaluateResume` (`shard-do.ts:5399`) and `runShardCdcSync` (`shard-do.ts:5170`).
 2. **A replica cursor**: `rewoundBeneathUs = page.cursor < state.appliedSeq` (`replica.ts:514`).

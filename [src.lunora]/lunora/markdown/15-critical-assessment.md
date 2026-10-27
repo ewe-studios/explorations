@@ -6,6 +6,16 @@ title: Critical Assessment: Strengths, Weaknesses, Risks
 
 This page judges Lunora from the code. Each item has evidence. Items are ranked by impact. Where a point is an inference and not a measurement, the text says so.
 
+## Words on this page
+
+- **Shard key.** The name of a shard. The caller chooses it. See [Sharding design](04-sharding-design.md).
+- **Fan-out.** One read that goes to every shard of a table. Each shard costs one subrequest.
+- **Registry.** The list of live shard keys, kept in one Durable Object.
+- **Hot shard.** A shard that gets much more traffic than the others. One object can serve about 1,000 requests per second as a soft limit and holds 10 gigabytes (`durable-objects/platform/limits.mdx` and `src/content/partials/durable-objects/do-faq-limits.mdx`).
+- **Write amplification.** One logical write that causes many physical writes, for example the row, its indexes and its log row. SQLite-backed Durable Object storage bills rows written (`src/content/partials/durable-objects/durable-objects-pricing.mdx`).
+- **Read-your-writes.** A client sees its own earlier writes. See [Replication and read scaling](07-replication-and-read-scaling.md).
+- **Alpha.** An early version in which breaking changes are expected.
+
 ## Verdict in short
 
 Lunora has a strong core idea and unusually careful handling of Cloudflare's sharp edges. Its weak points are the parts that sit outside one Durable Object: shard routing, reshaping, fan-out, and single shared objects. It is alpha software with a very large central class.
@@ -52,7 +62,7 @@ Epoch, cursor, floors, payload floor, `CDC_LOG_TRIMMED`, `CDC_PAYLOAD_COMPACTED`
 
 ### 4. Fail-closed security defaults
 
-Default-deny shard access and fan-out, reserved-name refusal, signed internal channels, replica control refused without a secret, jurisdiction never silently dropped, and a registry that refuses all requests without the secret (`create-worker.ts:3157-3224`, `replica.ts:318`, `shard-registry-do.ts:255`).
+Shard access and fan-out are denied by default. Reserved names are refused. Internal channels are signed. Replica control is refused without a secret. A jurisdiction is never silently dropped. The registry refuses all requests without the secret (`create-worker.ts:3157-3224`, `replica.ts:318`, `shard-registry-do.ts:255`).
 
 ### 5. Exactly-once effect from at-least-once parts
 
@@ -82,7 +92,7 @@ Changing the key is stop-writes, export, deploy, import, clear. The export is pa
 
 ### 3. Hidden write amplification (inference)
 
-By default every dispatch, including each query, inserts a row into `__lunora_reqlog__` (`LUNORA_REQUEST_LOG_SAMPLE` defaults to 1). A mutation also writes the `__idempotency` row when a mutation id is sent, a watermark row for custom mutators, an optional change log row, and index entries for the default sort and every declared index. Durable Object SQLite bills rows written. The code never states the total per request. Please measure before trusting the cost story "an idle app costs nothing". Idle is cheap. Busy read-heavy shards are not obviously cheap.
+By default every dispatch, including each query, inserts a row into `__lunora_reqlog__` (`LUNORA_REQUEST_LOG_SAMPLE` defaults to 1). A mutation also writes more rows. One is the `__idempotency` row, when a mutation id is sent. Others are a watermark row for custom mutators, an optional change log row, and index entries for the default sort and every declared index. Durable Object SQLite bills rows written. The code never states the total per request. Please measure before trusting the cost story "an idle app costs nothing". Idle is cheap. Busy read-heavy shards are not obviously cheap.
 
 ### 4. Single shared objects
 
@@ -110,7 +120,7 @@ No cross-shard transaction. A mutation touching a shard table and a global table
 
 ### 9. Complexity and maturity
 
-`shard-do.ts` has 18,454 lines. The behaviour is spread over many private methods and shared instance fields that need re-pinning after each await. Alpha version, 46 `ponytail:` notes, a source-available licence (FSL-1.1-Apache-2.0, converting to Apache 2.0 after two years), and the package manifest names one author. These are risk factors, not defects.
+`shard-do.ts` has 18,454 lines. The behaviour is spread over many private methods and shared instance fields that need re-pinning after each await. Alpha version, 46 `ponytail:` notes, a source-available licence (Functional Source License, FSL-1.1-Apache-2.0, converting to Apache 2.0 after two years), and the package manifest names one author. These are risk factors, not defects.
 
 ### 10. Internal channel authentication is basic
 
@@ -119,6 +129,18 @@ The hash-based message authentication code (HMAC) covers the body with no nonce 
 ### 11. Replica limits
 
 A fork is permanent for the object's life. Bootstrap is one response capped at 50,000 rows. The archive does not serve replicas.
+
+### 12. Read-your-writes has gaps (my reading of the code)
+
+The D1 bookmark protects a client only while the client holds one. [D1 and global tables](09-d1-global-and-hyperdrive.md), section "Limits of the design", lists the gaps:
+
+- A plain `query` does not store the bookmark that it receives. Two queries in a row can reach two replicas, and the second can be older.
+- The default bookmark store is in memory. A page reload drops it.
+- A replayed mutation that the shard already applied returns no bookmark.
+- A live socket and an alarm poll of a global shape send none.
+- A Hyperdrive global table has no bookmark. Hyperdrive caches reads for 60 seconds by default and does not purge them on a write.
+
+None of these is a crash. Each one shows a stale read after a write. I did not run the code to see them happen.
 
 ## Risks
 
@@ -132,6 +154,7 @@ A fork is permanent for the object's life. Bootstrap is one response capped at 5
 | Restore forks the timeline silently | Low | Consumers skip writes | `ctx-db-commit-seq.ts`, `shard-do.ts:5295` |
 | Cloudflare limit changes | Medium | Constants out of date | Many numbers copied from docs with a date note (`socket-host.ts:55`) |
 | Alpha breaking changes | High | Rework | `AGENTS.md`: no back-compat on alpha branches |
+| Stale read after a write on a global table | Medium | The client does not see its own write for a short time | Weakness 12 |
 
 ## What we would copy
 

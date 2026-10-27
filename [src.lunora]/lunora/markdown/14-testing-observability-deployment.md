@@ -6,6 +6,24 @@ title: Testing, Observability and Deployment
 
 Lunora runs its tests on the real Cloudflare runtime, not only in mocks. It records traces, wide events, metrics and a request log, and ships them to several sinks. It deploys by inferring the wrangler configuration from the code. This page covers each part with numbers.
 
+## Words on this page
+
+- **workerd.** The open-source runtime that runs Workers and Durable Objects. Tests on workerd use the real platform behavior.
+- **Vitest and Playwright.** Vitest is a test runner for TypeScript. Playwright drives a real browser for end-to-end tests.
+- **Double.** A plain-object stand-in for a platform object in a test.
+- **Coverage floor.** The lowest test coverage that a build may have. A build below the floor fails.
+- **Conformance suite.** A set of tests that every host must pass.
+- **Span and trace.** A span is one timed step of a request. A trace is the tree of spans for one request.
+- **Wide event.** One span with many attributes. It carries the facts of a whole request in one record.
+- **Sink.** A destination that receives events.
+- **Workers Logs.** The Cloudflare service that stores and searches the console logs of a Worker (`workers/observability/logs/workers-logs.mdx`).
+- **Logpush.** The Cloudflare service that sends Workers trace event logs to an outside storage or logging provider (`workers/observability/logs/logpush.mdx`).
+- **OpenTelemetry Protocol (OTLP).** An open format for traces, metrics and logs. Workers can export OpenTelemetry-compliant logs and traces (`workers/observability/opentelemetry-export.mdx`).
+- **Compatibility date.** A date in the Wrangler configuration that opts a Worker into the runtime behavior changes up to that date (`workers/configuration/compatibility-dates.mdx`).
+- **Secret.** An encrypted text value attached to a Worker as a binding (`workers/configuration/secrets.mdx`).
+- **Wrangler and binding.** Wrangler is the command-line tool of Cloudflare that builds and deploys Worker projects (`workers/wrangler/index.mdx`). A binding is a named link from a Worker to a resource, such as a D1 database or an R2 bucket. The binding appears on the `env` object.
+- **Binding inference.** Lunora reads the code and writes the matching bindings into the Wrangler configuration.
+
 ## Testing strategy
 
 ### Two kinds of suite
@@ -17,7 +35,7 @@ The shard package has two Vitest projects (`packages/do/vitest.config.ts`):
 
 The gate is permanent because coverage collects through `node:inspector`, which workerd does not implement, so coverage hangs with it on. A sandbox also cannot open the loopback port workerd needs (`AGENTS.md`, gotchas).
 
-The repository holds 1,875 test files named `*.test.ts` under `packages/`, and 97 of them are `*.workerd.test.ts` files (counted with `find`). The do package alone has 34 workerd test files, for example `eviction`, `alarm-rearm-breaker`, `relay-shape`, `relay-whisper`, `sql-limits`, `shard-do-idempotency`, `subscription-seed-race`, `room-recovery` and a `random-replay` directory (`packages/do/__tests__/workerd/`).
+The repository holds 1,875 test files whose names end in `.test.ts` under `packages/`. 97 of them end in `.workerd.test.ts` (counted with `find`). The do package alone has 34 workerd test files, for example `eviction`, `alarm-rearm-breaker`, `relay-shape`, `relay-whisper`, `sql-limits`, `shard-do-idempotency`, `subscription-seed-race`, `room-recovery` and a `random-replay` directory (`packages/do/__tests__/workerd/`).
 
 The AGENTS file explains why the workerd suite matters: `node:sqlite` is built with `SQLITE_DQS=0`, so a bare double-quoted column that resolves to nothing raises on Node, while on workerd it is a silent string literal. A full local test run can go green over a broken Durable Object or D1 path.
 
@@ -40,7 +58,7 @@ Two suites define what a host must do: `packages/platform/src/conformance/suite.
 | Batch cap | `lint:batch-cap` | drift of the shared batch limit |
 | Templates | `test:templates` | scaffolds install, build, typecheck |
 | End to end | `e2e` | Playwright |
-| Non-JS software development kits (SDKs) | `sdks/run-all.sh` | 8 software development kit (SDK) conformance suites |
+| Non-JavaScript software development kits (SDKs) | `sdks/run-all.sh` | 8 software development kit (SDK) conformance suites |
 
 The unit tests use fakes from `@lunora/testing`: `fake-scheduler`, `fake-queues`, `fake-topics`, `fake-secret-values`, `node-sqlite`, and a recorded model for agents.
 
@@ -124,7 +142,7 @@ Per function: calls, errors, conflicts, latency, scanned tables, index hits. The
 }
 ```
 
-The sample app `examples/team-chat/wrangler.jsonc` adds `"observability": { "enabled": true, "head_sampling_rate": 1 }`. The compatibility date 2026-10-01 matters: from that date, a pending `waitUntil` holds off idle eviction for up to 15 minutes (`cloudflare.ts:29`).
+The sample app `examples/team-chat/wrangler.jsonc` adds `"observability": { "enabled": true, "head_sampling_rate": 1 }`. The compatibility date 2026-10-01 matters: from that date, a pending `waitUntil` holds off idle eviction for up to 15 minutes (`cloudflare.ts:29`). Cloudflare confirms this. The flag `durable_object_io_tasks_prevent_eviction` is on by default from that date (`src/content/compatibility-flags/durable-object-io-tasks-prevent-eviction.md`).
 
 ### Binding inference
 
@@ -148,14 +166,14 @@ The sample app `examples/team-chat/wrangler.jsonc` adds `"observability": { "ena
 | `LUNORA_SCHEDULER_SECRET` | Worker secret | Sign scheduler dispatch |
 | `LUNORA_ORIGIN_URL` | var | Scheduler callback target |
 | `LUNORA_WS_BEARER` | secret | Gate WebSocket upgrades |
-| `LUNORA_SECRET_VALUE_KEY` | secret | AES-256-GCM key for secret values |
+| `LUNORA_SECRET_VALUE_KEY` | secret | Advanced Encryption Standard 256-bit Galois/Counter Mode (AES-256-GCM) key for secret values |
 | `LUNORA_CDC_ARCHIVE` | R2 binding | Archive bucket |
 | `LUNORA_CDC_LOG_RETENTION`, `LUNORA_CDC_PAYLOAD_RETENTION` | vars | Retention |
 | `LUNORA_RELAY_*`, `LUNORA_MAX_RELAYS` | vars | Relay tuning |
 | `LUNORA_REPLICA_*` | vars | Replica tuning |
 | `LUNORA_ALARM_REARM_LIMIT`, `LUNORA_SCHEDULE_RATE_LIMIT` | vars | Breakers |
 
-`lunora dev` generates the relay secret into `.dev.vars`. For production use `lunora env push` or `wrangler secret put`. Environment variables share a 5 kilobytes (KB) total limit (`limits.mdx`).
+`lunora dev` generates the relay secret into `.dev.vars`. For production use `lunora env push` or `wrangler secret put`. Cloudflare limits each environment variable and each secret to 5 kilobytes (KB), with 64 variables on Free and 128 on Paid for each Worker (`workers/platform/limits.mdx`, "Environment variables"). Lunora's own `limits.mdx` (line 86) says "5 KB total", which the Cloudflare page does not support.
 
 ### Jurisdiction and residency
 

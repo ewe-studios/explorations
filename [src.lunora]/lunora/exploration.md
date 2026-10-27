@@ -11,7 +11,7 @@ language: TypeScript (pnpm monorepo, 59 packages)
 
 Lunora is a type-safe, real-time backend for your own Cloudflare account. A Durable Object (a single-threaded Cloudflare object with its own SQLite storage) is the database. The same object holds the WebSocket connections of the clients that read the data. So the writer is also the broadcaster.
 
-Lunora is alpha software. Its license is FSL-1.1-Apache-2.0. The central class `ShardDO` has 18,454 lines. See [Overview](markdown/00-overview.md).
+Lunora is alpha software. Its license is the Functional Source License identifier FSL-1.1-Apache-2.0. The central class `ShardDO` has 18,454 lines. See [Overview](markdown/00-overview.md).
 
 ```mermaid
 flowchart LR
@@ -26,7 +26,7 @@ flowchart LR
 
 ## Cloudflare services used
 
-Durable Objects (with SQLite and WebSocket hibernation), Workers, D1, Hyperdrive, R2, Workers KV (a key-value store), Queues, Workflows, Cron Triggers, Analytics Engine, Pipelines with R2 SQL (Structured Query Language), Vectorize, Workers AI (artificial intelligence) with AI Gateway, and service bindings. The page [Cloudflare services](markdown/02-cloudflare-services.md) has one section for each.
+Durable Objects (with SQLite and WebSocket hibernation) and Workers form the core. Lunora also uses D1, Hyperdrive, R2 and Workers KV (a key-value store). It uses Queues, Workflows, Cron Triggers and Analytics Engine. It uses Pipelines with R2 SQL (Structured Query Language), Vectorize, Workers AI (artificial intelligence) with AI Gateway, and service bindings. The page [Cloudflare services](markdown/02-cloudflare-services.md) has one section for each.
 
 ## Sharding in one minute
 
@@ -46,6 +46,30 @@ sequenceDiagram
     R-->>S: resolved
     S->>W: advance
     S->>L: trim up to watermark
+```
+
+## Concepts explained for a reader who does not know Cloudflare
+
+The pages explain each Cloudflare idea at the place that owns it. The overview has a table that lists where each concept lives.
+
+| Concept | Where |
+|---------|-------|
+| Durable Object: actor model, gates, `blockConcurrencyWhile`, SQLite transactions, alarms, WebSocket hibernation, point-in-time recovery, location hints, jurisdictions, why it is a natural shard | [Cloudflare services](markdown/02-cloudflare-services.md) |
+| D1 read replicas, Sessions application programming interface (API), bookmark, `first-unconstrained`, `first-primary`, read-your-writes | [D1 and global tables](markdown/09-d1-global-and-hyperdrive.md) |
+| Consistency words: monotonic reads, eventual consistency, replication lag, watermark, epoch, commit sequence, idempotency, outbox, fork after restore | [Replication and read scaling](markdown/07-replication-and-read-scaling.md) |
+| Workers isolates and limits, R2, Workers KV, Queues, Workflows, Cron Triggers, Analytics Engine, Hyperdrive, Vectorize, Workers AI, Pipelines, service bindings | [Cloudflare services](markdown/02-cloudflare-services.md) |
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Shard (D1 session per request)
+    participant D as D1
+    C->>S: write a global row
+    S->>D: write, then read session.getBookmark()
+    S-->>C: response with header x-d1-bookmark
+    C->>S: later read with x-d1-bookmark
+    S->>D: withSession(bookmark): a replica waits until it reaches the bookmark
+    D-->>S: rows that include the earlier write
 ```
 
 ## Document map
@@ -80,23 +104,29 @@ sequenceDiagram
 
 ## Verdict
 
-Strong core idea, careful handling of Cloudflare edge cases. The weak points sit outside one object: caller-chosen shard keys, no resharding, single registry and scheduler objects, a log archive ceiling of about 166 changes per second per shard, and write amplification from the default request log. **Aha: the best parts (gate, outbox, archive) all come from treating the platform's failure modes as first-class.** See [Critical assessment](markdown/15-critical-assessment.md).
+Strong core idea, careful handling of Cloudflare edge cases. The weak points sit outside one object. They are caller-chosen shard keys, no resharding, single registry and scheduler objects, and a log archive ceiling of about 166 changes per second per shard. The default request log adds write amplification. **Aha: the best parts (gate, outbox, archive) all come from treating the platform's failure modes as first-class.** See [Critical assessment](markdown/15-critical-assessment.md).
 
 ## Differences between code and docs
 
 - The code has 59 packages. `AGENTS.md` says 58.
 - The docs say routing is by schema. In the code the client passes `shardKey`.
 - The docs say actions run in the Worker. In the code they run on the shard.
-- Analytics Engine blob size is 5,120 bytes in the code. A doc says 16 kilobytes (KB).
+- The sink comment says the Analytics Engine blob limit is 5,120 bytes. The writer in `bindings` uses 16 kilobytes (KB), which matches the Cloudflare limit.
+- The queue delay check is 12 hours. The code comment calls it the Cloudflare ceiling. Cloudflare lists 24 hours.
+- `architecture.mdx` says D1 replicas converge within about 24 hours. The Cloudflare D1 docs give no such bound.
+- `limits.mdx` says environment variables share 5 KB in total. Cloudflare limits each variable to 5 KB.
 
 ## Grandfather review
 
 Done on 2026-10-27. Every `file:line` citation in chapters 00 to 15 was printed by a script and read against the claim. Several wrong line numbers and facts were fixed (for example 34 workerd tests, not 37; `platform-node` uses `better-sqlite3`). Numbers were cross-checked with grep. Mermaid count is at least 2 in every chapter. Abbreviations are spelled out.
 
+Round 2 (concept explanations) added the sections that explain Cloudflare ideas. Each Cloudflare claim names the file of `cloudflare/cloudflare-docs` (commit `3edd18a`, 2026-10-27) that supports it. Each new Lunora name and `file:line` citation was checked against the clone at commit `50b6008`. Mermaid diagrams were parsed with Mermaid 11. Wrong or unsupported statements that round 2 found are listed in "Differences between code and docs" above. The Cloudflare Pipelines, R2 SQL and R2 Data Catalog products are now named Basin Pipelines, Basin SQL and Basin Catalog in the Cloudflare docs.
+
 Not verified:
 
 - Nothing was run. The clone was treated as untrusted, so all claims come from reading code.
 - Row-write amplification per request (chapter 12, entry 56) is an inference, not a measurement.
-- Cloudflare platform limits quoted from the repository comments were not checked against current Cloudflare documentation.
+- Cloudflare limits and behavior were checked against a shallow clone of `cloudflare/cloudflare-docs` (round 2). Not found there: the compound `SELECT` limit of 5 terms, and the `startAfter` option of the R2 binding `list` call. See [Cloudflare services](markdown/02-cloudflare-services.md) and [Storage tiers](markdown/08-storage-tiers-and-archive.md).
 - The Node and `celld` host rows of the capability matrix were counted from the matrix, not tested.
 - Chapter 16 (glossary) citations were checked less closely than chapters 00 to 15.
+- The limits that Lunora's `limits.mdx` quotes (for example 50-byte `LIKE` patterns on D1) were checked only where the Cloudflare docs list them.

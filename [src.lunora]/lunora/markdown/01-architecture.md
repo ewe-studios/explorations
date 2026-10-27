@@ -6,6 +6,17 @@ title: Architecture and Layers
 
 Lunora splits the engine from Cloudflare. The engine talks to small interfaces. One adapter package maps those interfaces onto Cloudflare primitives. This page shows the layers, the interfaces, and the code generator that joins them.
 
+## Words on this page
+
+- **Host.** The platform that runs the engine. Cloudflare is one host. A Node process and the `celld` daemon are others.
+- **Contract.** A TypeScript interface that says what a host must do, for example "run one event at a time".
+- **Adapter.** Code that maps a contract onto the calls of one host. `platform-cloudflare` is the Cloudflare adapter.
+- **Gate.** The `blockConcurrencyWhile` call of a Durable Object. It holds back all other events until its callback ends. [Cloudflare services](02-cloudflare-services.md), section "Durable Objects from first principles", explains the call and the input and output gates around it.
+- **Cold start.** The first request after the object or Worker loads from nothing. Code that runs in a cold start is paid for again after each wake.
+- **Capability matrix.** A table that rates each feature as `native`, `emulated` or `unsupported` on each host.
+- **Codegen.** The build step that writes TypeScript from the schema and the function files.
+- **`celld`.** A self-hosted daemon that runs Wrangler bundles ([Testing, observability and deployment](14-testing-observability-deployment.md)).
+
 ## The layers
 
 ```mermaid
@@ -85,7 +96,7 @@ The `onCommitted` hook runs inside the gate, after the commit. It is the only po
 
 The adapter is short (792 lines). Three tricks are worth reading.
 
-**Trick 1: the gate never rejects.** The platform call `blockConcurrencyWhile` treats a rejected callback as fatal. It resets the object and drops every hibernating WebSocket. A normal application error must not do that. So the adapter turns the result into a value and re-throws it outside the gate.
+**Trick 1: the gate never rejects.** The platform call `blockConcurrencyWhile` treats a rejected callback as fatal. Cloudflare says: "If the callback throws an exception, the object will be terminated and reset" (`durable-objects/api/state.mdx`, `blockConcurrencyWhile`). The code comment adds that the abort discards the in-memory state and "every hibernating WebSocket subscription" (`packages/platform-cloudflare/src/cloudflare-host.ts:145-156`). A normal application error must not do that. So the adapter turns the result into a value and re-throws it outside the gate.
 
 ```ts
 // packages/platform-cloudflare/src/cloudflare-host.ts:161
@@ -104,7 +115,7 @@ const runSerialized: ShardHost["runSerialized"] = async (function_) => {
 
 **Trick 2: the original error survives.** The platform rolls back correctly but hands back a flattened copy of the error. A `LunoraError` copy would look like an unknown fault and be hidden from the client. The adapter saves the original, and re-throws it. It attaches the platform error as `cause` (`cloudflare-host.ts:114,202`).
 
-**Trick 3: no raw transaction Structured Query Language (SQL).** The Workers runtime forbids `BEGIN`, `COMMIT` and `SAVEPOINT` inside a Durable Object. The adapter always uses `storage.transaction` (`cloudflare-host.ts:185-201`, and the explanation at `shard-do.ts:4160-4185`). The synchronous variant `transactionSync` does not wait for an async handler, so it is not used.
+**Trick 3: no raw transaction Structured Query Language (SQL).** The Workers runtime forbids transaction statements such as `BEGIN` and `SAVEPOINT` in `sql.exec` inside a Durable Object. Cloudflare names `BEGIN TRANSACTION` and `SAVEPOINT` and points to `storage.transaction()` and `transactionSync()` (`durable-objects/api/sqlite-storage-api.mdx:239`). The code comment lists `COMMIT` too. The adapter always uses `storage.transaction` (`cloudflare-host.ts:185-201`, and the explanation at `shard-do.ts:4160-4185`). The synchronous variant `transactionSync` does not wait for an async handler, so it is not used.
 
 ### Gate and transaction in order
 
@@ -163,7 +174,7 @@ const mergeDurableObjects = <Env = unknown>(roles: MergedRoles): MergedDurableOb
             this.#role = new Role(state as never, env as never);
 ```
 
-Names for the non-shard roles carry the prefix `__lunora_do__:<role>:` (`LUNORA_ROLE_PREFIX`, `packages/platform/src/shard-directory.ts:126`). `roleNamespace` is a `Proxy` that adds the prefix (`merge-durable-objects.ts:119`). The directory refuses any user shard key that starts with the prefix (`shard-directory.ts:138`).
+A `Proxy` is a JavaScript object that intercepts reads of its properties. Here it adds a prefix to a name before the real call happens. Names for the non-shard roles carry the prefix `__lunora_do__:<role>:` (`LUNORA_ROLE_PREFIX`, `packages/platform/src/shard-directory.ts:126`). `roleNamespace` is a `Proxy` that adds the prefix (`merge-durable-objects.ts:119`). The directory refuses any user shard key that starts with the prefix (`shard-directory.ts:138`).
 
 **Aha: the role is a name.** A Durable Object has no way to be told its role at creation. So Lunora puts the role in the name, and the name is fixed for the life of the object. The same trick marks relays (`::relay::`) and replicas (`::replica::`). See [Replication](07-replication-and-read-scaling.md).
 

@@ -6,6 +6,19 @@ title: Inside One Shard: the ShardDO
 
 `ShardDO` is the abstract class that every shard runs. The file `packages/do/src/shard-do.ts` has 18,454 lines. Codegen writes a subclass that adds the schema. This page follows one request through the class and lists what the class stores.
 
+## Words on this page
+
+- **Dispatch.** One run of one function on the shard. A call to a query, a mutation or an action is one dispatch.
+- **Query, mutation, action.** A query only reads. A mutation writes, and runs inside the gate and one transaction. An action may call outside services. It runs with no gate and no transaction, because an outside call cannot be rolled back.
+- **Gate.** The `blockConcurrencyWhile` call. While a mutation holds it, no other event runs in the object. See [Cloudflare services](02-cloudflare-services.md), section "Durable Objects from first principles".
+- **Interleave.** Two requests take turns inside one object. Each `await` is a point where another request can run.
+- **Transaction.** A group of writes that all happen or none happen.
+- **At-least-once delivery.** A message may arrive more than once, but it never gets lost. Retries cause this.
+- **Idempotency.** Doing an action twice has the same effect as doing it once. At-least-once delivery plus idempotency gives an exactly-once effect. See [Replication and read scaling](07-replication-and-read-scaling.md), section "Consistency words used in these docs".
+- **Attachment.** A small value that the runtime saves with a WebSocket. It survives hibernation.
+- **Hibernation.** The object leaves memory while its sockets stay open. All in-memory state is lost.
+- **Headroom.** The room that is left before a limit. A tracker counts reads and writes and refuses work before the shard runs out of memory.
+
 ## Construction
 
 The constructor (`shard-do.ts:3210`) does five things.
@@ -132,7 +145,7 @@ By default `LUNORA_REQUEST_LOG_SAMPLE` is unset, and `parseSampleRate` returns `
 
 ## Sockets and hibernation
 
-Subscriptions live in the socket attachment so they survive hibernation. Limits:
+The platform feature behind this section is the WebSocket Hibernation application programming interface (API). [Cloudflare services](02-cloudflare-services.md), section "WebSocket hibernation", explains it with a diagram. In short: the runtime keeps the socket open while the object is out of memory, and it builds the object again when a message arrives. Subscriptions live in the socket attachment so they survive hibernation. Limits:
 
 | Item | Value | Source |
 |------|-------|--------|
@@ -151,7 +164,7 @@ When a socket errors, the runtime calls `webSocketError` and no `webSocketClose`
 
 ## Point-in-time recovery
 
-SQLite-backed Durable Objects keep 30 days of history. Admin operations `getPitrBookmark` and `pitrRestore` wrap the platform application programming interface (API) (`shard-engine/src/pitr.ts:98,118`). `pitrRestore` arms a restore with `onNextSessionRestoreBookmark`, bumps the change log epoch, records an audit entry, and optionally calls `state.abort()` (`shard-do.ts:12242-12310`). The restore also reverts the epoch row, which is the main subtlety in [Change log](06-change-log-cdc.md).
+Point-in-time recovery (PITR) restores the SQLite database of one Durable Object to a moment in the past 30 days. Cloudflare names the moments with bookmarks. A PITR bookmark is not a D1 bookmark. [Cloudflare services](02-cloudflare-services.md), section "Point-in-time recovery", explains the three platform calls and the restart that completes a restore. SQLite-backed Durable Objects keep 30 days of history. Admin operations `getPitrBookmark` and `pitrRestore` wrap the platform application programming interface (API) (`shard-engine/src/pitr.ts:98,118`). `pitrRestore` arms a restore with `onNextSessionRestoreBookmark`, bumps the change log epoch, records an audit entry, and optionally calls `state.abort()` (`shard-do.ts:12242-12310`). The restore also reverts the epoch row, which is the main subtlety in [Change log](06-change-log-cdc.md).
 
 ## Where to go next
 

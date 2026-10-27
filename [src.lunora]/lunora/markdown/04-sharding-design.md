@@ -8,6 +8,31 @@ Lunora does not hash keys into a ring. A shard is a Durable Object, and its iden
 
 This page covers naming, routing, the registry, fan-out reads, hot shards, and what happens when you want to change the shard key. It ends with the good and bad of the design.
 
+## Words on this page
+
+- **Shard.** One slice of the data that one server owns. In Lunora a shard is one Durable Object. [Cloudflare services](02-cloudflare-services.md), section "Why a Durable Object is a natural shard", explains why.
+- **Shard key.** The name of a shard. The caller chooses it. It is also the address, because Cloudflare turns the name into the object.
+- **Tenant.** One customer or one group of users whose data stays together, for example one chat channel.
+- **Root shard.** The default shard, named `__root__`. Tables with no shard modifier live in it.
+- **Global table.** A table that lives in D1 or in Postgres or MySQL, and not in a shard.
+- **Fan-out.** One read that goes to every shard of a table. The Worker merges the answers.
+- **Registry.** A list of the live shard keys for each table. Cloudflare cannot list the objects of a namespace, so Lunora keeps its own list.
+- **Hash ring.** A common way to place keys on servers by hashing. Lunora does not use one.
+- **Rebalancer.** A process that moves keys between servers when servers are added. Lunora has none.
+- **Cardinality.** The number of different values a field has. A field with few values makes few shards and puts much load on each.
+
+Here is the shipped sample app as an example. The schema file `examples/team-chat/lunora/schema.ts` puts each table in a tier:
+
+```mermaid
+flowchart LR
+    CH["channels"] -->|"no modifier"| R["root shard __root__"]
+    MS["messages"] -->|"shardBy channelId"| S1["shard c1"]
+    MS --> S2["shard c2"]
+    PR["presence"] -->|"shardBy channelId"| S1
+    PR --> S2
+    PF["profiles"] -->|"global"| D["D1"]
+```
+
 ## Three modes for a table
 
 The schema builder has three tiers (`packages/server/src/types.ts:33`):
@@ -57,9 +82,9 @@ This differs from the documentation sentence "After codegen, every call to `ctx.
 
 ### What Cloudflare decides
 
-Cloudflare maps the name to an object id. The object is created in the data center nearest the first request. A `locationHint` is honoured only by the call that creates the object (`resolve-shard.ts:127-133`). Lunora derives a hint from `request.cf` (`shared/region-hint.ts:71`): continent `AF` gives `afr`; `AS` gives `me` for 15 listed Middle East countries and `apac` otherwise; `EU` gives `eeur` east of longitude 15 and `weur` otherwise; `NA` gives `wnam` west of -100 and `enam` otherwise; `OC` gives `oc`; `SA` gives `sam`. The valid hints are `wnam, enam, sam, weur, eeur, apac, apac-ne, apac-se, oc, afr, me` (`region-hint.ts:26`).
+Cloudflare maps the name to an object id. The object is created in the data center nearest the first request. A `locationHint` is honoured only by the call that creates the object (`resolve-shard.ts:127-133`). Cloudflare says the same: only the first `get()` respects the hint, and the hint is best effort, not a guarantee (`durable-objects/reference/data-location.mdx`, "Provide a location hint"). Lunora derives a hint from `request.cf` (`shared/region-hint.ts:71`): continent `AF` gives `afr`; `AS` gives `me` for 15 listed Middle East countries and `apac` otherwise; `EU` gives `eeur` east of longitude 15 and `weur` otherwise; `NA` gives `wnam` west of -100 and `enam` otherwise; `OC` gives `oc`; `SA` gives `sam`. The valid hints are `wnam, enam, sam, weur, eeur, apac, apac-ne, apac-se, oc, afr, me` (`region-hint.ts:26`).
 
-A jurisdiction (`eu`, `fedramp`, `us`) is a hard rule. `jurisdiction("eu")` maps the same name to a different object id. So a sibling lookup inside a Durable Object must use the same subnamespace. The object reads `this.state.id?.jurisdiction` for that (`shard-do.ts:3271`, and the comment in `sibling-channel.ts:72-93`). If a jurisdiction is requested but the binding lacks the method, Lunora throws instead of falling back (`resolve-shard.ts:198-210`). This is "fail closed".
+A jurisdiction (`eu`, `fedramp`, `us`) is a hard rule: the object runs and stores data only inside that region (`data-location.mdx`, "Restrict Durable Objects to a jurisdiction"). `jurisdiction("eu")` maps the same name to a different object id. So a sibling lookup inside a Durable Object must use the same subnamespace. The object reads `this.state.id?.jurisdiction` for that (`shard-do.ts:3271`, and the comment in `sibling-channel.ts:72-93`). If a jurisdiction is requested but the binding lacks the method, Lunora throws instead of falling back (`resolve-shard.ts:198-210`). This is "fail closed".
 
 ## Reserved names
 
@@ -165,16 +190,16 @@ The documented steps are (`concepts/sharding.mdx`):
 
 The page says: "This is not an online migration." The export is paginated live reads, not a snapshot, so a write made during the procedure can be lost. The schema drift gate treats a change of shard mode as breaking (`codegen/src/schema-drift.ts:1-30`). Plan 168 (`plans/168-cross-shard-transactions-spike.md`) lists cross-shard transactions as an undecided design spike.
 
-**Aha: the real warning is in the root shard.** `maybeWarnRootSize` logs once when the `__root__` object reaches 1 GiB, which is 10% of the 10 GiB limit (`shard-do.ts:10473`, `ROOT_DO_SIZE_WARN_BYTES = 1_073_741_824` at `shard-do.ts:1441`). The warning flag is `static`, so one isolate warns at most once. Only the root shard is checked.
+**Aha: the real warning is in the root shard.** `maybeWarnRootSize` logs once when the `__root__` object reaches 1 GiB. That is 10% of the 10 GiB limit (`shard-do.ts:10473`, `ROOT_DO_SIZE_WARN_BYTES = 1_073_741_824` at `shard-do.ts:1441`). The warning flag is `static`, so one isolate warns at most once. Only the root shard is checked.
 
 ## Limits
 
 | Limit | Value | Source |
 |-------|-------|--------|
-| SQLite per object | 10 gigabytes (GB) | `limits.mdx` |
-| Requests per object | about 1,000 per second | `limits.mdx` |
-| WebSockets per object | about 32,000 hibernated | `limits.mdx` |
-| Objects per account | unlimited | `limits.mdx` |
+| SQLite per object | 10 gigabytes (GB) | `limits.mdx`; `durable-objects/platform/limits.mdx` |
+| Requests per object | about 1,000 per second, a soft limit. Above it the object answers "overloaded" | `limits.mdx`; `src/content/partials/durable-objects/do-faq-limits.mdx` |
+| WebSockets per object | 32,768 hibernating connections (Lunora's `limits.mdx` says about 32,000) | `durable-objects/api/state.mdx`, `acceptWebSocket` |
+| Objects per account | unlimited | `limits.mdx`; `durable-objects/platform/limits.mdx` |
 | Pending unauthenticated sockets | 1,024, with a 10,000 ms connect deadline | `shard-do.ts:567,575` |
 | Subscriptions per socket | 32 | `shard-do.ts:2017` |
 | Attachment size | 16,384 bytes | `shard-do.ts:1988` |

@@ -160,9 +160,11 @@ sequenceDiagram
     S-&gt;&gt;L: trim rows up to watermark only
 
 </div>
+<h2>Words on this page</h2>
+<ul><li><strong>Expression index.</strong> A SQLite index built on an expression, such as <code>json_extract(__doc__, '$.field')</code>, and not on a plain column.</li><li><strong>B-tree.</strong> The tree structure that SQLite uses for tables and indexes. A temporary B-tree is built in memory when a sort has no index.</li><li><strong>Gate.</strong> The <code>blockConcurrencyWhile</code> call. See <a href="02-cloudflare-services.html">Cloudflare services</a>, section "Durable Objects from first principles".</li><li><strong>Watermark.</strong> A number that marks progress. See <a href="07-replication-and-read-scaling.html">Replication and read scaling</a>, section "Consistency words used in these docs".</li><li><strong>Epoch.</strong> A label for one timeline of the change log. See <a href="06-change-log-cdc.html">Change log</a>.</li><li><strong>Optimistic concurrency control (OCC).</strong> Writers read a version and write only if the version is unchanged. See <a href="09-d1-global-and-hyperdrive.html">D1 and global tables</a>.</li><li><strong>Jitter.</strong> Random variation in a wait time, so that many clients do not retry at the same moment.</li><li><strong>Microtask.</strong> The smallest scheduled unit of JavaScript. Work queued as a microtask runs before the next event, so many calls in one tick can be grouped.</li><li><strong>Outbox.</strong> A table written in the transaction that holds a message to send after the commit.</li></ul>
 <p><strong>Aha: most tricks are one pattern.</strong> The code finds a platform limit, sets a constant equal to that limit, and writes the reason in a comment.</p>
 <h2>Storage layout</h2>
-<h3>1. Documents as JSON text, fields through <code>json_extract</code></h3>
+<h3>1. Documents as JavaScript Object Notation (JSON) text, fields through <code>json_extract</code></h3>
 <p>Each shard table has <code>id</code>, <code>_creationTime</code> and one <code>__doc__</code> text column (<code>packages/shard-engine/src/ctx-db-migrations.ts:638</code>). Field reads use <code>json_extract</code>. Indexes are expression indexes on those paths. Adding a field needs no <code>ALTER TABLE</code>. System fields such as <code>_commitSeq</code> live in the blob for the same reason (<code>ctx-db-commit-seq.ts:94</code>).</p>
 <h3>2. A real index for the default sort</h3>
 <p>A read with no index and no <code>orderBy</code> sorts by <code>_creationTime, id</code>. The row table had only <code>id</code> as key, so SQLite built a temporary B-tree on every page. The migration adds an index on those two stored columns. The comment gives 1317.9 microseconds without it and 7.3 microseconds with it, over 50,000 rows. Cold-start cost to build it on a 1,000,000 row table: 369 ms, once (<code>packages/shard-engine/src/ctx-db-migrations.ts:664-684</code>).</p>
@@ -179,7 +181,7 @@ const ninesComplement = (digits: string): string =&gt; Array.from(digits, (digit
 <p>Documented limits: 5 compound <code>SELECT</code> terms, 100 bound parameters, 50-byte <code>LIKE</code> pattern (<code>limits.mdx</code>). Lunora nests compound selects five at a time, binds a long <code>in</code> list as one <code>json_each</code> parameter (<code>where-sql.ts:71</code>), chunks multi-row inserts, and compiles <code>contains</code> to a position function. The change log chunks table names at 90 (<code>ctx-db-cdc.ts:174</code>).</p>
 <h2>Durable Object runtime</h2>
 <h3>5. A gate that never rejects</h3>
-<p><code>blockConcurrencyWhile</code> resets the object when its callback rejects. The adapter returns <code>{ok, value}</code> or <code>{ok:false, error}</code> and re-throws outside (<code>cloudflare-host.ts:161-183</code>). An ordinary application error no longer drops every hibernating socket.</p>
+<p><code>blockConcurrencyWhile</code> resets the object when its callback rejects (<code>durable-objects/api/state.mdx</code>, <code>blockConcurrencyWhile</code>). The adapter returns <code>{ok, value}</code> or <code>{ok:false, error}</code> and re-throws outside (<code>cloudflare-host.ts:161-183</code>). An ordinary application error no longer drops every hibernating socket.</p>
 <h3>6. Keep the original error object</h3>
 <p>The platform returns a flattened copy of a thrown error. A copy of a <code>LunoraError</code> would look like an unknown fault and be hidden. The adapter saves the original and re-throws it, with the platform error as <code>cause</code> (<code>cloudflare-host.ts:202-236</code>). <code>attachCause</code> itself is guarded, because a frozen error rejects a <code>cause</code> write (line 114).</p>
 <h3>7. After-commit work in commit order, outside the gate</h3>
@@ -244,17 +246,17 @@ flushed = this.linkAfterCommit(async () =&gt; flushAfterCommit(queued));
 <h3>33. Zero-padded time index</h3>
 <p>String order equals number order. The upper bound is chosen so every value has 15 digits (<code>scheduler-do.ts:223-248</code>).</p>
 <h3>34. Lease equal to the platform ceiling</h3>
-<p>15 minutes, because an alarm cannot outlive 15 minutes (<code>scheduler-do.ts:214</code>).</p>
+<p>15 minutes, because an alarm cannot outlive 15 minutes (<code>scheduler-do.ts:214</code>; <code>src/content/partials/workers/wall-time-limits.mdx</code>).</p>
 <h3>35. Concurrency equal to the connection limit</h3>
-<p>Six dispatches at once, the number of connections a request may wait on (<code>scheduler-do.ts:173</code>).</p>
+<p>Six dispatches at once, the number of simultaneous outgoing connections that a request may hold (<code>scheduler-do.ts:173</code>; <code>workers/platform/limits.mdx</code>).</p>
 <h3>36. Outbox inside the transaction</h3>
 <p>See <a href="11-alarms-queues-workflows.html">Alarms, queues, workflows</a>.</p>
 <h2>D1 and global tables</h2>
 <h3>37. Retry only what is provably a read</h3>
 <p><code>READ_ONLY_STATEMENT = /^[\s(]*(?:select|pragma|explain)\b/iu</code> (<code>retry.ts:119</code>). <code>WITH</code> is excluded.</p>
 <h3>38. Full-jitter backoff</h3>
-<p><code>Math.round(Math.random() <em> min(1000, 50 </em> 2 ** (attempt - 1)))</code> (<code>retry.ts:190-194</code>). It stops a synchronized wave against a recovering database.</p>
-<h3>39. Two-parameter OCC guard</h3>
+<p>The wait is a random number between 0 and the smaller of 1,000 and 50 times 2 to the power of (attempt minus 1), in milliseconds (<code>retry.ts:190-194</code>). It stops a synchronized wave against a recovering database.</p>
+<h3>39. Two-parameter optimistic concurrency control (OCC) guard</h3>
 <p>Compare <code>id</code> and <code>_version</code> only, so wide tables stay under 100 parameters (<code>shared/occ-version-column.ts</code>).</p>
 <h3>40. Batched provisioning</h3>
 <p>368 statements for 42 tables became a few <code>batch</code> calls (<code>ctx-db-global-provisioning.ts:1-5</code>).</p>
@@ -265,7 +267,7 @@ flushed = this.linkAfterCommit(async () =&gt; flushAfterCommit(queued));
 <h3>43. Lease row for fleet-wide sweep</h3>
 <p>One compare-and-set row stops N shards trimming one shared log (<code>sql-store/src/ctx-db.ts:957-1100</code>).</p>
 <h2>Worker, batching and cold start</h2>
-<h3>44. Batch RPC grouped by shard</h3>
+<h3>44. Batch remote procedure call (RPC) grouped by shard</h3>
 <p>Calls are validated, grouped by shard and sent as one <code>/rpc-batch</code> each. The body and headers of a fan-out are built once (<code>create-worker.ts:5026</code>, <code>query-coordinator.ts:1216</code>).</p>
 <h3>45. Directory adapter cached in a WeakMap</h3>
 <p>One object per namespace, not three closures per request (<code>resolve-shard.ts:38</code>).</p>
@@ -291,7 +293,7 @@ flushed = this.linkAfterCommit(async () =&gt; flushAfterCommit(queued));
 <h3>55. Hibernation as the idle strategy</h3>
 <p>Subscriptions sit in attachments. Idle sockets cost storage, not compute.</p>
 <h3>56. Row-write cost to know</h3>
-<p>One mutation can write: the row, the default-sort index entry, each declared index entry, a log row (if on), an idempotency row (if a mutation id is sent), the client watermark, plus a request-log row. This is an inference from the migration and dispatch code, not a measured count.</p>
+<p>One mutation can write these rows: the row itself and the default-sort index entry. It can write each declared index entry and a log row (if on). It can write an idempotency row (if a mutation id is sent), the client watermark, and a request-log row. This is an inference from the migration and dispatch code, not a measured count.</p>
 <h2>Where to go next</h2>
 <p>Read <a href="13-migrations-and-schema.html">Migrations</a>.</p>
   </article>

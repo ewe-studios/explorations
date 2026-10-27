@@ -6,6 +6,22 @@ title: The Realtime Engine: Subscriptions, Pokes and Hibernation
 
 When a mutation commits, the shard that wrote the rows pushes the result to the clients that watch them. No broker is involved. This page shows the two push protocols, the tricks that avoid needless work, and the limits that protect the shard.
 
+## Words on this page
+
+- **Subscription.** A request to be told when the result of a query changes.
+- **Shape.** A named, parameterized part of a table: the rows that match a predicate, and optionally some columns. A client keeps a local copy of a shape.
+- **Poke.** A message that lists the rows that entered, changed or left a shape. It has three frames: `pokeStart`, `pokePart` and `pokeEnd`.
+- **Membership diff.** The difference between the rows that are in the shape now and the rows that were in it before.
+- **Cursor and checkpoint.** The change log position up to which a client has seen changes. See [Change log](06-change-log-cdc.md).
+- **Row-level security (RLS).** A rule that decides which rows a given caller may see. A shape resolves it under the identity of the socket.
+- **Flush.** One pass that sends the changes of a commit to the subscribed sockets.
+- **Coalescing.** Merging many small events into one.
+- **Backpressure.** Slowing the sender when the receiver cannot keep up. Here the shard waits while a socket has too many unsent bytes.
+- **Memo.** The saved last result of a subscription. The shard skips a push if the new result is identical.
+- **Reactor.** A server-side subscription that runs a handler when its query result changes.
+- **Hibernation.** The object leaves memory while its sockets stay open. See [Cloudflare services](02-cloudflare-services.md), section "WebSocket hibernation".
+- **Server-Sent Events (SSE).** A one-way stream of events from the server over a normal Hypertext Transfer Protocol (HTTP) connection.
+
 ## Two protocols on one WebSocket
 
 | Protocol | What the shard does after a write | Cost |
@@ -59,7 +75,7 @@ sequenceDiagram
     participant Lg as __cdc_log
     participant Tb as Shape table
     Cl->>Sh: shape_subscribe {name, args, sinceSeq, sinceEpoch}
-    Sh->>Sh: resolve shape under the socket identity (RLS)
+    Sh->>Sh: resolve shape under the socket identity (row-level security)
     Sh->>Lg: seed (or resume if epoch and floor allow)
     Sh-->>Cl: pokeStart, pokePart (insert rows), pokeEnd (cursor, epoch)
     Note over Sh: later, a mutation commits
@@ -97,7 +113,7 @@ Idle sockets cost no compute. State lives in the socket attachment, with limits 
 - **Whisper.** Small ephemeral messages: payload up to 4,096 bytes, a token bucket of 50 burst and 25 per second per socket, 64 topics per socket (`shard-do.ts:2115,2182`). Verdicts are memoized with a cap of 256 pairs per socket. The slot is reserved with its in-flight promise before the first await, so concurrent frames cannot exceed the cap (`shard-do.ts` `authorizeWhisper`).
 - **Rooms and socket routes.** `defineWebSocket` routes run handlers per frame, with a queue of 64 events per socket (`MAX_QUEUED_ROOM_EVENTS`).
 - **Live streams (Server-Sent Events).** Up to 1,024 connections per shard, 32 per caller, a 25 s comment keep-alive, and a 256 KiB queue limit. A slow reader is dropped (`shard-do.ts:2145-2180`).
-- **Durable streams.** Each chunk is saved in `__stream_chunks` with a sequence, so a stream can resume after eviction. A run whose object is evicted ends as `STREAM_INTERRUPTED` (`cloudflare.ts:27-30`). `waitUntil` keeps the object alive up to 15 minutes from compatibility date 2026-10-01.
+- **Durable streams.** Each chunk is saved in `__stream_chunks` with a sequence, so a stream can resume after eviction. A run whose object is evicted ends as `STREAM_INTERRUPTED` (`cloudflare.ts:27-30`). `waitUntil` keeps the object alive up to 15 minutes from compatibility date 2026-10-01 (`src/content/compatibility-flags/durable-object-io-tasks-prevent-eviction.md`).
 
 ## Reactors
 

@@ -134,6 +134,7 @@
   <article class="prose">
 <h1>Cloudflare services: what Lunora uses, how, and why</h1>
 <p>Lunora uses Cloudflare Workers and Durable Objects as its core. It adds D1, R2, Queues, Workflows, Hyperdrive and more around that core. This page lists every service found in the code. Each section says how Lunora uses the service, why, and where the code is.</p>
+<p>This page is also the place where the Cloudflare ideas are explained. You do not need to know Cloudflare before you read it. Each product section has two parts. The part "What it is" explains the product in plain words and names the one property that Lunora relies on. The part "How Lunora uses it" lists the code. Every Cloudflare claim names the Cloudflare documentation file that supports it. The paths are relative to the <code>src/content/docs</code> folder of the <code>cloudflare/cloudflare-docs</code> repository. Durable Objects have their own long section, "Durable Objects from first principles". D1 has its full explanation in <a href="09-d1-global-and-hyperdrive.html">D1 and global tables</a>.</p>
 <p>The authority for this list is the Cloudflare capability matrix (<code>packages/platform/src/capabilities/cloudflare.ts:12</code>). The wrangler binding manifest (<code>packages/config/src/cloudflare/binding-manifest.ts</code>) lists 25 binding types: <code>ai</code>, <code>ai_search</code>, <code>ai_search_namespace</code>, <code>analytics_engine</code>, <code>analytics_sql</code>, <code>artifacts</code>, <code>assets</code>, <code>browser</code>, <code>container</code>, <code>d1</code>, <code>durable_object</code>, <code>hyperdrive</code>, <code>images</code>, <code>kv</code>, <code>media</code>, <code>pipeline</code>, <code>queue_consumer</code>, <code>queue_producer</code>, <code>r2</code>, <code>service</code>, <code>stream</code>, <code>vectorize</code>, <code>vpc_network</code>, <code>vpc_service</code>, <code>workflow</code>.</p>
 <div class="mermaid">
 flowchart LR
@@ -192,14 +193,148 @@ sequenceDiagram
 <h2>Summary table</h2>
 <table><tr><th>Service</th><th>Lunora package</th><th>Used for</th><th>Core or optional</th></tr><tr><td>Workers</td><td><code>runtime</code></td><td>Entry, routing, auth, fan-out, cron and queue entries</td><td>Core</td></tr><tr><td>Durable Objects</td><td><code>do</code>, <code>scheduler</code>, <code>shard-engine</code></td><td>Shards, registry, scheduler, relays, replicas</td><td>Core</td></tr><tr><td>Durable Object SQLite</td><td><code>shard-engine</code></td><td>Every shard-local table and the change log</td><td>Core</td></tr><tr><td>D1</td><td><code>d1</code>, <code>sql-store</code></td><td><code>.global()</code> tables</td><td>Core when <code>.global()</code> is used</td></tr><tr><td>R2</td><td><code>storage</code>, <code>shard-engine</code>, <code>runtime</code></td><td>Files, change log archive, backups, uploads</td><td>Optional</td></tr><tr><td>Workers KV (a key-value store)</td><td><code>bindings</code></td><td><code>ctx.kv</code> facade for apps</td><td>Optional</td></tr><tr><td>Queues</td><td><code>queue</code></td><td>Background work, topics, requeue</td><td>Optional</td></tr><tr><td>Hyperdrive</td><td><code>hyperdrive</code></td><td>Postgres or MySQL as a <code>.global()</code> backend</td><td>Optional</td></tr><tr><td>Workflows</td><td><code>workflow</code>, <code>agent</code></td><td>Durable multi-step jobs and agents</td><td>Optional</td></tr><tr><td>Cron Triggers</td><td><code>runtime</code>, <code>config</code></td><td>Scheduled functions and backups</td><td>Optional</td></tr><tr><td>Analytics Engine</td><td><code>bindings</code>, <code>runtime</code></td><td>App events and function metrics</td><td>Optional</td></tr><tr><td>Service bindings</td><td><code>config</code>, <code>do</code></td><td>Shared shard registry across Workers</td><td>Optional</td></tr><tr><td>Vectorize</td><td><code>bindings</code>, <code>ai</code></td><td>Vector search</td><td>Optional</td></tr><tr><td>Workers AI (artificial intelligence) and AI Gateway</td><td><code>ai</code>, <code>agent</code></td><td>Models and cost telemetry</td><td>Optional</td></tr><tr><td>Pipelines, R2 SQL (Structured Query Language)</td><td><code>bindings</code>, <code>runtime</code></td><td>Log archive</td><td>Optional</td></tr><tr><td>Others</td><td>see end of page</td><td>Images, Browser, Containers, Email, Access, Secrets Store</td><td>Optional</td></tr></table>
 <h2>Workers</h2>
+<h3>What a Worker is</h3>
+<p>A Worker is a JavaScript program that Cloudflare runs close to the user. It runs inside an isolate. An isolate is a light sandbox inside the V8 engine. Chromium and Node.js use the same engine. One runtime process hosts hundreds or thousands of isolates and switches between them. An isolate starts inside a process that already runs. So there is no virtual machine start and the cold start is small (<code>workers/reference/how-workers-works.mdx</code>, "Isolates", and <code>src/content/partials/workers/isolate-description.mdx</code>).</p>
+<p>A Worker handles many requests in a single-threaded event loop. Cloudflare may evict an isolate at any time. It may send two requests of one user to two different isolates. So a Worker must not keep mutable state in global variables (<code>how-workers-works.mdx</code>, "Distributed execution"). This is why Lunora says the Worker is stateless and keeps all state in Durable Objects, D1 and R2.</p>
+<h3>Limits that shape Lunora</h3>
+<table><tr><th>Limit</th><th>Value</th><th>Source</th></tr><tr><td>Central processing unit (CPU) time per request</td><td>30 seconds by default, up to 5 minutes on the Paid plan</td><td><code>workers/platform/limits.mdx</code>, "CPU time"</td></tr><tr><td>Memory per isolate</td><td>128 megabytes</td><td>same file, "Memory"</td></tr><tr><td>Subrequests per request</td><td>50 (Free), 10,000 (Paid, can go higher)</td><td>same file, "Subrequests"</td></tr><tr><td>Simultaneous outgoing connections</td><td>6</td><td>same file, account table</td></tr><tr><td>Start-up time</td><td>1 second, for the top-level code of the Worker. A deploy that is too slow fails with error <code>10021</code></td><td>same file, "Worker startup time"</td></tr><tr><td>Worker size</td><td>64 mebibytes uncompressed</td><td>same file, "Worker size"</td></tr><tr><td>Environment variables</td><td>64 (Free) or 128 (Paid) per Worker. Each value may be 5 kilobytes</td><td>same file, "Environment variables"</td></tr></table>
+<p>A subrequest is any request that a Worker sends with <code>fetch</code> or to a Cloudflare service such as R2, Workers KV or D1.</p>
+<h3>Two Worker tools that the docs use often</h3>
+<ul><li><strong><code>waitUntil</code>.</strong> <code>ctx.waitUntil(promise)</code> keeps the Worker alive until a promise ends, even after the response went out. Without it, work that is not awaited can be cancelled when the request ends (<code>workers/runtime-apis/context.mdx</code>, <code>waitUntil</code>). Lunora uses it to push changes to sockets after the response.</li><li><strong><code>request.cf</code>.</strong> Cloudflare adds a <code>cf</code> object to each incoming request. It holds data such as the continent, the data center code (<code>colo</code>) and the country (<code>workers/runtime-apis/request.mdx</code>, <code>IncomingRequestCfProperties</code>). Lunora reads it to pick a region hint.</li></ul>
+<h3>How Lunora uses Workers</h3>
 <p>The Worker is a stateless front. The function <code>createWorker</code> returns an object with <code>fetch</code>, <code>scheduled</code> and <code>queue</code> entries (<code>packages/runtime/src/create-worker.ts:2756</code> for <code>scheduled</code>). It parses the remote procedure call (RPC) envelope, checks identity, and forwards to a shard. It also runs fan-out reads and serves the admin routes.</p>
 <p>Why: the Worker scales horizontally for free. All state lives in Durable Objects, D1 and R2. See <a href="03-worker-runtime.html">Worker runtime</a>.</p>
-<p>A limit Lunora tracks: a Worker must start within 1 second of central processing unit (CPU) time (error 10021). The repository commits a baseline in <code>worker-startup.json</code> (300 procedures, 60 tables, 915 eager modules, 6,046,937 eager bytes) and a size baseline in <code>worker-size.json</code> (1,348,884 raw bytes, 344,186 gzip bytes). Scripts check both in continuous integration.</p>
+<p>A limit Lunora tracks: a Worker must parse and run its top-level code within 1 second. A deploy that is too slow fails with error 10021 (<code>workers/platform/limits.mdx</code>, "Worker startup time"). The repository commits a baseline in <code>worker-startup.json</code> (300 procedures, 60 tables, 915 eager modules, 6,046,937 eager bytes) and a size baseline in <code>worker-size.json</code> (1,348,884 raw bytes, 344,186 gzip bytes). Scripts check both in continuous integration.</p>
 <h2>Durable Objects</h2>
-<p>The Durable Object (DO) is the heart of Lunora. The code uses these platform features:</p>
+<p>The Durable Object (DO) is the heart of Lunora. The code uses the platform features in the table. The next section, "Durable Objects from first principles", explains each feature from the beginning.</p>
 <table><tr><th>Platform feature</th><th>Where Lunora uses it</th></tr><tr><td><code>idFromName</code>, <code>getByName</code>, <code>get</code></td><td><code>packages/runtime/src/resolve-shard.ts:69-115</code></td></tr><tr><td><code>namespace.jurisdiction("eu")</code></td><td><code>resolve-shard.ts:198</code>, <code>cloudflare-host.ts:785</code></td></tr><tr><td><code>locationHint</code> on creation</td><td><code>resolve-shard.ts:58</code></td></tr><tr><td><code>blockConcurrencyWhile</code></td><td><code>cloudflare-host.ts:161</code>, <code>shard-registry-do.ts:296</code></td></tr><tr><td><code>storage.transaction</code></td><td><code>cloudflare-host.ts:202</code></td></tr><tr><td><code>storage.sql.exec</code></td><td><code>cloudflare-host.ts:52</code></td></tr><tr><td><code>setAlarm</code>, <code>getAlarm</code>, <code>deleteAlarm</code></td><td><code>cloudflare-host.ts:75</code></td></tr><tr><td><code>acceptWebSocket</code>, <code>getWebSockets</code>, <code>getTags</code></td><td><code>cloudflare-host.ts:684</code></td></tr><tr><td><code>serializeAttachment</code></td><td><code>shard-do.ts:18400</code> (<code>writeAttachment</code>)</td></tr><tr><td><code>setWebSocketAutoResponse</code></td><td><code>shard-do.ts:16404</code></td></tr><tr><td><code>waitUntil</code></td><td><code>cloudflare-host.ts:247</code></td></tr><tr><td><code>abort</code></td><td><code>shard-do.ts:12242</code> (point-in-time restore)</td></tr><tr><td><code>getCurrentBookmark</code>, <code>onNextSessionRestoreBookmark</code></td><td><code>shard-engine/src/pitr.ts:98,118</code></td></tr><tr><td><code>state.id.name</code>, <code>state.id.jurisdiction</code></td><td><code>cloudflare-host.ts:244</code>, <code>shard-do.ts:3271</code></td></tr></table>
 <p>At least seven Durable Object classes appear in the code: <code>ShardDO</code>, <code>ShardRegistryDO</code>, <code>SchedulerDO</code>, <code>SessionDO</code>, the auth object, the container object, and the event log object in <code>packages/replica</code>. A merged class can host the shard, scheduler and registry roles (<code>merge-durable-objects.ts:63</code>).</p>
+<h2>Durable Objects from first principles</h2>
+<p>A Durable Object is a small server program with its own disk. Cloudflare runs at most one copy of it for each name. Lunora builds its database on this fact. This section explains the ideas one by one. Each idea has a Cloudflare source and the Lunora code that depends on it.</p>
+<h3>One named instance, anywhere in the world</h3>
+<p>A Durable Object class is a JavaScript class. A namespace is the set of all objects of one class. You turn a name into an identifier with <code>idFromName</code>. You turn the identifier into a stub with <code>get</code>. A stub is a client handle. You call methods on the stub, and the call travels to the object, wherever it runs (<code>durable-objects/api/namespace.mdx</code>, <code>idFromName</code> and the example at the top).</p>
+<p>Cloudflare creates the object late. Making an identifier or a stub does not create the object. The first call on the stub does (<code>durable-objects/concepts/durable-object-lifecycle.mdx</code>, first section).</p>
+<p>Cloudflare promises that one identifier maps to one live instance in the whole world. The docs call each object "globally unique" (<code>durable-objects/platform/known-issues.mdx:25</code>). This promise has a price. The first time a Worker uses a name, the system must check that no other Worker created the same object a moment earlier. The check "can take up to a few hundred milliseconds". After that, the location is cached. A random identifier from <code>newUniqueId</code> skips the check (<code>durable-objects/api/namespace.mdx</code>, note after <code>newUniqueId</code>).</p>
+<p>This model is the actor model. An actor receives messages, runs in its own single-threaded context, uses its own storage, and sends messages out. Erlang, Akka and Microsoft Orleans use the same model (<code>durable-objects/concepts/what-are-durable-objects.mdx</code>, "Actor programming model").</p>
+<p>Lunora turns the promise into a rule for every host. The <code>ShardHost</code> contract says there must be "at most one LIVE instance per shard key, at any moment". Lunora keeps state in memory that is correct only under this rule, for example the in-flight claim for actions (<code>packages/platform/src/shard-host.ts:122-132</code>). Lunora names each shard and resolves the name with <code>getByName</code> or <code>idFromName</code> (<code>packages/runtime/src/resolve-shard.ts:69-115</code>). So the first request to a new shard key pays the uniqueness check. This is my reading of the Cloudflare note and the resolve code.</p>
+<h3>Lifecycle: active, idle, hibernated, inactive</h3>
+<p>An object is not always in memory. The Cloudflare docs list five states (<code>durable-objects/concepts/durable-object-lifecycle.mdx</code>, "Durable Object Lifecycle state transitions"):</p>
+<table><tr><th>State</th><th>Meaning</th></tr><tr><td>Active, in-memory</td><td>The object runs and handles events</td></tr><tr><td>Idle, in-memory, non-hibernateable</td><td>The object waits, but something blocks hibernation</td></tr><tr><td>Idle, in-memory, hibernateable</td><td>The object waits and may hibernate. The runtime hibernates it after 10 seconds of inactivity</td></tr><tr><td>Hibernated</td><td>The object is out of memory. Its WebSockets stay connected</td></tr><tr><td>Inactive</td><td>The object is fully removed from the host process. This is the first state of every object</td></tr></table>
+<div class="mermaid">
+stateDiagram-v2
+    [*] --&gt; Inactive
+    Inactive --&gt; Active: first request or event (constructor runs)
+    Active --&gt; IdleHibernateable: all events done
+    Active --&gt; IdleBlocked: all events done, but a timer or open I/O remains
+    IdleHibernateable --&gt; Hibernated: 10 seconds without events
+    Hibernated --&gt; Active: new event (constructor runs again)
+    IdleBlocked --&gt; Inactive: 70 to 140 seconds without events
+    IdleHibernateable --&gt; Active: new event
+    IdleBlocked --&gt; Active: new event
+    Hibernated --&gt; Inactive: the runtime decides
+
+</div>
+<p>Hibernation needs four things. No <code>setTimeout</code> or <code>setInterval</code> callback may be set. No unfinished input or output (I/O) or <code>waitUntil</code> promise may remain, and no outbound connection may stay open. The standard WebSocket application programming interface (API) must not be in use. No request may be in progress. When the object hibernates, its in-memory state is discarded. On the next event the constructor runs again.</p>
+<p>A promise passed to <code>waitUntil</code> prevents eviction for up to 15 minutes. Each pending operation has its own 15-minute window (<code>durable-objects/api/state.mdx</code>, <code>waitUntil</code>, and the lifecycle page note "Pending operations prevent eviction").</p>
+<p>What this means for Lunora: every in-memory value is a cache that can vanish. The flag <code>migrated</code> resets on wake, so the schema migration runs again (<a href="13-migrations-and-schema.html">Migrations</a>). The reactive query cache dies on hibernation (<a href="07-replication-and-read-scaling.html">Replication</a>). The registry sees a shard register again after each wake (<a href="04-sharding-design.html">Sharding design</a>).</p>
+<h3>One event at a time: input gates and output gates</h3>
+<p>JavaScript runs one piece of code at a time. But <code>await</code> lets another request run while the first one waits. This can cause races. The Durable Object runtime adds two rules to prevent them (<code>durable-objects/best-practices/rules-of-durable-objects.mdx</code>, "Understand how input and output gates work").</p>
+<ul><li><strong>Input gate.</strong> While a storage operation runs, the runtime delivers no new event to the object, except storage completions. The runtime holds the other events until the gate opens. An <code>await</code> on <code>fetch()</code> opens the gate. An <code>await</code> on a storage call does not.</li><li><strong>Output gate.</strong> While a storage write is pending, the runtime holds back every outgoing message, such as a response or a <code>fetch</code>. The client never sees a confirmation of data that is not yet saved. If the write fails, the runtime drops the held messages, replaces them with errors, and restarts the object (<code>src/content/glossary/durable-objects.yaml</code>, terms "input gate" and "output gate").</li><li><strong>Write coalescing.</strong> Several writes with no <code>await</code> between them commit together as one atomic implicit transaction.</li></ul>
+<p>SQLite calls on the object are synchronous. They do not yield the event loop. So they run atomically with no extra step (<code>durable-objects/api/state.mdx</code>, note "When to use <code>blockConcurrencyWhile</code>").</p>
+<div class="mermaid">
+sequenceDiagram
+    participant A as Request A
+    participant O as Object
+    participant B as Request B
+    A-&gt;&gt;O: storage read and write
+    Note over O: input gate closed. B waits
+    B--&gt;&gt;O: arrives, held at the input gate
+    O--&gt;&gt;A: storage done
+    A-&gt;&gt;O: await fetch to another service
+    Note over O: input gate open. B now runs
+    O-&gt;&gt;B: B runs and may change shared state
+    A-&gt;&gt;O: write row
+    O--&gt;&gt;A: response held until the write is saved (output gate)
+
+</div>
+<p>The gates protect storage calls only. A call to another service, such as D1, opens the input gate. Other requests then run inside the object. Lunora has three tools for this case. It wraps each mutation in <code>blockConcurrencyWhile</code>. It saves and restores per-request fields after each <code>await</code> (see <a href="05-shard-durable-object.html">The ShardDO</a>). It uses a compare-and-set write for D1 (see <a href="09-d1-global-and-hyperdrive.html">D1 and global tables</a>).</p>
+<h3>blockConcurrencyWhile</h3>
+<p><code>blockConcurrencyWhile(callback)</code> runs an async callback and delivers no other event to the object until the callback ends. The docs name two uses: set-up in the constructor, and any async work that must not see state change under it (<code>durable-objects/api/state.mdx</code>, <code>blockConcurrencyWhile</code>).</p>
+<p>Two rules matter:</p>
+<ul><li>If the callback throws, Cloudflare terminates the object and resets it. The docs advise a <code>try...catch</code> around the whole body.</li><li>A callback has a 30-second timeout. If it runs longer, the object resets.</li></ul>
+<p>Lunora calls this method <code>runSerialized</code> and uses it as a gate. The adapter catches every error inside the callback, returns it as a value, and throws it again after the gate. An ordinary application error then cannot reset the object and drop its hibernating sockets (<code>packages/platform-cloudflare/src/cloudflare-host.ts:161-183</code>). Every mutation runs inside this gate (<code>packages/shard-engine/src/shard-runner.ts:136</code>). I found no Lunora code that changes the 30-second platform timeout. So 30 seconds is the upper bound of one mutation. This is an inference from the Cloudflare docs and the code.</p>
+<h3>SQLite storage and the transaction model</h3>
+<p>A SQLite-backed object has a private SQLite database. The object reads and writes it with <code>ctx.storage.sql.exec(query, ...bindings)</code>. The storage is "durable, transactional, and strongly consistent", up to 10 gigabytes for one object (<code>durable-objects/concepts/what-are-durable-objects.mdx</code>, "Storage API"; <code>durable-objects/platform/limits.mdx</code>). Lunora calls <code>sql.exec</code> in <code>cloudflare-host.ts:52</code>.</p>
+<p>Transactions work in three ways:</p>
+<ol><li><strong>Automatic.</strong> Writes with no <code>await</code> between them commit together (write coalescing).</li><li><strong><code>transactionSync(callback)</code>.</strong> The callback must be synchronous. It must not be <code>async</code> and must not return a promise. If it throws, the transaction rolls back.</li><li><strong><code>transaction(closure)</code>.</strong> This is the async form. The closure runs as one transaction that commits or aborts. On a SQLite-backed object, every storage call inside it is part of the transaction.</li></ol>
+<p><code>sql.exec</code> cannot run <code>BEGIN TRANSACTION</code> or <code>SAVEPOINT</code>. You must use the two methods above (<code>durable-objects/api/sqlite-storage-api.mdx:239</code> and <code>src/content/partials/durable-objects/api-storage-other-methods.mdx</code>, <code>transactionSync</code> and <code>transaction</code>).</p>
+<p>Lunora uses <code>storage.transaction</code> and never <code>transactionSync</code>. The reason, from the code comment: <code>transactionSync</code> does not wait for the result of an async handler. An async handler could then finish after the commit (<code>packages/do/src/shard-do.ts:4160-4185</code>). The adapter also keeps the original error object, because the platform returns a flattened copy of a thrown error (<code>cloudflare-host.ts:185-202</code>).</p>
+<p>Limits that Lunora designs around (<code>durable-objects/platform/limits.mdx</code>, SQLite-backed tables):</p>
+<table><tr><th>Limit</th><th>Value</th></tr><tr><td>Storage per object</td><td>10 gigabytes</td></tr><tr><td>Row, string, blob, and key plus value</td><td>2 megabytes</td></tr><tr><td>Columns per table</td><td>100</td></tr><tr><td>Length of one Structured Query Language (SQL) statement</td><td>100 kilobytes</td></tr><tr><td>Bound parameters per query</td><td>100</td></tr><tr><td>Bytes in a <code>LIKE</code> or <code>GLOB</code> pattern</td><td>50</td></tr><tr><td>Simultaneous outgoing connections per request</td><td>6</td></tr><tr><td>Soft request rate for one object</td><td>1,000 per second (<code>src/content/partials/durable-objects/do-faq-limits.mdx</code>)</td></tr></table>
+<p>SQLite-backed storage bills rows read and rows written. Key-value calls count too, because they use a hidden SQLite table. Deletes count as rows written (<code>src/content/partials/durable-objects/durable-objects-pricing.mdx</code>, footnotes 1 to 4). Lunora's write count per request matters for this reason (see <a href="15-critical-assessment.html">Critical assessment</a>).</p>
+<h3>Alarms</h3>
+<p>An alarm is a timer that wakes the object. Each object has one alarm slot, set with <code>setAlarm()</code>. When the time comes, the runtime calls the <code>alarm()</code> handler (<code>durable-objects/api/alarms.mdx</code>, "Background").</p>
+<ul><li><strong>At-least-once.</strong> If the handler throws, the runtime retries it with exponential backoff, starting at 2 seconds, for up to 6 retries.</li><li><strong>One at a time.</strong> Only one <code>alarm()</code> call runs for an object at any moment.</li><li><strong>Wall time.</strong> An alarm handler may run for at most 15 minutes (<code>src/content/partials/workers/wall-time-limits.mdx</code>).</li><li><strong>Many events, one slot.</strong> To run many scheduled jobs, store the schedule in storage. Let the handler process the due jobs and set the alarm to the next due time.</li></ul>
+<p>Alarms differ from Cron Triggers. An alarm belongs to one object and is set by code. A Cron Trigger belongs to a Worker and is set by configuration.</p>
+<p>Lunora uses exactly the "many events, one slot" pattern. The shard alarm serves four tiers, and the scheduler object stores jobs with a time index. See <a href="11-alarms-queues-workflows.html">Alarms, queues, workflows</a>.</p>
+<h3>WebSocket hibernation</h3>
+<p>A WebSocket is a long-lived two-way connection. A server object can hold thousands of them. With the standard API (<code>ws.accept()</code>), the object must stay in memory as long as a socket is open. That costs money. The Hibernation API changes this (<code>durable-objects/best-practices/websockets.mdx</code>, "Why use Hibernation?").</p>
+<p>With <code>ctx.acceptWebSocket(server)</code>, the runtime keeps the connection open while the object is out of memory. When a message arrives, the runtime builds the object again, runs its constructor, and calls <code>webSocketMessage</code>. Billable duration does not accrue during hibernation. In-memory state is lost. To keep per-connection state, the code calls <code>serializeAttachment(value)</code> on the socket. It reads the value back with <code>deserializeAttachment()</code>.</p>
+<div class="mermaid">
+sequenceDiagram
+    participant C as Client
+    participant R as Runtime
+    participant O as Durable Object
+    C-&gt;&gt;R: WebSocket upgrade, forwarded to the object
+    R-&gt;&gt;O: fetch
+    O-&gt;&gt;R: acceptWebSocket(server), serializeAttachment(state)
+    Note over O: idle for 10 seconds. The object leaves memory. The socket stays open
+    C-&gt;&gt;R: message
+    R-&gt;&gt;O: new instance, constructor runs
+    R-&gt;&gt;O: webSocketMessage(ws, message)
+    O-&gt;&gt;O: deserializeAttachment() restores the state
+    O--&gt;&gt;C: reply
+
+</div>
+<p>More facts from the same source and from <code>durable-objects/api/state.mdx</code>:</p>
+<ul><li>A WebSocket may carry up to 10 tags of 256 characters each. <code>getWebSockets(tag)</code> finds sockets by tag. Lunora keeps 9 usable tags and reserves one tag slot for identity (<code>packages/platform/src/socket-host.ts:55-64</code>).</li><li>One object may hold at most 32,768 hibernating WebSocket connections. Central processing unit (CPU) time and memory limit the practical number lower.</li><li>The runtime can answer a fixed ping with a fixed pong without waking the object. This is the <code>setWebSocketAutoResponse</code> call (<code>durable-objects/api/state.mdx</code>). Lunora uses it as a keep-alive (<code>shard-do.ts:16404</code>).</li></ul>
+<p>Lunora stores each socket's subscriptions in the attachment. So a woken shard can resume every subscription. See <a href="10-realtime-engine.html">Realtime engine</a>.</p>
+<h3>Point-in-time recovery</h3>
+<p>Point-in-time recovery (PITR) restores the SQLite database of one object to any moment in the past 30 days. It covers all stored data, including key-value data. It does not work in local development (<code>durable-objects/api/sqlite-storage-api.mdx</code>, "PITR (Point In Time Recovery) API").</p>
+<p>PITR uses bookmarks. A PITR bookmark is "a mostly alphanumeric string". Bookmarks compare as plain strings. A smaller bookmark is an earlier time. Three calls matter:</p>
+<ul><li><code>getCurrentBookmark()</code> returns the bookmark of now.</li><li><code>getBookmarkForTime(timestamp)</code> returns the bookmark near a time inside the last 30 days.</li><li><code>onNextSessionRestoreBookmark(bookmark)</code> arms a restore. The object restores its storage the next time it restarts. The call returns an undo bookmark for the point just before the restore. The code then usually calls <code>ctx.abort()</code> to restart the object at once.</li></ul>
+<div class="mermaid">
+sequenceDiagram
+    participant Op as Operator (admin call)
+    participant O as ShardDO
+    participant P as Platform storage
+    Op-&gt;&gt;O: pitrRestore(bookmark)
+    O-&gt;&gt;P: onNextSessionRestoreBookmark(bookmark)
+    P--&gt;&gt;O: undo bookmark
+    O-&gt;&gt;O: bump change log epoch, write audit entry
+    O-&gt;&gt;O: optionally state.abort() restarts the object now
+    Note over P: on restart, storage equals the state at the bookmark
+
+</div>
+<p>Lunora wraps these calls in <code>packages/shard-engine/src/pitr.ts:98,118</code> and uses <code>abort</code> in <code>shard-do.ts:12242</code>. The restore reverts the whole SQLite file, including Lunora's own epoch row. So Lunora must detect the "fork" from outside the file. See <a href="06-change-log-cdc.html">Change log</a>.</p>
+<h3>Location hints and jurisdictions</h3>
+<p>By default, Cloudflare creates an object in a data center near the first request. Cloudflare does not move an object after that (<code>durable-objects/reference/data-location.mdx</code>).</p>
+<ul><li><strong>Location hint.</strong> A hint is advice about where to create the object. It goes in the <code>locationHint</code> option of <code>get()</code>. Only the first <code>get()</code> for an object uses it. It is best effort. The object may start in a different place that has lower latency from the hint. The values are <code>wnam</code>, <code>enam</code>, <code>sam</code>, <code>weur</code>, <code>eeur</code>, <code>apac</code>, <code>apac-ne</code>, <code>apac-se</code>, <code>oc</code>, <code>afr</code> and <code>me</code>. Some of these do not host objects yet. The runtime then picks a nearby place.</li><li><strong>Jurisdiction.</strong> A jurisdiction is a hard rule. The object runs and stores data only inside the region. The values are <code>eu</code>, <code>us</code> and <code>fedramp</code>. You apply it with <code>namespace.jurisdiction("eu")</code>. The same name gives a different identifier in each jurisdiction. A Worker anywhere in the world may still call the object.</li></ul>
+<p>Lunora derives a hint from the region of the request, and drops hints when a jurisdiction is set. See <a href="04-sharding-design.html">Sharding design</a> and <code>packages/runtime/src/resolve-shard.ts:58,127-133,198</code>.</p>
+<h3>Why a Durable Object is a natural shard</h3>
+<p>A shard is one slice of the data that one server owns. A Durable Object has the properties of a good shard:</p>
+<table><tr><th>Property of a Durable Object</th><th>Consequence for a shard</th></tr><tr><td>The name maps to one instance worldwide</td><td>The shard key is the address. No hash ring or lookup table is needed</td></tr><tr><td>One event runs at a time</td><td>The shard has one writer. Commit order is the consistency order</td></tr><tr><td>Private storage next to the code</td><td>Reads and writes need no network hop</td></tr><tr><td>WebSockets terminate in the same object</td><td>The writer can push changes to its own subscribers</td></tr><tr><td>An idle object hibernates</td><td>A shard that nobody uses costs almost nothing</td></tr><tr><td>Creation on first use</td><td>A new tenant needs no provisioning step</td></tr></table>
+<div class="mermaid">
+flowchart LR
+    K[&quot;shard key, for example a channel id&quot;] --&gt;|&quot;idFromName&quot;| ID[&quot;object identifier&quot;]
+    ID --&gt;|&quot;get&quot;| ST[&quot;stub&quot;]
+    ST --&gt;|&quot;fetch&quot;| DO[&quot;one Durable Object: one writer, one SQLite file, its sockets&quot;]
+
+</div>
+<p>The same properties set the limits. One object is one machine's worth of work: about 1,000 requests per second as a soft limit, and 10 gigabytes of storage. There is no transaction across two objects. Work that needs to cross shards must use fan-out, a registry, or a global table. <a href="04-sharding-design.html">Sharding design</a> shows how Lunora handles this.</p>
+<p><strong>Aha: the name is the whole routing layer.</strong> Most databases need a router that maps keys to servers and moves keys when servers change. A Durable Object needs only a string. Cloudflare keeps the map from name to place.</p>
 <h2>Durable Object SQLite storage</h2>
+<p>Durable Object SQLite is the storage that sits inside each Durable Object. The full explanation of the storage application programming interface (API), transactions and limits is in the section "SQLite storage and the transaction model" above.</p>
 <p>Every shard table has three columns: <code>id</code>, <code>_creationTime</code>, and a JavaScript Object Notation (JSON) document column <code>__doc__</code>.</p>
 <pre><code class="language-ts">// packages/shard-engine/src/ctx-db-migrations.ts:638
 CREATE TABLE IF NOT EXISTS &lt;table&gt; (
@@ -210,8 +345,12 @@ CREATE TABLE IF NOT EXISTS &lt;table&gt; (
 </code></pre>
 <p>Fields are read with <code>json_extract(__doc__, '$.field')</code>. Secondary indexes are expression indexes on those paths. A second index on <code>(_creationTime, id)</code> serves the default sort order (<code>ctx-db-migrations.ts:664-684</code>). The comment reports 1317.9 microseconds without it and 7.3 microseconds with it, over 50,000 rows.</p>
 <p>Why a JSON column: a schema change that adds a field needs no <code>ALTER TABLE</code>. The cost is that indexes need expression paths and big documents cost more bytes per write. See <a href="12-optimizations-and-tricks.html">Tricks</a>.</p>
-<p>The shard Structured Query Language (SQL) layer works around Cloudflare statement limits. The documentation table lists them (<code>apps/docs/src/content/docs/limits.mdx</code>): 5 terms in a compound <code>SELECT</code>, 100 bound parameters, a 50-byte <code>LIKE</code> pattern, 100 columns, 2 megabytes (MB) per row, 100 kilobytes (KB) per statement. The change log code chunks <code>IN</code> lists at 90 names (<code>ctx-db-cdc.ts:174</code>).</p>
+<p>The shard Structured Query Language (SQL) layer works around Cloudflare statement limits. The documentation table lists them (<code>apps/docs/src/content/docs/limits.mdx</code>). The limits are: 5 terms in a compound <code>SELECT</code>, 100 bound parameters, a 50-byte <code>LIKE</code> pattern, 100 columns, 2 megabytes (MB) per row, and 100 kilobytes (KB) per statement. Cloudflare documents all of them except the compound <code>SELECT</code> limit (<code>durable-objects/platform/limits.mdx</code>, SQL storage limits). The change log code chunks <code>IN</code> lists at 90 names (<code>ctx-db-cdc.ts:174</code>).</p>
 <h2>D1</h2>
+<h3>What D1 is</h3>
+<p>D1 is the managed SQLite database of Cloudflare. It has one primary copy in one place. It can add read-only copies near users. <a href="09-d1-global-and-hyperdrive.html">D1 and global tables</a> explains read replicas, sessions and the bookmark from the beginning. That page owns the topic. This page gives only the short form.</p>
+<p><strong>The property Lunora relies on.</strong> A client that writes a <code>.global()</code> row must read it back. The D1 Sessions application programming interface (API) gives this guarantee when the client passes the bookmark of its last write. A bookmark is a string that stands for one point in the history of the database. A replica that gets a bookmark waits until it has caught up to that point, then answers. See the sequence diagrams in the D1 page.</p>
+<h3>How Lunora uses D1</h3>
 <p>D1 is a Cloudflare Structured Query Language (SQL) database. Lunora uses it for <code>.global()</code> tables: data that must be readable from every shard. The adapter uses the D1 Sessions application programming interface (API) with a bookmark.</p>
 <pre><code class="language-ts">// packages/d1/src/d1-client.ts:195
 public withSession(bookmark?: string): D1Session {
@@ -221,15 +360,79 @@ public withSession(bookmark?: string): D1Session {
 </code></pre>
 <p>The constant <code>D1_FIRST_UNCONSTRAINED</code> is <code>"first-unconstrained"</code> (<code>d1-client.ts:67</code>). It lets the first read use any replica. Details are in <a href="09-d1-global-and-hyperdrive.html">D1 and global tables</a>.</p>
 <h2>R2</h2>
+<h3>What R2 is</h3>
+<p>R2 is object storage that speaks the S3 protocol and charges no egress fees. An object is a key, a body, and metadata such as the ETag (a fingerprint of the body), Hypertext Transfer Protocol (HTTP) metadata and custom metadata. R2 has four parts: a gateway that authenticates, a metadata service built on Durable Objects, a read cache, and the storage that holds encrypted bytes (<code>r2/how-r2-works.mdx</code>, "Architecture").</p>
+<p>A write is visible only after the metadata service commits it. R2 sends the success response after that commit. So R2 is strongly consistent: every client sees the effect of a write, update or delete at once, everywhere (<code>r2/reference/consistency.mdx</code>).</p>
+<p>Three R2 properties matter for Lunora:</p>
+<ol><li><strong>Conditional writes.</strong> A <code>put</code> can carry an <code>onlyIf</code> condition, such as <code>etagMatches</code>. If the condition fails, <code>put</code> returns <code>null</code> and writes nothing (<code>r2/api/workers/workers-api-reference.mdx</code>, "Conditional operations"). This is a compare-and-swap. It lets two writers agree on one winner with no lock service.</li><li><strong>Ordered listing.</strong> <code>list</code> returns keys in lexicographic order, with a <code>prefix</code> and a <code>cursor</code>, up to 1,000 per call (same file, <code>R2ListOptions</code>). Lunora relies on this order for the change log archive.</li><li><strong>Multipart upload.</strong> A large object is uploaded in parts. Each part must be at least 5 mebibytes, except the last. All parts except the last must have the same size. A multipart upload may have up to 10,000 parts. R2 aborts an unfinished upload after 7 days by default (<code>r2/objects/upload-objects.mdx</code>, "Multipart upload details").</li></ol>
+<div class="mermaid">
+sequenceDiagram
+    participant A as Writer A
+    participant B as Writer B
+    participant R as R2 object (upload state)
+    A-&gt;&gt;R: get, receives etag e1
+    B-&gt;&gt;R: get, receives etag e1
+    A-&gt;&gt;R: put with onlyIf etagMatches e1
+    R--&gt;&gt;A: new object, etag e2
+    B-&gt;&gt;R: put with onlyIf etagMatches e1
+    R--&gt;&gt;B: null (condition failed, nothing written)
+
+</div>
+<p>R2 does not delete anything by itself unless an operator sets a lifecycle rule. Lunora relies on that: its archive and upload state have no delete job (see <a href="08-storage-tiers-and-archive.html">Storage tiers</a>).</p>
+<h3>How Lunora uses R2</h3>
 <p>R2 is Cloudflare object storage. Lunora uses it in four ways.</p>
 <ol><li>File storage with signed uniform resource locators (URLs) (<code>packages/storage</code>). A 16 MiB cap exists for buffered streams (<code>create-storage.ts:58</code>).</li><li>Resumable uploads, with upload state kept as conditional-put objects in the same bucket (<code>r2-binding-upload-storage.ts:1-60</code>). Parts are 5 MiB (<code>R2_PART_SIZE</code>, <code>r2-upload-part-writer.ts</code>).</li><li>The change log archive under <code>cdc/{shard}/{epoch}/{seq}.json</code> (<code>ctx-db-cdc-archive.ts:106,116</code>). See <a href="06-change-log-cdc.html">Change log</a> and <a href="08-storage-tiers-and-archive.html">Storage tiers</a>.</li><li>Snapshot backups under <code>backups/</code> (<code>packages/runtime/src/backup-layout.ts:18</code>).</li></ol>
 <h2>Workers KV</h2>
-<p>key-value (KV) is a global key-value store. Lunora does not use it in the core data path. It exposes <code>ctx.kv</code> to applications through <code>createKv</code>. The wrapper checks the KV limits before the call: 512-byte keys, 1000 keys per list page, 1,024 bytes of metadata (<code>packages/bindings/src/kv/create-kv.ts:17-27</code>).</p>
+<h3>What Workers KV is</h3>
+<p>Workers KV is a global key-value store. It writes data to a small number of central data centers. It caches the data in each data center after the first read there. Hot reads are fast. Cold reads must go to the center (<code>kv/concepts/how-kv-works.mdx</code>).</p>
+<p>Workers KV is eventually consistent. "Eventually consistent" means that readers may see old data for a while, and then all readers see the new data. A change is usually visible at once in the location where it was made. In other locations it can take 60 seconds or more, because those locations keep a cached copy until it expires. The <code>cacheTtl</code> option sets this time. Its default is 60 seconds and its minimum is 30 seconds. A lookup for a missing key is cached too, so a new key can also take that long to appear (<code>how-kv-works.mdx</code>, "Performance" and "Consistency"; <code>kv/platform/limits.mdx</code>).</p>
+<div class="mermaid">
+sequenceDiagram
+    participant W1 as Writer (location 1)
+    participant K as Workers KV central store
+    participant RD as Reader (location 2, has cached the old value)
+    W1-&gt;&gt;K: put key = v2
+    W1-&gt;&gt;W1: read key, sees v2 at once
+    RD-&gt;&gt;RD: read key, sees v1 from its cache
+    Note over RD: up to 60 seconds or more
+    RD-&gt;&gt;K: cache expires, fetch
+    K--&gt;&gt;RD: v2
+
+</div>
+<p>Two writes to the same key at nearly the same time can overwrite each other. A key may be written once per second at most. Workers KV does not suit atomic or transactional work (<code>kv/api/write-key-value-pairs.mdx</code>; <code>how-kv-works.mdx</code>, note under "Consistency").</p>
+<p><strong>The property Lunora relies on.</strong> None. Lunora does not use Workers KV on its core data path, because the data path needs stronger guarantees. Lunora only exposes <code>ctx.kv</code> to applications. An application that uses it must expect old reads for up to about a minute.</p>
+<h3>How Lunora uses Workers KV</h3>
+<p>Lunora does not use Workers KV in the core data path. It exposes <code>ctx.kv</code> to applications through <code>createKv</code>. The wrapper checks the Workers KV limits before the call: 512-byte keys, 1000 keys per list page, 1,024 bytes of metadata (<code>packages/bindings/src/kv/create-kv.ts:17-27</code>).</p>
 <p>Do not confuse this with the key-value application programming interface (API) of Durable Object storage. Lunora uses that API in <code>SchedulerDO</code>, <code>ShardRegistryDO</code> and the secret value store.</p>
 <h2>Queues</h2>
-<p>Queues give at-least-once background delivery. The wrapper <code>createQueues</code> checks two Cloudflare limits before a send: 100 messages per batch (<code>MAX_QUEUE_BATCH</code>, <code>create-queues.ts:18</code>) and 43,200 seconds of delay (<code>MAX_DELAY_SECONDS</code>, <code>create-queues.ts:27</code>). Longer delays go to the scheduler.</p>
+<h3>What Queues is</h3>
+<p>Queues is a message service. A producer sends messages to a queue with <code>send</code> or <code>sendBatch</code>. A consumer Worker receives batches of messages through its <code>queue()</code> handler. The service stores each message until the consumer acknowledges it (<code>queues/reference/how-queues-works.mdx</code>).</p>
+<p>Rules from the Cloudflare docs:</p>
+<ul><li><strong>At-least-once delivery.</strong> A message is delivered at least once. In rare cases it is delivered more than once. The docs advise an idempotency key to remove duplicates (<code>queues/reference/delivery-guarantees.mdx</code>). Idempotency means that doing the same action twice has the same effect as doing it once.</li><li><strong>No order guarantee.</strong> Queues "does not guarantee that messages will be delivered to a consumer in the same order".</li><li><strong>One consumer per queue.</strong> A queue can have only one consumer Worker (<code>queues/get-started.mdx</code>).</li><li><strong>Retries and dead letters.</strong> If delivery fails, Queues retries up to <code>max_retries</code>, three by default. After that the message goes to a dead letter queue (DLQ) if one is set. Without a DLQ, Queues deletes it (<code>queues/configuration/batching-retries.mdx</code>; <code>dead-letter-queues.mdx</code>).</li><li><strong>Limits.</strong> A message may be 128 kilobytes. A batch holds up to 100 messages. A delay may be up to 24 hours. A consumer call may run 15 minutes of wall time (<code>queues/platform/limits.mdx</code>).</li></ul>
+<div class="mermaid">
+sequenceDiagram
+    participant P as Producer (Worker)
+    participant Q as Queue
+    participant C as Consumer Worker
+    participant D as Dead letter queue
+    P-&gt;&gt;Q: send(message)
+    Q-&gt;&gt;C: batch of messages
+    C--&gt;&gt;Q: error, or retry()
+    Q-&gt;&gt;C: same message again (attempt 2, 3 ...)
+    C--&gt;&gt;Q: ack()
+    Note over Q,D: after max_retries failures the message moves to the dead letter queue
+
+</div>
+<p><strong>The property Lunora relies on.</strong> At-least-once delivery with retries. Lunora builds the missing exactly-once effect itself. It gives each queue message a stable identifier, and the shard's idempotency table removes the duplicates (<a href="11-alarms-queues-workflows.html">Alarms, queues, workflows</a>).</p>
+<h3>How Lunora uses Queues</h3>
+<p>Queues give at-least-once background delivery. The wrapper <code>createQueues</code> checks two limits before a send: 100 messages per batch (<code>MAX_QUEUE_BATCH</code>, <code>create-queues.ts:18</code>) and 43,200 seconds, which is 12 hours, of delay (<code>MAX_DELAY_SECONDS</code>, <code>create-queues.ts:27</code>). Longer delays go to the scheduler.</p>
+<p><strong>Correction.</strong> The code comment calls 12 hours "the Cloudflare Queues ceiling". The Cloudflare limits page lists 24 hours (86,400 seconds) for <code>delaySeconds</code> (<code>queues/platform/limits.mdx</code>; <code>queues/configuration/batching-retries.mdx</code>, "Messages can be delayed by up to 24 hours"). So the Lunora check is stricter than the platform. A delay between 12 and 24 hours is refused by Lunora although Cloudflare would accept it.</p>
 <p>The consumer <code>dispatchQueueBatch</code> wraps every message in a <code>Proxy</code> so it can see <code>ack</code> and <code>retry</code>. It isolates a poison message and re-enqueues a declined one inside a signed envelope. A topic is a set of queues, one per subscription, because a queue has one consumer (<code>topics.ts:75</code>). See <a href="11-alarms-queues-workflows.html">Alarms, Queues and Workflows</a>.</p>
 <h2>Hyperdrive</h2>
+<h3>What Hyperdrive is</h3>
+<p>Hyperdrive sits between a Worker and a Postgres or MySQL database. It does three jobs: it sets up connections near the Worker, it pools connections near the database, and it caches read-only query results (<code>hyperdrive/concepts/how-hyperdrive-works.mdx</code>). A pool is a set of open connections that many requests reuse. A database accepts only a limited number of connections, and a Worker is stateless. Without a pool, each Worker call would open a new connection.</p>
+<p><strong>The property Lunora relies on.</strong> A Durable Object can reach an ordinary Postgres or MySQL database without exhausting its connections. One warning comes with the caching job. Hyperdrive does not remove cached results when your code writes. A read right after a write can return the old result. <a href="09-d1-global-and-hyperdrive.html">D1 and global tables</a> explains this in the part about Hyperdrive.</p>
+<h3>How Lunora uses Hyperdrive</h3>
 <p>Hyperdrive is a connection pool in front of Postgres or MySQL. Lunora lets a <code>.global()</code> table use it as an alternative to D1.</p>
 <pre><code class="language-ts">// packages/hyperdrive/src/global.ts:50
 export const createHyperdriveGlobalCtxDb = ({ engine, exec, ...rest }) =&gt;
@@ -237,18 +440,58 @@ export const createHyperdriveGlobalCtxDb = ({ engine, exec, ...rest }) =&gt;
 </code></pre>
 <p>The same store core (<code>sql-store</code>) runs on three dialects. MySQL needs the <code>FOUND_ROWS</code> flag so the affected-rows check sees matched rows (<code>global.ts:19-22</code>).</p>
 <h2>Workflows</h2>
+<h3>What Workflows is</h3>
+<p>Workflows runs a multi-step program that can last minutes, hours or weeks. Each step is a function that Workflows runs, retries and saves. When a later step fails, Workflows does not run the earlier steps again. It replays the saved results (<code>workflows/index.mdx</code>; <code>workflows/build/rules-of-workflows.mdx</code>). This style is called durable execution.</p>
+<p>Facts from the docs:</p>
+<ul><li><strong>Step results are saved.</strong> A step result can be up to 1 mebibyte. The step name is the cache key, so names must be deterministic (<code>rules-of-workflows.mdx</code>, "Name steps deterministically").</li><li><strong>Retries have defaults.</strong> Without a setting, a step retries 5 times, with a 10-second exponential delay and a 10-minute timeout per attempt (<code>workflows/build/sleeping-and-retrying.mdx</code>).</li><li><strong>Steps must be idempotent.</strong> A step can run twice, for example when the service that it called died after it committed. Check whether the work is already done before a call that is not idempotent (<code>rules-of-workflows.mdx</code>, first rule).</li><li><strong>Sleep is cheap.</strong> <code>step.sleep</code> may last up to 365 days and does not count as a step.</li><li><strong>Limits.</strong> Up to 10,000 steps (Paid), 1 mebibyte per event payload, and 50,000 running instances per account (<code>workflows/reference/limits.mdx</code>).</li></ul>
+<div class="mermaid">
+flowchart LR
+    S[&quot;Workflow starts: run()&quot;] --&gt; A[&quot;step.do &#x27;fetch&#x27;: result saved&quot;]
+    A --&gt; B[&quot;step.do &#x27;analyze&#x27;: fails, retried with backoff&quot;]
+    B --&gt; C[&quot;step.sleep or wait for an event&quot;]
+    C --&gt; D[&quot;step.do &#x27;notify&#x27;: result saved&quot;]
+    D --&gt; E[&quot;Workflow ends&quot;]
+
+</div>
+<p><strong>The property Lunora relies on.</strong> A saved step is not repeated. So a long job, such as an agent run, can survive an eviction or a deploy. Lunora's own code in a step must still be idempotent.</p>
+<h3>How Lunora uses Workflows</h3>
 <p>Workflows are durable multi-step jobs. Lunora generates one <code>WorkflowEntrypoint</code> class per <code>defineWorkflow</code> and per <code>defineAgent</code> (<code>packages/codegen/src/emit/shard-runtime.ts:141,197</code>). The base class <code>LunoraWorkflow</code> applies a user definition onto the platform class (<code>packages/workflow/src/do/index.ts</code>). Instances are created through <code>ctx.exports.&lt;Class&gt;</code>; no <code>workflows[]</code> binding is needed (<code>cloudflare.ts:95</code>). Lunora also supports workflow cron schedules in wrangler (<code>cloudflare.ts:91</code>).</p>
 <h2>Cron Triggers</h2>
+<h3>What a Cron Trigger is</h3>
+<p>A Cron Trigger runs a Worker on a schedule. You write a cron expression in the configuration and add a <code>scheduled()</code> handler to the Worker. Cron Triggers use Coordinated Universal Time (UTC) and run on machines that have spare capacity (<code>workers/configuration/cron-triggers.mdx</code>). A scheduled invocation may run up to 15 minutes of wall time (real elapsed time) (<code>src/content/partials/workers/wall-time-limits.mdx</code>).</p>
+<p>A Cron Trigger belongs to a Worker, and the operator sets it in configuration. A Durable Object alarm belongs to one object and the code sets it. Lunora uses both: a Cron Trigger for app schedules, and alarms for per-shard work.</p>
+<p><strong>The property Lunora relies on.</strong> A reliable clock tick that needs no running object. The tick has no caller, so Lunora marks its internal call as trusted.</p>
+<h3>How Lunora uses Cron Triggers</h3>
 <p>The generated Worker has a <code>scheduled()</code> entry. It walks a generated map named <code>LUNORA_CRONS</code> (<code>cloudflare.ts:100</code>). The build step writes <code>triggers.crons</code> into wrangler config and keeps a record of the entries it owns, so it never deletes a hand-written cron (<code>packages/config/src/cloudflare/reconcile-crons.ts:1-60</code>). A scheduled backup also runs on a cron (<code>packages/runtime/src/scheduled-backup.ts</code>).</p>
 <h2>Analytics Engine</h2>
+<h3>What Analytics Engine is</h3>
+<p>Analytics Engine stores time-series data points. A Worker writes a point with <code>writeDataPoint({ blobs, doubles, indexes })</code>. The call returns at once, and the runtime writes in the background, so the Worker does not <code>await</code> it. A dataset is created on its first write. You read the data back with a Structured Query Language (SQL) application programming interface (API) (<code>analytics/analytics-engine/get-started.mdx</code>). The data is kept for three months (<code>analytics/analytics-engine/limits.mdx</code>).</p>
+<p>A blob is a string dimension to group by. A double is a number to sum or average. The index is the sampling key. Reads use sampling: when data is large, a query may look at a subset (<code>analytics/analytics-engine/sampling.mdx</code>, <code>analytics/sampling.mdx</code>). So Analytics Engine is good for trends and not for exact counts.</p>
+<p>Limits per data point: 20 blobs, 20 doubles, 1 index of at most 96 bytes, and 16 kilobytes in all blobs. A Worker invocation may write at most 250 data points (<code>analytics/analytics-engine/limits.mdx</code>).</p>
+<p><strong>The property Lunora relies on.</strong> A cheap, non-blocking write path for telemetry. A failed write must never fail a request.</p>
+<h3>How Lunora uses Analytics Engine</h3>
 <p>Analytics Engine stores sampled time-series data. Lunora has two writers.</p>
 <p>The first is <code>analyticsEngineSink</code>. It writes one data point for each remote procedure call (RPC) call: index <code>[functionPath]</code>, five string blobs, four numeric doubles (<code>packages/runtime/src/observability-sinks.ts:477-500</code>). The call is fire-and-forget and wrapped in <code>try/catch</code>.</p>
 <p>The second is <code>ctx.analytics</code>. It enforces Analytics Engine limits before the write: 20 blobs, 20 doubles, 1 index, 16 kilobytes (KB) of blobs, 96 bytes of index (<code>packages/bindings/src/analytics/create-analytics.ts:3-30</code>). There is also an Analytics SQL (Structured Query Language) reader (<code>bindings/src/analytics-sql</code>).</p>
 <h2>Service bindings</h2>
+<h3>What a service binding is</h3>
+<p>A service binding lets one Worker call another Worker without a public uniform resource locator (URL). Worker A can forward a request to Worker B or call a method on it. By default both Workers run on the same thread of the same server, so the call adds no network hop and no extra cost (<code>workers/runtime-apis/bindings/service-bindings/index.mdx</code>).</p>
+<p><strong>The property Lunora relies on.</strong> The binding is the permission. A Worker without the binding cannot reach the target. So the target needs no shared secret.</p>
+<h3>How Lunora uses service bindings</h3>
 <p>A service binding lets one Worker call another Worker without the public internet. Lunora uses it for the shard registry. A second Worker can bind the first Worker's <code>ShardRegistryEntrypoint</code>. The binding is the permission, so the second Worker needs no secret (<code>packages/do/src/shard-registry-do.ts:480-542</code>). The build step writes <code>services[]</code> entries and records which ones it owns (<code>config/src/cloudflare/reconcile-services.ts:1-30</code>).</p>
 <h2>Vectorize, Workers AI, AI Gateway, AI Search</h2>
+<h3>What these services are</h3>
+<p>Vectorize is a vector database. A vector, or embedding, is a list of numbers that represents the meaning of a text or an image. A query asks for the stored vectors that are nearest to a given vector (<code>vectorize/index.mdx</code>). Writes are not visible at once. Vectorize writes a change to a log, and a later asynchronous job builds the new index files in R2 and commits them. It groups many changes into one batch. A large insert can take minutes or more to become visible (<code>vectorize/best-practices/insert-vectors.mdx</code>, "Improve Write Throughput").</p>
+<p>Workers AI runs machine learning models on serverless graphics processors (<code>workers-ai/index.mdx</code>). AI Gateway is a proxy in front of model calls. It adds analytics, caching, rate limits, retries and cost tracking (<code>ai-gateway/index.mdx</code>).</p>
+<p><strong>The property Lunora relies on.</strong> None of these can roll back. A vector write cannot be undone with a Lunora transaction. So Lunora starts these calls after the commit. Because Vectorize shows a write late, a search right after a write may miss it.</p>
+<h3>How Lunora uses them</h3>
 <p>Vectorize stores embeddings. Lunora syncs vectors after a commit, never inside the transaction. The reason is that Vectorize cannot roll back (<code>shard-do.ts:4222-4254</code>, <code>deferAfterCommit</code>). Workers AI (artificial intelligence) runs models. When the gateway variables are set, calls go through AI Gateway, which adds token and cost telemetry (<code>packages/ai/src/gateway.ts:1-12</code>). AI Search is read through the <code>ai_search_namespaces</code> binding and is remote-only (<code>cloudflare.ts:133</code>).</p>
 <h2>Pipelines and R2 SQL</h2>
+<h3>What these services are</h3>
+<p>Pipelines takes events from a Worker binding or a Hypertext Transfer Protocol (HTTP) endpoint. It transforms them with Structured Query Language (SQL) and writes them to R2 as Apache Iceberg tables or as Parquet or JavaScript Object Notation (JSON) files. It delivers with an exactly-once guarantee (<code>basin-pipelines/index.mdx</code>). Iceberg is an open table format for large analytic data in object storage. R2 Data Catalog keeps the table list inside the bucket. R2 SQL is a serverless engine that runs SQL queries over those tables (<code>basin-sql/index.mdx</code>, <code>basin-catalog/index.mdx</code>).</p>
+<p>Note on names. The current Cloudflare docs call these products Basin Pipelines, Basin Catalog and Basin SQL. They say Basin SQL was formerly R2 SQL, and Basin Pipelines was formerly Cloudflare Pipelines. The Lunora code and the wrangler binding type still use the older names (<code>pipeline</code>). This document uses the Lunora names.</p>
+<p><strong>The property Lunora relies on.</strong> A durable, cheap place for logs that survive the shard, with a SQL reader. Logs are append-only and are not part of the data path.</p>
+<h3>How Lunora uses them</h3>
 <p><code>pipelineLogSink</code> sends log records to a Cloudflare Pipeline. The pipeline writes to R2 Data Catalog (Apache Iceberg). The admin route reads the logs back with R2 SQL (Structured Query Language) on the server, because the application programming interface (API) token must not reach a browser (<code>cloudflare.ts:172-176</code>, <code>observability-sinks.ts:563</code>). <code>ctx.pipelines.send</code> wraps the binding; it always passes an array (<code>bindings/src/pipelines/create-pipelines.ts</code>).</p>
 <h2>Other services in the code</h2>
 <table><tr><th>Service</th><th>Evidence</th></tr><tr><td>Images</td><td><code>bindings/src/images</code>, <code>cloudflare.ts:141</code></td></tr><tr><td>Browser Run</td><td><code>packages/browser</code>, <code>cloudflare.ts:137</code></td></tr><tr><td>Containers</td><td><code>packages/container</code>, <code>cloudflare.ts:142-153</code></td></tr><tr><td>Email (<code>send_email</code>)</td><td><code>packages/mail/src/cloudflare-transport.ts:1-45</code>. The binding sends to one verified recipient only</td></tr><tr><td>Cloudflare Access</td><td><code>packages/cloudflare-access</code>, <code>cloudflare.ts:204</code></td></tr><tr><td>Secrets Store</td><td><code>cloudflare.ts:182</code>, <code>infer-bindings.ts:386</code></td></tr><tr><td>Cache application programming interface (API) (<code>caches.default</code>)</td><td><code>packages/runtime/src/rest-edge-cache.ts:1-40</code></td></tr><tr><td>Version metadata</td><td><code>CF_VERSION_METADATA</code> read in <code>shard-do.ts:12187</code></td></tr><tr><td>Worker loaders</td><td><code>cloudflare.ts:86</code> (a binding validated by config)</td></tr><tr><td>Artifacts</td><td><code>bindings/src/artifacts</code>, <code>cloudflare.ts:160</code></td></tr><tr><td>Workers for Platforms</td><td><code>dispatch_namespaces</code> validated in <code>validate-bindings.ts:755</code>; no runtime use found</td></tr><tr><td>Smart Placement</td><td><code>placement</code> validated in <code>validate-settings.ts</code>; no runtime use found</td></tr></table>

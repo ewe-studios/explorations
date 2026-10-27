@@ -14,6 +14,18 @@ Lunora has four kinds of migration. Each runs in a different place. This page ex
 | D1 Structured Query Language (SQL) migration files | D1, by a runner | `lunora migrate` | `d1/src/migration-runner.ts:377` |
 | Durable Object classes | Cloudflare | `wrangler deploy` | `reconcile-bindings.ts:190-205` |
 
+## Words on this page
+
+- **Migration.** A planned change to the shape of stored data or to the set of classes that Cloudflare runs.
+- **Schema.** The list of tables, fields and indexes.
+- **Idempotent.** Safe to run again. `CREATE TABLE IF NOT EXISTS` does nothing the second time.
+- **Lazy.** Done on first use, and not at start-up.
+- **Cold start and wake.** The first request after the object loads from nothing or from hibernation. In-memory flags reset at that moment. See [Cloudflare services](02-cloudflare-services.md), section "Lifecycle: active, idle, hibernated, inactive".
+- **Drift.** The difference between the schema in the code and a committed baseline file.
+- **Keyset batch.** A page of rows chosen by "rows after this key", and not by a numeric offset.
+- **Claim and heartbeat.** A runner marks a migration as its own (the claim) and refreshes a time stamp while it works (the heartbeat). If the time stamp goes old, another runner may take over.
+- **Durable Object class migration.** A statement to Cloudflare that a Durable Object class is created, renamed or deleted. It is not a data migration.
+
 ## Shard schema: idempotent and lazy
 
 There is no migration file for a shard table. The schema is code. On the first request after a cold start, `ensureMigrated` runs `runShardMigrations`. It uses `CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS`. A Durable Object runs one event at a time, so no locking is needed.
@@ -37,7 +49,7 @@ Details:
 
 - Adding a field or a table needs nothing. The JavaScript Object Notation (JSON) document column absorbs it.
 - A removed index is dropped from a ledger table `__lunora_framework_indexes`. Framework indexes are tracked, so an index the schema no longer declares can be dropped without touching a user's own index (`ctx-db-migrations.ts:288`).
-- Companion tables (`__agg_*`, `__rank_*`, `__fts_*`, geo) are created with `IF NOT EXISTS`. They never reshape an existing table, so a rebuild marker table `__lunora_companion_state` records when a rebuild is needed (`ctx-db-migrations.ts:513-560`).
+- Companion tables (`__agg_<name>`, `__rank_<name>`, `__fts_<name>`, geo) are created with `IF NOT EXISTS`. They never reshape an existing table, so a rebuild marker table `__lunora_companion_state` records when a rebuild is needed (`ctx-db-migrations.ts:513-560`).
 - A unique index over existing duplicates cannot be created. The code returns the blocked indexes, keeps going, and refuses user dispatch with an error naming them. The retry is limited to once per `BLOCKED_MIGRATION_RETRY_MS` (5,000 ms, `packages/codegen/src/emit/shard.ts:1027`). An admin data migration that removes the duplicates resets the clock (`packages/codegen/src/emit/shard.ts:1160-1195`).
 - Each cold start re-runs the idempotent data definition language (DDL). The flag `migrated` is in memory and resets on hibernation. This costs catalog reads on every wake.
 - Index creation on the change log is isolated so that a slow build cannot block boot.
@@ -102,13 +114,17 @@ sequenceDiagram
 For D1, `MigrationRunner` applies ordered Structured Query Language (SQL) files.
 
 - Tracking table `__drizzle_migrations` with `hash` (UNIQUE) and `version` (a unique index). The table shape is borrowed from Drizzle, but the runner decides by version, not by Drizzle's timestamp rule, so the two are not interchangeable (`migration-runner.ts:30-50`).
-- Every refusal is decided before the first migration runs. If a migration was already applied from different SQL, the run throws `MIGRATION_DRIFT` (the recorded and current SHA-256 are in the message). Nothing is half applied.
+- Every refusal is decided before the first migration runs. If a migration was already applied from different SQL, the run throws `MIGRATION_DRIFT` (the recorded and current Secure Hash Algorithm 256-bit (SHA-256) checksums are in the message). Nothing is half applied.
 - Two runners that race lose on the unique hash. The loser's batch rolls back and the migration counts as skipped (`migration-runner.ts:432-460`).
 - Applied SQL runs in an atomic batch with its tracking row.
 
 Global tables themselves are provisioned automatically, so the migration files only keep history in step with the schema. The docs say `migrate generate` is bookkeeping for a table that became `.global()` (`concepts/sharding.mdx`).
 
 ## Durable Object class migrations
+
+A Durable Object class migration is a message to Cloudflare. It says "this class is new", "this class has a new name" or "this class is gone". It does not change any rows. The legacy Wrangler `migrations` array holds these entries. Each entry has a unique `tag`. A new SQLite-backed class goes in `new_sqlite_classes` (`durable-objects/reference/durable-object-class-migrations-legacy.mdx`). A change to the code of an existing class needs no migration.
+
+Cloudflare now prefers a declarative `exports` field for new Workers. It replaces the `migrations` array. The `migrations` array "remains fully supported for existing Workers", but a Worker cannot use both in one configuration (`durable-objects/reference/durable-objects-migrations.mdx`, and the note at the top of the legacy page). Lunora's build step writes the `migrations` array, as the next paragraph shows. Lunora uses `exports` only for Workflow entries (`packages/config/src/cloudflare/reconcile-bindings.ts:693-881`). Cloudflare allows Workflow entries in `exports` next to `migrations` (note at the top of the legacy page). I found no use of `exports` for Durable Object classes.
 
 Cloudflare needs a `migrations` entry to create a SQLite-backed class. The build step reconciles it. It replays `deleted_classes`, `renamed_classes`, `new_classes` and `new_sqlite_classes` the way wrangler does, then appends a new `new_sqlite_classes` tag for missing classes (`reconcile-bindings.ts:140-205`). The comment records a bug: counting only the `new_*` lists made a renamed class look unregistered, and wrangler then refused the config for ever. The class set comes from the Worker entry exports, not from imports, because wrangler refuses a binding whose class is not exported (`infer-bindings.ts:1-20`).
 

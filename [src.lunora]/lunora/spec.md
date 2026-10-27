@@ -14,7 +14,7 @@ documentation_goal: Explain how Lunora uses every Cloudflare service, how it sha
 | Location | https://github.com/anolilab/lunora, shallow clone at commit 50b6008 |
 | Language | TypeScript (pnpm monorepo, 59 packages) |
 | Version | Alpha. Root package.json is 0.0.0 |
-| License | FSL-1.1-Apache-2.0 (source available, becomes Apache 2.0 after two years) |
+| License | Functional Source License identifier FSL-1.1-Apache-2.0 (source available, becomes Apache 2.0 after two years) |
 | Main file studied | packages/do/src/shard-do.ts (18,454 lines) |
 
 ## 2. What Lunora Is
@@ -29,6 +29,7 @@ Lunora is a backend framework for Cloudflare. A Durable Object with its own SQLi
 4. Know replicas, relays, D1 bookmarks and read scaling.
 5. Know every trick and optimization.
 6. Know the strengths, weaknesses and risks, ranked.
+7. Understand every Cloudflare concept that the pages use, with no earlier Cloudflare knowledge, and find the Cloudflare documentation file for each claim.
 
 ## 4. Documentation Structure
 
@@ -67,6 +68,7 @@ Lunora is a backend framework for Cloudflare. A Durable Object with its own SQLi
 | 18 | exploration.md | DONE |
 | 19 | Grandfather review | DONE (citations checked by script; some items not verified, see exploration.md) |
 | 20 | Generate HyperText Markup Language (HTML) | DONE |
+| 21 | Concept explanations for readers new to Cloudflare (D1 bookmarks, Durable Objects, consistency words, every service, Lunora terms) | DONE |
 
 ## 6. Build System
 

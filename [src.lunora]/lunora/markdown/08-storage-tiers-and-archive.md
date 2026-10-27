@@ -6,6 +6,18 @@ title: Storage Tiers and the R2 Change Log Archive
 
 Lunora keeps data in four places: Durable Object SQLite, D1 or Hyperdrive, R2, and short-lived queues. The schema picks the tier for each table. Data does not move between tiers by itself, with one exception: the change log moves from SQLite to R2 before it is deleted. This page shows the tiers, the exact order of the archive steps, and every crash window.
 
+## Words on this page
+
+- **Tier.** A kind of storage with its own speed, cost and rules. Hot data is fast and small. Cold data is cheap and large.
+- **R2 bucket, object, key.** R2 stores objects in a bucket. Each object has a key (its name), a body and metadata. R2 lists keys in lexicographic order. See [Cloudflare services](02-cloudflare-services.md), section "R2".
+- **Strongly consistent.** After R2 confirms a write, every reader sees it. R2 is strongly consistent (`r2/reference/consistency.mdx`).
+- **Segment.** One R2 object that holds a batch of change log rows.
+- **Sweep.** One cleanup pass over the log. It archives old rows first and deletes them after.
+- **Watermark (archive).** The last `seq` that is safely in R2. See the three kinds of watermark in [Replication and read scaling](07-replication-and-read-scaling.md).
+- **Lifecycle rule.** An R2 rule that deletes or moves objects by age. R2 applies it by itself, usually within 24 hours (`r2/buckets/object-lifecycles.mdx`). Lunora never deletes archive segments, so the operator must set a rule.
+- **Crash window.** A short span between two steps in which a crash leaves a half-done state. The tables below list each window and its recovery.
+- **Compare-and-swap.** A write that succeeds only if the current value is still the one the writer read. R2 supports this through conditional writes.
+
 ## The tiers
 
 | Tier | Holds | Written by | Moves to another tier? |
@@ -112,6 +124,8 @@ When a consumer's cursor is below the live floor, `syncPage` catches only `CDC_L
 
 If R2 fails, the original 409 is thrown, not an opaque 500 (`cdc-retention.ts:459-470`).
 
+Not verified: the call uses the option `startAfter` of the R2 binding. The S3-compatible listing of R2 documents `start-after` (`r2/api/s3/api.mdx`). The reference of the Workers binding in the documentation snapshot that I read lists `limit`, `prefix`, `cursor`, `delimiter` and `include`, and not `startAfter` (`r2/api/workers/workers-api-reference.mdx`, `R2ListOptions`). I could not confirm the option for the binding from the docs.
+
 **Aha: the segment `from` and `to` are claims, not facts.** The bucket is operator-supplied. Nothing forces it to be dedicated. So the reader trusts only the rows it holds.
 
 ### Crash and failure windows
@@ -139,7 +153,7 @@ R2 is never cleaned by Lunora. "The archive grows without bound by design". The 
 
 ### Backups
 
-The cron backup streams every shard's rows into one newline-delimited JavaScript Object Notation (NDJSON) object under `backups/lunora-backup-<id>.ndjson`, with a sidecar `.manifest.json` that holds bytes, rows, a SHA-256 and the table list (`backup-layout.ts:60-91`). Facts:
+The cron backup streams every shard's rows into one newline-delimited JavaScript Object Notation (NDJSON) object under `backups/lunora-backup-<id>.ndjson`. A sidecar `.manifest.json` holds the bytes, the rows, a Secure Hash Algorithm 256-bit (SHA-256) checksum and the table list (`backup-layout.ts:60-91`). Facts:
 
 - The snapshot is capped at 24 MiB of NDJSON (`MAX_SCHEDULED_BACKUP_BYTES`, `scheduled-backup.ts`). The comment admits the rows are already in memory before the first check, so this is not a memory bound.
 - Retention removes at most 200 snapshots per run, 8 deletions at a time (`MAX_PRUNE_DELETES`, `PRUNE_DELETE_CONCURRENCY`), and only sidecars that carry its own cron expression in metadata.
@@ -149,7 +163,7 @@ For anything larger, the answer is the change data capture (CDC) tap, the replay
 
 ### Resumable uploads
 
-State is a JavaScript Object Notation (JSON) object per upload under `_lunora/uploads/`. R2 is strongly consistent and supports conditional puts, so a compare-and-swap lease works without a Durable Object. Chunks are coalesced into 5 MiB parts because R2 multipart needs equal parts except the last. A lease lasts 60,000 ms (`LEASE_MS`, `r2-binding-upload-storage.ts:102`). State objects are never deleted. The operator must set a lifecycle rule (`r2-binding-upload-storage.ts:80-95`).
+State is a JavaScript Object Notation (JSON) object per upload under `_lunora/uploads/`. R2 is strongly consistent and supports conditional puts (`r2/api/workers/workers-api-reference.mdx`, "Conditional operations"), so a compare-and-swap lease works without a Durable Object. Chunks are coalesced into 5 MiB parts. R2 multipart needs equal parts except the last. Each part except the last must be at least 5 MiB (`r2/objects/upload-objects.mdx`, "Part size limits"). A lease lasts 60,000 ms (`LEASE_MS`, `r2-binding-upload-storage.ts:102`). State objects are never deleted. The operator must set a lifecycle rule (`r2-binding-upload-storage.ts:80-95`).
 
 ### Log archive
 

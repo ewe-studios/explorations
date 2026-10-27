@@ -134,6 +134,8 @@
   <article class="prose">
 <h1>Architecture: host-neutral engine, thin Cloudflare adapter</h1>
 <p>Lunora splits the engine from Cloudflare. The engine talks to small interfaces. One adapter package maps those interfaces onto Cloudflare primitives. This page shows the layers, the interfaces, and the code generator that joins them.</p>
+<h2>Words on this page</h2>
+<ul><li><strong>Host.</strong> The platform that runs the engine. Cloudflare is one host. A Node process and the <code>celld</code> daemon are others.</li><li><strong>Contract.</strong> A TypeScript interface that says what a host must do, for example "run one event at a time".</li><li><strong>Adapter.</strong> Code that maps a contract onto the calls of one host. <code>platform-cloudflare</code> is the Cloudflare adapter.</li><li><strong>Gate.</strong> The <code>blockConcurrencyWhile</code> call of a Durable Object. It holds back all other events until its callback ends. <a href="02-cloudflare-services.html">Cloudflare services</a>, section "Durable Objects from first principles", explains the call and the input and output gates around it.</li><li><strong>Cold start.</strong> The first request after the object or Worker loads from nothing. Code that runs in a cold start is paid for again after each wake.</li><li><strong>Capability matrix.</strong> A table that rates each feature as <code>native</code>, <code>emulated</code> or <code>unsupported</code> on each host.</li><li><strong>Codegen.</strong> The build step that writes TypeScript from the schema and the function files.</li><li><strong><code>celld</code>.</strong> A self-hosted daemon that runs Wrangler bundles (<a href="14-testing-observability-deployment.html">Testing, observability and deployment</a>).</li></ul>
 <h2>The layers</h2>
 <div class="mermaid">
 flowchart TD
@@ -181,7 +183,7 @@ public async runInTransaction&lt;T&gt;(work: () =&gt; Promise&lt;T&gt;, onCommit
 <p>The <code>onCommitted</code> hook runs inside the gate, after the commit. It is the only point where "this transaction committed" and "no other transaction has committed since" are both true. The <code>ShardDO</code> uses it to put after-commit side effects in commit order (<code>shard-runner.ts:125-135</code>).</p>
 <h2>How Cloudflare maps onto the contracts</h2>
 <p>The adapter is short (792 lines). Three tricks are worth reading.</p>
-<p><strong>Trick 1: the gate never rejects.</strong> The platform call <code>blockConcurrencyWhile</code> treats a rejected callback as fatal. It resets the object and drops every hibernating WebSocket. A normal application error must not do that. So the adapter turns the result into a value and re-throws it outside the gate.</p>
+<p><strong>Trick 1: the gate never rejects.</strong> The platform call <code>blockConcurrencyWhile</code> treats a rejected callback as fatal. Cloudflare says: "If the callback throws an exception, the object will be terminated and reset" (<code>durable-objects/api/state.mdx</code>, <code>blockConcurrencyWhile</code>). The code comment adds that the abort discards the in-memory state and "every hibernating WebSocket subscription" (<code>packages/platform-cloudflare/src/cloudflare-host.ts:145-156</code>). A normal application error must not do that. So the adapter turns the result into a value and re-throws it outside the gate.</p>
 <pre><code class="language-ts">// packages/platform-cloudflare/src/cloudflare-host.ts:161
 const runSerialized: ShardHost[&quot;runSerialized&quot;] = async (function_) =&gt; {
     if (typeof state.blockConcurrencyWhile === &quot;function&quot;) {
@@ -196,7 +198,7 @@ const runSerialized: ShardHost[&quot;runSerialized&quot;] = async (function_) =&
 };
 </code></pre>
 <p><strong>Trick 2: the original error survives.</strong> The platform rolls back correctly but hands back a flattened copy of the error. A <code>LunoraError</code> copy would look like an unknown fault and be hidden from the client. The adapter saves the original, and re-throws it. It attaches the platform error as <code>cause</code> (<code>cloudflare-host.ts:114,202</code>).</p>
-<p><strong>Trick 3: no raw transaction Structured Query Language (SQL).</strong> The Workers runtime forbids <code>BEGIN</code>, <code>COMMIT</code> and <code>SAVEPOINT</code> inside a Durable Object. The adapter always uses <code>storage.transaction</code> (<code>cloudflare-host.ts:185-201</code>, and the explanation at <code>shard-do.ts:4160-4185</code>). The synchronous variant <code>transactionSync</code> does not wait for an async handler, so it is not used.</p>
+<p><strong>Trick 3: no raw transaction Structured Query Language (SQL).</strong> The Workers runtime forbids transaction statements such as <code>BEGIN</code> and <code>SAVEPOINT</code> in <code>sql.exec</code> inside a Durable Object. Cloudflare names <code>BEGIN TRANSACTION</code> and <code>SAVEPOINT</code> and points to <code>storage.transaction()</code> and <code>transactionSync()</code> (<code>durable-objects/api/sqlite-storage-api.mdx:239</code>). The code comment lists <code>COMMIT</code> too. The adapter always uses <code>storage.transaction</code> (<code>cloudflare-host.ts:185-201</code>, and the explanation at <code>shard-do.ts:4160-4185</code>). The synchronous variant <code>transactionSync</code> does not wait for an async handler, so it is not used.</p>
 <h3>Gate and transaction in order</h3>
 <div class="mermaid">
 sequenceDiagram
@@ -240,7 +242,7 @@ const mergeDurableObjects = &lt;Env = unknown&gt;(roles: MergedRoles): MergedDur
             ...
             this.#role = new Role(state as never, env as never);
 </code></pre>
-<p>Names for the non-shard roles carry the prefix <code>__lunora_do__:&lt;role&gt;:</code> (<code>LUNORA_ROLE_PREFIX</code>, <code>packages/platform/src/shard-directory.ts:126</code>). <code>roleNamespace</code> is a <code>Proxy</code> that adds the prefix (<code>merge-durable-objects.ts:119</code>). The directory refuses any user shard key that starts with the prefix (<code>shard-directory.ts:138</code>).</p>
+<p>A <code>Proxy</code> is a JavaScript object that intercepts reads of its properties. Here it adds a prefix to a name before the real call happens. Names for the non-shard roles carry the prefix <code>__lunora_do__:&lt;role&gt;:</code> (<code>LUNORA_ROLE_PREFIX</code>, <code>packages/platform/src/shard-directory.ts:126</code>). <code>roleNamespace</code> is a <code>Proxy</code> that adds the prefix (<code>merge-durable-objects.ts:119</code>). The directory refuses any user shard key that starts with the prefix (<code>shard-directory.ts:138</code>).</p>
 <p><strong>Aha: the role is a name.</strong> A Durable Object has no way to be told its role at creation. So Lunora puts the role in the name, and the name is fixed for the life of the object. The same trick marks relays (<code>::relay::</code>) and replicas (<code>::replica::</code>). See <a href="07-replication-and-read-scaling.html">Replication</a>.</p>
 <h2>Where to go next</h2>
 <p>Read <a href="02-cloudflare-services.html">Cloudflare services</a> for the full service list. Read <a href="03-worker-runtime.html">Worker runtime</a> for the request gate.</p>

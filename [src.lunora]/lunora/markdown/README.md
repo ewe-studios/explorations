@@ -6,7 +6,7 @@ title: lunora Documentation Index
 
 > **Type-safe, real-time backend on your own Cloudflare account.** A Durable Object is the database and also the broadcaster.
 
-This set explains how Lunora uses every Cloudflare service, how it shards, how its change log and R2 archive work, and what is good and bad about the design. All claims trace to files in the repository `anolilab/lunora` (commit `50b6008`).
+The set starts with a table, "How to read these docs", in the overview. It tells you which page explains each Cloudflare idea. This set explains how Lunora uses every Cloudflare service, how it shards, how its change log and R2 archive work, and what is good and bad about the design. All claims trace to files in the repository `anolilab/lunora` (commit `50b6008`).
 
 ## Foundation
 

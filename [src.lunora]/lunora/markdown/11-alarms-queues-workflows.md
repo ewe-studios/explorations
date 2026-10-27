@@ -6,6 +6,21 @@ title: Alarms, Scheduler, Queues, Workflows and Cron
 
 A Durable Object has exactly one alarm slot. Lunora shares that slot between several jobs. It also runs a separate scheduler object, uses Queues for background messages, Workflows for multi-step jobs and Cron Triggers for time. This page explains each, and the guards against runaway loops.
 
+## Words on this page
+
+- **Alarm.** A timer that wakes a Durable Object. Each object has one alarm slot. If the handler throws, Cloudflare retries it with exponential backoff, from 2 seconds, up to 6 times (`durable-objects/api/alarms.mdx`). An alarm handler may run 15 minutes at most (`src/content/partials/workers/wall-time-limits.mdx`). [Cloudflare services](02-cloudflare-services.md) explains alarms in full.
+- **Job.** One unit of delayed work in the scheduler.
+- **Lease.** A claim on a job that expires. If the holder dies, the job becomes free again after the lease ends.
+- **Outbox.** A table written inside the transaction. It holds a message that must be sent after the commit.
+- **Idempotency key.** An identifier that makes a repeated call return the first result.
+- **Dead letter.** A record that failed too many times. It moves to a separate place and is never deleted silently.
+- **Poison message.** A message that fails every time it is processed.
+- **Ack and retry.** A consumer tells the queue "done" (`ack`) or "try again" (`retry`).
+- **Workpool.** A named group of jobs with a limit on how many run at once.
+- **Circuit breaker.** A guard that stops a loop after too many repeats in a short time.
+- **Backoff.** A growing wait between retries.
+- **Wall time.** Real elapsed time, not processor time.
+
 ## One alarm, four tiers
 
 The shard alarm (`ShardDO.alarm`, `shard-do.ts:3633`) serves four tiers in one handler (`handleAlarmCloudflare`, `shard-do.ts:9062`).
@@ -100,7 +115,7 @@ Storage uses the key-value application programming interface (API) with prefixes
 
 ### The time index
 
-The index key is `t:<15-digit zero-padded time>:<id>`. Zero padding makes string order equal to number order. The maximum time is `999_999_999_999_999` so every value pads to 15 digits (`TIME_PAD`, `MAX_SCHEDULED_FOR_MS`, lines 223-227). The comment explains the failure for a 16-digit time: it sorts above every bound, so the job never fires, and a value at or above 1e21 prints as `8.6e+21` and parses back as `8`, which arms the alarm at a past time in a tight loop. A retry ladder can produce such a time after about 36 doublings, so the same check guards retries (`isIndexableTime`, line 248).
+The index key is `t:<15-digit zero-padded time>:<id>`. Zero padding makes string order equal to number order. The maximum time is `999_999_999_999_999` so every value pads to 15 digits (`TIME_PAD`, `MAX_SCHEDULED_FOR_MS`, lines 223-227). The comment explains the failure for a 16-digit time. It sorts above every bound, so the job never fires. A value at or above 1e21 prints as `8.6e+21` and parses back as `8`. That arms the alarm at a past time in a tight loop. A retry ladder can produce such a time after about 36 doublings, so the same check guards retries (`isIndexableTime`, line 248).
 
 ### The alarm
 
@@ -110,12 +125,12 @@ The index key is `t:<15-digit zero-padded time>:<id>`. Zero padding makes string
 2. List up to 100 index entries with `end: t:<now>:~` (`~` sorts after digits). This is one range read.
 3. Read all headers in parallel.
 4. Delete dangling index entries. A dangling entry would make `rescheduleAlarm` arm a past time for ever.
-5. Drain at most 6 records at once (`MAX_CONCURRENT_DISPATCHES = 6`). Six is the platform limit of simultaneous connections waiting for response headers. More would only queue.
+5. Drain at most 6 records at once (`MAX_CONCURRENT_DISPATCHES = 6`). Six is the platform limit of simultaneous outgoing connections for one request (`workers/platform/limits.mdx`, account table; `durable-objects/platform/limits.mdx`). More would only queue.
 6. Always re-arm in `finally`, even if a record threw.
 
 ### The lease
 
-A claimed record is not unindexed. It is re-armed 15 minutes ahead (`DISPATCH_LEASE_MS = 900_000`). The number is the alarm wall-clock ceiling. A claim made by this object cannot be alive 15 minutes later. A shorter lease would allow a double run. A longer one only delays recovery. If the scheduler dies mid-dispatch, the job is delayed up to 15 minutes, never lost (`scheduler-do.ts:178-214`).
+A claimed record is not unindexed. It is re-armed 15 minutes ahead (`DISPATCH_LEASE_MS = 900_000`). The number is the alarm wall-clock ceiling of 15 minutes (`src/content/partials/workers/wall-time-limits.mdx`). A claim made by this object cannot be alive 15 minutes later. A shorter lease would allow a double run. A longer one only delays recovery. If the scheduler dies mid-dispatch, the job is delayed up to 15 minutes, never lost (`scheduler-do.ts:178-214`).
 
 The receiver backs this up. The shard declines a second delivery of a live dedup key with 409 `DISPATCH_IN_PROGRESS` (`shared/dispatch-claim.ts:23`). The scheduler treats that answer as "in progress" and re-arms without using up an attempt (`dispatch`, line 769; `recordRetry(record, inProgress)`, line 1432).
 
@@ -127,15 +142,15 @@ The dispatch target comes from `env.LUNORA_ORIGIN_URL`, never from the request b
 
 ### Workpools
 
-A pool name with `maxConcurrency` limits parallel jobs. The count is in a `pool:<name>` row. It is read fresh for every record. The comment explains: an outbound fetch opens the input gate, so a cached copy written back after a `/complete` call would bring the finished job's slot back and leak pool capacity for ever. A pooled job at the limit is re-armed 1,000 ms later (`POOL_BACKPRESSURE_DELAY_MS`).
+A pool name with `maxConcurrency` limits parallel jobs. The count is in a `pool:<name>` row. It is read fresh for every record. The comment explains the reason. An outbound fetch opens the input gate. A cached copy that is written back after a `/complete` call would bring the finished job's slot back. Pool capacity would then leak for ever. A pooled job at the limit is re-armed 1,000 ms later (`POOL_BACKPRESSURE_DELAY_MS`).
 
 ## Queues
 
-`@lunora/queue` is a typed layer over the platform producer and consumer.
+Cloudflare Queues delivers each message at least once, may deliver messages out of order, and allows one consumer for each queue. [Cloudflare services](02-cloudflare-services.md), section "Queues", explains this with a diagram. `@lunora/queue` is a typed layer over the platform producer and consumer.
 
 ### Producer checks
 
-Before any call: batch at most 100 messages, delay at most 43,200 s, and the body may not carry the key `$lunora.requeued$` (`create-queues.ts:18,27,40-50`; `requeue-envelope.ts:21`). Cloudflare's byte limits (128 kilobytes (KB) per message, 256 KB per batch) are left to the platform. Measuring them would serialize every body twice.
+Before any call: batch at most 100 messages, delay at most 43,200 seconds (12 hours), and the body may not carry the key `$lunora.requeued$` (`create-queues.ts:18,27,40-50`; `requeue-envelope.ts:21`). Cloudflare's byte limits (128 kilobytes (KB) per message, 256 KB per batch) are left to the platform. The 12-hour delay check is stricter than Cloudflare: its limits page lists 24 hours for `delaySeconds` (`queues/platform/limits.mdx`). Measuring them would serialize every body twice.
 
 ### Consumer: `dispatchQueueBatch`
 
@@ -154,11 +169,11 @@ A Cloudflare queue has one consumer. A topic with N subscriptions is N queues, o
 
 ## Workflows
 
-`defineWorkflow` becomes a `WorkflowEntrypoint` subclass in `_generated/workflows.ts`. An instance is created through `ctx.exports.<Class>`. The scheduler can start a workflow at a time. Branches (`ctx.parallel`) stamp a callback marker into the params, so the child signals the parent when done (`workflow/src/do/index.ts`, `fan-out.ts`). Platform limits recorded in `limits.mdx`: 10,000 steps (Paid), 1 MiB per step output, 1 MiB per event, 50,000 concurrent instances.
+A workflow is a multi-step program. Cloudflare saves the result of each finished step and does not run that step again after a failure. [Cloudflare services](02-cloudflare-services.md), section "Workflows", explains the model. `defineWorkflow` becomes a `WorkflowEntrypoint` subclass in `_generated/workflows.ts`. An instance is created through `ctx.exports.<Class>`. The scheduler can start a workflow at a time. Branches (`ctx.parallel`) stamp a callback marker into the params, so the child signals the parent when done (`workflow/src/do/index.ts`, `fan-out.ts`). Platform limits recorded in `limits.mdx`: 10,000 steps (Paid), 1 MiB per step output, 1 MiB per event, 50,000 concurrent instances.
 
 ## Cron Triggers
 
-The generated `scheduled()` entry walks `LUNORA_CRONS`. The build step writes `triggers.crons`, keeping a list of the cron strings it owns in `package.json` so it does not remove a cron added by hand (`reconcile-crons.ts:1-60`). A cron target dispatches to a shard through `dispatchToShard`, which marks the call with the trusted `x-lunora-system` header (`create-worker.ts:3311-3340`). The cron path skips `authorizeShard` on purpose. The comment records the bug it avoids: the natural gate `identity?.userId !== undefined` would reject every cron, and the scheduler would retry for ever with nothing in the app logs.
+A Cron Trigger runs the `scheduled()` handler of a Worker at times that a cron expression sets, in Coordinated Universal Time (UTC) ([Cloudflare services](02-cloudflare-services.md), section "Cron Triggers"). The generated `scheduled()` entry walks `LUNORA_CRONS`. The build step writes `triggers.crons`, keeping a list of the cron strings it owns in `package.json` so it does not remove a cron added by hand (`reconcile-crons.ts:1-60`). A cron target dispatches to a shard through `dispatchToShard`, which marks the call with the trusted `x-lunora-system` header (`create-worker.ts:3311-3340`). The cron path skips `authorizeShard` on purpose. The comment records the bug it avoids: the natural gate `identity?.userId !== undefined` would reject every cron, and the scheduler would retry for ever with nothing in the app logs.
 
 ## Where to go next
 

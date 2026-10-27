@@ -33,11 +33,23 @@ sequenceDiagram
     S->>L: trim rows up to watermark only
 ```
 
+## Words on this page
+
+- **Expression index.** A SQLite index built on an expression, such as `json_extract(__doc__, '$.field')`, and not on a plain column.
+- **B-tree.** The tree structure that SQLite uses for tables and indexes. A temporary B-tree is built in memory when a sort has no index.
+- **Gate.** The `blockConcurrencyWhile` call. See [Cloudflare services](02-cloudflare-services.md), section "Durable Objects from first principles".
+- **Watermark.** A number that marks progress. See [Replication and read scaling](07-replication-and-read-scaling.md), section "Consistency words used in these docs".
+- **Epoch.** A label for one timeline of the change log. See [Change log](06-change-log-cdc.md).
+- **Optimistic concurrency control (OCC).** Writers read a version and write only if the version is unchanged. See [D1 and global tables](09-d1-global-and-hyperdrive.md).
+- **Jitter.** Random variation in a wait time, so that many clients do not retry at the same moment.
+- **Microtask.** The smallest scheduled unit of JavaScript. Work queued as a microtask runs before the next event, so many calls in one tick can be grouped.
+- **Outbox.** A table written in the transaction that holds a message to send after the commit.
+
 **Aha: most tricks are one pattern.** The code finds a platform limit, sets a constant equal to that limit, and writes the reason in a comment.
 
 ## Storage layout
 
-### 1. Documents as JSON text, fields through `json_extract`
+### 1. Documents as JavaScript Object Notation (JSON) text, fields through `json_extract`
 
 Each shard table has `id`, `_creationTime` and one `__doc__` text column (`packages/shard-engine/src/ctx-db-migrations.ts:638`). Field reads use `json_extract`. Indexes are expression indexes on those paths. Adding a field needs no `ALTER TABLE`. System fields such as `_commitSeq` live in the blob for the same reason (`ctx-db-commit-seq.ts:94`).
 
@@ -67,7 +79,7 @@ Documented limits: 5 compound `SELECT` terms, 100 bound parameters, 50-byte `LIK
 
 ### 5. A gate that never rejects
 
-`blockConcurrencyWhile` resets the object when its callback rejects. The adapter returns `{ok, value}` or `{ok:false, error}` and re-throws outside (`cloudflare-host.ts:161-183`). An ordinary application error no longer drops every hibernating socket.
+`blockConcurrencyWhile` resets the object when its callback rejects (`durable-objects/api/state.mdx`, `blockConcurrencyWhile`). The adapter returns `{ok, value}` or `{ok:false, error}` and re-throws outside (`cloudflare-host.ts:161-183`). An ordinary application error no longer drops every hibernating socket.
 
 ### 6. Keep the original error object
 
@@ -196,11 +208,11 @@ String order equals number order. The upper bound is chosen so every value has 1
 
 ### 34. Lease equal to the platform ceiling
 
-15 minutes, because an alarm cannot outlive 15 minutes (`scheduler-do.ts:214`).
+15 minutes, because an alarm cannot outlive 15 minutes (`scheduler-do.ts:214`; `src/content/partials/workers/wall-time-limits.mdx`).
 
 ### 35. Concurrency equal to the connection limit
 
-Six dispatches at once, the number of connections a request may wait on (`scheduler-do.ts:173`).
+Six dispatches at once, the number of simultaneous outgoing connections that a request may hold (`scheduler-do.ts:173`; `workers/platform/limits.mdx`).
 
 ### 36. Outbox inside the transaction
 
@@ -214,9 +226,9 @@ See [Alarms, queues, workflows](11-alarms-queues-workflows.md).
 
 ### 38. Full-jitter backoff
 
-`Math.round(Math.random() * min(1000, 50 * 2 ** (attempt - 1)))` (`retry.ts:190-194`). It stops a synchronized wave against a recovering database.
+The wait is a random number between 0 and the smaller of 1,000 and 50 times 2 to the power of (attempt minus 1), in milliseconds (`retry.ts:190-194`). It stops a synchronized wave against a recovering database.
 
-### 39. Two-parameter OCC guard
+### 39. Two-parameter optimistic concurrency control (OCC) guard
 
 Compare `id` and `_version` only, so wide tables stay under 100 parameters (`shared/occ-version-column.ts`).
 
@@ -238,7 +250,7 @@ One compare-and-set row stops N shards trimming one shared log (`sql-store/src/c
 
 ## Worker, batching and cold start
 
-### 44. Batch RPC grouped by shard
+### 44. Batch remote procedure call (RPC) grouped by shard
 
 Calls are validated, grouped by shard and sent as one `/rpc-batch` each. The body and headers of a fan-out are built once (`create-worker.ts:5026`, `query-coordinator.ts:1216`).
 
@@ -290,7 +302,7 @@ Subscriptions sit in attachments. Idle sockets cost storage, not compute.
 
 ### 56. Row-write cost to know
 
-One mutation can write: the row, the default-sort index entry, each declared index entry, a log row (if on), an idempotency row (if a mutation id is sent), the client watermark, plus a request-log row. This is an inference from the migration and dispatch code, not a measured count.
+One mutation can write these rows: the row itself and the default-sort index entry. It can write each declared index entry and a log row (if on). It can write an idempotency row (if a mutation id is sent), the client watermark, and a request-log row. This is an inference from the migration and dispatch code, not a measured count.
 
 ## Where to go next
 

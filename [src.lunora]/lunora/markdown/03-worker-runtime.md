@@ -6,6 +6,18 @@ title: The Worker Runtime and Request Gate
 
 The Worker is the only public entry. It never stores data. It resolves who the caller is, decides which shard the call may reach, and forwards the call. It is built by `createWorker` in `packages/runtime/src/create-worker.ts`, a file with 6,407 lines.
 
+## Words on this page
+
+- **Handler.** A function that Cloudflare calls for one kind of event. A Worker has `fetch` for Hypertext Transfer Protocol (HTTP) requests, `scheduled` for Cron Triggers and `queue` for Queue batches.
+- **Envelope.** The JavaScript Object Notation (JSON) body of a remote procedure call (RPC). It holds `functionPath`, `args` and `shardKey`.
+- **Identity.** Who the caller is. The Worker reads the token or cookie and builds an identity once per request.
+- **Stub.** A client handle for one Durable Object. A call on the stub travels to the object. See [Cloudflare services](02-cloudflare-services.md), section "Durable Objects from first principles".
+- **Subrequest.** Any request that a Worker sends to another service. Workers have a cap on subrequests per request.
+- **Isolate.** One running copy of a Worker. A cache "per isolate" is not shared with other copies. The Worker section of [Cloudflare services](02-cloudflare-services.md) explains isolates.
+- **`waitUntil`.** A call that keeps the Worker alive after the response so that background work can finish.
+- **`request.cf`.** An object that Cloudflare adds to each request. It holds the continent, the data center and the country of the caller.
+- **Default deny.** A rule that refuses an action unless a rule allows it.
+
 ## Entry points
 
 `createWorker` returns an object with `fetch`, `scheduled` and `queue` (`create-worker.ts:2756,6104`). A helper `composeWorker` builds the options per request from `env` (`create-worker.ts:6237`).
@@ -95,6 +107,22 @@ export const resolveShard = (directory, name, locationHint) => {
     return directory.get(directory.idForName(name), locationHint);
 };
 ```
+
+## Headers the Worker adds or forwards
+
+The Worker builds one set of headers for the shard request. The function is `resolveForwardContext` (`packages/runtime/src/create-worker.ts:2236-2345`). The Worker copies some headers from the client and mints others itself.
+
+| Header | Source | Meaning |
+|--------|--------|---------|
+| `authorization`, `cookie` | Client, copied | Credentials for the shard to check again |
+| `x-d1-bookmark` | Client, copied (line 2278) | The D1 position the client last saw. It makes the next read of a `.global()` table see the client's own writes. See [D1 and global tables](09-d1-global-and-hyperdrive.md) |
+| `x-lunora-mutation-id` | Client, copied | Idempotency key. A retry with the same key returns the saved result |
+| `x-lunora-client-id`, `x-lunora-client-seq` | Client, copied | Per-device identifier and a growing number for custom mutators. The shard compares the number with its client watermark |
+| `x-lunora-base-seq` | Client, copied | The change log position at which the client composed the write. Only a `.dropStalePatches()` table uses it |
+| `x-lunora-client-ip` | Worker, minted | The caller address, only where it can be trusted |
+| `x-lunora-origin` | Worker, minted | The origin from the request uniform resource locator (URL). Used to sign object URLs |
+| `x-lunora-userid`, `x-lunora-identity`, `x-lunora-identity-exp` | Worker, minted | The resolved identity. The Worker removes client copies first |
+| `x-lunora-min-seq` | Client, set per shard | The change log position of the client's last write. Replica reads use it. See [Replication](07-replication-and-read-scaling.md) |
 
 ## Batching: one request, many shards
 

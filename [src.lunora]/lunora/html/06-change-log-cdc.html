@@ -134,6 +134,22 @@
   <article class="prose">
 <h1>The change log: one append-only table per shard</h1>
 <p>Every shard can keep an append-only log of its writes. The table is <code>__cdc_log</code>. The log feeds subscriptions, read replicas, warehouse connectors, point-in-time replay and the archive in R2. This page explains the table, its cursors, the epoch that detects a forked timeline, the commit sequence <code>_commitSeq</code>, and the retention rules. The R2 archive and the order of writes are in <a href="08-storage-tiers-and-archive.html">Storage tiers</a>.</p>
+<h2>Words before you start</h2>
+<ul><li><strong>Change data capture (CDC).</strong> Recording every write as a row in a log, so that other programs can follow the changes.</li><li><strong>Sequence number (<code>seq</code>).</strong> The position of one log row. It starts low and only grows.</li><li><strong>Cursor.</strong> The <code>seq</code> that a reader has processed. The reader asks for "changes after my cursor".</li><li><strong>Consumer.</strong> Any reader of the log: a live subscriber, a read replica, a warehouse connector or the archive.</li><li><strong>Post-image.</strong> The full document after a write. A log row stores it in <code>doc</code>.</li><li><strong>Compaction.</strong> Setting <code>doc</code> to NULL on old log rows. The key stays, the content goes.</li><li><strong>Trim.</strong> Deleting old log rows.</li><li><strong>Floor.</strong> The oldest <code>seq</code> that is still stored. A cursor below the floor cannot be served from the table.</li><li><strong>Epoch.</strong> A random label for one timeline of the log. Consumers keep it with the cursor.</li><li><strong>Fork.</strong> Two different histories that share the same first part. A restore creates one.</li><li><strong>Witness.</strong> A fact from outside the SQLite file that proves a fork, for example a consumer cursor that is higher than the log.</li><li><strong>Re-seed.</strong> Take a fresh full copy of the data and start the cursor again. A consumer does this when its cursor is no longer valid.</li><li><strong>Retention.</strong> The rule for how much log to keep.</li></ul>
+<p>The next picture shows why a cursor alone is not enough.</p>
+<div class="mermaid">
+sequenceDiagram
+    participant C as Consumer (cursor 120, epoch E1)
+    participant S as Shard (log up to 120, epoch E1)
+    Note over S: operator restores the shard to the moment of seq 50
+    Note over S: the whole file reverts. The log now ends at 50 and the epoch is still E1
+    S-&gt;&gt;S: new writes get seq 51, 52 ... 60 (a different history)
+    C-&gt;&gt;S: changes after 120, epoch E1
+    S--&gt;&gt;C: refused: cursor 120 is above the high-watermark 60 (CDC_TIMELINE_FORKED)
+    C-&gt;&gt;S: re-seed: full copy, new epoch
+
+</div>
+<p>If the new writes had passed seq 120 before the consumer came back, the cursor would look valid and the fork would stay hidden. This is the "Silent" state below.</p>
 <h2>It is opt-in</h2>
 <p>Change data capture (CDC) is off by default. The app builder has <code>.cdc(enabled = true)</code>. The comment says it "costs a changelog row per write, which an app using none of the above should not pay" (<code>packages/codegen/src/emit/app-builder.ts:140-147</code>). A shard-local <code>defineShape</code> needs it. Without it, <code>shape_subscribe</code> is refused with <code>SHAPE_REQUIRES_CDC</code>. Replicas need it too: a shard with no log refuses the replica control channel with 409 (<code>replica.ts:325</code>).</p>
 <h2>The table</h2>
@@ -166,9 +182,9 @@ const cursorBelowRetainedFloor = (floor: number | undefined, sinceSeq: number): 
 <table><tr><th>Code</th><th>Hypertext Transfer Protocol (HTTP)</th><th>When</th><th>Source</th></tr><tr><td><code>CDC_LOG_TRIMMED</code></td><td>409</td><td>Cursor below the key floor</td><td><code>ctx-db-cdc.ts:617</code></td></tr><tr><td><code>CDC_PAYLOAD_COMPACTED</code></td><td>409</td><td>A page holds an insert or update with no post-image</td><td><code>shard-do.ts:5206-5214</code></td></tr><tr><td><code>CDC_TIMELINE_FORKED</code></td><td>409</td><td>Cursor above the high-watermark, or epoch mismatch</td><td><code>ctx-db-cdc.ts:649</code>, <code>shard-do.ts:5162</code></td></tr></table>
 <p>A compacted row is refused rather than served because "a doc-less insert/update is indistinguishable on the wire from a delete" (<code>shard-do.ts:5191-5197</code>). Serving it would delete rows in a warehouse.</p>
 <h2>The epoch: detecting a forked timeline</h2>
-<p><code>__cdc_meta</code> holds one row with an <code>epoch</code> string (a random UUID). A consumer stores <code>(epoch, cursor)</code>. It resumes only when both match (<code>ctx-db-cdc.ts:714-757</code>).</p>
+<p><code>__cdc_meta</code> holds one row with an <code>epoch</code> string (a random universally unique identifier (UUID)). A consumer stores <code>(epoch, cursor)</code>. It resumes only when both match (<code>ctx-db-cdc.ts:714-757</code>).</p>
 <p>Why the cursor alone is not enough: after a reset or a restore, <code>AUTOINCREMENT</code> starts low again. A client with a high old cursor would be told "resumable" on an unrelated timeline.</p>
-<p>The hard case is native point-in-time recovery (PITR). A restore reverts the whole SQLite file. That includes <code>__cdc_meta</code>. So the epoch comes back to its old value, and nothing inside the shard can see the fork. Lunora uses witnesses from outside SQLite:</p>
+<p>The hard case is native point-in-time recovery (PITR). A restore reverts the whole SQLite file. Cloudflare says the restore covers all stored data of the object, including key-value data (<code>durable-objects/api/sqlite-storage-api.mdx</code>, the section on point-in-time recovery). <a href="02-cloudflare-services.html">Cloudflare services</a>, section "Point-in-time recovery", explains the platform calls. That includes <code>__cdc_meta</code>. So the epoch comes back to its old value, and nothing inside the shard can see the fork. Lunora uses witnesses from outside SQLite:</p>
 <ol><li><strong>A consumer cursor</strong> above the high-watermark on the same epoch. Handled in <code>evaluateResume</code> (<code>shard-do.ts:5399</code>) and <code>runShardCdcSync</code> (<code>shard-do.ts:5170</code>).</li><li><strong>A replica cursor</strong>: <code>rewoundBeneathUs = page.cursor &lt; state.appliedSeq</code> (<code>replica.ts:514</code>).</li><li><strong>The R2 archive</strong>: a segment above the stored watermark proves a timeline the shard forgot (<code>cdcArchiveRewound</code>, <code>ctx-db-cdc-archive.ts:240</code>).</li></ol>
 <p>Any witness calls <code>sealForkedTimeline</code>, which mints a new epoch (<code>shard-do.ts:5310</code>).</p>
 <div class="mermaid">
