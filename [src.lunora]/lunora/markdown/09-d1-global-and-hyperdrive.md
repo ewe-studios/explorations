@@ -158,7 +158,7 @@ D1 calls the resulting guarantee **sequential consistency**. D1 builds one globa
 - **Writes follow reads.** A write is based on the value that the session just read.
 - **Read my own writes.** After you write, all later reads in the session see the write.
 
-The Sessions API exists only in the Worker binding. It is not available through the REST API (`read-replication.mdx`, "Known limitations"). Lunora runs inside a Worker, so this limit does not affect it.
+The Sessions application programming interface (API) exists only in the Worker binding. It is not available through the Representational State Transfer (REST) API (`read-replication.mdx`, "Known limitations"). Lunora runs inside a Worker, so this limit does not affect it.
 
 ### How Lunora carries the bookmark from request to request
 
@@ -232,9 +232,9 @@ These are places where the bookmark does not protect the client. Items 1, 3 and 
 2. **A page reload drops the bookmark.** The default store is in memory (`client/src/bookmark.ts:4`). After a reload the client has none, and its first read is unpinned. A caller who needs more can pass a persistent `bookmarkStorage`.
 3. **A replayed mutation returns no bookmark.** Suppose the response to a mutation is lost, and the client retries with the same mutation identifier. The shard returns the saved result and does not run the handler. The sink stays empty, so no bookmark is sent (`shard-do.ts:8831-8838`). The first attempt did write. The client never learned its bookmark.
 4. **Server-side callers send none.** The client for service bindings sends only `content-type`. The comment says read-your-writes across the binding "would need a bookmark the caller owns" (`packages/client/src/service.ts:110-118`).
-5. **Live sockets carry none.** The code assigns `currentRequestBookmark` only in `beginDispatch` and when it restores a request scope (`shard-do.ts:15437`, `9203`). I found no bookmark in the WebSocket frames. A global shape that the alarm polls every 2,000 milliseconds reads through `getInboundBookmark()` (`shard-shapes.ts:183,230`). That value is empty on an alarm tick. The shard drops the bookmark on paths without an HTTP response, such as an alarm or a lifecycle dispatch (`shard-do.ts:1171-1174`).
-6. **No bookmark for Hyperdrive.** A global table in Postgres or MySQL has no Sessions API. See the next part.
-7. **The edge cache must not replay it.** The REST cache removes `x-d1-bookmark` and `x-lunora-shard-key` from stored responses. A stored copy would hold an older bookmark than the client has, and would roll the client back (`packages/runtime/src/rest-edge-cache.ts:61-69`).
+5. **Live sockets carry none.** The code assigns `currentRequestBookmark` only in `beginDispatch` and when it restores a request scope (`shard-do.ts:15437`, `9203`). I found no bookmark in the WebSocket frames. A global shape that the alarm polls every 2,000 milliseconds reads through `getInboundBookmark()` (`shard-shapes.ts:183,230`). That value is empty on an alarm tick. The shard drops the bookmark on paths without an Hypertext Transfer Protocol (HTTP) response, such as an alarm or a lifecycle dispatch (`shard-do.ts:1171-1174`).
+6. **No bookmark for Hyperdrive.** A global table in Postgres or MySQL has no Sessions application programming interface (API). See the next part.
+7. **The edge cache must not replay it.** The Representational State Transfer (REST) cache removes `x-d1-bookmark` and `x-lunora-shard-key` from stored responses. A stored copy would hold an older bookmark than the client has, and would roll the client back (`packages/runtime/src/rest-edge-cache.ts:61-69`).
 8. **Lunora's architecture page states a bound that Cloudflare does not.** `architecture.mdx` (lines 292, 350 and 440) says replicas converge "within the ~24h window". The Cloudflare D1 docs give no such bound. They say only that a replica can be arbitrarily out of date. The 24-hour figure in the Cloudflare docs is the time that replicas need to stop serving after an operator disables replication (`read-replication.mdx`, "Disable read replication via REST API"). Do not rely on a 24-hour convergence bound.
 
 ### Three tokens with the same job

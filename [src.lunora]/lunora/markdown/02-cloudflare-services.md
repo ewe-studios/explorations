@@ -273,7 +273,7 @@ Lunora uses exactly the "many events, one slot" pattern. The shard alarm serves 
 
 ### WebSocket hibernation
 
-A WebSocket is a long-lived two-way connection. A server object can hold thousands of them. With the standard API (`ws.accept()`), the object must stay in memory as long as a socket is open. That costs money. The Hibernation API changes this (`durable-objects/best-practices/websockets.mdx`, "Why use Hibernation?").
+A WebSocket is a long-lived two-way connection. A server object can hold thousands of them. With the standard application programming interface (API) (`ws.accept()`), the object must stay in memory as long as a socket is open. That costs money. The Hibernation API changes this (`durable-objects/best-practices/websockets.mdx`, "Why use Hibernation?").
 
 With `ctx.acceptWebSocket(server)`, the runtime keeps the connection open while the object is out of memory. When a message arrives, the runtime builds the object again, runs its constructor, and calls `webSocketMessage`. Billable duration does not accrue during hibernation. In-memory state is lost. To keep per-connection state, the code calls `serializeAttachment(value)` on the socket. It reads the value back with `deserializeAttachment()`.
 
@@ -590,7 +590,7 @@ Analytics Engine stores sampled time-series data. Lunora has two writers.
 
 The first is `analyticsEngineSink`. It writes one data point for each remote procedure call (RPC) call: index `[functionPath]`, five string blobs, four numeric doubles (`packages/runtime/src/observability-sinks.ts:477-500`). The call is fire-and-forget and wrapped in `try/catch`.
 
-The second is `ctx.analytics`. It enforces Analytics Engine limits before the write: 20 blobs, 20 doubles, 1 index, 16 kilobytes (KB) of blobs, 96 bytes of index (`packages/bindings/src/analytics/create-analytics.ts:3-30`). There is also an Analytics SQL (Structured Query Language) reader (`bindings/src/analytics-sql`).
+The second is `ctx.analytics`. It enforces Analytics Engine limits before the write: 20 blobs, 20 doubles, 1 index, 16 kilobytes (KB) of blobs, 96 bytes of index (`packages/bindings/src/analytics/create-analytics.ts:3-30`). There is also an Analytics Engine SQL (Structured Query Language) reader (`bindings/src/analytics-sql`).
 
 ## Service bindings
 
