@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sharding Design: Names, Registry, Fan-out, Limits -- lunora</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/lunora/docs</span>
+    <div class="nav-actions">
+      <a href="01-architecture.html" class="nav-breadcrumb">Architecture and Layers</a><a href="02-cloudflare-services.html" class="nav-breadcrumb">Every Cloudflare Service Lunora Uses</a><a href="03-worker-runtime.html" class="nav-breadcrumb">The Worker Runtime and Request Gate</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="03-worker-runtime.html" class="nav-btn" title="Previous: The Worker Runtime and Request Gate">← prev</a>
+      <a href="05-shard-durable-object.html" class="nav-btn nav-btn-next" title="Next: Inside One Shard: the ShardDO">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Sharding design: a shard is a Durable Object name</h1>
+<p>Lunora does not hash keys into a ring. A shard is a Durable Object, and its identity is a string name. Cloudflare turns the name into an object with <code>idFromName</code>. The caller picks the name. Lunora adds a registry of live names, a fan-out coordinator, and an authorization gate around that idea.</p>
+<p>This page covers naming, routing, the registry, fan-out reads, hot shards, and what happens when you want to change the shard key. It ends with the good and bad of the design.</p>
+<h2>Three modes for a table</h2>
+<p>The schema builder has three tiers (<code>packages/server/src/types.ts:33</code>):</p>
+<pre><code class="language-ts">// packages/server/src/types.ts:33
+type ShardMode = { backend?: GlobalBackend; kind: &quot;global&quot; } | { field: string; kind: &quot;shardBy&quot; } | { kind: &quot;root&quot; };
+</code></pre>
+<p>A table cannot be both <code>.shardBy()</code> and <code>.global()</code>. The builder throws (<code>packages/server/src/schema.ts:521-540</code>). Under <code>.shardBy()</code> a tenant mapper (<code>tenantBy</code>) is mandatory for sourced tables (<code>packages/server/src/schema.ts:1142</code>).</p>
+<p>Example from the shipped sample app <code>examples/team-chat/lunora/schema.ts</code>: <code>messages</code> and <code>presence</code> use <code>.shardBy("channelId")</code>. <code>channels</code> stays in the root shard. <code>profiles</code> is <code>.global()</code>.</p>
+<h2>How a key becomes a Durable Object</h2>
+<div class="mermaid">
+flowchart LR
+    K[&quot;shardKey string, e.g. channel id&quot;] --&gt; G{&quot;Starts with __lunora_do__: ?&quot;}
+    G --&gt;|&quot;yes&quot;| E1[&quot;400 BAD_REQUEST&quot;]
+    G --&gt;|&quot;no&quot;| J{&quot;Jurisdiction set?&quot;}
+    J --&gt;|&quot;yes&quot;| NS[&quot;namespace.jurisdiction(eu)&quot;]
+    J --&gt;|&quot;no&quot;| NS2[&quot;namespace&quot;]
+    NS --&gt; ID[&quot;idFromName(key)&quot;]
+    NS2 --&gt; ID
+    ID --&gt; ST[&quot;get(id, locationHint?)&quot;]
+    ST --&gt; DO[&quot;Durable Object: one SQLite database&quot;]
+
+</div>
+<p>Source: <code>packages/runtime/src/resolve-shard.ts:228</code>, <code>packages/platform/src/shard-directory.ts:126,138</code>.</p>
+<h3>Where the key comes from</h3>
+<p>The shard key is chosen by the caller. The client library takes it as an option on each call:</p>
+<pre><code class="language-tsx">// examples/team-chat/src/client/Channel.tsx:54
+const messages = useQuery(api.messages.list, { channelId }, { shardKey: channelId });
+</code></pre>
+<p>The RPC envelope has an optional <code>shardKey</code> string. The WebSocket upgrade reads <code>?shard=</code> from the URL (<code>create-worker.ts:4422</code>). When nothing is given, the key is the default shard, <code>__root__</code> (<code>create-worker.ts:2893</code>). The import tool derives the key from the row: <code>String(doc[field])</code>, or <code>JSON.stringify</code> for a non-string value (<code>packages/runtime/src/import-stream.ts:73-83</code>).</p>
+<h3>What the Durable Object does not check</h3>
+<p>I searched <code>packages/shard-engine/src</code> and <code>packages/do/src</code> for a check that a written row's shard field equals the object's own name. I found none. The word <code>shardMode</code> appears in the writer only for global tables, rank indexes (<code>packages/shard-engine/src/ctx-db.ts:2799-2811</code>), and relations. So the field named in <code>.shardBy("channelId")</code> is declared metadata. The caller routes. If a caller sends <code>shardKey: "a"</code> with a row for channel <code>b</code>, the row is stored in shard <code>a</code>.</p>
+<p>This differs from the documentation sentence "After codegen, every call to <code>ctx.db.messages.*</code> routes by <code>channelId</code>" (<code>concepts/sharding.mdx</code>). In the code, routing happens at the call site through the <code>shardKey</code> option. Codegen types make the option available. They do not enforce it.</p>
+<h3>What Cloudflare decides</h3>
+<p>Cloudflare maps the name to an object id. The object is created in the data center nearest the first request. A <code>locationHint</code> is honoured only by the call that creates the object (<code>resolve-shard.ts:127-133</code>). Lunora derives a hint from <code>request.cf</code> (<code>shared/region-hint.ts:71</code>): continent <code>AF</code> gives <code>afr</code>; <code>AS</code> gives <code>me</code> for 15 listed Middle East countries and <code>apac</code> otherwise; <code>EU</code> gives <code>eeur</code> east of longitude 15 and <code>weur</code> otherwise; <code>NA</code> gives <code>wnam</code> west of -100 and <code>enam</code> otherwise; <code>OC</code> gives <code>oc</code>; <code>SA</code> gives <code>sam</code>. The valid hints are <code>wnam, enam, sam, weur, eeur, apac, apac-ne, apac-se, oc, afr, me</code> (<code>region-hint.ts:26</code>).</p>
+<p>A jurisdiction (<code>eu</code>, <code>fedramp</code>, <code>us</code>) is a hard rule. <code>jurisdiction("eu")</code> maps the same name to a different object id. So a sibling lookup inside a Durable Object must use the same subnamespace. The object reads <code>this.state.id?.jurisdiction</code> for that (<code>shard-do.ts:3271</code>, and the comment in <code>sibling-channel.ts:72-93</code>). If a jurisdiction is requested but the binding lacks the method, Lunora throws instead of falling back (<code>resolve-shard.ts:198-210</code>). This is "fail closed".</p>
+<h2>Reserved names</h2>
+<table><tr><th>Name pattern</th><th>Meaning</th><th>Who may mint it</th></tr><tr><td><code>__root__</code></td><td>The default shard</td><td>Built in (<code>shard-do.ts:1598</code>)</td></tr><tr><td><code>__lunora_do__:scheduler:&lt;name&gt;</code></td><td>Scheduler role in a merged class</td><td>Framework</td></tr><tr><td><code>__lunora_shard_registry__</code></td><td>The single registry instance</td><td>Framework (<code>shard-registry-do.ts:73</code>)</td></tr><tr><td><code>&lt;key&gt;::relay::&lt;n&gt;</code></td><td>Fan-out relay of shard <code>key</code></td><td>Worker (<code>shared/relay-name.ts:24</code>)</td></tr><tr><td><code>&lt;key&gt;::replica::&lt;region&gt;</code></td><td>Read replica of shard <code>key</code> in a region</td><td>Worker (<code>shared/replica-name.ts:23</code>)</td></tr></table>
+<p>The Worker refuses client keys that contain <code>::relay::</code> or <code>::replica::</code>. The shard directory refuses the <code>__lunora_do__:</code> prefix. A relay or replica registers nothing with the registry (<code>shard-do.ts:13207</code>).</p>
+<h2>The shard registry</h2>
+<p>A Durable Object namespace cannot list its objects. A fan-out needs a list. So each shard tells a registry when it first writes a sharded table.</p>
+<div class="mermaid">
+sequenceDiagram
+    participant S as ShardDO (key = c1)
+    participant R as ShardRegistryDO (one instance)
+    participant W as Worker coordinator
+    S-&gt;&gt;S: commit a write to sharded table messages
+    S-&gt;&gt;S: flushChangedTables, then deferPastResponse
+    S-&gt;&gt;R: POST /register {table, shardKey} with HMAC signature
+    R-&gt;&gt;R: blockConcurrencyWhile: put s:messages NUL c1, then update Map
+    R--&gt;&gt;S: changed true
+    W-&gt;&gt;R: GET /list?table=messages (cache 30 s)
+    R--&gt;&gt;W: shardKeys [c1, ...]
+    W-&gt;&gt;S: fan-out RPC to each key
+
+</div>
+<p>Source: <code>shard-do.ts:13193-13246</code>, <code>shard-registry-do.ts:328-363</code>, <code>runtime/src/dynamic-shard-registry.ts:280-318</code>.</p>
+<p>Design points:</p>
+<ul><li><strong>One storage key per pair.</strong> Each <code>(table, shardKey)</code> is stored under <code>s:&lt;table&gt;\0&lt;shardKey&gt;</code>. An earlier design stored the whole map in one value and hit the 2 MB value limit near 50,000 keys. The fix is explained in the class comment (<code>shard-registry-do.ts:28-39</code>).</li><li><strong>Persist first.</strong> <code>handleRegister</code> does <code>storage.put</code> before it changes the in-memory map (<code>shard-registry-do.ts:352</code>). A failed write cannot leave a false entry.</li><li><strong>Key size.</strong> A storage key above 2,048 bytes is refused with 400 (<code>MAX_STORAGE_KEY_BYTES</code>, <code>shard-registry-do.ts:94</code>).</li><li><strong>Signed requests.</strong> The registry refuses every request when <code>LUNORA_RELAY_SECRET</code> is unset. The signature covers method, path, query and body, because <code>GET /list</code> has no body (<code>shared/shard-registry-frame.ts:11-15</code>). The body is read with a 64 KiB cap before the signature check (<code>MAX_REQUEST_BYTES</code>, <code>shard-registry-do.ts:70</code>).</li><li><strong>Once per table per wake.</strong> The shard keeps <code>registeredTables</code> in memory (<code>shard-do.ts:3018</code>). After a hibernation it registers again, which costs one signed request per table. The call is idempotent.</li><li><strong>Retry.</strong> After a failed register, the shard waits <code>SHARD_REGISTRY_RETRY_MS = 30_000</code> before it tries again (<code>shard-do.ts:1601,13236</code>).</li><li><strong>Worker cache.</strong> The coordinator caches each table list for 30,000 ms (<code>DEFAULT_REGISTRY_CACHE_TTL_MS</code>, <code>dynamic-shard-registry.ts:66</code>). Concurrent misses share one request. A new shard can need up to 30 s to join a fan-out (<code>concepts/sharding.mdx</code>).</li><li><strong>Pruning.</strong> A key stays after its shard empties. <code>lunora shards prune</code> asks each shard whether it holds rows, then unregisters the empty ones (<code>shard-do.ts:13262-13300</code>).</li><li><strong>One instance.</strong> The registry is a single object named <code>__lunora_shard_registry__</code>. The class comment says one instance is enough "up to tens of thousands of distinct shard keys" (<code>shard-registry-do.ts:23-27</code>).</li></ul>
+<p>Without a registry, an export or backup of a sharded table fails with 400 and names the table (<code>query-coordinator.ts:68-103</code>). A shard written before the registry was bound is not listed until it is written again (<code>concepts/sharding.mdx</code>, and <code>cloudflare.ts:77-80</code>).</p>
+<h2>Fan-out reads</h2>
+<p>The coordinator in <code>packages/runtime/src/query-coordinator.ts</code> runs a read on every shard of a table.</p>
+<table><tr><th>Constant</th><th>Value</th><th>Source</th></tr><tr><td><code>DEFAULT_CONCURRENCY</code></td><td>16 shards in flight</td><td><code>query-coordinator.ts:644</code></td></tr><tr><td><code>DEFAULT_TIMEOUT_MS</code></td><td>5,000 ms per shard</td><td><code>query-coordinator.ts:645</code></td></tr></table>
+<p>Steps in <code>callOneShard</code> (<code>query-coordinator.ts:1248</code>):</p>
+<ol><li>Build the request once. The body and headers are the same for all shards, so they are prepared once (<code>prepareShardRpc</code>, line 1216).</li><li>Resolve the stub, start the fetch, and race it against a timer. On timeout the code aborts the fetch with an <code>AbortController</code>.</li><li>Never throw. A failed shard becomes data: <code>{ code, message, shardKey, timedOut }</code>. The merge step decides if it matters.</li><li>If the shard answers non-2xx, read the error envelope. Codes such as <code>CDC_TIMELINE_FORKED</code>, <code>CDC_LOG_TRIMMED</code> and <code>CDC_PAYLOAD_COMPACTED</code> are all HTTP 409 but need different actions, so the code is kept (<code>query-coordinator.ts:1223-1246</code>).</li></ol>
+<p><code>runBoundedJobs</code> is a work queue with a shared cursor, not fixed batches. A fast shard does not wait for a slow neighbour (<code>query-coordinator.ts:1348</code>).</p>
+<p>Merge strategies are plain data, so the client can describe them: <code>concat</code>, <code>topK</code> by a field, <code>first</code>, <code>sum</code>, <code>max</code>, <code>min</code>, <code>groupBy</code>, and <code>rank</code> (<code>query-coordinator.ts:117-127</code>). <code>avg</code> is not offered. A correct average needs sum and count from each shard.</p>
+<p>For a table that is not sharded, the default registry returns <code>[__root__]</code>, or <code>[]</code> for a global table (<code>query-coordinator.ts:68-103</code>). <code>withDefaultShard</code> makes sure an empty registry answer does not hide the root shard in an export (<code>query-coordinator.ts:1399</code>).</p>
+<h3>The cost of fan-out</h3>
+<p>Each fan-out call is one Worker subrequest per shard. The limits page says the internal subrequest cap is 1,000 on the Free plan and 10,000 by default on the Paid plan (<code>limits.mdx</code>). The advisor lint <code>fan_out_breadth</code> warns at 500 shards (<code>advisor/src/lints/runtime/fan-out-breadth.ts:25</code>). The tutorial calls a 5,000-shard fan-out for 50 rows a mistake (<code>tutorial/scaling.mdx</code>).</p>
+<h2>Authorization of shard access</h2>
+<p>Section "Step 3: default deny" in <a href="03-worker-runtime.html">Worker runtime</a> covers the gate. The option <code>authorizeShard({identity, shardKey})</code> decides per shard. <code>authorizeFanOut(identity)</code> decides per fan-out. Both are default-deny.</p>
+<h2>Hot shards</h2>
+<p>Lunora has three tools. None of them splits a shard.</p>
+<table><tr><th>Tool</th><th>What it does</th><th>Source</th></tr><tr><td><code>hot_shard</code> advisor lint</td><td>Warns when one shard has at least 50% of its group's requests, with at least 50 requests in total</td><td><code>hot-shard.ts:11,18</code></td></tr><tr><td>Relay tier</td><td>Spreads WebSocket fan-out of one shard over up to 8 relay objects</td><td><code>relay-hub.ts:74</code></td></tr><tr><td>Read replicas</td><td>Serve queries from a region-local copy</td><td><code>replica.ts</code></td></tr></table>
+<p>The <code>hot_shard</code> lint advice is "Re-shard on a higher-cardinality key" (<code>hot-shard.ts</code>). The traffic data comes from <code>orchestrateShardTraffic</code>, which reads each shard's recorded call totals (<code>query-coordinator.ts:2106</code>). See <a href="07-replication-and-read-scaling.html">Replication</a> for the relay and replica tiers.</p>
+<h2>Rebalancing and resharding</h2>
+<p>There is no rebalancer. The word <code>reshard</code> does not appear in the code (searched <code>packages/*/src</code> and <code>shared/</code>). A change of shard key is a manual export and import.</p>
+<p>The documented steps are (<code>concepts/sharding.mdx</code>):</p>
+<ol><li>Stop writes to the table.</li><li><code>lunora export --tables messages</code>.</li><li>Add <code>.shardBy()</code> and deploy with <code>--allow-schema-drift</code>.</li><li><code>lunora import ... --verify</code>.</li><li>Resume writes.</li><li>Clear the old rows in the root shard from the Studio.</li></ol>
+<p>The page says: "This is not an online migration." The export is paginated live reads, not a snapshot, so a write made during the procedure can be lost. The schema drift gate treats a change of shard mode as breaking (<code>codegen/src/schema-drift.ts:1-30</code>). Plan 168 (<code>plans/168-cross-shard-transactions-spike.md</code>) lists cross-shard transactions as an undecided design spike.</p>
+<p><strong>Aha: the real warning is in the root shard.</strong> <code>maybeWarnRootSize</code> logs once when the <code>__root__</code> object reaches 1 GiB, which is 10% of the 10 GiB limit (<code>shard-do.ts:10473</code>, <code>ROOT_DO_SIZE_WARN_BYTES = 1_073_741_824</code> at <code>shard-do.ts:1441</code>). The warning flag is <code>static</code>, so one isolate warns at most once. Only the root shard is checked.</p>
+<h2>Limits</h2>
+<table><tr><th>Limit</th><th>Value</th><th>Source</th></tr><tr><td>SQLite per object</td><td>10 GB</td><td><code>limits.mdx</code></td></tr><tr><td>Requests per object</td><td>about 1,000 per second</td><td><code>limits.mdx</code></td></tr><tr><td>WebSockets per object</td><td>about 32,000 hibernated</td><td><code>limits.mdx</code></td></tr><tr><td>Objects per account</td><td>unlimited</td><td><code>limits.mdx</code></td></tr><tr><td>Pending unauthenticated sockets</td><td>1,024, with a 10,000 ms connect deadline</td><td><code>shard-do.ts:567,575</code></td></tr><tr><td>Subscriptions per socket</td><td>32</td><td><code>shard-do.ts:2017</code></td></tr><tr><td>Attachment size</td><td>16,384 bytes</td><td><code>shard-do.ts:1988</code></td></tr><tr><td>Batch entries</td><td>500</td><td><code>batch-wire.ts:42</code></td></tr><tr><td>Batch rows per write</td><td>500 default</td><td><code>shared/batch-cap.ts</code></td></tr><tr><td>Relays per shard</td><td>8</td><td><code>relay-hub.ts:74</code></td></tr></table>
+<h2>Failure modes</h2>
+<table><tr><th>Failure</th><th>Effect</th><th>Defense in code</th></tr><tr><td>Registry unreachable at register time</td><td>Shard missing from exports and fan-outs</td><td>Retry after 30 s; error logged (<code>shard-do.ts:13236-13241</code>)</td></tr><tr><td>Registry not bound</td><td>Fan-out on a sharded table fails with 400</td><td>Explicit error text (<code>query-coordinator.ts:83-92</code>)</td></tr><tr><td>One shard times out</td><td>Partial result with an <code>errors</code> list</td><td>Failure is data (<code>query-coordinator.ts:1265-1277</code>)</td></tr><tr><td>Caller sends a wrong key</td><td>Row lands in the wrong shard</td><td>None found. The access gate limits who may name a shard</td></tr><tr><td>Client invents many keys</td><td>Many new objects and registry entries</td><td><code>authorizeShard</code>; prune command</td></tr><tr><td>Cross-shard write</td><td>Not atomic</td><td>Documented non-goal (<code>architecture.mdx</code>)</td></tr><tr><td>Region hint ignored</td><td>Object created far from users</td><td>Hint is advice only; correctness does not depend on it</td></tr></table>
+<h2>Why this design is good</h2>
+<ul><li><strong>No coordinator on the write path.</strong> A write goes straight to one object. No lock manager, no consensus.</li><li><strong>Strong order for free.</strong> One object runs one event at a time.</li><li><strong>Idle cost near zero.</strong> An idle shard hibernates.</li><li><strong>Escape hatches in the same API.</strong> <code>.global()</code> and <code>.shardBy()</code> are schema edits.</li></ul>
+<h2>Why it is bad</h2>
+<ul><li><strong>The caller must route.</strong> Wrong keys are not detected.</li><li><strong>No online resharding.</strong> A bad key choice is a downtime migration.</li><li><strong>Hot keys cannot be split.</strong> One tenant bigger than one object is out of scope.</li><li><strong>The registry is a single object and a 30 s cache.</strong> Fan-out lists are eventually consistent.</li><li><strong>Fan-out is expensive.</strong> It uses one subrequest per shard.</li></ul>
+<h2>Where to go next</h2>
+<p>Read <a href="05-shard-durable-object.html">The shard Durable Object</a> to see what runs inside one shard.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
