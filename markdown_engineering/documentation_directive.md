@@ -2,6 +2,11 @@
 
 A comprehensive guide for creating high-quality technical documentation from source code. This directive codifies the approach, lessons, and quality standards developed through the Pi, Hermes, and Mastra documentation projects, including the grandfather review process.
 
+
+## English levels (Mandatory)
+
+We must always write documentation in ASD-STE100 and have abbreviations spelled out in the site of usage (not at the top) so its clear and easy to read without overloaded jargon or verbosity that stresses understanding.
+
 ## Core Principle: Code Is the Grandfather
 
 Everything downstream — documentation, specs, diagrams — is a descendant of the code. The code is the "grandfather," the root of truth. Every claim in documentation must trace back to an implementation.
