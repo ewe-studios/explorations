@@ -26,7 +26,7 @@ The schema picks where a table lives. Each tier uses a different Cloudflare serv
 |------|-----------------|--------------------|-------------|
 | Root shard | none | one Durable Object named `__root__` | strong, one writer |
 | Sharded | `.shardBy("field")` | one Durable Object per field value | strong inside one shard |
-| Global | `.global()` | D1 (Cloudflare SQL database) or Postgres/MySQL through Hyperdrive | read-your-writes with a bookmark |
+| Global | `.global()` | D1 (Cloudflare Structured Query Language (SQL) database) or Postgres/MySQL through Hyperdrive | read-your-writes with a bookmark |
 | Blob | `.storage()` and the `ctx.storage` facade | R2 (object storage) | per object |
 
 Source: `apps/docs/src/content/docs/concepts/sharding.mdx`, `packages/do/src/shard-do.ts:1598` (`ROOT_SHARD_NAME = "__root__"`).
@@ -41,7 +41,7 @@ The packages fall into groups. Only the first three groups matter for sharding a
 | Engine | `shard-engine`, `sql-store`, `d1`, `hyperdrive` | SQL, change log, replicas, relays, global tables |
 | Runtime | `do`, `runtime`, `server`, `values`, `wire`, `errors` | Durable Object class, Worker, builders, validators |
 | Async | `scheduler`, `queue`, `workflow`, `dispatch` | Alarms, Queues, Workflows, at-least-once dispatch |
-| Storage and bindings | `storage`, `bindings`, `ai`, `container`, `browser` | R2, KV, Analytics Engine, Vectorize, AI, Containers |
+| Storage and bindings | `storage`, `bindings`, `ai`, `container`, `browser` | R2, Workers KV (key-value store), Analytics Engine, Vectorize, AI, Containers |
 | Tooling | `codegen`, `cli`, `vite`, `config`, `advisor`, `studio`, `testing` | Build, deploy, lint, local admin, tests |
 | Clients | `client`, `react`, `vue`, `solid`, `svelte`, `angular`, `react-native` | Browser and mobile SDKs |
 | Add-ons | `auth`, `mail`, `payment`, `notify`, `ratelimit`, `flags`, `privacy` and more | Optional features |
@@ -105,7 +105,7 @@ Source: `packages/do/src/shard-do.ts:8525` (`handleFetchCloudflare`), `shard-do.
 | Topic | Documentation says | Code shows |
 |-------|--------------------|------------|
 | Package count | 58 (`AGENTS.md`) | 59 directories in `packages/` |
-| Shard routing | "codegen re-addresses `ctx.db.messages.*`" (`concepts/sharding.mdx`) | The client sends `shardKey` in the RPC envelope. The Durable Object does not check that a row field equals its own name. See [Sharding design](04-sharding-design.md) |
+| Shard routing | "codegen re-addresses `ctx.db.messages.*`" (`concepts/sharding.mdx`) | The client sends `shardKey` in the remote procedure call (RPC) envelope. The Durable Object does not check that a row field equals its own name. See [Sharding design](04-sharding-design.md) |
 | Analytics blob size | "5120 bytes" in the sink comment (`packages/runtime/src/observability-sinks.ts:430`) | 16 KB in `bindings/src/analytics/create-analytics.ts` |
 
 ## Where to go next

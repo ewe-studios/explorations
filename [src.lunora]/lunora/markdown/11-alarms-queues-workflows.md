@@ -14,7 +14,7 @@ The shard alarm (`ShardDO.alarm`, `shard-do.ts:3633`) serves four tiers in one h
 |------|--------------|-----------|
 | Global shapes | Poll D1 for membership changes | now + 2,000 ms while any global shape is subscribed |
 | External sources | Pull from an outside system into a local table | earliest next-due time of any source |
-| TTL sweep | Delete expired rows (`.ttl()`) | next expiry |
+| time to live (TTL) sweep | Delete expired rows (`.ttl()`) | next expiry |
 | Schedule outbox | Retry a deferred `ctx.scheduler` call | next retry time |
 
 The next alarm time is the earliest of the tier times, never later than now (`nextPollAlarmTarget`, `shard-do.ts:2214`). If no tier has work, no alarm is set, and the object goes fully idle. A replica never runs the alarm, because it holds a copy (`shard-do.ts:9070`).
@@ -96,7 +96,7 @@ sequenceDiagram
 
 `SchedulerDO` is a separate Durable Object. The client resolves it with `idFromName(options.instanceName ?? "default")` (`scheduler/src/do-client.ts:28-31`). So an app has one scheduler object unless it names more. All schedule traffic for an app reaches that object.
 
-Storage uses the key-value API with prefixes: `id:` (job header), `t:` (time index), `retry:`, `dead:`, `pool:`, `pq:` (`scheduler-do.ts:83-92`).
+Storage uses the key-value application programming interface (API) with prefixes: `id:` (job header), `t:` (time index), `retry:`, `dead:`, `pool:`, `pq:` (`scheduler-do.ts:83-92`).
 
 ### The time index
 

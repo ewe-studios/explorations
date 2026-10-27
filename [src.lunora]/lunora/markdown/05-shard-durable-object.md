@@ -56,7 +56,7 @@ A client can send the header `x-lunora-mutation-id`. The shard keeps `(identity,
 
 For a mutation the read and the handler share one gate. So two deliveries cannot both miss the cache (`shard-do.ts:8776-8781`). The dedup row is written inside the same transaction as the data: `commitMutationBookkeeping` runs before commit (`shard-do.ts:5850-5870`). A crash cannot leave data without its replay guard.
 
-An action or query with a mutation id must not take the gate. The gate would let any caller freeze the shard for the length of an outbound call. So actions use `InFlightClaims`, an in-memory set. A second delivery of a live key gets HTTP 409 with code `DISPATCH_IN_PROGRESS`. The claim has a 15-minute ceiling (`DISPATCH_CLAIM_CEILING_MS = 900_000`, `shared/dispatch-claim.ts:20`) which matches the 15-minute alarm limit (`do/src/in-flight-claims.ts:1-30`).
+An action or query with a mutation id must not take the gate. The gate would let any caller freeze the shard for the length of an outbound call. So actions use `InFlightClaims`, an in-memory set. A second delivery of a live key gets Hypertext Transfer Protocol (HTTP) 409 with code `DISPATCH_IN_PROGRESS`. The claim has a 15-minute ceiling (`DISPATCH_CLAIM_CEILING_MS = 900_000`, `shared/dispatch-claim.ts:20`) which matches the 15-minute alarm limit (`do/src/in-flight-claims.ts:1-30`).
 
 ### Custom mutators and the client watermark
 
@@ -128,7 +128,7 @@ The data browser hides any table that starts with `__lunora`.
 
 ### A cost to know: every dispatch writes a log row
 
-By default `LUNORA_REQUEST_LOG_SAMPLE` is unset, and `parseSampleRate` returns `1` (`do/src/admin-rpc-args.ts:1538`). `recordRequestLog` skips only sampled-out successes (`shard-do.ts:12102`). So each dispatch, including a query, inserts one row into `__lunora_reqlog__` (`packages/observability/src/request-log.ts:983`). A trim runs once per 60-second window (`REQUEST_LOG_PRUNE_WINDOW_MS = 60_000`, `packages/observability/src/request-log.ts:59`). Metrics flush to SQL every 8 dispatches (`DEFAULT_METRICS_FLUSH_EVERY = 8`, `shard-do.ts:1740`). The Durable Object SQLite price counts rows written. So a read-heavy shard pays for log writes unless the operator lowers the sample rate. See [Critical assessment](15-critical-assessment.md).
+By default `LUNORA_REQUEST_LOG_SAMPLE` is unset, and `parseSampleRate` returns `1` (`do/src/admin-rpc-args.ts:1538`). `recordRequestLog` skips only sampled-out successes (`shard-do.ts:12102`). So each dispatch, including a query, inserts one row into `__lunora_reqlog__` (`packages/observability/src/request-log.ts:983`). A trim runs once per 60-second window (`REQUEST_LOG_PRUNE_WINDOW_MS = 60_000`, `packages/observability/src/request-log.ts:59`). Metrics flush to Structured Query Language (SQL) every 8 dispatches (`DEFAULT_METRICS_FLUSH_EVERY = 8`, `shard-do.ts:1740`). The Durable Object SQLite price counts rows written. So a read-heavy shard pays for log writes unless the operator lowers the sample rate. See [Critical assessment](15-critical-assessment.md).
 
 ## Sockets and hibernation
 
@@ -151,7 +151,7 @@ When a socket errors, the runtime calls `webSocketError` and no `webSocketClose`
 
 ## Point-in-time recovery
 
-SQLite-backed Durable Objects keep 30 days of history. Admin operations `getPitrBookmark` and `pitrRestore` wrap the platform API (`shard-engine/src/pitr.ts:98,118`). `pitrRestore` arms a restore with `onNextSessionRestoreBookmark`, bumps the change log epoch, records an audit entry, and optionally calls `state.abort()` (`shard-do.ts:12242-12310`). The restore also reverts the epoch row, which is the main subtlety in [Change log](06-change-log-cdc.md).
+SQLite-backed Durable Objects keep 30 days of history. Admin operations `getPitrBookmark` and `pitrRestore` wrap the platform application programming interface (API) (`shard-engine/src/pitr.ts:98,118`). `pitrRestore` arms a restore with `onNextSessionRestoreBookmark`, bumps the change log epoch, records an audit entry, and optionally calls `state.abort()` (`shard-do.ts:12242-12310`). The restore also reverts the epoch row, which is the main subtlety in [Change log](06-change-log-cdc.md).
 
 ## Where to go next
 

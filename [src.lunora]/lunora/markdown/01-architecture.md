@@ -32,7 +32,7 @@ The rule is simple. `@lunora/platform` has types and capability data only. It ha
 
 | Contract | Cloudflare implementation | Meaning |
 |----------|---------------------------|---------|
-| `ShardHost` | `createShardHost(state)` | One writer, a transaction, local SQL, alarms, `waitUntil` |
+| `ShardHost` | `createShardHost(state)` | One writer, a transaction, local Structured Query Language (SQL), alarms, `waitUntil` |
 | `SocketHost` | `createSocketHost(state)` | Hibernating WebSockets with durable attachments and tags |
 | `ShardDirectory` | `createShardDirectory(namespace)` | Shard key to stub, with jurisdiction and region hint |
 | `SchedulerHost` | `SchedulerDO` | Durable delayed jobs |

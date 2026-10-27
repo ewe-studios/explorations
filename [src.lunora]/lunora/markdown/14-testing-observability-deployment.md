@@ -33,10 +33,10 @@ Two suites define what a host must do: `packages/platform/src/conformance/suite.
 
 | Gate | Script | What it checks |
 |------|--------|----------------|
-| Public API | `api:check` | `api-snapshots/*.api.md` against built output |
+| Public application programming interface (API) | `api:check` | `api-snapshots/*.api.md` against built output |
 | Dist | `dist:check` | built output is production clean |
 | Worker size | `worker-size` | baseline in `worker-size.json`; Cloudflare limit 64 MiB uncompressed |
-| Startup | `worker-startup` | modules and bytes, not CPU, in `worker-startup.json` |
+| Startup | `worker-startup` | modules and bytes, not central processing unit (CPU), in `worker-startup.json` |
 | Batch cap | `lint:batch-cap` | drift of the shared batch limit |
 | Templates | `test:templates` | scaffolds install, build, typecheck |
 | End to end | `e2e` | Playwright |
@@ -88,7 +88,7 @@ All in `packages/runtime/src/observability-sinks.ts`:
 | Sink | Line | Notes |
 |------|------|-------|
 | `consoleSink` | 287 | Workers Logs |
-| `webhookSink` | 382 | HTTP post |
+| `webhookSink` | 382 | Hypertext Transfer Protocol (HTTP) post |
 | `analyticsEngineSink` | 477 | index `[functionPath]`, blobs `[path, ok or error, shardKey, error code, fan-out table]`, doubles `[durationMs, errorCount, shards, failed]` |
 | `pipelineLogSink` | 563 | to R2 through Pipelines |
 | `otlpSink` | 832 | OpenTelemetry Protocol, batched |
@@ -96,7 +96,7 @@ All in `packages/runtime/src/observability-sinks.ts`:
 
 ### The request log
 
-Default behaviour writes one SQL row per dispatch. Knobs: `LUNORA_REQUEST_LOG_SAMPLE` (0 to 1, default 1), `LUNORA_REQUEST_LOG_RETENTION` (default 1,000 rows), `LUNORA_REQUEST_LOG_EMIT` (default on in development, off in production; errors always emit). Arguments and identity are redacted unless the environment is development (`shard-do.ts:12223-12234`, `request-log.ts`). Sensitive arguments marked `v.sensitive` are masked before every sink (`shard-do.ts:12102`).
+Default behaviour writes one Structured Query Language (SQL) row per dispatch. Knobs: `LUNORA_REQUEST_LOG_SAMPLE` (0 to 1, default 1), `LUNORA_REQUEST_LOG_RETENTION` (default 1,000 rows), `LUNORA_REQUEST_LOG_EMIT` (default on in development, off in production; errors always emit). Arguments and identity are redacted unless the environment is development (`shard-do.ts:12223-12234`, `request-log.ts`). Sensitive arguments marked `v.sensitive` are masked before every sink (`shard-do.ts:12102`).
 
 ### Metrics
 
@@ -133,7 +133,7 @@ The sample app `examples/team-chat/wrangler.jsonc` adds `"observability": { "ena
 - A Durable Object binding appears when the entry exports the class, because wrangler refuses a binding for a class that is not exported.
 - Imports of `@lunora/auth`, `scheduler`, `storage`, `payment` are only hints.
 - A `.global()` schema drives the `DB` binding.
-- Lunora writes only what it can create. KV ids, Hyperdrive ids and Vectorize indexes need the operator.
+- Lunora writes only what it can create. Workers KV (key-value store) ids, Hyperdrive ids and Vectorize indexes need the operator.
 - It records what it wrote in `package.json` under `lunora` (`queueTuning`, `crons`, `services`), so it can take its own entries out again and never touches hand-written ones.
 - It adds a Durable Object migration tag for missing classes.
 

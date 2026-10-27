@@ -128,7 +128,7 @@ Gaps marked `ponytail:` in `relay-hub.ts`: fixed time limits for relay calls (li
 
 ## Tool 3: D1 sessions and bookmarks
 
-For `.global()` tables D1 can serve reads from regional replicas. The Sessions API guarantees order inside a session. The bookmark carries the session position across requests.
+For `.global()` tables D1 can serve reads from regional replicas. The Sessions application programming interface (API) guarantees order inside a session. The bookmark carries the session position across requests.
 
 ```mermaid
 sequenceDiagram
@@ -150,14 +150,14 @@ The bookmark sink is per dispatch (`DispatchBookmark`, `shard-do.ts:1158-1170`).
 
 ## Tool 4: caches
 
-| Cache | Scope | Size or TTL | Invalidation | Source |
+| Cache | Scope | Size or time to live (TTL) | Invalidation | Source |
 |-------|-------|-------------|--------------|--------|
 | Reactive query cache | One shard, in memory | 1,000 entries, 4 MB | Row dependencies; never evicts a watched entry | `reactive-cache.ts:30-34` |
 | Per-socket result memo | One socket | 8 MB per result, 32 MB memo total, env overrides | Byte-equal results are not pushed | `shard-do.ts:1420,1428` |
 | Shape diff cache | One flush | Discarded after the flush | New every flush | `shape-diff-cache.ts` |
 | Relay probe cache | One Worker isolate | 5 s, 4,096 entries | TTL | `create-worker.ts:2560,2568` |
 | Registry list cache | One Worker isolate | 30 s per table | `register` busts the local entry only | `dynamic-shard-registry.ts:66` |
-| Statement cache | One D1 client | 256 statements, LRU | Eviction | `d1-client.ts:28` |
+| Statement cache | One D1 client | 256 statements, least recently used (LRU) | Eviction | `d1-client.ts:28` |
 | Colo cache | Cloudflare data center | `Cache-Control` policy | Key folds in `Vary` headers | `rest-edge-cache.ts` |
 | Point-read batcher | One tick | 50 ids per fetch | Microtask flush | `point-read-batcher.ts:32` |
 

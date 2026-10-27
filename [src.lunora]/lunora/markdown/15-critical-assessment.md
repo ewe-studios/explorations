@@ -64,7 +64,7 @@ The capability matrix is honest (`emulated` for what Lunora builds). Conformance
 
 ### 7. Real-runtime tests
 
-34 workerd test files in the shard package alone, plus conformance suites, coverage floors, API snapshots and size and startup budgets.
+34 workerd test files in the shard package alone, plus conformance suites, coverage floors, application programming interface (API) snapshots and size and startup budgets.
 
 ### 8. Efficient reactive delivery
 

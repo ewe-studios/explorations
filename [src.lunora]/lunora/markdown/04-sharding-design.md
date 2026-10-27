@@ -47,7 +47,7 @@ The shard key is chosen by the caller. The client library takes it as an option 
 const messages = useQuery(api.messages.list, { channelId }, { shardKey: channelId });
 ```
 
-The RPC envelope has an optional `shardKey` string. The WebSocket upgrade reads `?shard=` from the URL (`create-worker.ts:4422`). When nothing is given, the key is the default shard, `__root__` (`create-worker.ts:2893`). The import tool derives the key from the row: `String(doc[field])`, or `JSON.stringify` for a non-string value (`packages/runtime/src/import-stream.ts:73-83`).
+The remote procedure call (RPC) envelope has an optional `shardKey` string. The WebSocket upgrade reads `?shard=` from the URL (`create-worker.ts:4422`). When nothing is given, the key is the default shard, `__root__` (`create-worker.ts:2893`). The import tool derives the key from the row: `String(doc[field])`, or `JSON.stringify` for a non-string value (`packages/runtime/src/import-stream.ts:73-83`).
 
 ### What the Durable Object does not check
 
@@ -122,7 +122,7 @@ Steps in `callOneShard` (`query-coordinator.ts:1248`):
 1. Build the request once. The body and headers are the same for all shards, so they are prepared once (`prepareShardRpc`, line 1216).
 2. Resolve the stub, start the fetch, and race it against a timer. On timeout the code aborts the fetch with an `AbortController`.
 3. Never throw. A failed shard becomes data: `{ code, message, shardKey, timedOut }`. The merge step decides if it matters.
-4. If the shard answers non-2xx, read the error envelope. Codes such as `CDC_TIMELINE_FORKED`, `CDC_LOG_TRIMMED` and `CDC_PAYLOAD_COMPACTED` are all HTTP 409 but need different actions, so the code is kept (`query-coordinator.ts:1223-1246`).
+4. If the shard answers non-2xx, read the error envelope. Codes such as `CDC_TIMELINE_FORKED`, `CDC_LOG_TRIMMED` and `CDC_PAYLOAD_COMPACTED` are all Hypertext Transfer Protocol (HTTP) 409 but need different actions, so the code is kept (`query-coordinator.ts:1223-1246`).
 
 `runBoundedJobs` is a work queue with a shared cursor, not fixed batches. A fast shard does not wait for a slow neighbour (`query-coordinator.ts:1348`).
 
@@ -199,7 +199,7 @@ The page says: "This is not an online migration." The export is paginated live r
 - **No coordinator on the write path.** A write goes straight to one object. No lock manager, no consensus.
 - **Strong order for free.** One object runs one event at a time.
 - **Idle cost near zero.** An idle shard hibernates.
-- **Escape hatches in the same API.** `.global()` and `.shardBy()` are schema edits.
+- **Escape hatches in the same application programming interface (API).** `.global()` and `.shardBy()` are schema edits.
 
 ## Why it is bad
 

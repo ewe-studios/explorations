@@ -47,7 +47,7 @@ A read with no index and no `orderBy` sorts by `_creationTime, id`. The row tabl
 
 ### 3. Sortable keys for big numbers
 
-SQLite cannot compare a bigint stored as JSON. Lunora projects a `bigint` to an order-preserving text key and parks the exact original under the reserved key `__originals__`.
+SQLite cannot compare a bigint stored as JavaScript Object Notation (JSON). Lunora projects a `bigint` to an order-preserving text key and parks the exact original under the reserved key `__originals__`.
 
 ```ts
 // packages/shard-engine/src/sql-projection.ts:45
@@ -252,7 +252,7 @@ The key contains the values of every `Vary` header, because the platform cache h
 
 ### 47. Lazy function registry
 
-Opt-in `--lazy-functions`. A real app of about 1,000 functions and 130 tables fell from median 421 ms to 290 ms of startup CPU, about 31% (`plans/490-lazy-function-registry.md`). The Worker limit is 1 s (error 10021).
+Opt-in `--lazy-functions`. A real app of about 1,000 functions and 130 tables fell from median 421 ms to 290 ms of startup central processing unit (CPU), about 31% (`plans/490-lazy-function-registry.md`). The Worker limit is 1 s (error 10021).
 
 ### 48. Size and startup budgets in continuous integration
 

@@ -4,7 +4,7 @@ title: D1, Hyperdrive and Global Tables
 
 # Global tables: D1 and Hyperdrive behind one store core
 
-A `.global()` table is readable from every shard. It cannot live in one shard's SQLite. Lunora stores it in D1 (a Cloudflare SQL database built on SQLite) or, as an option, in Postgres or MySQL reached through Hyperdrive. One store core, `@lunora/sql-store`, runs on all three engines through a dialect object.
+A `.global()` table is readable from every shard. It cannot live in one shard's SQLite. Lunora stores it in D1 (a Cloudflare Structured Query Language (SQL) database built on SQLite) or, as an option, in Postgres or MySQL reached through Hyperdrive. One store core, `@lunora/sql-store`, runs on all three engines through a dialect object.
 
 ## Layers
 
@@ -23,7 +23,7 @@ The D1 module is thin. It calls `createSqlCtxDb({ ...options, dialect: sqliteDia
 
 ## Storage layout
 
-A global table has one column per declared field. This differs from shard tables, which use a JSON document column. The limit is 100 columns per D1 table. The advisor lint `global_table_near_column_limit` warns at 90 (`limits.mdx`). Every global table also has a `_version` column for optimistic concurrency (`shared/occ-version-column.ts:27`).
+A global table has one column per declared field. This differs from shard tables, which use a JavaScript Object Notation (JSON) document column. The limit is 100 columns per D1 table. The advisor lint `global_table_near_column_limit` warns at 90 (`limits.mdx`). Every global table also has a `_version` column for optimistic concurrency (`shared/occ-version-column.ts:27`).
 
 ## Optimistic concurrency without transactions
 

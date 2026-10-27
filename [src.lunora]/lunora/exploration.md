@@ -26,7 +26,7 @@ flowchart LR
 
 ## Cloudflare services used
 
-Durable Objects (with SQLite and WebSocket hibernation), Workers, D1, Hyperdrive, R2, KV, Queues, Workflows, Cron Triggers, Analytics Engine, Pipelines with R2 SQL, Vectorize, Workers AI with AI Gateway, and service bindings. The page [Cloudflare services](markdown/02-cloudflare-services.md) has one section for each.
+Durable Objects (with SQLite and WebSocket hibernation), Workers, D1, Hyperdrive, R2, Workers KV (key-value store), Queues, Workflows, Cron Triggers, Analytics Engine, Pipelines with R2 SQL (Structured Query Language), Vectorize, Workers AI with AI Gateway, and service bindings. The page [Cloudflare services](markdown/02-cloudflare-services.md) has one section for each.
 
 ## Sharding in one minute
 

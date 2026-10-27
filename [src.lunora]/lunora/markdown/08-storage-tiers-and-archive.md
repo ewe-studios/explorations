@@ -14,7 +14,7 @@ Lunora keeps data in four places: Durable Object SQLite, D1 or Hyperdrive, R2, a
 | D1 or Postgres/MySQL | `.global()` tables and the global change log | Writes from any shard, one statement or one `batch` | No automatic move. Log rows are deleted by time |
 | R2 (cold) | Files, upload state, change log segments, NDJSON backups, log archive | Storage facade, retention sweep, backup cron, Pipelines | Segments are never deleted by Lunora |
 | Queues | In-flight background messages | `ctx.queues.send` | Dead letter queue after retries |
-| Durable Object KV API | Scheduler jobs, registry entries, secret values | Scheduler, registry | No |
+| Durable Object Workers KV (key-value store) application programming interface (API) | Scheduler jobs, registry entries, secret values | Scheduler, registry | No |
 | Workers KV | App data through `ctx.kv` | The app | No |
 
 Source: `architecture.mdx` (data tiers), `cloudflare.ts:112-124`.
@@ -122,7 +122,7 @@ If R2 fails, the original 409 is thrown, not an opaque 500 (`cdc-retention.ts:45
 | `put` fails (R2 error) | Watermark unchanged. Retention for this pass is skipped | Error recorded as `cdc:archive`. Log stays larger until a later sweep |
 | Crash after `put`, before the watermark write | A segment sits above the watermark | Next sweep sees it as a rewind: `cdcArchiveRewound` is true. The shard mints a new epoch and skips that cycle. All consumers re-seed once. The comment calls this "the benign false positive" (`ctx-db-cdc-archive.ts:229-238`). The orphan segment stays in R2 under the old epoch |
 | Crash after the watermark, before the trim | Rows archived and still in SQLite | Next sweep trims, bounded by the watermark |
-| PITR restore | Watermark and epoch roll back. R2 keeps segments | `cdcArchiveRewound` is true. Epoch is re-minted. The new timeline writes under a new prefix |
+| point-in-time recovery (PITR) restore | Watermark and epoch roll back. R2 keeps segments | `cdcArchiveRewound` is true. Epoch is re-minted. The new timeline writes under a new prefix |
 | R2 lifecycle rule deletes a segment | A hole | Read-back returns a prefix and then stops. The consumer re-seeds if its next row is missing |
 | R2 unreachable on read | Original 409 returned | Consumer re-seeds |
 | Writes faster than archive | Log grows | See below |
@@ -145,15 +145,15 @@ The cron backup streams every shard's rows into one NDJSON object under `backups
 - Retention removes at most 200 snapshots per run, 8 deletions at a time (`MAX_PRUNE_DELETES`, `PRUNE_DELETE_CONCURRENCY`), and only sidecars that carry its own cron expression in metadata.
 - The command line tool writes the same layout to the same bucket.
 
-For anything larger, the answer is the CDC tap, the replay path, or native PITR (30 days).
+For anything larger, the answer is the change data capture (CDC) tap, the replay path, or native PITR (30 days).
 
 ### Resumable uploads
 
-State is a JSON object per upload under `_lunora/uploads/`. R2 is strongly consistent and supports conditional puts, so a compare-and-swap lease works without a Durable Object. Chunks are coalesced into 5 MiB parts because R2 multipart needs equal parts except the last. A lease lasts 60,000 ms (`LEASE_MS`, `r2-binding-upload-storage.ts:102`). State objects are never deleted. The operator must set a lifecycle rule (`r2-binding-upload-storage.ts:80-95`).
+State is a JavaScript Object Notation (JSON) object per upload under `_lunora/uploads/`. R2 is strongly consistent and supports conditional puts, so a compare-and-swap lease works without a Durable Object. Chunks are coalesced into 5 MiB parts because R2 multipart needs equal parts except the last. A lease lasts 60,000 ms (`LEASE_MS`, `r2-binding-upload-storage.ts:102`). State objects are never deleted. The operator must set a lifecycle rule (`r2-binding-upload-storage.ts:80-95`).
 
 ### Log archive
 
-`pipelineLogSink` sends records to a Pipeline that writes Iceberg tables in R2. The admin route queries with R2 SQL on the server (`cloudflare.ts:172`).
+`pipelineLogSink` sends records to a Pipeline that writes Iceberg tables in R2. The admin route queries with R2 SQL (Structured Query Language) on the server (`cloudflare.ts:172`).
 
 ## Where to go next
 

@@ -15,7 +15,7 @@ The Worker is the only public entry. It never stores data. It resolves who the c
 | `/_lunora/rpc` | `handleRpc` | One query, mutation or action |
 | `/_lunora/rpc-batch` | `handleBatchRpc` (`create-worker.ts:5026`) | Many calls, grouped by shard |
 | WebSocket upgrade | `handleWebSocketUpgrade` (`create-worker.ts:4403`) | Live subscriptions |
-| `/_lunora/admin/*` | admin route modules | Export, import, backup, PITR, introspection |
+| `/_lunora/admin/*` | admin route modules | Export, import, backup, point-in-time recovery (PITR), introspection |
 | `scheduled()` | cron dispatch | Cron Triggers |
 | `queue()` | `dispatchQueueBatch` | Queue consumer |
 
@@ -151,7 +151,7 @@ The Worker sends `x-lunora-replica-read: 1` and the caller bookmark `x-lunora-mi
 
 ## Security and trust headers
 
-The Worker strips client-supplied identity headers and sets its own. A comment states the rule: `x-lunora-userid` and `x-lunora-identity` are "server-minted and trusted verbatim by the DO", so the Worker removes client copies first (`create-worker.ts:4449-4456`). Scheduler dispatch uses `x-lunora-system` to mark a trusted internal call (`create-worker.ts:3324`).
+The Worker strips client-supplied identity headers and sets its own. A comment states the rule: `x-lunora-userid` and `x-lunora-identity` are "server-minted and trusted verbatim by the Durable Object (DO)", so the Worker removes client copies first (`create-worker.ts:4449-4456`). Scheduler dispatch uses `x-lunora-system` to mark a trusted internal call (`create-worker.ts:3324`).
 
 Internal control channels use a Hash-based Message Authentication Code (HMAC) over the body with the secret `LUNORA_RELAY_SECRET`. The header is `x-lunora-relay-sig` (`shared/relay-signature.ts:14,35`). The signature has no nonce and no time stamp, so a captured frame can be replayed by someone who can reach the namespace.
 

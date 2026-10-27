@@ -70,7 +70,7 @@ sequenceDiagram
 | Durable Object SQLite | `shard-engine` | Every shard-local table and the change log | Core |
 | D1 | `d1`, `sql-store` | `.global()` tables | Core when `.global()` is used |
 | R2 | `storage`, `shard-engine`, `runtime` | Files, change log archive, backups, uploads | Optional |
-| Workers KV | `bindings` | `ctx.kv` facade for apps | Optional |
+| Workers KV (key-value store) | `bindings` | `ctx.kv` facade for apps | Optional |
 | Queues | `queue` | Background work, topics, requeue | Optional |
 | Hyperdrive | `hyperdrive` | Postgres or MySQL as a `.global()` backend | Optional |
 | Workflows | `workflow`, `agent` | Durable multi-step jobs and agents | Optional |
@@ -79,7 +79,7 @@ sequenceDiagram
 | Service bindings | `config`, `do` | Shared shard registry across Workers | Optional |
 | Vectorize | `bindings`, `ai` | Vector search | Optional |
 | Workers AI and AI Gateway | `ai`, `agent` | Models and cost telemetry | Optional |
-| Pipelines, R2 SQL | `bindings`, `runtime` | Log archive | Optional |
+| Pipelines, R2 SQL (Structured Query Language) | `bindings`, `runtime` | Log archive | Optional |
 | Others | see end of page | Images, Browser, Containers, Email, Access, Secrets Store | Optional |
 
 ## Workers
@@ -88,7 +88,7 @@ The Worker is a stateless front. The function `createWorker` returns an object w
 
 Why: the Worker scales horizontally for free. All state lives in Durable Objects, D1 and R2. See [Worker runtime](03-worker-runtime.md).
 
-A limit Lunora tracks: a Worker must start within 1 second of CPU time (error 10021). The repository commits a baseline in `worker-startup.json` (300 procedures, 60 tables, 915 eager modules, 6,046,937 eager bytes) and a size baseline in `worker-size.json` (1,348,884 raw bytes, 344,186 gzip bytes). Scripts check both in continuous integration.
+A limit Lunora tracks: a Worker must start within 1 second of central processing unit (CPU) time (error 10021). The repository commits a baseline in `worker-startup.json` (300 procedures, 60 tables, 915 eager modules, 6,046,937 eager bytes) and a size baseline in `worker-size.json` (1,348,884 raw bytes, 344,186 gzip bytes). Scripts check both in continuous integration.
 
 ## Durable Objects
 
@@ -115,7 +115,7 @@ At least seven Durable Object classes appear in the code: `ShardDO`, `ShardRegis
 
 ## Durable Object SQLite storage
 
-Every shard table has three columns: `id`, `_creationTime`, and a JSON document column `__doc__`.
+Every shard table has three columns: `id`, `_creationTime`, and a JavaScript Object Notation (JSON) document column `__doc__`.
 
 ```ts
 // packages/shard-engine/src/ctx-db-migrations.ts:638
@@ -134,7 +134,7 @@ The shard SQL layer works around Cloudflare statement limits. The documentation 
 
 ## D1
 
-D1 is a Cloudflare SQL database. Lunora uses it for `.global()` tables: data that must be readable from every shard. The adapter uses the D1 Sessions API with a bookmark.
+D1 is a Cloudflare SQL database. Lunora uses it for `.global()` tables: data that must be readable from every shard. The adapter uses the D1 Sessions application programming interface (API) with a bookmark.
 
 ```ts
 // packages/d1/src/d1-client.ts:195

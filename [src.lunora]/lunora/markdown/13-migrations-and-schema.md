@@ -11,7 +11,7 @@ Lunora has four kinds of migration. Each runs in a different place. This page ex
 | Shard schema | Inside each shard, on first use after a wake | Any dispatch | `runShardMigrations`, `ctx-db-migrations.ts` |
 | Data migration (`defineMigration`) | Inside each shard, resumable | Admin call, fanned out | `data-migration.ts:643` |
 | Global tables | D1 or Hyperdrive, batched DDL | First access | `ctx-db-global-provisioning.ts` |
-| D1 SQL migration files | D1, by a runner | `lunora migrate` | `d1/src/migration-runner.ts:377` |
+| D1 Structured Query Language (SQL) migration files | D1, by a runner | `lunora migrate` | `d1/src/migration-runner.ts:377` |
 | Durable Object classes | Cloudflare | `wrangler deploy` | `reconcile-bindings.ts:190-205` |
 
 ## Shard schema: idempotent and lazy
@@ -35,7 +35,7 @@ Source: `packages/shard-engine/src/ctx-db-migrations.ts:590-751`, `codegen/src/e
 
 Details:
 
-- Adding a field or a table needs nothing. The JSON document column absorbs it.
+- Adding a field or a table needs nothing. The JavaScript Object Notation (JSON) document column absorbs it.
 - A removed index is dropped from a ledger table `__lunora_framework_indexes`. Framework indexes are tracked, so an index the schema no longer declares can be dropped without touching a user's own index (`ctx-db-migrations.ts:288`).
 - Companion tables (`__agg_*`, `__rank_*`, `__fts_*`, geo) are created with `IF NOT EXISTS`. They never reshape an existing table, so a rebuild marker table `__lunora_companion_state` records when a rebuild is needed (`ctx-db-migrations.ts:513-560`).
 - A unique index over existing duplicates cannot be created. The code returns the blocked indexes, keeps going, and refuses user dispatch with an error naming them. The retry is limited to once per `BLOCKED_MIGRATION_RETRY_MS` (5,000 ms, `packages/codegen/src/emit/shard.ts:1027`). An admin data migration that removes the duplicates resets the clock (`packages/codegen/src/emit/shard.ts:1160-1195`).

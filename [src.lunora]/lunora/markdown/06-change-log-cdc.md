@@ -60,7 +60,7 @@ The `+ 1` matters. A consumer at `sinceSeq` has seen that entry. It expects `sin
 
 ### Errors
 
-| Code | HTTP | When | Source |
+| Code | Hypertext Transfer Protocol (HTTP) | When | Source |
 |------|------|------|--------|
 | `CDC_LOG_TRIMMED` | 409 | Cursor below the key floor | `ctx-db-cdc.ts:617` |
 | `CDC_PAYLOAD_COMPACTED` | 409 | A page holds an insert or update with no post-image | `shard-do.ts:5206-5214` |
@@ -138,7 +138,7 @@ A known ceiling remains: a relayed cohort on a quiet table pins the floor, becau
 
 ## Vouching: when "nothing changed" is a lie
 
-`evaluateResume` lets a reconnecting client keep its cached query result if no table it read changed. The log can only vouch for tables in this shard's SQLite. A `.global()` table lives in D1. A flag provider, `ctx.kv` and wall-clock filters leave no row. So `cdcCanVouchFor` defines the safe set by a positive rule: a dependency is vouchable only if a table of that name exists in this shard's SQLite (`ctx-db-cdc.ts:332`). Memory tables stamp a sentinel dependency `UNVOUCHABLE_DEP` to fail this check (`ctx-db.ts:2229-2245`). The answer is cached per SQL handle, and only positive answers are cached.
+`evaluateResume` lets a reconnecting client keep its cached query result if no table it read changed. The log can only vouch for tables in this shard's SQLite. A `.global()` table lives in D1. A flag provider, `ctx.kv` and wall-clock filters leave no row. So `cdcCanVouchFor` defines the safe set by a positive rule: a dependency is vouchable only if a table of that name exists in this shard's SQLite (`ctx-db-cdc.ts:332`). Memory tables stamp a sentinel dependency `UNVOUCHABLE_DEP` to fail this check (`ctx-db.ts:2229-2245`). The answer is cached per Structured Query Language (SQL) handle, and only positive answers are cached.
 
 The resume check uses `cdcTouchesTables`: one indexed probe `SELECT 1 ... LIMIT 1`, chunked at 90 names for the 100-parameter limit (`ctx-db-cdc.ts:174,248`). It never decodes a document.
 
