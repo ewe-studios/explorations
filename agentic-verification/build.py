@@ -429,7 +429,7 @@ def build():
         'src.strukto-ai': "Structo AI projects. Mirage: Unified Virtual File System for AI agents mounting 30+ services as a single filesystem.",
         'src.lunora': "Lunora deep dive: Cloudflare sharding, change data capture, storage tiers.",
         'src.iii': "iii ecosystem. Serverless engine (Rust) with Worker/Function/Trigger primitives. SDKs, workers, tooling, and examples.",
-        'agentic-verification': "Agentic verification. beyond-done: a 60-minute workshop teaching verification loops for AI agents (proof receipts, a CDP lever, and semantic judging). pstack: poteto's 60-skill Cursor/Claude plugin for rigorous agent workflows, 24 principles, and a TLA+/statechart verification tool.",
+        'agentic-verification': "Agentic verification. beyond-done: a 60-minute workshop teaching verification loops for AI agents (proof receipts, a CDP lever, and semantic judging). pstack: poteto's 60-skill Cursor/Claude plugin for rigorous agent workflows, 24 principles, and a TLA+/statechart verification tool. pr-agent: Qodo's open-source AI pull-request reviewer (version 0.49.0, MIT) with 12 tools, 10 git providers, 11 servers, and a MOSAICO A2A server, plus its single maintainer skill.",
     }
     desc = descriptions.get(project_name, f"Documentation for {project_name}.")
 
