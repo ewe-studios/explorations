@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The Cloudflare API and the cf CLI -- mise-cloudflare</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/mise-cloudflare/docs</span>
+    <div class="nav-actions">
+      <a href="01-architecture.html" class="nav-breadcrumb">Architecture</a><a href="02-the-wconfig-bridge.html" class="nav-breadcrumb">The wconfig bridge</a><a href="03-the-login-model.html" class="nav-breadcrumb">The login model</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="03-the-login-model.html" class="nav-btn" title="Previous: The login model">← prev</a>
+      <a href="05-the-check-rules.html" class="nav-btn nav-btn-next" title="Next: The check rules">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>The Cloudflare application programming interface (API) and the cf command-line interface (CLI)</h1>
+<p>The project talks to Cloudflare through two thin clients. One calls the Cloudflare application programming interface (API) directly with a token. The other runs Cloudflare's own <code>cf</code> command-line interface (CLI) as a child process. Both follow one rule: they decide on the HyperText Transfer Protocol (HTTP) status, never on the words in an error message.</p>
+<h2>Two clients, one rule</h2>
+<p>The project has two files that reach Cloudflare. They are <code>internal/cfapi/cfapi.go</code> and <code>internal/cf/cf.go</code>.</p>
+<ul><li><code>cfapi</code> calls the Cloudflare API itself. It sends a request and decodes the answer. It is used where no <code>cf</code> command does the job. Examples are the delete task and the secrets and resources task.</li><li><code>cf</code> runs Cloudflare's own <code>cf</code> CLI. It is used for login and for Workers Builds. The package comment at <code>internal/cf/cf.go:1-2</code> says why the separate CLI exists: "wrangler's login can't hold its scope (workers_builds:write)".</li></ul>
+<p>Both files share one rule. The package comment at <code>internal/cfapi/cfapi.go:1-2</code> states it: "what's decided on is the HTTP status, never its words." The <code>cf</code> package repeats the rule at <code>internal/cf/cf.go:70-71</code>.</p>
+<p>Source: <code>internal/cfapi/cfapi.go</code> and <code>internal/cf/cf.go</code></p>
+<h2>The direct API client: cfapi</h2>
+<p><code>internal/cfapi/cfapi.go</code> is 67 lines long. It has one variable, one struct, and three functions. Nothing else.</p>
+<h3>Base: the one address</h3>
+<p>The whole API lives under one address:</p>
+<pre><code class="language-go">// Base is Cloudflare&#x27;s API.
+var Base = &quot;https://api.cloudflare.com/client/v4&quot;
+</code></pre>
+<p>Source: <code>internal/cfapi/cfapi.go:16</code></p>
+<p>The path of every call starts at <code>/client/v4</code>. A caller passes only the part after it. For example, <code>cmd/mise-cloudflare/resources.go:142</code> calls with the path <code>/accounts/</code> plus the account identifier.</p>
+<h3>Result: the envelope every call returns</h3>
+<p>Cloudflare wraps every answer in one JavaScript Object Notation (JSON) envelope. The <code>Result</code> struct mirrors that envelope:</p>
+<pre><code class="language-go">type Result struct {
+	Status int
+	Errors []struct {
+		Code             int    `json:&quot;code&quot;`
+		Message          string `json:&quot;message&quot;`
+		DocumentationURL string `json:&quot;documentation_url&quot;`
+	} `json:&quot;errors&quot;`
+	Result json.RawMessage `json:&quot;result&quot;`
+}
+</code></pre>
+<p>Source: <code>internal/cfapi/cfapi.go:21-29</code></p>
+<p>The three fields do three different jobs.</p>
+<ul><li><code>Status</code> is the HTTP status of the call. The code fills it from the response, not from the body. It is the field every decision uses.</li><li><code>Errors</code> holds what Cloudflare says went wrong. Each error has a <code>Code</code>, a <code>Message</code>, and a <code>DocumentationURL</code>.</li><li><code>Result</code> is the payload. It is a <code>json.RawMessage</code>, which means the caller decodes it into its own type. The client never has to know what a Worker, a bucket, or a namespace looks like.</li></ul>
+<p>The envelope is the same for every Cloudflare product. Only the <code>result</code> inside differs. That is why one <code>Result</code> type serves the whole project.</p>
+<h3>OK: the only success test</h3>
+<pre><code class="language-go">// OK reports whether the call succeeded (2xx).
+func (a Result) OK() bool { return a.Status/100 == 2 }
+</code></pre>
+<p>Source: <code>internal/cfapi/cfapi.go:32</code></p>
+<p><code>OK</code> divides the status by 100. A result from 200 to 299 gives 2, so it is a success. Anything else is not. The method reads only the number. It never reads the error words.</p>
+<h3>Said: Cloudflare's own words, for humans</h3>
+<p>When a call does not succeed, the project shows Cloudflare's own words. <code>Said</code> builds that message:</p>
+<pre><code class="language-go">func (a Result) Said() string {
+	var out []string
+	for _, e := range a.Errors {
+		s := fmt.Sprintf(&quot;%s (code %d)&quot;, e.Message, e.Code)
+		if e.DocumentationURL != &quot;&quot; {
+			s += &quot;: &quot; + e.DocumentationURL
+		}
+		out = append(out, s)
+	}
+	return fmt.Sprintf(&quot;HTTP %d: %s&quot;, a.Status, strings.Join(out, &quot;; &quot;))
+}
+</code></pre>
+<p>Source: <code>internal/cfapi/cfapi.go:36-46</code></p>
+<p>The output looks like <code>HTTP 404: The thing does not exist (code 7000): https://developers.cloudflare.com/...</code>. The status comes first. The message, the code, and the documentation link follow. <code>Said</code> is for showing, never for deciding.</p>
+<h3>Call: the one request function</h3>
+<pre><code class="language-go">func Call(ctx context.Context, token, method, path string, body []byte, contentType string) (Result, error) {
+	var a Result
+	req, err := http.NewRequestWithContext(ctx, method, Base+path, bytes.NewReader(body))
+	if err != nil {
+		return a, err
+	}
+	req.Header.Set(&quot;Authorization&quot;, &quot;Bearer &quot;+token)
+	if contentType != &quot;&quot; {
+		req.Header.Set(&quot;Content-Type&quot;, contentType)
+	}
+	resp, err := (&amp;http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		return a, fmt.Errorf(&quot;%s %s: %w&quot;, method, path, err)
+	}
+	defer resp.Body.Close()
+	json.NewDecoder(resp.Body).Decode(&amp;a) // a body that isn&#x27;t the envelope leaves only the status
+	a.Status = resp.StatusCode
+	return a, nil
+}
+</code></pre>
+<p>Source: <code>internal/cfapi/cfapi.go:49-67</code></p>
+<p><code>Call</code> is the whole client. Walk it line by line.</p>
+<ol><li><code>http.NewRequestWithContext</code> builds the request. The method is <code>GET</code>, <code>POST</code>, <code>PATCH</code>, or <code>DELETE</code>. The address is <code>Base</code> plus the path.</li><li>The <code>Authorization</code> header is set to <code>Bearer </code> plus the token. This is the login token, described in <a href="03-the-login-model.html">The login model</a>.</li><li>If the caller passes a <code>contentType</code>, the <code>Content-Type</code> header is set. A merge patch uses <code>application/merge-patch+json</code> at <code>cmd/mise-cloudflare/resources.go:331</code>.</li><li>The request runs with a 30-second timeout. The client is created inline for this one call. No client is shared or reused.</li><li>On a transport error, the error names the method and the path.</li><li>The body decodes into <code>Result</code>. A body that is not the envelope fails to decode, and only the status remains.</li><li><code>a.Status</code> is set from <code>resp.StatusCode</code>, not from the body. This is the rule again: the number comes from the transport, not from the words.</li></ol>
+<p>The sequence below shows the whole call.</p>
+<div class="mermaid">
+sequenceDiagram
+    participant T as Caller (resources.go)
+    participant C as cfapi.Call
+    participant H as http.Client
+    participant A as Cloudflare API
+    T-&gt;&gt;C: Call(ctx, token, method, path, body, contentType)
+    C-&gt;&gt;H: NewRequestWithContext(method, Base + path)
+    C-&gt;&gt;C: set Authorization: Bearer token
+    C-&gt;&gt;C: set Content-Type (when given)
+    H-&gt;&gt;A: send with a 30-second timeout
+    A--&gt;&gt;H: HTTP status plus the JSON envelope
+    H--&gt;&gt;C: response
+    C-&gt;&gt;C: decode the envelope into Result, set Status
+    C--&gt;&gt;T: Result; caller calls OK() then Said()
+
+</div>
+<h2>The cf CLI wrapper</h2>
+<p><code>internal/cf/cf.go</code> is 166 lines long. It wraps Cloudflare's <code>cf</code> CLI for two jobs: login and Workers Builds.</p>
+<h3>Scopes: what connect-github needs</h3>
+<pre><code class="language-go">// Scopes is what connect-github needs: the account and Workers Builds.
+var Scopes = []string{&quot;account:read&quot;, &quot;user:read&quot;, &quot;workers:write&quot;, &quot;workers_scripts:write&quot;, &quot;workers_builds:write&quot;}
+</code></pre>
+<p>Source: <code>internal/cf/cf.go:23</code></p>
+<p>These five scopes are what the connect-github task needs. The last one, <code>workers_builds:write</code>, is the reason the project uses <code>cf</code> at all. Wrangler's login cannot hold that scope. The document <a href="09-connect-github.html">Connect GitHub</a> covers that task.</p>
+<h3>CF: one profile, one folder, one account</h3>
+<pre><code class="language-go">type CF struct {
+	Dir     string
+	Profile string
+	Account string
+}
+</code></pre>
+<p>Source: <code>internal/cf/cf.go:26-30</code></p>
+<p><code>CF</code> holds three facts.</p>
+<ul><li><code>Dir</code> is the folder every <code>cf</code> command runs in.</li><li><code>Profile</code> is the <code>cf</code> profile name. Every command passes it.</li><li><code>Account</code> is the Cloudflare account identifier, once known. It is optional.</li></ul>
+<h3>Installed: on the PATH is not enough</h3>
+<pre><code class="language-go">func Installed() bool {
+	return exec.Command(&quot;cf&quot;, &quot;--version&quot;).Run() == nil
+}
+</code></pre>
+<p>Source: <code>internal/cf/cf.go:34-36</code></p>
+<p>The comment above it explains the trap. Mise leaves a shim for <code>cf</code> on the PATH wherever mise has ever installed it. The shim fails with "No version is set for shim: cf" where nothing pins it. So <code>Installed</code> runs <code>cf --version</code> and checks that it really works.</p>
+<h3>cmd: every command, with the profile</h3>
+<pre><code class="language-go">func (c CF) cmd(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, &quot;cf&quot;, append(args, &quot;--profile&quot;, c.Profile)...)
+	cmd.Dir = c.Dir
+	cmd.Env = os.Environ()
+	if c.Account != &quot;&quot; {
+		cmd.Env = append(cmd.Env, &quot;CLOUDFLARE_ACCOUNT_ID=&quot;+c.Account)
+	}
+	return cmd
+}
+</code></pre>
+<p>Source: <code>internal/cf/cf.go:38-46</code></p>
+<p><code>cmd</code> builds every <code>cf</code> command. It appends <code>--profile</code> with the profile name. It runs in <code>Dir</code>. When the account is known, it sets the <code>CLOUDFLARE_ACCOUNT_ID</code> environment variable.</p>
+<h3>Error and the error box</h3>
+<pre><code class="language-go">type Error struct {
+	Args   []string
+	Output string
+}
+</code></pre>
+<p>Source: <code>internal/cf/cf.go:49-52</code></p>
+<p><code>Error</code> holds the arguments and the output of a failed <code>cf</code> command. Its <code>Error()</code> method trims the noise:</p>
+<pre><code class="language-go">func (e *Error) Error() string {
+	out := e.Output
+	// A call cf can&#x27;t take prints its whole help first, then the error in a box: only the box says what went wrong.
+	if i := strings.Index(out, &quot;┌ Error&quot;); i &gt;= 0 {
+		out = out[i:]
+		if j := strings.Index(out, &quot;└&quot;); j &gt;= 0 {
+			out = out[:j+len(&quot;└&quot;)]
+		}
+	}
+	return fmt.Sprintf(&quot;cf %s: %s&quot;, strings.Join(e.Args, &quot; &quot;), out)
+}
+</code></pre>
+<p>Source: <code>internal/cf/cf.go:54-64</code></p>
+<p>When <code>cf</code> cannot take a command, it prints its full help first, then the real error in a box. The box starts at <code>┌ Error</code> and ends at <code>└</code>. <code>Error()</code> keeps only the box. The result names the command and shows the box.</p>
+<h3>Status: pulling the number out of the box</h3>
+<p>The rule "decide on the status, not the words" needs the status number. The <code>cf</code> CLI does not hand it back as an exit code. It prints the status inside the error box. So the code reads it with a regular expression (regex):</p>
+<pre><code class="language-go">var statusLine = regexp.MustCompile(`(?m)^\W*([1-5][0-9][0-9]) [A-Za-z][A-Za-z ]* · HTTP `)
+</code></pre>
+<p>Source: <code>internal/cf/cf.go:68</code></p>
+<pre><code class="language-go">func Status(err error) int {
+	var e *Error
+	if !errors.As(err, &amp;e) {
+		return 0
+	}
+	m := statusLine.FindStringSubmatch(e.Output)
+	if m == nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(m[1])
+	return n
+}
+</code></pre>
+<p>Source: <code>internal/cf/cf.go:72-83</code></p>
+<p><code>Status</code> does three steps.</p>
+<ol><li>It checks that the error is a <code>*cf.Error</code>. Any other error returns 0.</li><li>It runs the regex on the output. No match means 0.</li><li>It converts the first capture group to an integer and returns it.</li></ol>
+<p>The regex looks for a three-digit number from 100 to 599, then a space, then a reason in letters, then <code> · HTTP </code>. The <code>(?m)</code> flag makes <code>^</code> match the start of each line. The <code>\W*</code> skips the box-drawing character <code>│</code> at the start of the line.</p>
+<p>The test at <code>internal/cf/cf_test.go:59-62</code> shows a real box from <code>cf 1.0.0-beta.26</code>:</p>
+<pre><code class="language-go">box := `┌ APIError
+│ [12040] No build configuration associated with that script tag was found for this account
+│ 404 Not Found · HTTP /accounts/0123456789abcdef0123456789abcdef/builds/workers/0123456789abcdef0123456789abcdef
+└`
+</code></pre>
+<p>The regex matches <code>404 Not Found · HTTP </code> and captures <code>404</code>. The flowchart shows the path:</p>
+<div class="mermaid">
+flowchart TD
+    E[an error from a cf command] --&gt; A{&quot;is it a *cf.Error?&quot;}
+    A -- &quot;no&quot; --&gt; Z[&quot;return 0&quot;]
+    A -- &quot;yes&quot; --&gt; R[&quot;run statusLine on Output&quot;]
+    R --&gt; M{&quot;match found?&quot;}
+    M -- &quot;no&quot; --&gt; Z
+    M -- &quot;yes&quot; --&gt; N[&quot;strconv.Atoi of group 1&quot;]
+    N --&gt; X[&quot;return the number&quot;]
+
+</div>
+<h3>NotFound: the one status the tasks check</h3>
+<pre><code class="language-go">func NotFound(err error) bool { return Status(err) == http.StatusNotFound }
+</code></pre>
+<p>Source: <code>internal/cf/cf.go:86</code></p>
+<p><code>NotFound</code> is true when the status is 404. The connect-github task uses it to ignore a delete of a Workers Build that is already gone. It appears at <code>cmd/mise-cloudflare/connect_github.go:121</code> and <code>:201</code>.</p>
+<h3>JSON: run cf and unwrap the envelope</h3>
+<pre><code class="language-go">func (c CF) JSON(ctx context.Context, out any, args ...string) error {
+	cmd := c.cmd(ctx, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &amp;stderr
+	b, err := cmd.Output()
+	if err != nil {
+		return &amp;Error{Args: args, Output: strings.TrimSpace(stderr.String() + &quot;\n&quot; + string(b))}
+	}
+	if out == nil {
+		return nil
+	}
+	var env struct {
+		Result json.RawMessage `json:&quot;result&quot;`
+	}
+	if json.Unmarshal(b, &amp;env) == nil &amp;&amp; len(env.Result) &gt; 0 {
+		b = env.Result
+	}
+	if err := json.Unmarshal(b, out); err != nil {
+		return fmt.Errorf(&quot;cf %s printed %.300s: %w&quot;, strings.Join(args, &quot; &quot;), b, err)
+	}
+	return nil
+}
+</code></pre>
+<p>Source: <code>internal/cf/cf.go:89-110</code></p>
+<p><code>JSON</code> runs a <code>cf</code> command and decodes its output. It unwraps the same <code>result</code> envelope that <code>cfapi.Result</code> models. When the output has a <code>result</code> field, only that field is decoded into <code>out</code>. When <code>out</code> is <code>nil</code>, the command runs and the output is thrown away. That is the "fire and forget" case for deletes.</p>
+<h3>Whoami and HasScopes</h3>
+<pre><code class="language-go">type Who struct {
+	Authenticated bool     `json:&quot;authenticated&quot;`
+	Scopes        []string `json:&quot;scopes&quot;`
+	Accounts      []struct {
+		ID string `json:&quot;id&quot;`
+	} `json:&quot;accounts&quot;`
+}
+</code></pre>
+<p>Source: <code>internal/cf/cf.go:113-119</code></p>
+<p><code>Whoami</code> runs <code>cf auth whoami</code>:</p>
+<pre><code class="language-go">func (c CF) Whoami(ctx context.Context) (Who, error) {
+	var who Who
+	cmd := c.cmd(ctx, &quot;auth&quot;, &quot;whoami&quot;)
+	out, _ := cmd.Output() // not logged in, it still prints JSON, whatever it exits with (1 before cf 1.0.0-beta.26, 0 now)
+	if err := json.Unmarshal(out, &amp;who); err != nil {
+		return who, fmt.Errorf(&quot;cf auth whoami printed %.300s: %w&quot;, out, err)
+	}
+	return who, nil
+}
+</code></pre>
+<p>Source: <code>internal/cf/cf.go:122-130</code></p>
+<p>A logged-out profile still prints JSON. So <code>Whoami</code> ignores the exit code and only decodes the output. <code>Authenticated</code> is <code>false</code> when the profile is not logged in. It is not an error.</p>
+<pre><code class="language-go">func (w Who) HasScopes() bool {
+	for _, s := range Scopes {
+		if !slices.Contains(w.Scopes, s) {
+			return false
+		}
+	}
+	return true
+}
+</code></pre>
+<p>Source: <code>internal/cf/cf.go:133-140</code></p>
+<p><code>HasScopes</code> checks that the login holds every one of the five <code>Scopes</code>. It is true only when all five are present.</p>
+<h3>Login: the device flow</h3>
+<pre><code class="language-go">func (c CF) Login(ctx context.Context, browser bool) error {
+	args := append([]string{&quot;auth&quot;, &quot;create&quot;, c.Profile, &quot;--device&quot;, &quot;--scopes&quot;}, Scopes...)
+	if !browser {
+		args = append(args, &quot;--no-browser&quot;)
+	}
+	cmd := exec.CommandContext(ctx, &quot;cf&quot;, args...)
+	cmd.Dir, cmd.Env = c.Dir, os.Environ()
+	fmt.Printf(&quot;Logging %s in to Cloudflare&#x27;s cf, for Workers Builds: approve it on any device (your phone works).\n&quot;, c.Profile)
+	if err := wrangler.RunDeviceLogin(cmd, true); err != nil {
+		return fmt.Errorf(&quot;cf auth create %s: %w&quot;, c.Profile, err)
+	}
+	return nil
+}
+</code></pre>
+<p>Source: <code>internal/cf/cf.go:144-156</code></p>
+<p><code>Login</code> runs <code>cf auth create PROFILE --device --scopes</code> with all five scopes. The <code>--device</code> flag asks for the Open Authorization (OAuth) device flow. That flow prints a link and a code. The person opens the link on any device and approves. When <code>browser</code> is false, <code>--no-browser</code> is added so <code>cf</code> does not try to open this machine's browser.</p>
+<h3>Delete: log the profile out</h3>
+<pre><code class="language-go">func (c CF) Delete(ctx context.Context) error {
+	cmd := exec.CommandContext(ctx, &quot;cf&quot;, &quot;auth&quot;, &quot;delete&quot;, c.Profile)
+	cmd.Dir, cmd.Env = c.Dir, os.Environ()
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return &amp;Error{Args: []string{&quot;auth&quot;, &quot;delete&quot;, c.Profile}, Output: strings.TrimSpace(string(out))}
+	}
+	return nil
+}
+</code></pre>
+<p>Source: <code>internal/cf/cf.go:159-166</code></p>
+<p><code>Delete</code> logs the profile out on Cloudflare and deletes it. This is the logout path, documented in <a href="11-delete-clean-logout-update.html">Delete, clean, logout and update</a>.</p>
+<h2>Why the code decides on the status, not the words</h2>
+<p>The rule appears in both files, so it is worth naming. The reason is simple. Cloudflare changes the words in its error messages between versions. It changes the codes too. The one thing that stays stable across every product is the HTTP status.</p>
+<p>The <code>cf</code> CLI proves the point. Its error box prints a reason like <code>404 Not Found</code> in English. But the box also prints <code>403 Forbidden</code> for a different failure. If the code matched the words, it would need a new string match for every Cloudflare message. If it matches the status, one number serves every product and every version.</p>
+<p>The test at <code>internal/cf/cf_test.go:67-73</code> checks exactly this. It replaces <code>404 Not Found</code> with <code>403 Forbidden</code> and expects <code>Status</code> to change from 404 to 403. It also feeds the words alone, <code>"the thing was not found"</code>, and expects 0. The words decide nothing.</p>
+<h2>Aha: the code you never have to type</h2>
+<p>The device flow prints two things: a link and a code. The person normally reads the code and types it into the page. The project removes that typing. The helper at <code>internal/wrangler/devicelink.go</code> rebuilds the link with the code already inside it:</p>
+<pre><code class="language-go">verifyURL = regexp.MustCompile(`https://\S+/device/verify\S*`)
+userCode  = regexp.MustCompile(`^\s*([A-Za-z0-9-]{6,12})\s*$`)
+</code></pre>
+<p>Source: <code>internal/wrangler/devicelink.go:13-14</code></p>
+<pre><code class="language-go">} else if m := userCode.FindStringSubmatch(line); m != nil &amp;&amp; link != &quot;&quot; &amp;&amp; !strings.Contains(link, &quot;user_code=&quot;) {
+	u, err := url.Parse(link)
+	if err == nil {
+		q := u.Query()
+		q.Set(&quot;user_code&quot;, m[1])
+		u.RawQuery = q.Encode()
+		fmt.Fprintf(w, &quot;\nOr open this link, the code already in it, on any device, and click Allow:\n\n  %s\n\n&quot;, u)
+		done = true
+	}
+}
+</code></pre>
+<p>Source: <code>internal/wrangler/devicelink.go:31-40</code></p>
+<p><strong>Aha:</strong> the Open Authorization (OAuth) device flow has a standard field called <code>verification_uri_complete</code>, from Request for Comments (RFC) 8628. It is the verification link with the user code already appended as <code>?user_code=</code>. The CLI prints the plain link and the code apart, but the code recombines them. The result is one link. On a phone, the person opens it and taps Allow. They never type the code.</p>
+<div class="mermaid">
+sequenceDiagram
+    participant P as Person
+    participant L as cf.Login
+    participant C as cf CLI
+    participant D as wrangler.DeviceLink
+    participant W as Cloudflare
+    L-&gt;&gt;C: cf auth create PROFILE --device --scopes ...
+    C-&gt;&gt;D: prints the verify link and the code, apart
+    D-&gt;&gt;D: find the link, find the code
+    D-&gt;&gt;D: append ?user_code=CODE to the link
+    D-&gt;&gt;P: one link, the code already inside it
+    P-&gt;&gt;W: open the link on any device, click Allow
+    W--&gt;&gt;C: approval
+    C--&gt;&gt;L: login file written
+
+</div>
+<h2>Where to go next</h2>
+<p>The <code>cfapi</code> and <code>cf</code> clients both carry a login token. Read <a href="03-the-login-model.html">The login model</a> for how the project stores and scopes that login. Read <a href="05-the-check-rules.html">The check rules</a> for how the project keeps that token out of the repository.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
