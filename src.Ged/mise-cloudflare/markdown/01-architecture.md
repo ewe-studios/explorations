@@ -43,11 +43,11 @@ require golang.org/x/sys v0.49.0 // indirect
 
 Source: `go.mod:1-9`.
 
-The command package has one file per command. Each file holds a method on the `repo` struct: `check.go` holds `r.check`, `deploy.go` holds `r.deploy`, and so on. `main.go` is the dispatcher. The README states the layout rule: "a file per command, `x.go` holding `r.x`, which `main.go`'s `case "x"` calls" (`README.md:227`).
+The command package has one file per command. Each file holds a method on the `repo` struct: `check.go` holds `r.check`, `deploy.go` holds `r.deploy`, and so on — except `init`, `template`, `verify`, `show-version` and `show-help`, whose entry points are package functions. `main.go` is the dispatcher. The README states the layout rule: "a file per command, `x.go` holding `r.x`, which `main.go`'s `case "x"` calls" (`README.md:227`).
 
 ## The command package in detail
 
-The command package has 24 files. 19 of them are commands or helpers. `main.go` is the dispatcher. `paths.go` and `paths_windows.go` hold one platform function. `main_test.go` holds the package's unit tests.
+The command package has 24 files. 20 of them are commands or helpers: the 19 command files plus `resources.go` (the preview-resource helpers). `main.go` is the dispatcher. `paths.go` and `paths_windows.go` hold one platform function. `main_test.go` holds the package's unit tests.
 
 ### main.go: command-first arguments
 
@@ -106,7 +106,7 @@ So `mise-cloudflare serve --ip 127.0.0.1` passes `--ip 127.0.0.1` to wrangler. `
 
 ### main.go: the pre-open switch
 
-Five commands run before the repository is opened. They do not need the wrangler config. The first switch in `main` handles them and returns.
+Six commands run before the repository is opened. They do not need the wrangler config. The first switch in `main` handles them and returns.
 
 ```go
 	ctx := context.Background()
@@ -226,7 +226,7 @@ After the guard, `main` opens the repository and dispatches to the command's met
 
 Source: `cmd/mise-cloudflare/main.go:110-141`.
 
-An empty command is `show`. The three pass-through commands receive `args` untouched. `connect-github` receives a `builds` struct built from the three flags. `delete` and `clean` receive the `-yes` boolean. An unknown command prints the help and exits with status 2.
+An empty command is `show`. The four pass-through commands receive `args` untouched. `connect-github` receives a `builds` struct built from the three flags. `delete` and `clean` receive the `-yes` boolean. An unknown command prints the help and exits with status 2.
 
 ### The repo struct and openRepo
 

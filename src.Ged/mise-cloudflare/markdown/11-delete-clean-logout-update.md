@@ -28,7 +28,7 @@ Four promises sit in that comment. Delete removes the Worker and its own Durable
 Delete first asks Cloudflare whether the Worker exists, by its settings.
 
 ```go
-// cmd/mise-cloudflare/delete.go:30
+// cmd/mise-cloudflare/delete.go:31
 	got, err := cfapi.Call(ctx, token, http.MethodGet, "/accounts/"+account+"/workers/scripts/"+url.PathEscape(r.wc.Name)+"/settings", nil, "")
 	switch {
 	case err != nil:
@@ -468,9 +468,14 @@ flowchart TD
     G -- yes --> H[go get -u ./... then go mod tidy]
     G -- no --> I[read pins again]
     H --> I
-    I --> J{did the mise-cloudflare pin move?}
+    I --> J{self pin moved?}
     J -- yes --> K[print: run 03-init again]
-    J -- no --> L[print each pin, major moves marked]
+    K --> L{no pins read?}
+    J -- no --> L
+    L -- yes --> M[fail: no pins read]
+    L -- no --> N{no pin moved?}
+    N -- yes --> O[print: nothing moved]
+    N -- no --> P[print each moved pin, major moves marked]
 ```
 
 ## Where to go next

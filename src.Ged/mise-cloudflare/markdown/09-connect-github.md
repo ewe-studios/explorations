@@ -23,7 +23,7 @@ Production is one Worker. When `--staging` is given, a second Worker deploys a w
 
 ## The entry point
 
-`connectGithub` is the largest command in the project, at 186 lines in `cmd/mise-cloudflare/connect_github.go`. It runs in clear phases. The first phase checks that cf is present, refuses stray tokens, and resolves the GitHub repository.
+`connectGithub` is the largest command in the project, in `cmd/mise-cloudflare/connect_github.go`. It runs in clear phases. The first phase checks that cf is present, refuses stray tokens, and resolves the GitHub repository.
 
 ```go
 // cmd/mise-cloudflare/connect_github.go:52
@@ -111,7 +111,7 @@ func (w Who) HasScopes() bool {
 Workers Builds attaches to an already-deployed Worker by its script tag. The command builds a list of Workers: production (the config's `name`, plus the `CLOUDFLARE_ENV` it picks), and staging when `--staging` is set.
 
 ```go
-// cmd/mise-cloudflare/connect_github.go:88
+// cmd/mise-cloudflare/connect_github.go:89
 	env := os.Getenv("CLOUDFLARE_ENV")
 	envFlag := func(e string) string {
 		if e == "" {

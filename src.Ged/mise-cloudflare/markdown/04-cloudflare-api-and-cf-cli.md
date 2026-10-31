@@ -121,7 +121,7 @@ Source: `internal/cfapi/cfapi.go:49-67`
 
 `Call` is the whole client. Walk it line by line.
 
-1. `http.NewRequestWithContext` builds the request. The method is `GET`, `POST`, `PATCH`, or `DELETE`. The address is `Base` plus the path.
+1. `http.NewRequestWithContext` builds the request. The method is any HyperText Transfer Protocol (HTTP) method; this repository uses `GET`, `PATCH`, and `DELETE`. The address is `Base` plus the path.
 2. The `Authorization` header is set to `Bearer ` plus the token. This is the login token, described in [The login model](03-the-login-model.md).
 3. If the caller passes a `contentType`, the `Content-Type` header is set. A merge patch uses `application/merge-patch+json` at `cmd/mise-cloudflare/resources.go:331`.
 4. The request runs with a 30-second timeout. The client is created inline for this one call. No client is shared or reused.

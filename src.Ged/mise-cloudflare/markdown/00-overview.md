@@ -232,7 +232,7 @@ flowchart TD
     H --> L["12-login, and 14-logout when done"]
 ```
 
-Every step has an undo. `13-delete` undoes the Cloudflare side. `15-clean` undoes the local side. The two undo tasks both ask first, and `--yes` does not skip the question in their command flags. The task file states it for `15-clean`:
+Every step has an undo. `13-delete` undoes the Cloudflare side. `15-clean` undoes the local side. The two undo tasks both ask first, unless `--yes` is set, which skips the question. The task file states it for `15-clean`:
 
 ```toml
 ["cloudflare:15-clean"]

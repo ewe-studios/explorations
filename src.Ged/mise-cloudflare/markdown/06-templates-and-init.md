@@ -567,7 +567,7 @@ sequenceDiagram
     M->>M: sayNewest()
 ```
 
-**Aha: one task file runs on every shell because it is not shell.** The task file's `run` values are mise templates, not shell commands. Shell syntax differs between `sh`, `cmd` and PowerShell; mise's `{% if %}` and `{{usage.x}}` do not. So a single task file works unchanged on Linux, macOS and Windows. The project's own CI proves it: the matrix runs on `ubuntu-latest`, `macos-latest` and `windows-latest`, and the comment says mise runs each task in each operating system's own shell (`.github/workflows/ci.yml:26`).
+**Aha: one task file runs on every shell because it is not shell.** The task file's `run` values are mise templates, not shell commands. Shell syntax differs between `sh`, `cmd` and PowerShell; mise's `{% if %}` and `{{usage.x}}` do not. So a single task file works unchanged on Linux, macOS and Windows. The project's own CI proves it: the comment says mise runs each task in each operating system's own shell (`ci.yml:31`), in a matrix on `ubuntu-latest`, `macos-latest` and `windows-latest` (`ci.yml:26`).
 
 ## Where to go next
 

@@ -14,7 +14,7 @@ A wrangler config (`wrangler.jsonc`, `wrangler.json`, or `wrangler.toml`) is a m
 
 ## The embedded script
 
-The whole read is one JavaScript program embedded as a Go string constant. It imports the repo's own wrangler and calls four of its internal read functions. Source: `internal/wconfig/wconfig.go:50`.
+The whole read is one JavaScript program embedded as a Go string constant. It imports the repo's own wrangler and calls five of its internal functions. Source: `internal/wconfig/wconfig.go:50`.
 
 ```js
 const script = `const w = await import('wrangler');
@@ -44,14 +44,15 @@ try {
 }`
 ```
 
-The script calls four wrangler functions, in order:
+The script calls five wrangler functions, in order:
 
 1. `unstable_readConfig` reads the config in one environment and returns the resolved Worker fields. The environment comes from the `CLOUDFLARE_ENV` environment variable, or none. Its answer `c` holds `name`, `configPath`, `secrets`, `previews`, and `compatibility_date`.
 2. `experimental_readRawConfig` returns the raw file, unmerged, so the script can see the top-level name and the list of environments. Its answer `r.rawConfig.name` is the top-level name; `r.rawConfig.env` holds every `env.<name>` block.
 3. `unstable_convertConfigBindingsToStartWorkerBindings` turns each binding block (`kv_namespaces`, `d1_databases`, `workflows`, and so on) into the shape a Worker actually sees: name to a converted binding object.
 4. `maybeStartOrUpdateRemoteProxySession` reports which bindings `wrangler dev` runs remotely. The fake `session` object has a do-nothing `updateBindings`, so wrangler starts no proxy. The script only reads the returned `picked.remoteBindings` names.
+5. `unstable_getDevCompatibilityDate` reads wrangler's own default compatibility date for dev. The optional call `?.()` means an older wrangler without it still works.
 
-Three small helpers shape the converted bindings. `conv` drops any binding named `"undefined"` (older wranglers emit that for an assets block with no name). `types` keeps only each binding's `type` field. `given` decides whether a binding names its resource, by checking whether any field besides `type` has a real value. `named` collects the names that pass `given`.
+Four small helpers shape the converted bindings. `conv` drops any binding named `"undefined"` (older wranglers emit that for an assets block with no name). `types` keeps only each binding's `type` field. `given` decides whether a binding names its resource, by checking whether any field besides `type` has a real value. `named` collects the names that pass `given`.
 
 The result is printed as one line starting with `WCONFIG `, then a JavaScript Object Notation (JSON) object. A failure prints `WCONFIG_ERROR `, then the error message as JSON. These two prefixes are the whole protocol between the script and Go.
 

@@ -81,7 +81,7 @@ flowchart TD
 
 1. **Brittle regexes over human output.** The project's core dependency is the text that wrangler and cf print. `devicelink.go:13` and `devicelink.go:14` parse the verification URL and the user code from a login prompt. `cf.go:68` parses a status from an error box. Any upstream wording or layout change breaks these silently. The project accepts this cost, but it is a real cost.
 
-2. **The update flow needs mise, aube and go to be present.** `update.go:28` checks for aube and fails with instructions, but `update.go:35` and `update.go:41` call mise and go directly. There is no same-style check for mise itself or for the Go toolchain. The readme installs mise first, but `update` can still fail late on a machine without Go, after it has already moved the mise pins.
+2. **The update flow needs mise, aube and go to be present.** `update.go:28` checks for aube and fails with instructions, but `update.go:36` and `update.go:41` call mise and go directly. There is no same-style check for mise itself or for the Go toolchain. The readme installs mise first, but `update` can still fail late on a machine without Go, after it has already moved the mise pins.
 
 3. **The device login refuses when `~/.wrangler` exists.** `wrangler.go:236` returns an error if the home folder already has a `.wrangler` directory. The reason is real: wrangler would ignore the temporary folder and overwrite the default login. But a user who already has a machine-wide wrangler login gets a refusal with no automatic fallback. The workaround is "move it away," which a user may not want.
 

@@ -13,10 +13,10 @@ This page defines every term and abbreviation the documentation uses. Each entry
 - **Command** — one action of the `mise-cloudflare` binary. Each command is a task, and each task runs one command. Source: `templates/docs/mise-cloudflare/README.md:105`.
 - **Pin** — a fixed version of a tool or package, written in a file. The repo pins wrangler, Node, and mise-cloudflare itself. Source: `templates/docs/mise-cloudflare/README.md:46`.
 - **Monorepo** — a repository that holds several Workers or several projects in one place. The project does not handle a repo of several Workers yet. Source: `README.md:94`.
-- **Worktree** — a git working tree, the folder where a repository is checked out. The walks use throwaway worktrees and branches. Source: `e2e_walk_test.go:117`.
+- **Worktree** — a git working tree, the folder where a repository is checked out. The walks use throwaway worktrees and branches. Source: `e2e_mise_test.go:67`.
 - **Environment variable** — a named value the operating system passes to a program. `CLOUDFLARE_ENV` picks a wrangler environment. Source: `internal/wconfig/wconfig.go:76`.
 - **Staging** — a deployment environment one step before production. `connect-github --staging main` deploys staging from the `main` branch. Source: `templates/docs/mise-cloudflare/README.md:183`.
-- **Production** — the live deployment environment. A push to the deploy branch deploys production. Source: `templates/docs/mise-cloudflare/README.md:181`.
+- **Production** — the live deployment environment. A push to the deploy branch deploys production. Source: `templates/docs/mise-cloudflare/README.md:185`.
 - **Continuous integration (CI)** — an automated check that runs on every push and pull request. The CI here runs only checks that need no Cloudflare account. Source: `.github/workflows/ci.yml:1`.
 - **Command-line interface (CLI)** — a program a person runs by typing commands in a terminal. `mise-cloudflare` and `cf` are both CLIs.
 
@@ -27,7 +27,7 @@ This page defines every term and abbreviation the documentation uses. Each entry
 - **cf** — Cloudflare's newer CLI. `connect-github` uses cf because wrangler's login cannot hold the Workers Builds scope. Source: `internal/cf/cf.go:1`.
 - **Workers Builds** — Cloudflare's service that builds and deploys a Worker from a Git repository on every push. Source: `templates/docs/mise-cloudflare/README.md:179`.
 - **Workers Preview** — a temporary deployment of a Worker for a branch other than the deploy branch. Its Uniform Resource Locator (URL) goes on the pull request. Source: `templates/docs/mise-cloudflare/README.md:190`.
-- **Previews Base** — the Cloudflare settings that every new preview starts from. The previews' own KV, D1 and R2 resources live there. Source: `templates/docs/mise-cloudflare/README.md:203`.
+- **Previews Base** — the Cloudflare settings that every new preview starts from. The previews' own KV, D1 and R2 resources live there. Source: `templates/docs/mise-cloudflare/README.md:204`.
 - **D1** — Cloudflare's serverless Structured Query Language (SQL) database. A Worker binds to it with a name such as `DB`. Source: `internal/wconfig/wconfig.go:47`.
 - **KV** — Cloudflare's key-value store. A Worker binds to it with a name. Source: `internal/wconfig/wconfig.go:47`.
 - **R2** — Cloudflare's object storage. A Worker binds to it with a name. Source: `internal/wconfig/wconfig.go:47`.
@@ -59,9 +59,9 @@ This page defines every term and abbreviation the documentation uses. Each entry
 ## The tool's internals
 
 - **Bridge** — the one place where the tool talks to wrangler's internals. `wconfig` is the bridge. Source: `README.md:120`.
-- **Config** — the Worker's wrangler configuration file. The tool never parses it; wrangler reads it. Source: `internal/wconfig/wconfig.go:19`.
-- **Go embed** — a Go language feature that puts files into the binary. The template files ship inside the binary. Source: `README.md:107`.
-- **Build tag** — a Go language marker that includes a file only on one platform. Windows path handling uses one. Source: `cmd/mise-cloudflare/paths_windows.go`.
+- **Config** — the Worker's wrangler configuration file. The tool never parses it; wrangler reads it. Source: `internal/wconfig/wconfig.go:18`.
+- **Go embed** — a Go language feature that puts files into the binary. The template files ship inside the binary. Source: `templates/templates.go:16-26`.
+- **Build tag** — a Go language marker that includes a file only on one platform. `paths.go` is excluded on Windows by `//go:build !windows`; `paths_windows.go` is chosen by its `_windows.go` filename suffix. Source: `cmd/mise-cloudflare/paths.go:1`.
 - **Aha moment** — a non-obvious design decision that is worth reading the code for. Each document surfaces at least one. Source: `documentation_directive.md:130`.
 
 ## Release and test
@@ -69,7 +69,7 @@ This page defines every term and abbreviation the documentation uses. Each entry
 - **Walk** — the end-to-end test that runs the repo's numbered tasks in order, on Cloudflare itself. Source: `e2e_walk_test.go:1`.
 - **Corpus** — the set of third-party repositories whose wrangler configs `check` reads. Source: `README.md:209`.
 - **goreleaser** — a Go tool that builds release binaries. It puts the binary on the GitHub release. Source: `README.md:245`.
-- **Go module proxy** — a service that caches Go modules. `proxy.golang.org` holds the release so `go get` finds it at once. Source: `README.md:247`.
+- **Go module proxy** — a service that caches Go modules. `proxy.golang.org` holds the release so `go get` finds it at once. Source: `README.md:246`.
 - **Lockfile** — a file that pins every package version. The repo commits it so everyone runs the same wrangler. Source: `internal/rules/rules.go:123`.
 - **SHA-256** — a Secure Hash Algorithm with a 256-bit output. It turns file content into a fixed-size digest. The walk hashes repo files to prove deploy changes none of them. Source: `e2e_walk_test.go:18`.
 - **JSON merge-patch** — a JavaScript Object Notation (JSON) way to update part of a resource with one object. `connect-github` uses one to turn on GitHub's delete-branch setting. Source: `cmd/mise-cloudflare/connect_github.go:410`.

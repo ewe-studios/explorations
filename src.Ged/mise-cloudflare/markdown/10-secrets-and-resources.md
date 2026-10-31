@@ -4,7 +4,7 @@ title: Secrets and resources
 
 # Secrets and resources
 
-Two commands prepare what the Worker needs to run on Cloudflare that a plain deploy does not give it. `set-secrets` puts the secret values on Cloudflare. `set-preview-secrets` puts the previews' secret values in the Previews Base. The `previewResources` helper, which the `delete` command also uses, makes each preview its own Key-Value (KV) namespace, Data-1 (D1) database, R2 object storage (R2) bucket, Queue, and Flagship app. This page reads three files: `set_secrets.go`, `set_preview_secrets.go`, and `resources.go`.
+Two commands prepare what the Worker needs to run on Cloudflare that a plain deploy does not give it. `set-secrets` puts the secret values on Cloudflare. `set-preview-secrets` puts the previews' secret values in the Previews Base. The `previewResources` helper makes each preview its own Key-Value (KV) namespace, Data-1 (D1) database, R2 object storage (R2) bucket, Queue, and Flagship app. This page reads three files: `set_secrets.go`, `set_preview_secrets.go`, and `resources.go`.
 
 Source: `cmd/mise-cloudflare/set_secrets.go`, `cmd/mise-cloudflare/set_preview_secrets.go`, `cmd/mise-cloudflare/resources.go`.
 

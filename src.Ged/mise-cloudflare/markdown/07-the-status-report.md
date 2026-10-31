@@ -242,7 +242,8 @@ The data sources of the report, in one picture:
 flowchart TD
     R["statusReport (show.go)"]
     R --> A["wconfig.Config: Worker, Profile, CompatibilityDate, DevDate, Remote, Secrets, Envs"]
-    R --> B["wrangler whoami: LoggedIn, Accounts, Scopes"]
+    R --> B["wrangler auth list: LoggedIn"]
+    R --> B2["wrangler whoami: Accounts, Scopes"]
     R --> C["wrangler secret list: missing Secrets"]
     R --> D["wrangler deployments status + versions view: Deployed"]
     R --> E[".wrangler/output.json: URL"]

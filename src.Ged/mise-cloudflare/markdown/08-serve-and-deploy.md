@@ -4,7 +4,7 @@ title: Serve and deploy
 
 # Serve and deploy
 
-serve, deploy and preview are the three tasks that make the Worker run. serve runs it on your machine. deploy puts it on Cloudflare. preview builds a short-lived copy for a pull request. One shared rule ties the three together: the package's own build runs first, then wrangler runs, on the repo's own login. This page walks each task line by line.
+serve, deploy and preview are the three tasks that make the Worker run. serve runs it on your machine. deploy puts it on Cloudflare. preview builds a short-lived copy of what is in the folder now. One shared rule ties the three together: the package's own build runs first, then wrangler runs, on the repo's own login. This page walks each task line by line.
 
 ## The three commands at a glance
 

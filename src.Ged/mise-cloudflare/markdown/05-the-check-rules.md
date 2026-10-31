@@ -40,7 +40,7 @@ Source: `internal/rules/rules.go:20-24`
 
 The `token` regex matches an assignment of a Cloudflare token. It looks for the name `CLOUDFLARE_API_TOKEN`, then an equals sign or a colon, then an optional quote, then 30 or more characters from letters, digits, underscore, and dash. The 30-character minimum is the Cloudflare token length. A shorter example value never triggers it. The regex catches the token in a shell script, a `.env` file, or any other text file.
 
-The `login` regex matches the exact words `wrangler login`. The `\b` word boundaries stop it from matching `wrangler login-dev` or other longer commands. A file that runs `wrangler login` would log the person in machine-wide, outside the project's own profile.
+The `login` regex matches the exact words `wrangler login`. The `\b` word boundaries stop it from matching a longer word like `wrangler logins`. A file that runs `wrangler login` would log the person in machine-wide, outside the project's own profile.
 
 The `exactPin` regex matches a full three-part version like `4.151.3`. It rejects a caret range like `^4.0.0`. Only an exact pin counts.
 
@@ -92,7 +92,7 @@ Source: `internal/rules/rules.go:27-68`
 
 1. `Previews(w, false)` adds problems for a previews block whose KV, D1, or R2 resource is unnamed.
 2. A `bad` closure appends one formatted line per problem.
-3. If wrangler printed warnings about the config, the first problem repeats them. The config comes from the wconfig bridge, described in [The wconfig bridge](02-the-wconfig-bridge.md).
+3. If wrangler printed warnings about the config, the code adds a problem line that repeats them. The config comes from the wconfig bridge, described in [The wconfig bridge](02-the-wconfig-bridge.md).
 4. `gitFiles(dir)` lists the repository's files. If there is no git repository, `Check` returns the error and nothing else.
 5. For each file, the code skips a file that is gone, a directory, or binary. A binary is detected by a null byte.
 6. The `token` regex runs on the raw bytes. A match adds "holds a Cloudflare token".
@@ -247,7 +247,7 @@ Source: `internal/rules/rules.go:134-143`
 
 `Lockfile` walks from `dir` upward. At each folder it asks git whether a lockfile is committed. The first committed lockfile wins. The fallback is an empty file and `npm install`.
 
-The git command `ls-files --error-unmatch` returns success only when the file is tracked and committed. An uncommitted lockfile does not count. The test at `internal/rules/rules_test.go:121-134` proves it: an uncommitted `package-lock.json` returns `npm install`, and a committed one returns `npm ci`.
+The git command `ls-files --error-unmatch` returns success only when the file is tracked in the index. A lockfile that is not tracked does not count. The test at `internal/rules/rules_test.go:121-134` proves it: an untracked `package-lock.json` returns `npm install`, and a tracked one returns `npm ci`.
 
 A lockfile in a folder above `dir` counts too. That is a workspace's lockfile. The test name and comment at `internal/rules/rules_test.go:119-120` state it: "a committed lockfile pins wrangler, in the folder or a workspace's above it".
 

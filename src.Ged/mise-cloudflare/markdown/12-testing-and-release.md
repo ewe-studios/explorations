@@ -359,7 +359,7 @@ Windows also gets `longPath`, which converts a path like `C:\Users\RUNNER~1` to 
 - `GO_CMD` and `GO_LAYOUT` — the folder of the Go binaries the tasks run, and how their commands are laid out (`file` or `folder`). Give both, or neither.
 - `GO_CALLERS` — the folder of Go that runs the tasks by name. Optional.
 
-The mise side reads any mise file. The other side reads only Go: `.go` files, the binary folders, and Go's `flag` package. What the checker cannot read fails; it never passes over it silently (`mise_test.go:40`).
+The mise side reads any mise file. The other side reads only Go: `.go` files, the binary folders, and Go's `flag` package. What the checker cannot read fails; it never passes over it silently (`mise_test.go:36-39`).
 
 ### The two forms of a `run` line
 
@@ -552,7 +552,7 @@ sequenceDiagram
 
 ## GoReleaser: the binaries
 
-`.goreleaser.yaml` declares the build for every machine (`goreleaser.yaml:5-13`):
+`.goreleaser.yaml` declares the build for every machine (`.goreleaser.yaml:5-13`):
 
 ```yaml
 builds:
@@ -566,7 +566,7 @@ builds:
     ldflags: ["-s -w -X main.version={{ .Version }}"]
 ```
 
-`CGO_ENABLED=0` makes a static binary. The linker flags strip symbols (`-s -w`) and stamp the version into `main.version` (`-X main.version={{ .Version }}`). The matrix is three operating systems — Linux, macOS (darwin), and Windows — times two architectures, 64-bit (amd64) and 64-bit Arm (arm64). The changelog uses the GitHub source, listing every commit since the previous tag, because most changes go straight to `main` and GitHub's own pull-request notes would be nearly empty (`goreleaser.yaml:26-35`).
+`CGO_ENABLED=0` makes a static binary. The linker flags strip symbols (`-s -w`) and stamp the version into `main.version` (`-X main.version={{ .Version }}`). The matrix is three operating systems — Linux, macOS (darwin), and Windows — times two architectures, 64-bit (amd64) and 64-bit Arm (arm64). The changelog uses the GitHub source, listing every commit since the previous tag, because most changes go straight to `main` and GitHub's own pull-request notes would be nearly empty (`.goreleaser.yaml:26-34`).
 
 ## The corpus
 
