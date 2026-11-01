@@ -45,6 +45,41 @@ Features the code has that the docs don't mention. Modules that exist but aren't
 
 It is not a peer review (another person reads the docs and says "this makes sense"). It is not a structural review (checking diagrams render, links work). Those catch different bugs. Grandfather review catches the kind where a developer reads the docs, tries to use the API, and gets a 400 because the function actually takes an `actions` array, not a flat field.
 
+## The Fresh-Reader Review
+
+The grandfather review checks fidelity: does the document match the code? The fresh-reader review
+checks comprehension: can a first-time reader reach full understanding from the document alone?
+
+The two review different axes. A document can be 100% accurate and still useless, because it
+assumes knowledge the reader does not have, skips a step, or names a concept without explaining
+how it works. The fresh-reader review is the tool that catches that.
+
+### How to Run It
+
+1. **Spawn a fresh agent.** It must have no memory of the writing session, no summary of how the
+   document was produced, and no prior context on the topic. Its context is the document itself.
+2. **No tool use. No web search. No reading the source.** The agent reads the file *as written*.
+   It may not open the codebase, grep for the implementation, or look anything up. If the document
+   does not stand alone, the agent must report that it does not stand alone.
+3. **Report every gap.** The agent reports, concretely and by section:
+   - Where it got lost, and why (a term used before it is defined, a jump with no bridge).
+   - Where the depth is too thin — a concept named but not explained, a mechanism asserted but not
+     shown, a claim with no supporting reasoning or example.
+   - What a reader would have to look up or guess to reach "enlightenment" — full, unaided
+     understanding of the topic end to end.
+
+### What the Author Does With the Report
+
+The author fixes every gap the fresh reader names. This is not optional feedback; it is a gate.
+The document is not done until a fresh reader can reconstruct the full understanding from the file
+alone, without opening any other source.
+
+### What It Is Not
+
+It is not the grandfather review. It does not check whether the names and numbers match the code
+(that is the grandfather review's job). It checks whether the *explanation* carries the reader all
+the way. The two reviews run together, and a document must pass both.
+
 ## Documentation Quality Standards (Iron Rules)
 
 These standards are non-negotiable. Every document must meet all ten.
