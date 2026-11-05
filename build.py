@@ -504,6 +504,7 @@ def build(project_dir: str):
         'rust-authz': "Four Rust crates: Zanzibar-style FGA authorization engine (authz-core), PostgreSQL extension (pgauthz), auto-generated REST API for databases (dbrest), and telemetry ingestion platform (zradar).",
         'aipack': "Jeremy Chone's Rust crate collection: genai (19 AI providers), rpc-router (JSON-RPC 2.0), sqlb (SQL builder), modql (query language), agentic (MCP protocol), udiffx (diff parser), and 7 utility crates.",
         'voice-agent-server': "Voice AI assistant server. Express.js REST API managing Vapi voice assistants and phone numbers with 11Labs synthesis.",
+        'usewinslow': "AI-native payroll, benefits, and HRIS platform with a Slack co-worker and a public 185-tool MCP server. Site, Vibe Code promise, MCP authorization, tool catalog, payroll, benefits, pricing, and a critical assessment.",
         'mirage': "Unified Virtual File System for AI agents. Mounts 30+ services (S3, GDrive, Slack, GitHub, MongoDB, SSH) as a single filesystem tree. Agents use Unix commands (ls, grep, cat) across all backends. Python + TypeScript SDKs with two-layer cache.",
         'iii-engine': "Rust-based serverless engine collapsing queues, cron, HTTP, state, pub/sub, observability, and sandboxed execution into one system. Built on Worker/Function/Trigger primitives. microVM sandbox with userspace TCP/IP.",
         'agentmemory': "Persistent memory for AI coding agents. 53 MCP tools, triple-stream retrieval (BM25+Vector+Graph), 4-tier memory consolidation. Built on iii engine.",
