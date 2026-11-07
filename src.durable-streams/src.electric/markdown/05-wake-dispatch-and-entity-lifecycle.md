@@ -139,7 +139,7 @@ The registry receives its registrations from a Shape stream, but it receives the
 
 ### How a match becomes a wake
 
-`WakeRegistry.evaluate` returns one result for each matching registration. `deliverWakeResult` then appends one `wake` event to the subscriber entity's main stream. The producer identifier is `wake-reg-<registration database id>-<source event key>`, so a repeated match is not a second wake. The append uses `appendIdempotent`, which starts every call at epoch 0 and sequence 1, so the same producer identifier presents the same tuple (`packages/agents-server/src/stream-client.ts:313-336`). That append is an ordinary stream append, so the subscriber's own subscription delivers the wake by webhook or by runner pull. Source: `packages/agents-server/src/entity-manager.ts:3289-3363`.
+`WakeRegistry.evaluate` returns one result for each matching registration. `deliverWakeResult` then appends one `wake` event to the subscriber entity's main stream. The producer identifier is `wake-reg-<registration database id>-<source event key>`, so a repeated match is not a second wake. The append uses `appendIdempotent`, which starts every call at epoch 0 and sequence 0, so the same producer identifier presents the same tuple (`packages/agents-server/src/stream-client.ts:313-336`). That append is an ordinary stream append, so the subscriber's own subscription delivers the wake by webhook or by runner pull. Source: `packages/agents-server/src/entity-manager.ts:3289-3363`.
 
 This is why the registry is a wake source, not a wake transport. It turns a condition into a wake event; the stream subscription does the delivery.
 
@@ -196,7 +196,7 @@ Source: `packages/agents-server/src/scheduler.ts`.
 | Column | Purpose |
 |--------|---------|
 | `kind` | `delayed_send` or `cron_tick` |
-| `run_at` | When the task becomes due |
+| `fire_at` | When the task becomes due |
 | `payload` | Task-specific data |
 | `claimed_by` | Which scheduler instance owns the task |
 | `claimed_at` | When the claim was taken |
@@ -250,7 +250,7 @@ await this.manager.evaluateWakes(streamPath, tickEvent)
 
 Source: `packages/agents-server/src/runtime.ts:388-419`.
 
-The producer identifier includes the tick number. A retry of the same tick deduplicates. A new tick gets a new identifier. `appendIdempotent` creates a fresh `IdempotentProducer` with epoch 0. Its sequence starts at 1, so two calls with the same producer identifier present the same `(Producer-Id, 0, 1)` tuple (`packages/agents-server/src/stream-client.ts:313-336`).
+The producer identifier includes the tick number. A retry of the same tick deduplicates. A new tick gets a new identifier. `appendIdempotent` creates a fresh `IdempotentProducer` with epoch 0. Its sequence starts at 0, so two calls with the same producer identifier present the same `(Producer-Id, 0, 0)` tuple (`packages/agents-server/src/stream-client.ts:313-336`).
 
 ### How a cron tick becomes a wake
 

@@ -233,7 +233,7 @@ Source: `packages/agents-desktop/package.json:17-25`.
 
 ## Type checking and tests
 
-`typecheck` runs `tsc --noEmit`. The TypeScript configuration is strict and includes `src` and `vite.config.ts`. Source: `packages/agents-desktop/package.json:27` and `packages/agents-desktop/tsconfig.json:2-22`.
+`typecheck` runs `tsc --noEmit`. The TypeScript configuration is strict and includes `src` and `vite.config.ts`. Source: `packages/agents-desktop/package.json:27` and `packages/agents-desktop/tsconfig.json:2-18`.
 
 The package has two test files:
 

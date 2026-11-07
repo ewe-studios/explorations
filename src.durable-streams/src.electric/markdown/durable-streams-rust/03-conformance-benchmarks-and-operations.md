@@ -270,7 +270,7 @@ The tail cache is off on Linux because `sendfile` is already fast. It is on by d
 
 | Flag | Default | Effect |
 |------|---------|--------|
-| `--tier` | `off` | `off` or `s3` (`src/main.rs:167-177`) |
+| `--tier` | `off` | `off` or `s3` (`src/main.rs:167-177`, `src/tier.rs:208-212`) |
 | `--tier-segment-bytes` | 8 MiB | cold-tier sealed segment size (`src/tier.rs:33-35`) |
 | `--tier-compact-bytes` | 64 MiB | live-file compaction threshold (`src/tier.rs:37-41`) |
 | `--tier-endpoint`, `--tier-region`, `--tier-bucket` | none | S3 connection (`src/main.rs:185-187`) |

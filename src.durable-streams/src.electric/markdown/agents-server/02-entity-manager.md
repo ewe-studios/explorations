@@ -247,7 +247,7 @@ The value has these fields:
 | `from_agent` | request | omitted |
 | `message_type` | request `type` | omitted |
 | `position` | request, or `createInitialQueuePosition` | generated for queued and paused |
-| `processed_at` | server clock | now for immediate |
+| `processed_at` | server clock | now for `immediate` and `steer` |
 
 The event carries a transaction identifier in its headers. This `txid` is a random Universally Unique Identifier (UUID) from `crypto.randomUUID()`. It is not the Postgres transaction identifier that `createEntity` returns. The two values share a name and have different sources.
 

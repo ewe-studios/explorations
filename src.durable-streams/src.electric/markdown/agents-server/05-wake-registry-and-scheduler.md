@@ -85,7 +85,7 @@ A failed restart is logged. The registry then waits for the next shape error to 
 
 The cache key is `tenantId:sourceUrl`. The value is an array of registrations. `evaluate(sourceUrl, event, tenantId?)` resolves the tenant in this order: the explicit argument, then the tenant of the registry instance, then an error. In shared mode the registry has no tenant of its own, so the caller must pass one. `evaluate()` then looks up one key and loops over a small array. It does not query Postgres on the hot path.
 
-**Aha: the wake path is a pure in-memory function after start-up.** The shape stream is the only external writer to the cache. Four local paths also write it: `register()`, `unregisterByManifestKey()`, `unregisterBySubscriber()`, and `loadRegistrations()`. All of them change the same process memory. This is why the wake registry can match thousands of appends per second without a database round trip.
+**Aha: the wake path is a pure in-memory function after start-up.** The shape stream is the only external writer to the cache. Six local paths also write it: `register()`, `unregisterByManifestKey()`, `unregisterBySubscriber()`, `unregisterBySource()`, `unregisterBySubscriberAndSource()`, and `loadRegistrations()`. All of them change the same process memory. This is why the wake registry can match thousands of appends per second without a database round trip.
 
 A second process does not see those local writes until its own shape stream delivers them. The shape stream is the only channel between processes.
 
@@ -383,7 +383,7 @@ await this.pgClient`
 `
 ```
 
-The reset makes the task available again. The reset query has the same three tenant forms as the claim query. The operation must therefore be idempotent. Delayed sends use the manifest producer identifier. Cron ticks use `scheduler-cron-<expression>-<tickNumber>`.
+The reset makes the task available again. The reset query has the same three tenant forms as the claim query. The operation must therefore be idempotent. Delayed sends use the manifest producer identifier. Cron ticks use `scheduler-cron-<base64url-encoded cron spec>-<tickNumber>`, where the encoded spec is the final segment of the `/_cron/<encoded spec>` stream path.
 
 The claim is not renewed. The loop does not extend `claimed_at` while a task runs. A task that takes longer than 30,000 ms therefore becomes visible to the reset query, and another instance can claim it. The completion update still checks `claimed_by = instanceId`, so when the first worker finishes late, its update matches zero rows. The update reports success and raises no error, because a zero-row `UPDATE` is not an error in Postgres. The first worker cannot tell that it lost the claim, and the scheduler logs nothing. The producer identifiers above make the duplicate execution harmless.
 

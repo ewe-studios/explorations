@@ -156,7 +156,7 @@ The canonical key removes the protocol parameters in this list (`lib/electric/cl
 
 **Aha:** the word `live` names two different controls, and they are not the same. The **stream option** `live: true | false` says whether the caller wants an infinite stream or a finite stream (`lib/electric/client/stream.ex:30-34`). The **wire parameter** `live=true` says whether the server should hold the request open for new changes. The stream engine derives the wire parameter from `state.up_to_date?`, not from the stream option (`lib/electric/client/poll.ex:122-124`).
 
-The first request is always non-live because the state starts with `up_to_date?: false` (`lib/electric/client/shape_state.ex:38-53`). The `up-to-date` control message flips the flag (`lib/electric/client/poll.ex:260-262`). Every later request is then a live long-poll. A finite stream (`live: false`) still uses live long-polls after catch-up; it stops when the caller's loop sees the first `up-to-date` and the stream reaches its terminal state. A caller cannot accidentally request a live response before the snapshot is complete.
+The first request is always non-live because the state starts with `up_to_date?: false` (`lib/electric/client/shape_state.ex:38-53`). The `up-to-date` control message flips the flag (`lib/electric/client/poll.ex:260-262`). For an infinite stream (`live: true`), every later request is a live long-poll. A finite stream (`live: false`) sends no live long-poll: it halts when it receives the first `up-to-date` control message (`lib/electric/client/stream.ex:221-224`). A caller cannot accidentally request a live response before the snapshot is complete.
 
 ## Step 5: handle the response
 
@@ -197,7 +197,7 @@ The check runs before the success handler (`lib/electric/client/poll.ex:86-88`).
 `process_success_response/4` does five things (`lib/electric/client/poll.ex:155-172`):
 
 1. Sets the offset to the response offset, or keeps the old offset when the response has none (`lib/electric/client/poll.ex:156`, `lib/electric/client/poll.ex:382-383`).
-2. Stores the shape handle and cursor in the state. The **cursor** is an integer that identifies a position in the live delivery stream. The server sends it on a live response, and the client sends it back so that the server can resume the live subscription without replaying. It is not the offset; the offset selects stored changes, and the cursor selects a point in the live feed.
+2. Stores the shape handle and cursor in the state. The **cursor** is a cache-busting interval token. The server computes it from the current time and the previous cursor, and sends it on a live response. The client sends it back so that a cache cannot serve an old response. It is not the offset; the offset selects stored changes, and the cursor selects a cache interval.
 3. Builds a value mapper when the response carries a schema and the state has no mapper (`lib/electric/client/poll.ex:316-326`).
 4. Clears the stale-retry counters (`lib/electric/client/poll.ex:161`).
 5. Parses every body element with `Message.parse/4` (`lib/electric/client/poll.ex:165-169`).

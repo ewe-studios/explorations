@@ -330,7 +330,7 @@ After a successful upload, the message send waits for both the attachment transa
 
 The composer drawer can edit a pending message, delete it, steer it, or reorder it. These actions are optimistic updates against the local `inbox` collection. The update action starts at `:505`, delete at `:568`, and steer at `:596`; reorder goes through the `position` field of the update action. Source: `packages/agents-server-ui/src/lib/sendMessage.ts:505-630`.
 
-Reordering uses `createQueuePositionBetween`. It uses the `fractional-indexing` package to generate a string between two neighbours. If the two neighbours have different timestamps, the function adjusts the timestamp instead. Source: `packages/agents-server-ui/src/lib/sendMessage.ts:125-160`.
+Reordering uses `createQueuePositionBetween`. It uses the `fractional-indexing` package to generate a string between two neighbours. When a previous neighbour exists, the function keeps its timestamp; otherwise it uses the next timestamp. It subtracts 1 millisecond from the next timestamp only when the next position has no fractional index. Source: `packages/agents-server-ui/src/lib/sendMessage.ts:125-160`.
 
 ## Stop, steer, and fork
 
@@ -376,7 +376,7 @@ const CHAT_VIEW_PERMISSIONS: ReadonlyArray<EntityPermission> = [
 
 - Without `write`, the composer shows the placeholder `Read-only`. Source: `packages/agents-server-ui/src/components/views/ChatView.tsx:418-420`.
 - Without `signal`, the stop control is disabled. Source: `packages/agents-server-ui/src/components/views/ChatView.tsx:419`.
-- Without `fork`, the fork controls do not appear.
+- Without `fork`, the fork controls appear disabled with the label `Fork permission required` (`packages/agents-server-ui/src/hooks/useForkFromHere.ts:46-60`; `packages/agents-server-ui/src/components/AgentResponse.tsx:808-840`).
 
 The server enforces the permission. The view only hides controls.
 

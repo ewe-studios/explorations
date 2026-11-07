@@ -58,7 +58,7 @@ The shared engine is the key design choice. A correction to offset handling, cac
 
 ## The layers
 
-The state layer uses several terms. A **cursor** is an integer that the server sends on a live response; the client sends it back so the server can resume the live stream. A **mapper** is the `ValueMapper` that converts a wire string into an Elixir value. A **tag index** maps row keys to the filter tags that currently match them. A **disjunct** is one branch of a filter that is written as an OR of AND groups; **disjunctive normal form** is that OR-of-ANDs shape. **Visibility** is the test that at least one disjunct has all of its positions active. A **retry counter** counts failed attempts. A **self-heal flag** records that the client already tried to recover from a stale cached response.
+The state layer uses several terms. A **cursor** is a cache-busting interval token that the server sends on a live response; the client sends it back so that a cache cannot serve an old response. A **mapper** is the `ValueMapper` that converts a wire string into an Elixir value. A **tag index** maps row keys to the filter tags that currently match them. A **disjunct** is one branch of a filter that is written as an OR of AND groups; **disjunctive normal form** is that OR-of-ANDs shape. **Visibility** is the test that at least one disjunct has all of its positions active. A **retry counter** counts failed attempts. A **self-heal flag** records that the client already tried to recover from a stale cached response.
 
 | Layer | Module | Role | Citation |
 |-------|--------|------|----------|

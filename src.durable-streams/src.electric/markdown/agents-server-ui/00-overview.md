@@ -51,7 +51,7 @@ flowchart TB
 | Entity stream client | `@durable-streams/client` `^0.2.6` | `packages/agents-server-ui/package.json:18` |
 | Stream state helper | `@durable-streams/state` `^0.3.1` | `packages/agents-server-ui/package.json:19` |
 | Interface primitives | Base UI `@base-ui/react` `^1.4.1` | `packages/agents-server-ui/package.json:17` |
-| Markdown and math | `streamdown`, `katex`, `shiki`, `mermaid` | `packages/agents-server-ui/package.json:34-46` |
+| Markdown and math | `streamdown`, `katex`, `shiki`, `mermaid` | `packages/agents-server-ui/package.json:30-43` |
 | Test runner | Vitest `^4.1.0` | `packages/agents-server-ui/package.json:54` |
 
 The project instruction file says to use Base UI primitives when a suitable component exists (`packages/agents-server-ui/AGENTS.md:1`). The components in `src/ui` wrap Base UI. Example primitives include Box, Button, Dialog, Menu, Select, Switch, and Text.

@@ -246,7 +246,7 @@ The provider exposes five write actions:
 | Set title | `POST <entityUrl>/tags/title` | Set `tags.title` |
 | Fork | `POST <entityUrl>/fork` | None |
 
-Each action is a TanStack DB `createOptimisticAction`. The action applies `onMutate` first, then calls the server, then waits for the write to appear in the shape.
+Spawn, kill, set title, and signal use a TanStack DB `createOptimisticAction`. Fork does not: `createForkEntity` is a plain async function (`src/lib/ElectricAgentsProvider.tsx:788`). An optimistic action applies `onMutate` first, then calls the server, then waits for the write to appear in the shape.
 
 The wait uses the transaction identifier from the server:
 

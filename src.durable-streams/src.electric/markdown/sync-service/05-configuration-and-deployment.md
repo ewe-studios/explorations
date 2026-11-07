@@ -117,7 +117,7 @@ The complete database name is `v<status-version>_<schema-version>@otp-<otp-major
 
 `ELECTRIC_STORAGE=file` and `ELECTRIC_STORAGE=legacy_file` are rejected. The message tells the user to use `fast_file`. The legacy backend is removed from the code.
 
-The persistent state backend can be memory. If it is memory, the installation identifier is not persisted across restarts. The service uses `ELECTRIC_INSTANCE_ID` when the environment sets it, and otherwise generates a new identifier at each boot (`packages/sync-service/lib/electric/config.ex:175-188`). With the file backend, the same value is written under the key `electric_installation_id` at `packages/sync-service/lib/electric/config.ex:162`. That key and `ELECTRIC_INSTANCE_ID` describe the same identifier.
+The persistent state backend can be memory. If it is memory, the installation identifier is not persisted across restarts. The service uses `ELECTRIC_INSTANCE_ID` when the environment sets it, and otherwise generates a new identifier at each boot (`packages/sync-service/lib/electric/config.ex:175-188`). With the file backend, the service writes the identifier under the key `electric_installation_id` (`packages/sync-service/lib/electric/config.ex:162`). The OpenTelemetry resource detector reads that key. The service configuration keeps the environment value or the generated UUID, because the caller discards the return value of `persist_installation_id` (`packages/sync-service/config/runtime.exs:119`).
 
 ## Replication variables
 
@@ -231,7 +231,7 @@ The last row is easy to misread. The variable name suggests tests only. The code
 | `ELECTRIC_LOG_OTP_REPORTS` | `false` | Log Open Telecom Platform (OTP) system reports |
 | `ELECTRIC_TEST_LOG_LEVEL` | `error` | Test-only logger level |
 | `ELECTRIC_SERVICE_NAME` | `electric` | Service name in telemetry resources |
-| `ELECTRIC_INSTANCE_ID` | random Universally Unique Identifier (UUID) | Instance identifier. The runtime default is a new UUID (`packages/sync-service/config/runtime.exs:47`). With `ELECTRIC_PERSISTENT_STATE=file`, the value stored in the filesystem key-value store wins over the environment value, so the identifier stays the same across restarts (`packages/sync-service/lib/electric/config.ex:195-206`). With `memory`, the environment value is used, and the default is new at each boot |
+| `ELECTRIC_INSTANCE_ID` | random Universally Unique Identifier (UUID) | Instance identifier. The runtime default is a new UUID (`packages/sync-service/config/runtime.exs:47`). With `ELECTRIC_PERSISTENT_STATE=file`, the service stores an installation identifier in the filesystem key-value store, but only the OpenTelemetry resource detector reads it (`packages/sync-service/lib/electric/telemetry/open_telemetry/resource_detector.ex:11-12`). The service instance identifier is always the environment value or a new UUID at each boot (`packages/sync-service/config/runtime.exs:47,119`). With `memory`, no installation identifier is stored |
 
 The logger format has a blank line before and after each message. This makes long messages easy to find. The metadata fields are `pid`, `shape_handle`, and `request_id`.
 

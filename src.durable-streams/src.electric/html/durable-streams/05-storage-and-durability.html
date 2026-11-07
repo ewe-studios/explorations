@@ -178,7 +178,7 @@ flowchart TD
 <table><tr><th>Part</th><th>Example</th><th>Purpose</th></tr><tr><td>Encoded path</td><td><code>L3N0cmVhbS9vcmRlcnM</code></td><td>Encoded path, not a human-readable name; reversible unless truncated</td></tr><tr><td>Timestamp in base 36</td><td><code>m9x2k</code></td><td>Rough age; the example is shorter than a current value</td></tr><tr><td>4 random bytes in hexadecimal</td><td><code>a1b2c3d4</code></td><td>Collision avoidance</td></tr></table>
 <p>The encoding is base64url (Request for Comments 4648 section 5): <code>+</code> becomes <code>-</code>, <code>/</code> becomes <code>_</code>, and padding <code>=</code> is removed (<code>packages/server/src/path-encoding.ts:16</code>). For a path of normal length, the decoder restores the original path (<code>path-encoding.ts:41</code>). A path whose encoding is longer than 200 characters is cut to 180 characters and given a 16-hex-character Secure Hash Algorithm 256 (SHA-256) suffix. That case adds one more <code>~</code> inside the encoded part (<code>:25-29</code>). The truncation is not reversible: the hash is one way, so the decoder cannot rebuild the full path. The store does not need the path from the file name, because the metadata record holds both values.</p>
 <p>The timestamp is base-36 text with no fixed width. Lexical sort agrees with age only while every name has the same number of characters. The store uses the metadata record to find the file; it does not scan the directory in name order.</p>
-<p>The <code>~</code> character is the separator. It is not in the base64url alphabet, so it cannot occur in the base64url part. The output of <code>encodeStreamPath</code> has at most one <code>~</code>; the decoder takes the last one and keeps the suffix only if it is a 16-character hexadecimal hash (<code>packages/server/src/path-encoding.ts:41</code>). The full directory name adds more <code>~</code> separators after the encoded path (<code>file-store.ts:261</code>).</p>
+<p>The <code>~</code> character is the separator. It is not in the base64url alphabet, so it cannot occur in the base64url part. The output of <code>encodeStreamPath</code> has at most one <code>~</code>; the decoder takes the last one and keeps the suffix only if it is a 16-character hexadecimal hash (<code>packages/server/src/path-encoding.ts:41</code>). The full directory name adds more <code>~</code> separators after the encoded path (<code>file-store.ts:259-264</code>).</p>
 <p>The metadata record stores this name. The LMDB key is <code>stream:{path}</code>, not the bare path.</p>
 <h3>One file, not many segments</h3>
 <p>The metadata has a <code>segmentCount</code> field and the code file is named <code>file-store.ts</code>. The names suggest a segmented log. The current implementation writes one file per stream:</p>
@@ -232,7 +232,7 @@ const newByteOffset = byteOffset + FRAME_OVERHEAD + processedData.length
 <p>Key insight: the newline is a redundancy marker, not the parser's separator. The length prefix does that job. The current scan and read code use the length and do not verify the newline byte. A short frame or a length that runs past the end of the file marks a partial frame. A missing newline with a correct length is not detected.</p>
 <h2>The write path and its durability order</h2>
 <p>The append path has a strict order:</p>
-<ol><li>Check the stream state.</li><li>Validate the producer tuple, without mutation.</li><li>Process JSON mode. JSON mode is the protocol rule for <code>application/json</code>: each append is one message, and a read returns an array of messages. The processing here turns the append body into message text.</li><li>Compute the new offset.</li><li>Write the frame to the file.</li><li>Flush the file with <code>fdatasync</code>.</li><li>Commit the metadata to LMDB.</li><li>Notify long-poll waiters.</li></ol>
+<ol><li>Check the stream state.</li><li>Validate the producer tuple, without mutation.</li><li>Process JSON mode. JSON mode is the protocol rule for <code>application/json</code>: the server flattens exactly one array level, so one append can store several messages, and a read returns an array of messages. The processing here turns the append body into message text.</li><li>Compute the new offset.</li><li>Write the frame to the file.</li><li>Flush the file with <code>fdatasync</code>.</li><li>Commit the metadata to LMDB.</li><li>Notify long-poll waiters.</li></ol>
 <p>Steps 5 to 7 are the important part.</p>
 <pre><code class="language-ts">// 4. Update LMDB metadata atomically (only after flush, so metadata reflects durability)
 await this.fileHandlePool.fsyncFile(segmentPath)
@@ -242,8 +242,8 @@ await this.db.put(key, updatedMeta)
 </code></pre>
 <p>This block is from <code>packages/server/src/file-store.ts:1367</code>.</p>
 <p>The method is named <code>fsyncFile</code>, but the system call is <code>fs.fdatasync</code> (<code>file-store.ts:199</code>). <code>fdatasync</code> flushes the file data and the metadata that is necessary to read that data. It does not flush unrelated metadata, such as the last modification time. This document uses "flush" for that call, and "<code>fsync</code>" only when it speaks about a directory.</p>
-<p>The source comments state the rule directly: "Update LMDB metadata atomically (only after flush, so metadata reflects durability)" and "Producer state is committed HERE (not in validateProducer) for atomicity" (<code>file-store.ts:1367</code>). Metadata must never acknowledge bytes that are not durable.</p>
-<p>The code comments number their own steps 1 to 5, plus 5a. The eight-step list above gives the same order in more detail. The two numbering schemes do not match; this document uses the list numbers when it refers to a stage.</p>
+<p>The source comments state the rule directly: "Update LMDB metadata atomically (only after flush, so metadata reflects durability)" and "Producer state is committed HERE (not in validateProducer) for atomicity" (<code>file-store.ts:1367-1369</code>). Metadata must never acknowledge bytes that are not durable.</p>
+<p>The code comments number their own steps 1 to 6. The eight-step list above gives the same order in more detail. The two numbering schemes do not match; this document uses the list numbers when it refers to a stage.</p>
 <div class="mermaid">
 sequenceDiagram
     participant C as Client
@@ -257,7 +257,7 @@ sequenceDiagram
     F--&gt;&gt;S: durable
     S-&gt;&gt;D: put metadata and producer state
     D--&gt;&gt;S: committed
-    S--&gt;&gt;C: 204 with new offset
+    S--&gt;&gt;C: 200 with new offset
 
 </div>
 <h3>Crash windows</h3>
@@ -348,7 +348,7 @@ flowchart TD
 <table><tr><th>Store</th><th>Partial tail on start</th><th>File size after recovery</th></tr><tr><td>Node.js file store</td><td>Left in place; later appends land after it</td><td>Unchanged</td></tr><tr><td>Caddy file store</td><td>Truncated at the last complete frame</td><td>Shrinks to the true offset</td></tr></table>
 <p>In both stores, the recovered offset points at the first byte of the partial frame. The difference is what happens to the bytes after that point.</p>
 <h2>The read path</h2>
-<p>The store does not keep messages in memory. A read opens the file, parses frames, and returns views into the file buffer for the requested range.</p>
+<p>The store does not keep messages in memory. A read opens the file and parses frames. The <code>subarray</code> call below makes a temporary view into the file buffer, but the returned message copies the payload into a new byte array, <code>new Uint8Array(messageData)</code> (<code>file-store.ts:1662</code>). The caller can therefore keep a message after the read returns.</p>
 <pre><code class="language-ts">const messageData = fileContent.subarray(
   filePos,
   filePos + messageLength
@@ -361,7 +361,7 @@ if (capByte !== undefined &amp;&amp; logicalOffset &gt; capByte) {
   break
 }
 </code></pre>
-<p>This block is from <code>packages/server/src/file-store.ts:1638</code>.</p>
+<p>This block is from <code>packages/server/src/file-store.ts:1639</code>.</p>
 <p>Three variables control the loop. <code>baseByteOffset</code> is the fork base: zero for a normal stream, and the source byte position for a fork. <code>physicalDataOffset</code> counts bytes in this file, including frame overhead. <code>capByte</code> is the end of the requested logical range; <code>undefined</code> means read to the tail. A message is included when its end offset is greater than <code>startByte</code> and not greater than <code>capByte</code> (<code>file-store.ts:1655-1662</code>).</p>
 <p>The method reads the whole file with <code>fs.readFileSync</code>. It then walks the frames. <code>subarray</code> returns a view, not a copy. The design is simple, but it has the partial-tail limit above. It also does not scale to a multi-gigabyte stream, because each read allocates the full file content. Reads use the synchronous call because they need the full file and a simple snapshot. Writes use the handle pool because they must append and flush one frame at a time.</p>
 <p>The timestamp of a message is set to <code>0</code>. The file format does not store the append time. The in-memory store has a real timestamp. This is a behavioural difference between the two stores.</p>

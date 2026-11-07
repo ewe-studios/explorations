@@ -261,7 +261,7 @@ The condition `parsed.initialMessage !== undefined` is true for the route above,
 
 **Aha: the subscription is linked before the first message when a wake target exists.** Suppose the order were reversed. The message append would happen first. The subscription would be created second. The Durable Streams protocol links an existing stream at its current tail offset, so a late subscription does not replay the earlier bytes. The agent would sit idle with an unread inbox message. Linking first removes that race.
 
-**Why the subscription identifier has a suffix.** `subscriptionIdForEntityDispatchTarget` adds a suffix for a webhook target and for a runner target. The suffix is the first 16 hexadecimal characters of the SHA-256 digest of the entity address. SHA-256 means Secure Hash Algorithm with a 256-bit output. One webhook therefore gets one subscription per entity, not one shared subscription for all entities. The base identifier is the one held on the entity row, such as `assistant-handler`.
+**Why the subscription identifier has a suffix.** `subscriptionIdForEntityDispatchTarget` adds a suffix for every runner target, and for a webhook target only when it carries a `subscription_id`. The suffix is the first 16 hexadecimal characters of the SHA-256 digest of the entity address. SHA-256 means Secure Hash Algorithm with a 256-bit output. One webhook therefore gets one subscription per entity, not one shared subscription for all entities. The base identifier is the one held on the entity row, such as `assistant-handler`.
 
 ### Step 10: how the subscription is built
 

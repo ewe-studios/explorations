@@ -10,7 +10,7 @@ The protocol is defined by Hypertext Transfer Protocol (HTTP) methods, query par
 
 ## The stream object
 
-A stream is an append-only sequence of bytes. The protocol gives a stream six properties:
+A stream is an append-only sequence of bytes. The protocol gives a stream seven properties:
 
 | Property | Meaning |
 |----------|---------|
@@ -19,6 +19,7 @@ A stream is an append-only sequence of bytes. The protocol gives a stream six pr
 | Ordering | Bytes are strictly ordered by offset |
 | Content type | One Multipurpose Internet Mail Extensions (MIME) type set at creation |
 | Time To Live (TTL) or expiry | A sliding window or an absolute deadline |
+| Retention | A server option that drops data older than a set age while the stream continues |
 | Stream state | Open or closed |
 
 A stream is addressable by URL. The URL is the identity. There is no separate stream identifier in the protocol.
@@ -52,7 +53,7 @@ const newByteOffset = byteOffset + FRAME_OVERHEAD + processedData.length
 const newOffset = `${String(readSeq).padStart(16, `0`)}_${String(newByteOffset).padStart(16, `0`)}`
 ```
 
-This block is from `packages/server/src/store.ts:1370`. `processedData` is the byte sequence after validation and JSON normalization; it is not the raw request body. The constant `5` is the frame overhead. Four bytes hold the message length. One byte holds a newline. Document [05-storage-and-durability.md](05-storage-and-durability.md) explains the on-disk frame.
+This block is from `packages/server/src/store.ts:1370`. `processedData` is the byte sequence that goes into the frame. In JSON mode it is the normalized result of flattening one array level. For every other content type it is the request body unchanged. The constant `5` is the frame overhead. Four bytes hold the message length. One byte holds a newline. Document [05-storage-and-durability.md](05-storage-and-durability.md) explains the on-disk frame.
 
 The `readSeq` part is reserved. The reference server starts it at zero, preserves it on every append, and does not increment it. The Caddy plugin names the field "For future log rotation support" (`packages/caddy-plugin/store/offset.go:13`). A client must treat the whole offset string as opaque and must not depend on the value of either part.
 

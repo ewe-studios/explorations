@@ -117,7 +117,7 @@ The SSE parser calls its message handler synchronously. The promise chain is nec
 
 ## Snapshots
 
-`requestSnapshot` requests a subset of the shape and injects the result into the normal subscriber stream. It works only when the log mode is `changes_only`. The log mode is the `log` option: `full` sends complete rows, and `changes_only` sends only changed columns and requires the client to track its own keys. The citation is `src/client.ts:2152-2235` and `src/client.ts:784`.
+`requestSnapshot` requests a subset of the shape and injects the result into the normal subscriber stream. It works only when the log mode is `changes_only`. The log mode is the `log` option: `full` loads an initial snapshot and then sends changes; `changes_only` skips the snapshot and sends changes only. The separate `replica` option selects row content: the default sends only changed columns, and `full` sends complete rows. The citation is `src/client.ts:2152-2235` and `src/client.ts:784`.
 
 The method does these steps:
 

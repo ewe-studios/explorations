@@ -294,7 +294,7 @@ streamResponse.subscribeJson((batch) => {
 
 This block is from `packages/state/src/stream-db.ts:701`.
 
-The batch is the transaction boundary. The dispatcher buffers writes until the batch ends. It then commits them in one TanStack transaction. This gives a user interface one update per batch, not one update per event. This implementation is stricter than the protocol: the protocol allows a consumer to apply a batch in parts, but this dispatcher commits one batch atomically.
+A collection is the transaction boundary, not a batch. The dispatcher opens one transaction for each collection the first time that collection receives a write in the current catch-up. It buffers further writes to that collection. When the stream reports up to date, the dispatcher commits each buffered collection in its own TanStack transaction. Because the up-to-date signal can arrive in a later batch than the first catch-up data, the buffered writes can span several batches. This gives a user interface one update per collection per catch-up, not one update per event. Two collections do not commit together, so an observer can see one collection change before another.
 
 ```mermaid
 sequenceDiagram
@@ -306,7 +306,7 @@ sequenceDiagram
     R->>D: dispatch each change event
     D->>D: buffer write per collection
     R->>D: batch upToDate
-    D->>T: commit buffered writes
+    D->>T: commit each buffered collection
     D->>D: resolve txids
     T-->>R: queries see new state
 ```

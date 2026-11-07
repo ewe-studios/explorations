@@ -102,7 +102,7 @@ const isTextCompatible =
 useBase64 = !isTextCompatible
 ```
 
-This block is from `packages/server/src/server.ts:907`. Here `ct` is the stream content type and `useBase64` is the decision flag.
+This block is from `packages/server/src/server.ts:906-908`. Here `ct` is the stream content type and `useBase64` is the decision flag.
 
 The control events stay JSON. They are never base64-encoded. A client must remove line breaks from a split base64 payload before it decodes the value.
 
@@ -164,7 +164,7 @@ flowchart LR
     H --> I[Old cache entry expires]
 ```
 
-The client should echo the cursor on every long-poll request. The server sends a new cursor on every live response, including a timeout. The cursor value is not an offset. A client must not mix the two.
+The client should echo the cursor on every long-poll request. The server sends a new cursor on every long-poll response, including a timeout. The one exception is a request at the tail of a stream that is already closed: the server answers at once with status 204 and no cursor (`packages/server/src/server.ts:969-978`). The cursor value is not an offset. A client must not mix the two.
 
 ## The subscription control plane
 
@@ -182,7 +182,7 @@ const SUBSCRIPTION_PREFIX = `${RESERVED_CONTROL_PREFIX}/subscriptions/`
 const JWKS_PATH = `${RESERVED_CONTROL_PREFIX}/jwks.json`
 ```
 
-This block is from `packages/server/src/subscription-routes.ts:14`. The server routes this prefix before it routes normal streams. Document [04-node-server.md](04-node-server.md) shows the routing order.
+This block is from `packages/server/src/subscription-routes.ts:15`. The server routes this prefix before it routes normal streams. Document [04-node-server.md](04-node-server.md) shows the routing order.
 
 ### Subscription model
 
@@ -263,7 +263,7 @@ const headers = {
 }
 ```
 
-This block is from `packages/server/src/subscription-manager.ts:575`.
+This block is from `packages/server/src/subscription-manager.ts:576`.
 
 ### Signature
 

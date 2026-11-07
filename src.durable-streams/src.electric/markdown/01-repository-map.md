@@ -93,7 +93,7 @@ durable-streams/
 | `tanstack-ai-transport` | Transport adapter for TanStack AI | 7 |
 | `aisdk-transport` | Transport adapter for the AI Software Development Kit (AI SDK) | 6 |
 | `benchmarks` | Performance benchmarks | 2 |
-| `caddy-plugin` | Caddy web server plugin | 1 |
+| `caddy-plugin` | Caddy web server plugin | 26 (25 Go, 1 TypeScript) |
 
 The two repositories divide by change rate. The Electric repository changes when the agent product changes. The Durable Streams repository changes when the storage protocol changes. Most Electric packages depend on Durable Streams; no Durable Streams package depends on Electric.
 

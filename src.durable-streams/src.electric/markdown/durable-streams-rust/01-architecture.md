@@ -31,7 +31,7 @@ The protocol uses these headers (`src/handlers.rs:15-30`). The direction column 
 | `stream-up-to-date` | response | the reader has reached the durable tail |
 | `stream-closed` | both | request: close the stream; response: the stream can accept no more appends |
 | `stream-cursor` | response | advisory time-based cursor for live responses. The server derives it from 20-second intervals and adds jitter when the client is current, so collapsed clients do not retry in lockstep (`src/store.rs:1573-1596`) |
-| `stream-ttl` | both | request: set a time to live (TTL) in seconds; response: the remaining TTL (`src/handlers.rs:376`, `src/handlers.rs:2089`) |
+| `stream-ttl` | both | request: set a time to live (TTL) in seconds; response: the configured TTL window in seconds. A `HEAD` reports the window and does not reset it (`src/handlers.rs:376`, `src/handlers.rs:2089-2090`) |
 | `stream-expires-at` | both | request: set an absolute expiry time; response: the configured expiry time |
 | `stream-seq` | request | writer sequence string. A value not greater than the last accepted value returns 409 (`src/handlers.rs:1082-1105`) |
 | `producer-id` | request | idempotent producer identifier |
@@ -86,7 +86,7 @@ The stage function does three things:
 2. In `wal` mode, it registers the stream in the shard's dirty set before it stages the record. The dirty set is the list of streams touched since the last checkpoint.
 3. It reserves an LSN and writes the framed record, which contains the same bytes just written to the data file, into the shard segment.
 
-The WAL record is the second copy, not a staging area for a later copy. A checkpoint never reads this record and rewrites it. It syncs the data-file copy and then unlinks whole segments whose records are below the recycle floor (`src/handlers.rs:1121-1126`, `src/handlers.rs:1169-1174`).
+The WAL record is the second copy, not a staging area for a later copy. A checkpoint never reads this record and rewrites it. It syncs the data-file copy and then unlinks whole segments whose records are below the recycle floor (`src/wal/shard.rs:915-1022`).
 
 The register-before-stage order closes a race with checkpoint recycling. If the server staged the record first, a checkpoint could make the record durable and take a recycle floor above it. It could then unlink its segment without ever syncing the stream's data file. Registering first guarantees that any checkpoint that can recycle a record of this stream also syncs that stream's file (`src/handlers.rs:720-723`).
 

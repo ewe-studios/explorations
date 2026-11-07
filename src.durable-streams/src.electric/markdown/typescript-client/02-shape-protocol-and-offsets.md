@@ -195,11 +195,11 @@ A `NULL` value in a column with `not_null` set throws `ParserNullValueError`. Th
 
 ## Log modes
 
-The `log` query parameter selects the row content. The default is `full`. The other value is `changes_only`. The citation is `src/client.ts:784` and `src/constants.ts:26`.
+The `log` query parameter selects whether the shape sends an initial snapshot. The default is `full`, which sends the snapshot and then changes. The other value is `changes_only`, which skips the snapshot. The citation is `src/client.ts:784` and `src/constants.ts:26`.
 
 In `full` mode, the client materializes every row and applies every insert, update, and delete. In `changes_only` mode, the client applies an update or a delete only for a key that it observed as an insert. This rule prevents a client from applying a partial row to a key it does not have. The citation is `src/shape.ts:205-248`.
 
-The `log` option is not the `replica` parameter. `log` controls how much history and row content the shape sends: `full` or `changes_only`. `replica` controls the content of one update message: `default` sends only changed columns, and `full` sends the whole row and an `old_value`. A shape can use `log=full` with `replica=default`. The `ShapeStream.Replica` constants name the `replica` values; they do not name the `log` values. The citations are `src/client.ts:113-151` and `src/client.ts:652-655`.
+The `log` option is not the `replica` parameter. `log` controls whether the shape sends an initial snapshot and its change history: `full` or `changes_only`. `replica` controls the content of one update message: `default` sends only changed columns, and `full` sends the whole row and an `old_value`. A shape can use `log=full` with `replica=default`. The `ShapeStream.Replica` constants name the `replica` values; they do not name the `log` values. The citations are `src/client.ts:113-151` and `src/client.ts:652-655`.
 
 `requestSnapshot` is available only in `changes_only` mode. The citation is `src/client.ts:2156-2160`.
 
@@ -224,6 +224,6 @@ The tracker retires a snapshot when the stream passes the snapshot `database_lsn
 | Server returns 409 | Reset the stream and publish `must-refetch` | `src/client.ts:1083-1111` |
 | Offset is up to date and `subscribe` is false | Stop the request loop | `src/client.ts:992-997` |
 
-The required response headers are `electric-offset` and `electric-handle`. A live response also requires `electric-cursor`. A non-live response requires `electric-schema`, unless it is a snapshot request; the header check skips all snapshot requests. The citation is `src/fetch.ts:310-347`.
+The required response headers are `electric-offset` and `electric-handle`. A live response also requires `electric-cursor`. A non-live response requires `electric-schema`, unless it is a snapshot request whose subset parameters are in the URL; the header check skips those snapshot requests only. The citation is `src/fetch.ts:310-348`.
 
 Read [01-shape-stream-client.md](01-shape-stream-client.md) for the client that drives this protocol. Read [03-fetching-caching-and-reconnect.md](03-fetching-caching-and-reconnect.md) for the transport behavior.

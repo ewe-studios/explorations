@@ -167,7 +167,7 @@ The `ShapeStream` has a request loop: the repeated long-poll or Server-Sent Even
 
 The hash covers the options object. The hook removes `selector` from the options before it calls `getShapeStream`. The citation is `src/react-hooks.tsx:167-173`.
 
-`log` selects `full` row content or `changes_only` content; the default is `full`. `liveSse` selects SSE instead of the default long polling. Both values change the protocol conversation, so they change stream identity.
+`log` selects `full` (snapshot plus changes) or `changes_only` (changes only); the default is `full`. `liveSse` selects SSE instead of the default long polling. Both values change the protocol conversation, so they change stream identity.
 
 An `AbortSignal` object has no enumerable data. It serializes to `{}`. Two components with different signals can therefore share a cached stream if every other option is equal, including whether they both supply a signal. A component that supplies a signal and a component that omits the option do not share, because their serialized objects have different keys. The cache checks the cached stream signal, not the caller signal. The first stream owns the signal that created it. A caller that needs an isolated stream must change another option, such as a parameter or a header. A caller that shares a stream must not abort the owner's signal, because the abort closes the stream for every component that shares it.
 

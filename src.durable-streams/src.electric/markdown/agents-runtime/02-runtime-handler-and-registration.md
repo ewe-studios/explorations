@@ -12,9 +12,11 @@ A notification has this minimum shape:
 
 ```json
 {
+  "consumerId": "consumer-1",
   "epoch": 1,
   "wakeId": "wake-123",
   "streamPath": "/agent/abc/main",
+  "streams": [{ "path": "/agent/abc/main", "offset": "-1" }],
   "callback": "http://server/_electric/wake/callback",
   "claimToken": "...",
   "entity": { "type": "agent", "url": "/agent/abc" }

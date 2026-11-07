@@ -31,7 +31,7 @@ Sizes use binary units: one kibibyte (KiB) is 1,024 bytes, one mebibyte (MiB) is
 | Maximum request body | 1 GiB | `src/api.rs:65-67` |
 | Maximum request head | 64 KiB | `src/http1.rs:11` |
 | Maximum concurrent connections | 65,536 | `src/engine_raw.rs:79` |
-| Default cold-tier mode | off | `src/main.rs:167-177` |
+| Default cold-tier mode | off | `src/main.rs:119`, `src/tier.rs:208-212` |
 
 The 1 GiB body limit is a parser limit, not a WAL limit. A single WAL record must fit inside one 128 MiB segment, so a `wal`-mode append above roughly 128 MiB returns an error (`src/wal/shard.rs:639-646`).
 

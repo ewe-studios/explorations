@@ -234,7 +234,7 @@ Two facts drive every later rule.
 
 **DS-7.** A create on a soft-deleted path reports status 409. The path is not free until the last fork is removed.
 
-**DS-8.** A create on an expired path replaces the expired stream. Expiry is checked before the soft-deleted check, so this rule also applies to an expired soft-deleted stream. The store applies its delete rule first: with no live fork it removes the stream; with a live fork it marks the record soft deleted. It then writes the new stream record over that path. The response is status 201, because `has` reports an expired path as absent (`packages/server/src/server.ts:709`, `packages/server/src/file-store.ts:806-810`, `:1122-1126`). The soft-deleted mark does not survive the replacement. The in-memory store has no reference count, so it removes the entry in both cases and then creates the new one. In the file store the new record gets a new log directory, so the old segment file is left behind. The live fork keeps its record, but its inherited range resolves the source path to the new record and returns no messages. The replacement silently removes the prefix that the fork inherited.
+**DS-8.** A create on an expired path replaces the expired stream. Expiry is checked before the soft-deleted check, so this rule also applies to an expired soft-deleted stream. The store applies its delete rule first: with no live fork it removes the stream; with a live fork it marks the record soft deleted. It then writes the new stream record over that path. The response is status 201, because `has` reports an expired path as absent (`packages/server/src/server.ts:701`, `packages/server/src/file-store.ts:806-810`, `:1122-1126`). The soft-deleted mark does not survive the replacement. The in-memory store does hold a reference count, but its expired-create path ignores the count: it removes the entry in both cases and then creates the new one. In the file store the new record gets a new log directory, so the old segment file is left behind. The live fork keeps its record, but its inherited range resolves the source path to the new record and returns no messages. The replacement silently removes the prefix that the fork inherited.
 
 ### 4.2 Offset and read
 
@@ -341,7 +341,7 @@ The protocol does not define which condition the server checks first. The refere
 
 ### 4.7 Delivery
 
-**DS-50.** A subscription names either a path pattern or a list of streams. Its configuration is the type, the pattern, the sorted unique stream list, the delivery settings, the lease time in milliseconds, and the description. The delivery settings are the webhook address, or the wake stream, for the chosen type.
+**DS-50.** A subscription names at least one of a path pattern or a list of streams. The two are additive, so a subscription can name both. Its configuration is the type, the pattern, the sorted unique stream list, the delivery settings, the lease time in milliseconds, and the description. The delivery settings are the webhook address, or the wake stream, for the chosen type.
 
 **DS-51.** A subscription is idempotent by the hash of its normalized configuration. The normalization is: the type, the pattern, the stream list with duplicates removed and sorted, and the webhook address. The remaining fields are the wake stream, the lease time, and the description, in that fixed order. The hash is SHA-256 (Secure Hash Algorithm 256-bit) over the JavaScript Object Notation (JSON) text of that object. A second create with the same hash returns the same subscription with status 200. A create with the same identifier and a different hash reports status 409.
 
@@ -480,12 +480,12 @@ sequenceDiagram
     S->>L: 8. write framed bytes after the current tail
     L-->>S: new tail offset
     S->>S: 9. commit producer state, Stream-Seq, closure, and the new tail in LMDB
-    S-->>C: 204 No Content<br/>Stream-Next-Offset
+    S-->>C: 200 OK<br/>Stream-Next-Offset
 ```
 
 The diagram shows the success path. Each check has a failure outcome:
 
-- Step 1 returns 404 after a removal, and 410 after a soft delete or an expiry.
+- Step 1 returns 404 when no stream record remains: after a removal, or after an expiry with no live fork. It returns 410 when the stream is soft-deleted. An expiry with a live fork soft-deletes instead of removing, so a later request gets 410 until the last fork is removed. A delete request while a fork still exists returns 409 and keeps the path.
 - Step 2 returns 400 when one or two producer headers are present without the third. The reference server makes this check before the closure check.
 - Step 3 returns 409 with `Stream-Closed: true` and the final offset, unless the retry matches `closedBy`. A close-only request without producer headers is idempotent and returns 204.
 - Step 4 returns 409 for a content type mismatch, and 400 when a body append gives no content type. A bodyless close skips the check.
@@ -1901,10 +1901,10 @@ PASS  A fork of an expired source reports not found
 |------------------|----------|------|
 | DS-1 | Partial | The create conflict test shows the content type in the identity. No test sends a mismatching type on an append. |
 | DS-2 | Covered | Same-configuration create, the stable default fork offset, and the resolved default for an omitted content type. |
-| DS-3 | Covered | A closed create against an open stream conflicts. |
+| DS-3 | Partial | A closed create against an open stream conflicts. No test asks for an open stream at a closed path. |
 | DS-4 | Partial | A failed create rolls back. A process crash is not executable. |
 | DS-5, DS-6 | Covered | Create with a close, with a body, and with `[]`. |
-| DS-7, DS-8 | Covered | A soft-deleted path blocks a create; an expired path is replaced, even when a live fork holds it. |
+| DS-7, DS-8 | Partial | An expired path is replaced, even when a live fork holds it, and a repeat fork create succeeds after the source is soft deleted. No test creates a plain stream at a soft-deleted path. |
 | DS-9 | Partial | An empty JSON array is refused. No test sends an empty body without a close. |
 | DS-10, DS-11, DS-12 | By construction | The model never mutates a message, and offsets rise with each message. Offset opacity is not testable inside the model. |
 | DS-13, DS-14, DS-15 | Covered | `-1`, `now`, a malformed token, a tail read, a zero limit, and up-to-date without closure. |
@@ -2006,7 +2006,7 @@ The model is a teaching tool. The real server must survive a crash, and it must 
 
 The metadata record holds the identity and the counters. It holds the path, the content type, the current offset, the last `Stream-Seq`, the time to live, the expiry time, the creation time, and the access time. It holds the storage counters: the segment count, the total bytes, and the directory name. It holds the producer map, the closure flag, and the closing producer triple. It holds the fork fields: the source, the fork offset, the sub-offset, and the reference count. It holds the soft-deleted flag. The producer map holds one epoch and one last sequence per producer. It is a map, not one record.
 
-The reference store never increments the read sequence. The first part of every token stays zero. The second part carries all of the progress. Both parts have a fixed width, so a byte-wise comparison of two valid tokens gives the same order as a numeric comparison. A client must not make a token with a shorter field, because the server rejects that form (DS-13).
+The reference store never increments the read sequence. The first part of every token stays zero. The second part carries all of the progress. Both parts have a fixed width, so a byte-wise comparison of two valid tokens gives the same order as a numeric comparison. The server accepts the form `digits_digits` without a width check (`packages/server/src/server.ts:886`). A client must not make a token with a shorter field, because such a token breaks byte-wise ordering even when the server accepts it. A client should treat the token as opaque and send back only a server-issued value.
 
 The create order matters. The server runs these steps:
 
@@ -2092,7 +2092,7 @@ The source object is the only writer of its own `fork_edges` table. That single-
 
 The Node.js file store does not need this protocol, because one process holds both records and one LMDB transaction covers both. The invariant is the same in both stores: one visible fork has one reference, and no crash leaves zero or two.
 
-Source: `packages/server-cloudflare/src/store.ts:155-200`, `:310-325`, `:390-500`.
+Source: `packages/server-cloudflare/src/store.ts:155-200`, `:310-325`, `:390-500`, and `packages/server-cloudflare/src/stream-object.ts:697-747`, `:1711-1772`.
 
 ### 13.3 Delivery in the Node.js server
 
@@ -2128,11 +2128,11 @@ Source: `packages/server/src/subscription-manager.ts:161-330`, `:331-500`, `:534
 
 The Electric agent runtime uses the reference server as an embedded server. The class is `DurableStreamTestServer`, and it is the production embedded server, despite the name. The runtime disables it when an external stream URL is configured.
 
-The runtime creates one stream per tag-scoped source. The path is `/_entities/{sourceRef}`. The source reference is a 16-character hexadecimal hash of the normalized tags (`electric/packages/agents-runtime/src/tags.ts:64-73`). One stream carries the membership events of every entity that has the same tags. An *entity* is a named record in the runtime, and a *typed collection* is the runtime's in-memory table for one entity type. The runtime reads the stream from the beginning, because the client default offset is `-1`. It materializes every stored change event into its typed collections and then follows the stream live. The delivery subscription is separate: it links the stream at its current tail, so the wake signal covers new messages only. The runtime's own read covers the history.
+The runtime creates one stream per tag-and-principal pair. The path is `/_entities/{sourceRef}`. The runtime first computes a preliminary source reference: a 16-character hexadecimal hash of the normalized tags (`electric/packages/agents-runtime/src/tags.ts:64-73`). It then asks the server to ensure the membership stream. The server scopes that reference to the caller's principal: the final reference is the tag hash, a hyphen, and a 16-character hash of the principal kind and principal URL (`electric/packages/agents-server/src/entity-bridge-manager.ts:146-154`). The server returns the final reference, and the runtime replaces its preliminary value with it (`electric/packages/agents-runtime/src/agents-client.ts:66-74`). Two principals with the same tags therefore get two streams. One stream carries the membership events of every entity that has the same tags and the same principal. An *entity* is a named record in the runtime, and a *typed collection* is the runtime's in-memory table for one entity type. The runtime reads the stream from the beginning, because the client default offset is `-1`. It materializes every stored change event into its typed collections and then follows the stream live. The delivery subscription is separate: it links the stream at its current tail, so the wake signal covers new messages only. The runtime's own read covers the history.
 
 A message can be both history and new. If an append lands after the subscription link but before the historical read reaches that position, the runtime sees it in both paths. The runtime applies change events by entity key, which is the record identifier inside the collection, so a second application of the same event does not change the result.
 
-Source: `electric/packages/agents-runtime/src/tags.ts:64-73`, `electric/packages/agents-server/src/entity-bridge-manager.ts:620-628`, `electric/packages/agents-server/src/entity-projector.ts:427-435`, `electric/packages/agents-server/src/entrypoint-lib.ts:181-211`, `PROTOCOL.md:895`, `:965`.
+Source: `electric/packages/agents-runtime/src/tags.ts:64-73`, `electric/packages/agents-runtime/src/agents-client.ts:66-74`, `electric/packages/agents-server/src/entity-bridge-manager.ts:146-154`, `electric/packages/agents-server/src/entity-bridge-manager.ts:620-628`, `electric/packages/agents-server/src/entity-projector.ts:427-435`, `electric/packages/agents-server/src/entrypoint-lib.ts:181-211`, `PROTOCOL.md:895`, `:965`.
 
 ## 14. Aha
 

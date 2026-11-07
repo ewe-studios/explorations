@@ -395,7 +395,7 @@ const isTextCompatible =
 useBase64 = !isTextCompatible
 ```
 
-This block is from `packages/server/src/server.ts:906-907`. Here `ct` is the stream content type. The server uses this inline test and passes the flag into `handleSSE` at `packages/server/src/server.ts:1108`. The TypeScript client has a matching list, `SSE_COMPATIBLE_CONTENT_TYPES`, at `packages/client/src/constants.ts:141`.
+This block is from `packages/server/src/server.ts:906-908`. Here `ct` is the stream content type. The server uses this inline test and passes the flag into `handleSSE` at `packages/server/src/server.ts:1108`. The TypeScript client has a matching list, `SSE_COMPATIBLE_CONTENT_TYPES`, at `packages/client/src/constants.ts:141`.
 
 The server closes an SSE connection after about 60 seconds. The client reconnects with the latest offset. The cursor makes the reconnect cheap for a shared cache. Document [03-live-reads-and-subscriptions.md](03-live-reads-and-subscriptions.md) gives the full timing rules.
 

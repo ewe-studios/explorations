@@ -85,7 +85,7 @@ The launch-at-login row appears only when `launchAtLogin.supported` is true. Sou
 
 ## Account
 
-`AccountPage` handles Electric Cloud sign-in, workspaces, and server creation. Source: `packages/agents-server-ui/src/components/settings/pages/AccountPage.tsx`.
+`AccountPage` handles Electric Cloud sign-in and workspaces. The servers page creates servers (`packages/agents-server-ui/src/components/settings/pages/ServersPage.tsx:88-104`). Source: `packages/agents-server-ui/src/components/settings/pages/AccountPage.tsx`.
 
 The package README states that Electric Cloud has shut down and that cloud sign-in and discovery no longer work. Source: `packages/agents-server-ui/README.md:3`. The page remains in the code. Treat its cloud actions as historical.
 

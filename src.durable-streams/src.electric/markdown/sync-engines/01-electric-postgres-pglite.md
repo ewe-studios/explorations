@@ -134,7 +134,7 @@ A client subscribes to a shape with an HTTP GET request. The request has these p
 
 The transport choice is separate from the data. A `live=false` request returns the available log and closes. A `live=true` request first returns the available log. If the log is empty, the API holds the request until a change arrives or the long-poll timeout expires (`packages/sync-service/lib/electric/shapes/api.ex:604-760,792-802`). A `live_sse=true` request sends the same data as server-sent events (`api.ex:792-794,1218-1240`). The embedded Ecto schema is at `packages/sync-service/lib/electric/shapes/api/params.ex:148-164`. Ecto is an Elixir library for data validation. The `validate/2` function runs the changeset steps in order (`params.ex:172-185`).
 
-The offset step is important. `cast_offset/1` calls `LogOffset.from_string/1` (`params.ex:241-253`). The parser accepts `-1`, `now`, a number, or a pair such as `11_4` (`packages/sync-service/lib/electric/replication/log_offset.ex:368-391`). The value `-1` means "before all data". The value `now` means "start at the current end".
+The offset step is important. `cast_offset/1` calls `LogOffset.from_string/1` (`params.ex:241-253`). The parser accepts `-1`, `now`, or a pair such as `11_4` (`packages/sync-service/lib/electric/replication/log_offset.ex:368-391`). The value `-1` means "before all data". The value `now` means "start at the current end".
 
 A request with offset `-1` or `now` does not need a handle. The validator deletes the handle in that case (`params.ex:255-268`). A request with any other offset must have a handle. The handle is the key to a stored shape.
 
@@ -160,7 +160,7 @@ The service stores the shape as one row in a SQLite database. The table is `shap
 
 The source is `packages/sync-service/lib/electric/shape_cache/shape_status/shape_db/connection.ex:15-25`. The `ShapeStatus.add_shape/2` function generates the handle and calls `ShapeDb.add_shape/3` (`packages/sync-service/lib/electric/shape_cache/shape_status.ex:116-139`). SQLite is an embedded relational database.
 
-The row data is not in SQLite. It is in a per-shape directory under the configured storage root. The default root is `./persistent`. `PureFileStorage` uses `<root>/shapes/<stack_id>/<first two handle characters>/<next two handle characters>/<shape_handle>/`, with the subdirectories `log`, `metadata`, and `snapshot` (`packages/sync-service/lib/electric/shape_cache/pure_file_storage.ex:99-105,148-166`). The two nesting levels limit the number of files in one directory. The SQLite database lives under `<root>/state` (`packages/sync-service/lib/electric/config.ex:17-25,40`).
+The row data is not in SQLite. It is in a per-shape directory under the configured storage root. The default root is `./persistent`. `PureFileStorage` uses `<root>/shapes/<stack_id>/<first two handle characters>/<next two handle characters>/<shape_handle>/`, with the subdirectories `log`, `metadata`, and `snapshot` (`packages/sync-service/lib/electric/shape_cache/pure_file_storage.ex:99-105,148-166`). The two nesting levels limit the number of files in one directory. The shape metadata database lives at `<root>/meta/shape-db/<version>.sqlite` (`packages/sync-service/lib/electric/shape_cache/shape_status/shape_db/connection.ex:578-580`). The `<root>/state` directory holds the filesystem key-value store, not the shape database (`packages/sync-service/lib/electric/config.ex:17-25`).
 
 ```elixir
 # packages/sync-service/lib/electric/shapes/api/params.ex:328-347

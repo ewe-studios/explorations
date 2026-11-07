@@ -239,7 +239,7 @@ const handleForkEntity = useCallback(
 
 `ForkPointer` is `{ offset: string | null; subOffset: number }`. It names a point in the source entity stream. A fork with no pointer clones the whole subtree; a fork with a pointer clones from that point. Source: `packages/agents-mobile/src/lib/agentsClient.ts:430-447`.
 
-The shared provider stores the callback in a reference. It builds one stable implementation when the callback is present. `EmbedApp` gives that implementation to `ElectricAgentsProvider` as `forkEntityImpl`. The provider passes it to `createForkEntity`, which uses it as a transport override. In that case the provider does not call `serverFetch`; the native wrapper does, in the React Native context. The shared code still owns the error toast and the response check, so both paths behave the same. Source: `packages/agents-server-ui/src/embed/EmbedApp.tsx:60-68` and `packages/agents-server-ui/src/lib/ElectricAgentsProvider.tsx:783-810`.
+The shared provider stores the callback in a reference. It builds one stable implementation when the callback is present. `EmbedApp` gives that implementation to `ElectricAgentsProvider` as `forkEntityImpl`. The provider passes it to `createForkEntity`, which uses it as a transport override. In that case the provider does not call `serverFetch`; the native wrapper does, in the React Native context. The shared provider owns the error toast (`ElectricAgentsProvider.tsx:799-806`), and the mobile client owns the response check (`agentsClient.ts:454-460`), so both paths behave the same. Source: `packages/agents-server-ui/src/embed/EmbedApp.tsx:60-68` and `packages/agents-server-ui/src/lib/ElectricAgentsProvider.tsx:783-810`.
 
 ## Layout and keyboard bridge
 

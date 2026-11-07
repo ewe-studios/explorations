@@ -237,9 +237,13 @@ The `queued` and `paused` messages wait in the inbox collection. When the curren
 
 ```ts
 rows.sort((left, right) => {
-  if (left.position && right.position && left.position !== right.position) {
-    return left.position < right.position ? -1 : 1
+  const leftPosition = left.position
+  const rightPosition = right.position
+  if (leftPosition && rightPosition && leftPosition !== rightPosition) {
+    return leftPosition < rightPosition ? -1 : 1
   }
+  if (leftPosition && !rightPosition) return -1
+  if (!leftPosition && rightPosition) return 1
   const leftSeq = left._seq ?? Number.MAX_SAFE_INTEGER
   const rightSeq = right._seq ?? Number.MAX_SAFE_INTEGER
   if (leftSeq !== rightSeq) return leftSeq - rightSeq

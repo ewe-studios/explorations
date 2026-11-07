@@ -30,7 +30,7 @@ The word **claim** has five meanings in this package. The recovery table below u
 | Scheduler task claim | `scheduled_tasks.claimed_by` and `claimed_at` | The scheduler deletes or reschedules the task; otherwise the claim expires after 30,000 ms |
 | Tag outbox claim | `tag_stream_outbox.claimed_by` and `claimed_at` | The drainer deletes the row on success, or clears the claim on failure; a stale claim is older than 30,000 ms |
 | Dispatch claim | `consumer_claims`, one row for a wake delivery | No code in this package marks a row `expired`; see the gap below |
-| Claim token | The value in a claim response | The runner sends it with each append, and it ends at `done` or `stop` |
+| Claim token | The value in a claim response | The runner sends it to acknowledge or release work; it ends at `done` or `stop`. It is not the append credential. The append credential is the separate per-wake write token from the wake callback |
 
 An **epoch** is a producer generation number. The Durable Streams protocol uses it to fence out an older writer. A producer triple is `(producerId, epoch, seq)`. A **manifest** is an event in an entity stream that lists the sources, schedules, and children that the entity owns. The *manifest key* is the key of that event. A **manifest source** is one entry with `kind: 'source'` and `sourceType: 'entities'`.
 

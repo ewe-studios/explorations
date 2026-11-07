@@ -65,9 +65,9 @@ The reason is subtle. The stream needs to know that the body is valid before it 
 | All shape responses | `electric-offset`, `electric-handle` | `src/fetch.ts:310-313` |
 | Live response | `electric-cursor` | `src/fetch.ts:315` |
 | Non-live response | `electric-schema` | `src/fetch.ts:317` |
-| Snapshot response | none; the check returns early | `src/fetch.ts:337-347` |
+| Snapshot response with subset parameters in the URL | none; the check returns early | `src/fetch.ts:337-347` |
 
-A missing header throws `MissingHeadersError`. The error text names the uniform resource locator (URL) and the missing headers. It also names cross-origin resource sharing (CORS) as a common cause. The citation is `src/fetch.ts:361-363` and `src/error.ts:108-118`.
+A snapshot sent as a POST body carries its subset parameters in the body, so the URL check does not detect it. Such a response must carry the normal headers. A missing header throws `MissingHeadersError`. The error text names the uniform resource locator (URL) and the missing headers. It also names cross-origin resource sharing (CORS) as a common cause. The citation is `src/fetch.ts:361-363` and `src/error.ts:108-118`.
 
 ## Chunk prefetch
 

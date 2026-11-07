@@ -60,7 +60,7 @@ The projection layer applies each change to a map. It controls when subscribers 
 | Mapping | `ColumnMapper`, `createColumnMapper`, `snakeCamelMapper`, `snakeToCamel`, `camelToSnake` | `src/column-mapper.ts:46-392` |
 | Expressions | `compileExpression`, `compileOrderBy` | `src/expression-compiler.ts:18-132` |
 | Errors | `FetchError`, `FetchBackoffAbortError` (exported); the other error classes are internal | `src/error.ts:1-125` |
-| Constants | `ELECTRIC_PROTOCOL_QUERY_PARAMS` and header names | `src/constants.ts:1-54` |
+| Constants | `ELECTRIC_PROTOCOL_QUERY_PARAMS` | `src/constants.ts:37` |
 
 ## One request cycle
 

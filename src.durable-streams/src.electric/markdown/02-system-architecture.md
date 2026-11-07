@@ -107,7 +107,7 @@ sequenceDiagram
 
 Source: `packages/agents-server/src/entrypoint-lib.ts:115-179`.
 
-The effective tenant identifier is `service ?? tenantId ?? 'default'` (`packages/agents-server/src/standalone-runtime.ts:70`, `packages/agents-server/src/tenant.ts:1`). The service identifier therefore wins over the tenant identifier.
+The effective tenant identifier is `service ?? tenantId ?? 'default'` (`packages/agents-server/src/standalone-runtime.ts:64`, `packages/agents-server/src/tenant.ts:1`). The service identifier therefore wins over the tenant identifier.
 
 Electric Sync is optional. When `ELECTRIC_AGENTS_ELECTRIC_URL` is set, `rebuildWakeRegistry` calls `WakeRegistry.startSync`, which follows the `wake_registrations` table through a Shape stream. When it is absent, `rebuildWakeRegistry` calls `loadRegistrations` once (`packages/agents-server/src/entity-manager.ts:428-438`). A single server still receives registrations through in-process `register()` calls; the Shape stream keeps several server instances consistent. The Docker Compose file runs an `electric` service and sets the URL.
 
@@ -136,7 +136,7 @@ The function `durableStreamTestServerBackendUrl` appends `/v1/stream` to the ori
 
 ### Step 5: standalone runtime
 
-`startStandaloneAgentsRuntime` constructs seven long-lived components:
+`startStandaloneAgentsRuntime` constructs six long-lived components directly:
 
 | Component | Responsibility |
 |-----------|----------------|
@@ -145,10 +145,11 @@ The function `durableStreamTestServerBackendUrl` appends `/v1/stream` to the ori
 | `WakeRegistry` | In-memory wake conditions, synchronized from PostgreSQL |
 | `Scheduler` | Delayed sends and cron ticks |
 | `EntityBridgeManager` | Bridges between entity streams and external sources |
-| `PgSyncBridgeManager` | Bridges that replicate entity events to PostgreSQL |
-| `EntityManager` | Entity lifecycle operations |
+| `TagStreamOutboxDrainer` | Drains queued tag events to the stream server |
 
-It then runs `rebuildWakeRegistry`, `rehydrateCronSchedules`, and starts the bridge managers and the scheduler. Source: construction at `packages/agents-server/src/standalone-runtime.ts:65-118`; start sequence at `:150-181`.
+The function then constructs an `ElectricAgentsTenantRuntime`. That object creates the `EntityManager` for entity lifecycle operations and the `PgSyncBridgeManager` that replicates entity events to PostgreSQL (`packages/agents-server/src/runtime.ts:88, 105`).
+
+It then runs `rebuildWakeRegistry`, `rehydrateCronSchedules`, and starts the bridge managers, the tag-stream drainer, and the scheduler. Source: construction at `packages/agents-server/src/standalone-runtime.ts:65-118`; start sequence at `:150-181`.
 
 The `runtime` field of this result is an `ElectricAgentsTenantRuntime`, not the `agents-runtime` package. It performs control-plane work: wake dispatch, scheduler execution, bridge management, and per-wake token minting. The `agents-runtime` package materializes entity streams and runs handlers. It reaches the server over HTTP and never imports the server.
 

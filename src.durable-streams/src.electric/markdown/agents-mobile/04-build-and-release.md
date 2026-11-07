@@ -112,7 +112,7 @@ The adaptive icon has a foreground image and a monochrome image for themed icons
 
 ## Sentry
 
-The configuration wraps the Expo config with `withSentry`. The Sentry data source name (DSN) host is in the European Union, so the upload target is `https://de.sentry.io/`. The organisation is `electricsql-04` and the project is `agents-mobile`. The upload secret comes from the EAS environment variable `SENTRY_AUTH_TOKEN`. Source: `packages/agents-mobile/app.config.ts:9-12` and `packages/agents-mobile/app.config.ts:159-165`.
+The configuration wraps the Expo config with `withSentry`. The Sentry data source name (DSN) host is in the European Union, so the upload target is `https://de.sentry.io/`. The organisation is `electricsql-04` and the project is `agents-mobile`. The upload secret comes from the EAS environment variable `SENTRY_AUTH_TOKEN`. Source: `packages/agents-mobile/app.config.ts:11-13` and `packages/agents-mobile/app.config.ts:159-165`.
 
 The application also wraps the root layout with `Sentry.wrap` and puts a `Sentry.ErrorBoundary` inside the provider tree. Source: `packages/agents-mobile/app/_layout.tsx:35-45` and `packages/agents-mobile/app/_layout.tsx:75`.
 

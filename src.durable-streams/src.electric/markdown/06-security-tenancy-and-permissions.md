@@ -109,7 +109,7 @@ The function `isPermissionBypassPrincipal` returns true for these three identiti
 
 ## Tenancy
 
-A tenant is a service identifier. The server resolves it as `service ?? tenantId ?? 'default'`, so `ELECTRIC_AGENTS_SERVICE` wins over `ELECTRIC_AGENTS_TENANT_ID`, and both unset gives `default`. The tenant runtime, the registry, and the scheduler all take this value (`packages/agents-server/src/standalone-runtime.ts:70`, `packages/agents-server/src/tenant.ts:1`).
+A tenant is a service identifier. The server resolves it as `service ?? tenantId ?? 'default'`, so `ELECTRIC_AGENTS_SERVICE` wins over `ELECTRIC_AGENTS_TENANT_ID`, and both unset gives `default`. The tenant runtime, the registry, and the scheduler all take this value (`packages/agents-server/src/standalone-runtime.ts:64`, `packages/agents-server/src/tenant.ts:1`).
 
 The default routing adapter removes the leading slash and adds no tenant prefix:
 

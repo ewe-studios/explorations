@@ -65,7 +65,7 @@ The ownership flag is `userProvidedCredentials`. The command sets it to true aft
 
 The branch at the top is the main design choice of the package. If the caller supplies a source identifier, the package trusts the caller's database and skips provisioning and migration. If not, the package creates a complete local stack. The citation is `src/cli.ts:195-266`.
 
-**Aha:** this package has no npm runtime dependencies. It does not ship a Hypertext Transfer Protocol (HTTP) library, a template engine, a prompt library, or a database driver. It uses `fetch` for the Electric Cloud interface, `readline` for prompts, `child_process` for template retrieval and package commands, and `fs` for file writes. The citation is `package.json:29`, `src/cli.ts:3-7`, and `src/electric-api.ts:49-57`. The whole quickstart is a thin orchestrator over tools that Node.js already provides.
+**Aha:** this package has no npm runtime dependencies. It does not ship a Hypertext Transfer Protocol (HTTP) library, a template engine, a prompt library, or a database driver. It uses `fetch` for the Electric Cloud interface, `readline` for prompts, `child_process` for template retrieval and package commands, and `fs` for file writes. The citation is `package.json:29`, `src/cli.ts:3-6`, `src/template-setup.ts:3` for `fs`, and `src/electric-api.ts:49-57`. The whole quickstart is a thin orchestrator over tools that Node.js already provides.
 
 "No npm dependencies" does not mean "no prerequisites". The command also needs:
 - Node.js with the global `fetch` function, which Node.js 18 and later provide.

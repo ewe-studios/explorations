@@ -175,8 +175,8 @@ A cold handle is a useful object. A caller can pass it through an application be
 | Method | Network call | Result |
 |--------|--------------|--------|
 | `DurableStream.create(opts)` | `PUT` | New handle; fails on `409` if the stream exists |
-| `DurableStream.connect(opts)` | `HEAD` | Handle with metadata; fails on `404` |
-| `DurableStream.head(opts)` | `HEAD` | `HeadResult` only |
+| `DurableStream.connect(opts)` | `HEAD` | Handle; a missing stream is not an error at this point |
+| `DurableStream.head(opts)` | `HEAD` | `HeadResult`; a `404` gives `{ exists: false }` |
 | `DurableStream.delete(opts)` | `DELETE` | No handle |
 
 `create` is create-only. A caller that wants "create or use" must handle the `CONFLICT_EXISTS` error code.
@@ -305,7 +305,7 @@ if (isJson) {
   const concatenated = new Uint8Array(totalSize)
 ```
 
-This block is from `packages/client/src/idempotent-producer.ts:724-726`.
+This block is from `packages/client/src/idempotent-producer.ts:715-725`.
 
 A JSON batch is one array. The server flattens it into N messages. A byte batch is one concatenated body. The server stores it as one message. This difference is important for a reader. JSON keeps message boundaries. A byte stream has none.
 
@@ -380,8 +380,9 @@ The client uses `DurableStreamError` with a text code. The codes include:
 | `CONFLICT_EXISTS` | Create found an existing stream |
 | `PARSE_ERROR` | JSON parse failure |
 | `ALREADY_CLOSED` | Append after close |
-| `STALE_EPOCH` | Producer epoch is behind the server |
 | `UNKNOWN` | Unclassified failure |
+
+A stale producer epoch throws a separate error class, `StaleEpochError`, from the idempotent producer (`packages/client/src/idempotent-producer.ts:34`). It is not a `DurableStreamError` code.
 
 `FetchError` carries the Hypertext Transfer Protocol (HTTP) status and the body. The read path calls `handleErrorResponse` for every non-success response.
 

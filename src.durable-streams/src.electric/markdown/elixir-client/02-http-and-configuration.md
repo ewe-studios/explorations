@@ -95,7 +95,7 @@ Within `:request`, two keys have special handling:
 | `max_retries` | `10_512_000` | A practical "forever". |
 | `receive_timeout` | `60_000` milliseconds | Longer than the server's 20-second long poll. |
 
-The comment at `lib/electric/client/fetch/http.ex:117-121` explains the two unusual values. `10_512_000` retries is about ten years at a one-second delay, so the retry counter is not the practical limit. The `:timeout` option is the real limit: the callback stops when the request age plus the next delay exceeds `300` seconds. The large `max_retries` value exists so that Req itself never stops a retry sequence before the age policy does. With `timeout: :infinity`, the ten-year figure becomes the effective ceiling. The receive timeout must exceed the server long-poll time, or Req would abort a valid long poll.
+The comment at `lib/electric/client/fetch/http.ex:117-121` explains the two unusual values. The source comment describes `10_512_000` retries as "~10 years"; at a one-second delay the count spans about 122 days, so the retry counter is not the practical limit. The `:timeout` option is the real limit: the callback stops when the request age plus the next delay exceeds `300` seconds. The large `max_retries` value exists so that Req itself never stops a retry sequence before the age policy does. With `timeout: :infinity`, the ten-year figure becomes the effective ceiling. The receive timeout must exceed the server long-poll time, or Req would abort a valid long poll.
 
 ### The retry policy
 
@@ -135,7 +135,7 @@ The retry predicate has four cases (`lib/electric/client/fetch/http.ex:251-287`)
 | HTTP version 2 error `:unprocessed` | Yes | `lib/electric/client/fetch/http.ex:281-283` |
 | Any other exception | No | `lib/electric/client/fetch/http.ex:285-287` |
 
-This client builds only GET requests on the HTTP path; the embedded backend also handles DELETE (`lib/electric/client/fetch/request.ex:21`, `lib/electric/client/embedded.ex:20-38`). The retry predicate does not restrict the method, so it would also retry a POST if a custom backend supplied one. The comment at `lib/electric/client/fetch/http.ex:192-194` gives the reason: the server endpoints are idempotent by design. This document does not describe a POST path, because the package has none.
+This client builds GET requests for shape reads and DELETE requests for shape deletion on the HTTP path (`lib/electric/client.ex:684-687`); the embedded backend also handles DELETE (`lib/electric/client/embedded.ex:20-38`). The retry predicate does not restrict the method, so it would also retry a POST if a custom backend supplied one. The comment at `lib/electric/client/fetch/http.ex:192-194` gives the reason: the server endpoints are idempotent by design. This document does not describe a POST path, because the package has none.
 
 ## Response decoding
 
@@ -160,7 +160,7 @@ The raw header values are wrapped in lists first (`lib/electric/client/fetch/res
 {fetch module, endpoint string, headers, request parameters}
 ```
 
-The monitor holds the subscriber list and starts the request only for the first subscriber (`lib/electric/client/fetch/monitor.ex:92-102`). The monitor starts the request as a linked process (`lib/electric/client/fetch/monitor.ex:88-92`). The request has a `:temporary` child specification for supervisor use, but this path starts it directly (`lib/electric/client/fetch/request.ex:118-132`). A crash does not restart it and replay a long poll.
+The monitor holds the subscriber list and starts the request only for the first subscriber (`lib/electric/client/fetch/monitor.ex:92-102`). The monitor starts the request as a linked process (`lib/electric/client/fetch/monitor.ex:86`). The request has a `:temporary` child specification for supervisor use, but this path starts it directly (`lib/electric/client/fetch/request.ex:118-132`). A crash does not restart it and replay a long poll.
 
 ```mermaid
 sequenceDiagram
@@ -208,7 +208,7 @@ The contract requires every implementation to set `authenticated: true` on the r
 
 The header name needs care. The `Electric.Client.new/1` documentation example uses `{"authorize", "Bearer ..."}` (`lib/electric/client.ex:207-215`). The standard HTTP header name is `authorization`. The client does not treat either name specially; it passes every header through unchanged. Use the name that your Electric deployment expects. This document uses `authorization` because it is the standard name.
 
-The Bearer row uses the HTTP `:headers` option, not the `:authenticator` option. A static token therefore bypasses the authenticator behaviour. The `:authenticator` option is for credentials that change per shape or per request. Both mechanisms can be present; the authenticator sees the request after the static headers are set.
+The Bearer row uses the HTTP `:headers` option, not the `:authenticator` option. A static token therefore bypasses the authenticator behaviour. The `:authenticator` option is for credentials that change per shape or per request. Both mechanisms can be present; the authenticator runs before the static headers are applied (`lib/electric/client/fetch/request.ex:155-158`, `lib/electric/client/fetch/http.ex:113`).
 
 There is no built-in Basic authentication module. A caller can build the `authorization` header and pass it through the HTTP `:headers` option.
 
@@ -380,7 +380,7 @@ No module under `lib/` reads an application environment at run time, with one ex
 | `config/runtime.exs` | environment variables | Read `ELECTRIC_PORT` (default `3333`), `DATABASE_URL` (a PostgreSQL Uniform Resource Identifier), and `ELECTRIC_URL` (default `http://localhost:<port>`). | `config/runtime.exs:5-17` |
 | `config/runtime.exs` | `:electric_client`, `:electric` | Set the test repository, the replication connection, the HTTP server port, a separate replication stream identifier, and a temporary storage directory. | `config/runtime.exs:19-32` |
 
-The test support code is the only reader of the `:electric_client` environment. It reads `:database_config` to build the test repository (`test/support/db_setup.ex:22`). A library user does not need any of these settings. The `mix test` command supplies them when the environment is `:test`.
+The test support code and the integration tests read the `:electric_client` environment. The support code reads `:database_config` to build the test repository (`test/support/db_setup.ex:22`), and the integration tests read `:electric_url` (`test/electric/client_test.exs:133`). A library user does not need any of these settings. The `mix test` command supplies them when the environment is `:test`.
 
 ## Key insight
 

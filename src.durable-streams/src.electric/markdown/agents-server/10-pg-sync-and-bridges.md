@@ -164,7 +164,7 @@ The read count is an in-memory map per source reference. For a `GET`, `beginClie
 
 The producer uses `autoClaim: true`, the same option that the projector uses. The producer identifier is stable across restarts, so a restart can find a higher epoch from an earlier process and claim the next one. See [07-entity-projector.md](07-entity-projector.md).
 
-`onEntityChanged` is a no-op with an explanatory comment: membership updates come only from the shape. A direct write through the entity registry does not push into the stream. The call sites still exist. They are grant create, grant delete, tag update, tag delete, and the `done` callback that returns an entity to `idle` or `stopped`.
+`onEntityChanged` is a no-op with an explanatory comment: membership updates come only from the shape. A direct write through the entity registry does not push into the stream. The call sites still exist. They are the send that wakes a paused entity, tag set, tag delete, a signal that changes status, and the run-finished callback that returns an entity to `idle` or `stopped`.
 
 The multi-tenant projector in [07-entity-projector.md](07-entity-projector.md) uses the same method name for a different job: its facade re-applies one entity to the shared projection, because that projection also writes permission-scoped streams. In the standalone runtime the bridge holds no second copy of the filter: every appended row has already passed the shape's `where` clause. The no-op therefore does not leave a stale in-memory permission decision.
 

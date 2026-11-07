@@ -83,7 +83,7 @@ The encoding is base64url (Request for Comments 4648 section 5): `+` becomes `-`
 
 The timestamp is base-36 text with no fixed width. Lexical sort agrees with age only while every name has the same number of characters. The store uses the metadata record to find the file; it does not scan the directory in name order.
 
-The `~` character is the separator. It is not in the base64url alphabet, so it cannot occur in the base64url part. The output of `encodeStreamPath` has at most one `~`; the decoder takes the last one and keeps the suffix only if it is a 16-character hexadecimal hash (`packages/server/src/path-encoding.ts:41`). The full directory name adds more `~` separators after the encoded path (`file-store.ts:261`).
+The `~` character is the separator. It is not in the base64url alphabet, so it cannot occur in the base64url part. The output of `encodeStreamPath` has at most one `~`; the decoder takes the last one and keeps the suffix only if it is a 16-character hexadecimal hash (`packages/server/src/path-encoding.ts:41`). The full directory name adds more `~` separators after the encoded path (`file-store.ts:259-264`).
 
 The metadata record stores this name. The LMDB key is `stream:{path}`, not the bare path.
 
@@ -195,7 +195,7 @@ The append path has a strict order:
 
 1. Check the stream state.
 2. Validate the producer tuple, without mutation.
-3. Process JSON mode. JSON mode is the protocol rule for `application/json`: each append is one message, and a read returns an array of messages. The processing here turns the append body into message text.
+3. Process JSON mode. JSON mode is the protocol rule for `application/json`: the server flattens exactly one array level, so one append can store several messages, and a read returns an array of messages. The processing here turns the append body into message text.
 4. Compute the new offset.
 5. Write the frame to the file.
 6. Flush the file with `fdatasync`.
@@ -216,9 +216,9 @@ This block is from `packages/server/src/file-store.ts:1367`.
 
 The method is named `fsyncFile`, but the system call is `fs.fdatasync` (`file-store.ts:199`). `fdatasync` flushes the file data and the metadata that is necessary to read that data. It does not flush unrelated metadata, such as the last modification time. This document uses "flush" for that call, and "`fsync`" only when it speaks about a directory.
 
-The source comments state the rule directly: "Update LMDB metadata atomically (only after flush, so metadata reflects durability)" and "Producer state is committed HERE (not in validateProducer) for atomicity" (`file-store.ts:1367`). Metadata must never acknowledge bytes that are not durable.
+The source comments state the rule directly: "Update LMDB metadata atomically (only after flush, so metadata reflects durability)" and "Producer state is committed HERE (not in validateProducer) for atomicity" (`file-store.ts:1367-1369`). Metadata must never acknowledge bytes that are not durable.
 
-The code comments number their own steps 1 to 5, plus 5a. The eight-step list above gives the same order in more detail. The two numbering schemes do not match; this document uses the list numbers when it refers to a stage.
+The code comments number their own steps 1 to 6. The eight-step list above gives the same order in more detail. The two numbering schemes do not match; this document uses the list numbers when it refers to a stage.
 
 ```mermaid
 sequenceDiagram
@@ -233,7 +233,7 @@ sequenceDiagram
     F-->>S: durable
     S->>D: put metadata and producer state
     D-->>S: committed
-    S-->>C: 204 with new offset
+    S-->>C: 200 with new offset
 ```
 
 ### Crash windows
@@ -377,7 +377,7 @@ In both stores, the recovered offset points at the first byte of the partial fra
 
 ## The read path
 
-The store does not keep messages in memory. A read opens the file, parses frames, and returns views into the file buffer for the requested range.
+The store does not keep messages in memory. A read opens the file and parses frames. The `subarray` call below makes a temporary view into the file buffer, but the returned message copies the payload into a new byte array, `new Uint8Array(messageData)` (`file-store.ts:1662`). The caller can therefore keep a message after the read returns.
 
 ```ts
 const messageData = fileContent.subarray(
@@ -393,7 +393,7 @@ if (capByte !== undefined && logicalOffset > capByte) {
 }
 ```
 
-This block is from `packages/server/src/file-store.ts:1638`.
+This block is from `packages/server/src/file-store.ts:1639`.
 
 Three variables control the loop. `baseByteOffset` is the fork base: zero for a normal stream, and the source byte position for a fork. `physicalDataOffset` counts bytes in this file, including frame overhead. `capByte` is the end of the requested logical range; `undefined` means read to the tail. A message is included when its end offset is greater than `startByte` and not greater than `capByte` (`file-store.ts:1655-1662`).
 

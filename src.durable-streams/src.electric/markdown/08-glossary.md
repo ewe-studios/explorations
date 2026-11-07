@@ -100,7 +100,7 @@ flowchart TD
 | **PostgreSQL sync (pg-sync)** | A bridge that replicates entity events into PostgreSQL. |
 | **Scheduler** | The component that runs delayed sends and cron ticks. Source: `packages/agents-server/src/scheduler.ts`. |
 | **Delayed send** | A scheduled message append. |
-| **Cron tick** | A scheduled event on a cron stream. Cron schedules are declared by rows in `wake_registrations`, not by a manifest. |
+| **Cron tick** | A scheduled event on a cron stream. Cron schedules are rehydrated from rows in `wake_registrations`, although a matching `manifest` event is also written; manifest replay does not recreate the registration. |
 | **Cron stream** | A stream whose path encodes a cron expression and timezone: `/_cron/<base64url>`. |
 | **Shared state** | A stream that several entities can read and write: `/_electric/shared-state/<id>`. |
 

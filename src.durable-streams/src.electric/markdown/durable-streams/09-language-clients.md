@@ -87,7 +87,7 @@ async with astream("https://streams.example.com/my-stream") as res:
         print(item)
 ```
 
-This block is from `packages/client-py/README.md:51`.
+This block is from `packages/client-py/README.md:53-60`.
 
 The design uses Python context managers. The connection closes when the block ends. The sync form uses a normal iterator. The async form uses `async for`.
 
@@ -158,7 +158,7 @@ The `await using` statement disposes the response. The `await foreach` loop read
 - Level: not listed in `CLIENT_MATURITY.md`.
 - Conformance claim: 179/179 tests in the package README.
 
-The client uses Swift concurrency. A read returns an async sequence. A caller writes `for try await item in response.items`. The producer has a batched write path.
+The client uses Swift concurrency. A read returns an async sequence. A caller writes `for try await message in handle.messages(as: Message.self)`. The producer has a batched write path.
 
 The package also builds a `conformance-adapter` target. The shared client conformance suite, written in TypeScript, calls that adapter over a standard protocol. This design lets a non-TypeScript client run the shared suite.
 

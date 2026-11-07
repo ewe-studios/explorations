@@ -75,11 +75,14 @@ The Wrangler configuration must name the binding `STREAMS`. Wrangler is the Clou
 
 The handler routes each stream path to one Durable Object instance with `idFromName(streamPath)`.
 
-This mapping is the core design choice. A Durable Object gives three properties that the protocol needs:
+This mapping is the core design choice. A Durable Object gives four properties that the protocol needs:
 
 1. One event loop per stream, so validation and append cannot interleave.
-2. An input gate. An input gate is a Durable Object feature that holds a new incoming event until the object has written earlier output to storage. This delays a new request until the prior output is durable.
-3. A storage API with a transaction.
+2. An input gate. A Durable Object feature that defers every incoming event while a storage operation runs. A new request cannot interleave with a half-finished append.
+3. An output gate. A Durable Object feature that holds an outgoing response until the pending storage write completes. A client never receives success for data that is not durable.
+4. A storage API with a transaction.
+
+Source for the two gates: the Cloudflare Durable Objects glossary, `https://developers.cloudflare.com/durable-objects/reference/glossary/`.
 
 The code does not need a lock for a producer sequence. The object is the lock.
 

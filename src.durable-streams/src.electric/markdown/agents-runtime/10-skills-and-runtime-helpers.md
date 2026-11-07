@@ -1309,7 +1309,7 @@ The citation is `packages/agents-runtime/src/entity-timeline.ts:215-223`.
 
 The `inboxMode` option has two values. `processed` keeps rows whose status is `processed` or missing. It also keeps a local pending row: `$synced === false`, status `pending` or missing, and `_timeline_order` that starts with `~pending:`. It hides other pending rows. `all` keeps every inbox row. The default is `processed`. The citation is `packages/agents-runtime/src/entity-timeline.ts:1393-1407`.
 
-The returned function is a TanStack DB query builder. The runtime imports `InitialQueryBuilder` and the operators from `@tanstack/db`. A query is composed with `q.from(...)`, `.where(...)`, `.select(...)`, `.unionAll(...)`, and `.orderBy(...)`. TanStack DB keeps the query live: it recomputes the result when a source collection changes. Document [04-entity-stream-db.md](04-entity-stream-db.md) explains the collection layer. The citation for the imports is `packages/agents-runtime/src/entity-timeline.ts:1-28`.
+The returned function is a TanStack DB query builder. The runtime imports the `InitialQueryBuilder` type from `@tanstack/db` and the query operators from `@durable-streams/state/db`. A query is composed with `q.from(...)`, `.where(...)`, `.select(...)`, `.unionAll(...)`, and `.orderBy(...)`. TanStack DB keeps the query live: it recomputes the result when a source collection changes. Document [04-entity-stream-db.md](04-entity-stream-db.md) explains the collection layer. The citation for the imports is `packages/agents-runtime/src/entity-timeline.ts:1-28`.
 
 The query unions the sources. It orders the union by the order reference, then by the source name, then by the row key. The citation is `packages/agents-runtime/src/entity-timeline.ts:1694-1710`.
 
@@ -1401,7 +1401,7 @@ The constructors are:
 | Constructor | Source type | Source reference | Stream |
 |-------------|-------------|------------------|--------|
 | `entity(entityUrl)` | `entity` | The entity URL | The entity URL |
-| `cron(expression, opts)` | `cron` | A hash of the normalized schedule | The cron stream path |
+| `cron(expression, opts)` | `cron` | A base64url encoding of the normalized schedule | The cron stream path |
 | `entities(query)` | `entities` | A hash of the normalized tags | The entities index stream |
 | `webhook(endpointKey, opts)` | `webhook` | The endpoint key, with an optional bucket | `/_webhooks/<endpoint>/<bucket>` |
 | `db(id, schema)` | `db` | The database identifier (ID) | The shared-state stream path |
@@ -1409,7 +1409,7 @@ The constructors are:
 
 The citation is `packages/agents-runtime/src/observation-sources.ts:185-418`.
 
-A constructor does not register itself. The handler passes the object to `ctx.observe`. The context factory forwards `ctx.observe` to `config.doObserve`. `processWake` supplies `doObserve` in the handler configuration. `doObserve` calls `source.wake()` when the caller gives no `opts.wake` value. It calls `serverClient.registerWake` with the subscriber entity URL, the source URL, and the wake condition. The setup context also stages the manifest entry through `wakeSession.registerManifestEntry`. `SourceWakeConfig` is therefore the input to the control-plane wake registration. The citation is `packages/agents-runtime/src/context-factory.ts:1105-1109`, `packages/agents-runtime/src/process-wake.ts:1766-1876`, and `packages/agents-runtime/src/setup-context.ts:700-715`.
+A constructor does not register itself. The handler passes the object to `ctx.observe`. The context factory forwards `ctx.observe` to `config.doObserve`. `processWake` supplies `doObserve` in the handler configuration. `doObserve` calls `source.wake()` whenever the source defines that function. A caller's `opts.wake` value overrides only the resulting condition. It calls `serverClient.registerWake` with the subscriber entity URL, the source URL, and the wake condition. The setup context also stages the manifest entry through `wakeSession.registerManifestEntry`. `SourceWakeConfig` is therefore the input to the control-plane wake registration. The citation is `packages/agents-runtime/src/context-factory.ts:1105-1109`, `packages/agents-runtime/src/process-wake.ts:1766-1876`, and `packages/agents-runtime/src/setup-context.ts:700-715`.
 
 A wake condition is either the string `runFinished` or an object `{ on: 'change', collections?, ops? }`. The optional `collections` list limits the change to named collections. The optional `ops` list limits it to operation tags. The citation is `packages/agents-runtime/src/types.ts:629-641`.
 
@@ -1823,7 +1823,7 @@ When the handler throws, `processWake` rolls back the staged manifest entries. I
 
 The session closes in the cleanup path. The citation is `packages/agents-runtime/src/process-wake.ts:2552-2557`.
 
-One detail is worth stating. In this source revision, `process-wake.ts` does not call `finishSetup`. A search of the package finds `finishSetup` only in the interface, the class, and the tests. The session therefore stays in `setup` for the whole wake. This has no visible effect, because `registerManifestEntry` and the handle registration methods accept both `setup` and `active`. The runtime does not need the return value of `finishSetup`: it reads the same data with `getManifest`, `getSharedStateHandles`, `getSpawnHandles`, and `getSourceHandles`. Those getters have no phase check. The citation is `packages/agents-runtime/src/wake-session.ts:154-172`, `packages/agents-runtime/src/wake-session.ts:174-183`, and `packages/agents-runtime/src/process-wake.ts:2383-2416`.
+One detail is worth stating. In this source revision, `process-wake.ts` does not call `finishSetup`. A search of the package finds `finishSetup` only in the interface, the class, and the tests. The session therefore stays in `setup` for the whole wake. This has no visible effect, because `registerManifestEntry` and the handle registration methods accept both `setup` and `active`. The runtime does not need the return value of `finishSetup`: it reads the same data with `getManifest`, `getSharedStateHandles`, and `setupCtx.getSourceHandleCache()`. It does not call `getSpawnHandles` or `getSourceHandles`. Those getters have no phase check. The citation is `packages/agents-runtime/src/wake-session.ts:154-172`, `packages/agents-runtime/src/wake-session.ts:174-183`, and `packages/agents-runtime/src/process-wake.ts:2383-2416`.
 
 ## Key insight
 

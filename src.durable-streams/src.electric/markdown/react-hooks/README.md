@@ -66,7 +66,7 @@ The function rule has a cost. Two functions with the same source text but differ
 
 `UseShapeResult` has seven fields: `data`, `shape`, `stream`, `isLoading`, `lastSyncedAt`, `error`, and `isError`. The citation is `src/react-hooks.tsx:92-114`.
 
-The default return value is the full result object. A caller can pass a `selector` to return a smaller value. The selector runs through `use-sync-external-store`. The citation is `src/react-hooks.tsx:159-170`.
+The default return value is the full result object. A caller can pass a `selector` to return a smaller value. The selector runs through `use-sync-external-store`. The citation is `src/react-hooks.tsx:196-209`.
 
 ## Related studies
 

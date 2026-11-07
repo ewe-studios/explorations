@@ -33,7 +33,7 @@ The callback list is in `packages/sync-service/lib/electric/shape_cache/storage.
 | `Electric.ShapeCache.InMemoryStorage` | `ELECTRIC_STORAGE=memory` | Tests and ephemeral use |
 | `Electric.ShapeCache.FileStorage` | none | Removed. The runtime configuration rejects the names `file` and `legacy_file` with an error, so no run mode selects it |
 
-The word "none" in the selection column means that no configuration value chooses this backend. The runtime configuration rejects the legacy file backend with a clear message. The check is in `packages/sync-service/lib/electric/application.ex:225-228`.
+The word "none" in the selection column means that no configuration value chooses this backend. The runtime configuration rejects the legacy file backend with a clear message. The name check is in `packages/sync-service/config/runtime.exs:130-133`; `packages/sync-service/lib/electric/application.ex:225-230` rejects the module tuple.
 
 ## Log offsets
 

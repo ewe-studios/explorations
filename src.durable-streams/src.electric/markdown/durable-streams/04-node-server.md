@@ -315,7 +315,7 @@ if (
 }
 ```
 
-This block is from `packages/server/src/server.ts:1085`.
+This block is from `packages/server/src/server.ts:1084-1094`.
 
 The helper `getCompressionEncoding` reads the `Accept-Encoding` request header. The server prefers `gzip`. It uses `deflate` only when the client does not accept `gzip`. The `vary` header is necessary. Without it, a cache can serve a compressed body to a client that did not ask for one.
 

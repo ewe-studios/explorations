@@ -4,7 +4,7 @@ title: API Reference
 
 # API Reference
 
-This document lists the public application programming interface (API) of `@electric-sql/client`. It covers the options, the classes, the helper functions, the types, the errors, and the constants. The package entry point re-exports the client, the shape, the types, the three guards, two errors, the backoff helper, the protocol constants, the column mapper, and the expression compiler (`src/index.ts:1-19`). The parser symbols and the other error classes are internal: the entry point does not export them.
+This document lists the public application programming interface (API) of `@electric-sql/client`. It covers the options, the classes, the helper functions, the types, the errors, and the constants. The package entry point re-exports the client, the shape, the types, the three guards, two errors, the backoff helper, the protocol query-parameter list, the column mapper, and the expression compiler (`src/index.ts:1-19`). The parser symbols and the other error classes are internal: the entry point does not export them.
 
 ## Class map
 
@@ -65,7 +65,7 @@ The type is in `src/client.ts:300-555`.
 | `subscribe` | `boolean` | `true` | Continue live synchronization | `src/client.ts:346-350`, `src/client.ts:730` |
 | `liveSse` | `boolean` | `false` | Use Server-Sent Events (SSE) for live data | `src/client.ts:357-360` |
 | `experimentalLiveSse` | `boolean` | none | Deprecated alias of `liveSse` | `src/client.ts:352-355` |
-| `log` | `changes_only` or `full` | `full` | Row content mode | `src/client.ts:362-365`, `src/client.ts:784` |
+| `log` | `changes_only` or `full` | `full` | Snapshot and change-history mode | `src/client.ts:362-365`, `src/client.ts:784` |
 | `signal` | `AbortSignal` | none | Stop signal | `src/client.ts:367` |
 | `fetchClient` | `typeof fetch` | platform fetch | Custom HTTP client | `src/client.ts:368` |
 | `runtimeVisibility` | `RuntimeVisibilityAdapter` | platform default | Background and foreground adapter; an object with optional `getCurrentState()` and required `subscribe(callback)` | `src/client.ts:256-262`, `src/client.ts:370-375` |
@@ -252,7 +252,7 @@ Only `FetchError` and `FetchBackoffAbortError` are exported from the package ent
 | `ParserNullValueError` | Null in a non-nullable column | `src/error.ts:94-99` |
 | `ShapeStreamAlreadyRunningError` | Declared but not thrown anywhere in this package | `src/error.ts:101-106` |
 | `MissingHeadersError` | Required Electric headers absent | `src/error.ts:108-118` |
-| `StaleCacheError` | Internal signal that a stale cached response started a retry; the request loop catches it | `src/error.ts:120-125`, `src/client.ts:1059-1068` |
+| `StaleCacheError` | Internal signal that a stale cached response started a retry; the request loop catches it | `src/error.ts:120-125`, `src/client.ts:1072-1078` |
 
 ## Protocol constants
 
@@ -288,7 +288,7 @@ const shape = new Shape(stream)
 const rows = await shape.rows
 ```
 
-The `Shape` constructor takes one argument: the `ShapeStream` (or any `ShapeStreamInterface`) to project. The constructor subscribes to that stream immediately. The constructor has no options and no defaults. The citation is `src/client.ts:616-647` and `src/shape.ts:85-95`.
+The `Shape` constructor takes one argument: the `ShapeStream` (or any `ShapeStreamInterface`) to project. The constructor subscribes to that stream immediately. The constructor has no options and no defaults. The citation is `src/client.ts:616-647` and `src/shape.ts:89-95`.
 
 ```ts
 import { isChangeMessage } from '@electric-sql/client'

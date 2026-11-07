@@ -89,7 +89,7 @@ The provider has three public methods (`yjs-provider.ts:248`, `:290`, `:328`):
 | `disconnect()` | Stop the connection and set `synced` to `false` |
 | `destroy()` | Release listeners and internal state |
 
-Three getters report state: `synced`, `connected`, and `connecting` (`yjs-provider.ts:182`).
+Three getters report state: `synced`, `connected`, and `connecting` (`yjs-provider.ts:183-202`).
 
 The provider emits three events:
 
@@ -331,7 +331,7 @@ The read uses JSON mode. Each SSE data event carries a JSON array of chunks, and
 | `messages` | The chat messages in order |
 | `offset` | Optional; the next offset reported by the read response |
 
-The function takes an options object with `readUrl`, optional `headers`, optional `offset`, and optional `fetchClient` (`client.ts:340`). The return type is at `packages/tanstack-ai-transport/src/client.ts:340`. The loader sends both values to the client. The client uses `offset` as `initialOffset`, so the first subscribe continues after the snapshot.
+The function takes an options object with `readUrl`, optional `headers`, optional `offset`, and optional `fetchClient` (`client.ts:340`). The return type is at `packages/tanstack-ai-transport/src/client.ts:346`. The loader sends both values to the client. The client uses `offset` as `initialOffset`, so the first subscribe continues after the snapshot.
 
 ### Server helper
 
@@ -341,7 +341,7 @@ The function takes an options object with `readUrl`, optional `headers`, optiona
 2. Pipe the model response chunks into the stream.
 3. Return an empty HTTP response.
 
-The response status is `202` in `immediate` mode and `200` in `await` mode. The option `mode` selects the mode and defaults to `immediate` (`server.ts:285`). In `await` mode the body is empty and the call returns after the writer finishes. In `immediate` mode the call returns `202`. When the platform supplies one, a `waitUntil` hook (a platform function that keeps the runtime alive until a promise settles) keeps the background write alive. The stream is now the source of truth for the chat, not the HTTP response body. The helper is at `packages/tanstack-ai-transport/src/server.ts:283`.
+The response status is `202` in `immediate` mode and `200` in `await` mode. The option `mode` selects the mode and defaults to `immediate` (`server.ts:286`). In `await` mode the body is empty and the call returns after the writer finishes. In `immediate` mode the call returns `202`. When the platform supplies one, a `waitUntil` hook (a platform function that keeps the runtime alive until a promise settles) keeps the background write alive. The stream is now the source of truth for the chat, not the HTTP response body. The helper is at `packages/tanstack-ai-transport/src/server.ts:283`.
 
 ## Vercel AI Software Development Kit (SDK) transport
 
@@ -384,7 +384,7 @@ A generation is one model response run. The recommended flow stores the stream p
 4. The endpoint returns `204` when no generation is active.
 5. Otherwise it returns `200` with a `Location` header and `{ streamUrl }`.
 
-This flow is a recommendation in `packages/aisdk-transport/README.md:90`. The reconnect endpoint is application code, not a library route. The method is `GET`; authentication is whatever the application uses.
+This flow is a recommendation in `packages/aisdk-transport/README.md:68-95`. The reconnect endpoint is application code, not a library route. The method is `GET`; authentication is whatever the application uses.
 
 The AI SDK transport provides `reconnectToStream` (`packages/aisdk-transport/src/client.ts:159`). It calls the reconnect endpoint and gets the URL. The endpoint is `reconnectApi` when the caller sets it, or `${api}/${chatId}/stream` by default (`client.ts:161`). The transport does not pass a stored offset to the reader. `readUiMessageChunksFromDurableStream` calls the client `stream()` with no `offset` value (`client.ts:84`). So the Durable Streams client applies its own default `-1`, the sentinel that means "beginning of the stream", and replays the whole stream (`client.ts:79`).
 
@@ -675,7 +675,7 @@ The repository reports different numbers in different places:
 | .NET client README | 177 | 177 tests pass |
 | Swift client README | 179/179 | 179 of 179 tests pass |
 | Cloudflare server README | 326 passed | 326 server tests pass; 0 fail; 6 skip |
-| Java client README | To Be Determined (TBD) | No conformance run is published |
+| `CLIENT_MATURITY.md:90` | To Be Determined (TBD) | No conformance run is published for Java |
 
 These numbers are copied from the named source files at commit `461b4026`. The files give no run date, no test-suite version, and no server commit for the run. They also cover different suites: the client suites test a client, and the server suite tests an HTTP server. The repository does not state one current count. The client counts are not directly comparable with the server count.
 
