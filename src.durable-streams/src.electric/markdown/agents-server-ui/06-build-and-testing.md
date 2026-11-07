@@ -272,7 +272,7 @@ The desktop development script starts the interface development server on port 5
 
 ## Aha: one source tree, three delivery paths
 
-**Aha:** The package has one source tree but three delivery paths. They are a static web bundle under `/__agent_ui/`, a file-loaded Electron bundle in `dist-desktop`, and raw TypeScript compiled by Metro for mobile. The Vite base path, the desktop HTML marker, and the embed entry exist to serve those three paths from the same components. The base path and the injected desktop HTML marker are the differences between the web and packaged desktop bundles (`packages/agents-server-ui/vite.config.ts:19-41,63`); the embed entry is the only difference between the full application and the mobile surface.
+**Aha:** The package has one source tree but three delivery paths. They are a static web bundle under `/__agent_ui/`, a file-loaded Electron bundle in `dist-desktop`, and raw TypeScript compiled by Metro for mobile. The Vite base path, the desktop HTML marker, and the embed entry exist to serve those three paths from the same components. The base path and the injected desktop HTML marker are the differences between the web and packaged desktop bundles (`packages/agents-server-ui/vite.config.ts:19-41,63`). The embed entry is the only difference between the full application and the mobile surface.
 
 ## Related documents
 

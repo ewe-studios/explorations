@@ -4,7 +4,7 @@ title: API Reference
 
 # API Reference
 
-This document lists the public application programming interface (API) of `@electric-sql/client`. It covers the options, the classes, the helper functions, the types, the errors, and the constants. The package entry point re-exports the client, the shape, the types, the three guards, two errors, the backoff helper, the protocol query-parameter list, the column mapper, and the expression compiler (`src/index.ts:1-19`). The parser symbols and the other error classes are internal: the entry point does not export them.
+This document lists the public application programming interface (API) of `@electric-sql/client`. It covers the options, the classes, the helper functions, the types, the errors, and the constants. The package entry point re-exports the client, the shape, the types, the three guards, and two errors. It also re-exports the backoff helper, the protocol query-parameter list, the column mapper, and the expression compiler (`src/index.ts:1-19`). The parser symbols and the other error classes are internal: the entry point does not export them.
 
 ## Class map
 
