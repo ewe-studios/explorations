@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>How the Runtime Sets Up a Stream -- src.electric</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue('--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        toolbar.appendChild(mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); }));
+        toolbar.appendChild(mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); }));
+        toolbar.appendChild(mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); }));
+        toolbar.appendChild(mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); }));
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.electric/docs</span>
+    <div class="nav-actions">
+      <a href="01-repository-map.html" class="nav-breadcrumb">Repository Map</a><a href="02-system-architecture.html" class="nav-breadcrumb">System Architecture</a><a href="03-the-durable-stream-primitive.html" class="nav-breadcrumb">The Durable Stream Primitive</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="03-the-durable-stream-primitive.html" class="nav-btn" title="Previous: The Durable Stream Primitive">← prev</a>
+      <a href="05-wake-dispatch-and-entity-lifecycle.html" class="nav-btn nav-btn-next" title="Next: Wake Dispatch and Entity Lifecycle">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>How the runtime sets up a durable stream</h1>
+<p>An entity stream is created once and opened many times. The <strong>creation</strong> happens in the agents-server during spawn. The <strong>opening</strong> happens in the agents-runtime during each wake. This document follows both moments in code and then states exactly where the bytes live.</p>
+<h2>Terms used in this document</h2>
+<p>These terms have one exact meaning here.</p>
+<table><tr><th>Term</th><th>Meaning</th></tr><tr><td>Entity</td><td>One agent instance. It has a type, an address, and one append-only event stream.</td></tr><tr><td>Spawn</td><td>The act of creating an entity. The agents-server writes the entity row and creates the stream.</td></tr><tr><td>Wake</td><td>One unit of work. A wake happens when the stream has new bytes, a timer fires, or a client sends a signal.</td></tr><tr><td>Stream</td><td>One persistent, append-only sequence of bytes at one path. The stream is the event log of the entity.</td></tr><tr><td>Tail</td><td>The current end of the stream. A reader at the tail has read every message that exists now.</td></tr><tr><td>Runtime</td><td>The agents-runtime package. It reads the stream, runs the handler, and writes events back.</td></tr><tr><td>Server</td><td>The agents-server package. It owns the control records and the HTTP interface.</td></tr><tr><td>Subscription</td><td>A Durable Streams object that tells the stream server which streams to watch and where to send a notification.</td></tr><tr><td>Principal</td><td>The authenticated identity that makes a request.</td></tr><tr><td>Runner</td><td>A remote process that executes agent work and receives pull wakes.</td></tr><tr><td>SSE</td><td>Server-Sent Events. A one-way Hypertext Transfer Protocol stream from the server to the client.</td></tr><tr><td>LMDB</td><td>Lightning Memory-Mapped Database. An embedded key-value store.</td></tr><tr><td>TTL</td><td>Time To Live. The period after which a stream may expire.</td></tr><tr><td>MIME</td><td>Multipurpose Internet Mail Extensions. The media type, such as <code>application/json</code>.</td></tr><tr><td>JSON</td><td>JavaScript Object Notation.</td></tr><tr><td>UUID</td><td>Universally Unique Identifier.</td></tr><tr><td>cwd</td><td>Current working directory of the process.</td></tr></table>
+<h2>The short answer</h2>
+<ol><li><strong>Creation.</strong> <code>EntityManager.spawnInner</code> builds the path <code>/{entityType}/{instanceId}/main</code>. It inserts the entity row into PostgreSQL first. It then calls <code>streamClient.create(mainPath, { contentType: 'application/json', body: initialBody })</code>. The initial body is a JSON array that holds the <code>entityCreated</code> event, any static slash commands, and an optional first inbox message.</li><li><strong>Subscription.</strong> After spawn, <code>linkEntityDispatchSubscription</code> adds the new stream to a Durable Streams subscription. The subscription is either a webhook target or a pull-wake target.</li><li><strong>Opening.</strong> On each wake, <code>processWake</code> constructs a <code>DurableStream</code> for the same path. It constructs an <code>IdempotentProducer</code> with the identifier <code>entity-${entityUrl}</code>. It calls <code>createEntityStreamDB</code> and then <code>db.preload()</code>. Preload opens one SSE connection, reads to the tail, and keeps the connection open.</li><li><strong>Storage.</strong> By default, the stream lives in a <code>DurableStreamTestServer</code> embedded in the server process. The name says "test", but the agents-server uses this class as its production embedded server. The class is the only embedded server in the Durable Streams package. When an external server URL is set, the agents-server does not start the embedded server. The file-backed store writes metadata to <code>metadata.lmdb</code> and event bytes to <code><dataDir>/streams/<directoryName>.log</code>. The default data directory is <code>${cwd}/.streams-data</code>. Docker uses <code>/var/lib/electric-agents/streams</code>.</li></ol>
+<p>The rest of this document shows the code behind each statement.</p>
+<h2>Part 1: creation during spawn</h2>
+<h3>Step 1: resolve the type and validate</h3>
+<p><code>spawnInner(typeName, req)</code> first checks three conditions:</p>
+<ul><li>A principal entity can only be created by the system.</li><li>An entity type name cannot start with <code>_</code>.</li><li>The type must exist in the registry.</li></ul>
+<p>Source: <code>packages/agents-server/src/entity-manager.ts:636-667</code>.</p>
+<p>Then it validates the spawn arguments against the type's <code>creation_schema</code>. A failed check returns <code>422</code> with the validation details.</p>
+<h3>Step 2: compute the identifiers</h3>
+<pre><code class="language-ts">const instanceId = req.instance_id || randomUUID()
+if (instanceId.includes(`/`)) {
+  throw new ElectricAgentsError(
+    ErrCodeInvalidRequest,
+    `instance_id must not contain forward slashes`,
+    400
+  )
+}
+
+const writeToken = randomUUID()
+
+const entityURL =
+  typeName === `principal`
+    ? principalUrl(instanceId)
+    : `/${typeName}/${instanceId}`
+const mainPath = `${entityURL}/main`
+
+const subscriptionId = `${typeName}-handler`
+</code></pre>
+<p>Source: <code>packages/agents-server/src/entity-manager.ts:687-704</code>.</p>
+<p>Three names come out of this block:</p>
+<table><tr><th>Name</th><th>Example</th><th>Purpose</th></tr><tr><td><code>entityURL</code></td><td><code>/assistant/7f3a...</code></td><td>Canonical entity address</td></tr><tr><td><code>mainPath</code></td><td><code>/assistant/7f3a.../main</code></td><td>Stream path for the entity event log</td></tr><tr><td><code>subscriptionId</code></td><td><code>assistant-handler</code></td><td>Base subscription identifier</td></tr></table>
+<p>The <code>writeToken</code> is a second identifier. It authorizes writes from a runner that does not have a principal. It is stored on the entity row and returned in the <code>x-write-token</code> response header.</p>
+<p><strong>Why the slash check matters:</strong> the stream path is built by string concatenation. A slash inside <code>instanceId</code> would create a deeper path. The path could collide with another entity or with an internal namespace such as <code>/_electric</code>. The check prevents that.</p>
+<h3>Step 3: resolve the dispatch policy</h3>
+<p>The dispatch policy decides where wakes go. The resolution order is:</p>
+<ol><li>The explicit <code>dispatch_policy</code> in the spawn request.</li><li>The parent entity's policy, adjusted by the type default.</li><li>The type default policy.</li></ol>
+<p>Source: <code>packages/agents-server/src/entity-manager.ts:729-738</code>.</p>
+<p>The policy has one target. The target is either a webhook URL or a runner identifier.</p>
+<h3>Step 4: build the entity row</h3>
+<p>The entity record holds the stream path, the subscription identifier, the policy, the write token, the tags, the spawn arguments, the sandbox choice, the schemas, and the timestamps.</p>
+<pre><code class="language-ts">const entityData: ElectricAgentsEntity = {
+  type: typeName,
+  status: `idle`,
+  url: entityURL,
+  streams: {
+    main: mainPath,
+  },
+  subscription_id: subscriptionId,
+  dispatch_policy: dispatchPolicy,
+  write_token: writeToken,
+  tags: initialTags,
+  spawn_args: req.args,
+  sandbox,
+  type_revision: entityType.revision,
+  inbox_schemas: entityType.inbox_schemas,
+  state_schemas: entityType.state_schemas,
+  created_at: now,
+  created_by: req.created_by ?? parentEntity?.created_by,
+  updated_at: now,
+}
+</code></pre>
+<p>Source: <code>packages/agents-server/src/entity-manager.ts:748-771</code>.</p>
+<h3>Step 5: build the initial events</h3>
+<p>The first event is always <code>entityCreated</code>.</p>
+<pre><code class="language-ts">const createdEvent = entityStateSchema.entityCreated.insert({
+  key: `entity-created`,
+  value: {
+    entity_type: typeName,
+    timestamp: new Date().toISOString(),
+    args: req.args ?? {},
+    ...(req.parent ? { parent_url: req.parent } : {}),
+  },
+} as any)
+</code></pre>
+<p>Source: <code>packages/agents-server/src/entity-manager.ts:786-796</code>.</p>
+<p>Next, the code appends one <code>slash_command</code> event for each command declared by the entity type. The source is <code>static</code>.</p>
+<p>Then, if <code>req.initialMessage</code> is present, the code appends one <code>inbox</code> event. The key has the form <code>msg-in-${Date.now()}-${randomSuffix}</code>. This key format is the same one the live send path uses.</p>
+<h3>Step 6: wrap the body for JSON mode</h3>
+<pre><code class="language-ts">// JSON-mode streams: server flattens one level. Append auto-wraps the
+// body in [...] but create does not, so we wrap it ourselves.
+const initialBody = `[${initialEvents.map((e) =&gt; JSON.stringify(e)).join(`,`)}]`
+</code></pre>
+<p>Source: <code>packages/agents-server/src/entity-manager.ts:824-826</code>.</p>
+<p>This is the most important line in the creation path. The stream server flattens one array level. If the code passed the array without wrapping, the whole array would become one message. With the wrap, each event becomes its own message and its own offset.</p>
+<h3>Step 7: write the row first, then the stream</h3>
+<p>The server uses a first-in-first-out job queue (the <code>fastq</code> package) to serialize spawn persistence. Inside the queued job it does two things in order:</p>
+<pre><code class="language-ts">// Create entity first so it&#x27;s visible in the DB before stream
+// creation can trigger webhooks that look up the entity.
+let entityTxid: number
+try {
+  entityTxid = await withSpan(`db.createEntity`, () =&gt;
+    this.registry.createEntity(entityData)
+  )
+} catch (err) {
+  return [ ... ]
+}
+
+const [mainStreamResult] = await Promise.allSettled([
+  this.streamClient.create(mainPath, {
+    contentType,
+    body: initialBody,
+  }),
+])
+</code></pre>
+<p>Source: <code>packages/agents-server/src/entity-manager.ts:833-858</code>.</p>
+<p><strong>Aha: the row must exist before the stream.</strong> Stream creation can trigger a subscription webhook. The webhook handler looks up the entity by URL. If the row were written after the stream, the first wake could arrive before the entity existed, and the runtime would drop the wake. The comment in the source states this reason directly.</p>
+<p><code>streamClient.create</code> delegates to <code>DurableStream.create</code>:</p>
+<pre><code class="language-ts">async create(
+  path: string,
+  opts: { contentType: string; body?: Uint8Array | string; closed?: boolean }
+): Promise&lt;void&gt; {
+  await DurableStream.create({
+    url: this.streamUrl(path),
+    headers: this.streamHeaders(),
+    contentType: opts.contentType,
+    body: opts.body,
+    closed: opts.closed,
+  })
+}
+</code></pre>
+<p>Source: <code>packages/agents-server/src/stream-client.ts:227-244</code>.</p>
+<h3>Step 8: handle a conflict or a failure</h3>
+<p>Two failure classes are special:</p>
+<table><tr><th>Failure</th><th>Detection</th><th>Action</th></tr><tr><td>Duplicate entity</td><td><code>EntityAlreadyExistsError</code></td><td>Return <code>409</code>; the winning spawn owns the row and the stream; do not roll back</td></tr><tr><td>Duplicate stream</td><td>HTTP <code>409</code> or <code>CONFLICT_SEQ</code></td><td>Return <code>409</code>; do not roll back</td></tr><tr><td>Other failure</td><td>any other error</td><td>Delete the stream, delete the row, unregister the wake</td></tr></table>
+<p>Source: <code>packages/agents-server/src/entity-manager.ts:861-925</code>.</p>
+<p><code>CONFLICT_SEQ</code> is the Durable Streams error code for a sequence conflict. An append carries an optional <code>Stream-Seq</code> header. The server stores the last value in <code>lastSeq</code>. An append with a value that is not newer than <code>lastSeq</code> is rejected with this code. A client can use the rejection as proof that the earlier append already reached the server.</p>
+<p>The rollback order protects the invariant "a live entity row always has a live main stream". If the stream failed, the row is deleted. If the row failed, no stream was created.</p>
+<h3>Step 9: link the dispatch subscription</h3>
+<p>The spawn route calls <code>linkEntityDispatchSubscription</code> after <code>spawnInner</code> returns. There is a subtle ordering rule:</p>
+<pre><code class="language-ts">const linkBeforeInitialMessage =
+  parsed.initialMessage !== undefined &amp;&amp;
+  shouldLinkDispatchBeforeInitialMessage(dispatchPolicy)
+if (linkBeforeInitialMessage) {
+  await linkEntityDispatchSubscription(ctx, entity)
+}
+if (parsed.initialMessage !== undefined) {
+  await ctx.entityManager.send(entity.url, {
+    from: principal.url,
+    payload: parsed.initialMessage,
+    type: parsed.initialMessageType, // optional message type from the request body
+  })
+}
+if (!linkBeforeInitialMessage) {
+  await linkEntityDispatchSubscription(ctx, entity)
+}
+</code></pre>
+<p>Source: <code>packages/agents-server/src/routing/entities-router.ts:1519-1534</code>.</p>
+<p>The condition <code>parsed.initialMessage !== undefined</code> is false for the route above: the route calls <code>spawnInner</code> with <code>initialMessage: undefined</code>. It sends the message itself, after the link. The route is the only caller in this path.</p>
+<p><code>spawnInner</code> also has a second, internal path. When a caller passes <code>req.initialMessage</code>, <code>spawnInner</code> adds one <code>inbox</code> event to the initial body. That event exists before the stream is created. This path is for internal callers, not for the HTTP route. The two paths never run together for one spawn.</p>
+<p><strong>Aha: the subscription is linked before the first message when a wake target exists.</strong> Suppose the order were reversed. The message append would happen first. The subscription would be created second. The Durable Streams protocol links an existing stream at its current tail offset, so a late subscription does not replay the earlier bytes. The agent would sit idle with an unread inbox message. Linking first removes that race.</p>
+<p><strong>Why the subscription identifier has a suffix.</strong> <code>subscriptionIdForEntityDispatchTarget</code> adds a suffix for a webhook target and for a runner target. The suffix is the first 16 hexadecimal characters of the SHA-256 digest of the entity address. SHA-256 means Secure Hash Algorithm with a 256-bit output. One webhook therefore gets one subscription per entity, not one shared subscription for all entities. The base identifier is the one held on the entity row, such as <code>assistant-handler</code>.</p>
+<h3>Step 10: how the subscription is built</h3>
+<p><code>linkStreamToTargetSubscription</code> ensures the stream exists, reads any existing subscription, and then creates or extends it.</p>
+<p>For a <strong>runner</strong> target:</p>
+<pre><code class="language-ts">const wakeStream = runner.wake_stream || runnerWakeStream(target.runnerId)
+await ctx.streamClient.ensure(wakeStream, { contentType: `application/json` })
+await ensureSubscriptionIncludesStream(ctx, subscriptionId, streamPath, {
+  type: `pull-wake`,
+  streams: [streamPath],
+  wake_stream: wakeStream,
+  description: `Electric Agents runner ${target.runnerId}`,
+}, existing)
+</code></pre>
+<p>For a <strong>webhook</strong> target:</p>
+<pre><code class="language-ts">const forwardUrl = appendPathToUrl(
+  ctx.publicUrl,
+  `/_electric/subscription-webhooks/${encodeURIComponent(subscriptionId)}`
+)
+await ensureSubscriptionIncludesStream(ctx, subscriptionId, streamPath, {
+  type: `webhook`,
+  streams: [streamPath],
+  webhook: { url: forwardUrl },
+  description: `Electric Agents webhook ${subscriptionId}`,
+}, existing)
+</code></pre>
+<p>Source: <code>packages/agents-server/src/routing/dispatch-policy.ts:279-350</code>.</p>
+<p>The webhook does not point at the final target. It points at the agents-server forward route. The real target URL is stored in the <code>subscription_webhooks</code> PostgreSQL table. The forward route reads the table and sends a signed request to the real target.</p>
+<p>This indirection exists for three reasons:</p>
+<ol><li>The stream server must reach the agents-server anyway.</li><li>The server can rewrite loopback addresses for Docker.</li><li>The server can sign every delivery with its own key.</li></ol>
+<h2>Part 2: opening during a wake</h2>
+<h3>The notification</h3>
+<p>The runtime receives a <code>WebhookNotification</code>. The important fields are:</p>
+<table><tr><th>Field</th><th>Meaning</th></tr><tr><td><code>streamPath</code></td><td>Which stream changed</td></tr><tr><td><code>entity.url</code></td><td>Which entity the stream belongs to</td></tr><tr><td><code>entity.type</code></td><td>Which registered handler to run</td></tr><tr><td><code>streams[].offset</code></td><td>The offset that triggered this wake</td></tr><tr><td><code>callback</code></td><td>URL to claim the wake</td></tr><tr><td><code>claimToken</code></td><td>Initial authorization token</td></tr><tr><td><code>epoch</code></td><td>Producer generation</td></tr><tr><td><code>wakeId</code></td><td>Unique wake identifier</td></tr></table>
+<h3>The three objects</h3>
+<p><code>processWake</code> creates three objects that share one connection:</p>
+<pre><code class="language-ts">const stream = new DurableStream({
+  url: streamUrl,
+  headers: serverHeaders,
+  contentType: `application/json`,
+})
+
+const producer = new IdempotentProducer(stream, `entity-${entityUrl}`, {
+  epoch,
+  autoClaim: true,
+  fetch: (input, init) =&gt; { ... },
+  onError: (error) =&gt; { failBackgroundWake(error, `WRITE_FAILED`) },
+})
+
+const db = createEntityStreamDB(
+  streamUrl,
+  entry.definition.state,
+  entry.definition.actions,
+  {
+    stream,
+    actorFrom: entityUrl,
+    writeEvent,
+    flushWrites: () =&gt; producer.flush(),
+    onEvent: ...,
+    onBatch: ...,
+  }
+)
+</code></pre>
+<p>Source: <code>packages/agents-runtime/src/process-wake.ts:529-573</code>.</p>
+<p>Four identifiers in this block need a definition.</p>
+<table><tr><th>Name</th><th>Meaning</th></tr><tr><td><code>epoch</code></td><td>The producer generation number. The server uses it to reject a write from an older producer after a newer one has claimed the stream.</td></tr><tr><td><code>autoClaim</code></td><td>When true, the producer claims the stream for its epoch on the first write. The runtime does not make a separate claim call.</td></tr><tr><td><code>entry.definition</code></td><td>The registered entity type: its state collections and its generated write actions. The runtime looked it up from the wake notification.</td></tr><tr><td><code>writeEvent</code></td><td>The function that turns one generated action into one stream append.</td></tr></table>
+<p>The order matters. The producer is created before the stream database. The reason is in the comment:</p>
+<pre><code class="language-ts">// Create producer BEFORE the StreamDB so state actions can write through it.
+</code></pre>
+<p>Source: <code>packages/agents-runtime/src/process-wake.ts:535</code>.</p>
+<p>A state action such as <code>ctx.db.actions.status_insert</code> must be able to write as soon as the handler calls it. The producer must already exist.</p>
+<h3>Preload</h3>
+<p><code>db.preload()</code> opens one SSE connection. It reads from the stream's beginning to the current tail. It applies each message to the collections. Then it keeps the connection open for live messages.</p>
+<pre><code class="language-ts">const preloadPromise = db.preload().then(() =&gt; {
+  preloadMs = +(performance.now() - preloadT0).toFixed(2)
+})
+const [claimed] = await Promise.all([claimPromise, preloadPromise])
+preloaded = true
+</code></pre>
+<p>Source: <code>packages/agents-runtime/src/process-wake.ts:1206-1211</code>.</p>
+<p><code>claimPromise</code> is the promise for the wake claim. A claim tells the Durable Streams server that this runtime has taken the wake. A second runtime must not also take it. The claim callback carries the <code>claimToken</code> from the notification.</p>
+<p>The claim callback and the preload run in parallel. The claim takes milliseconds when the entity row and the wake record exist. The preload takes longer when the stream is large. Running them together hides the claim latency.</p>
+<p><strong>Aha: one connection, three consumers.</strong> The <code>DurableStream</code> is shared by the materialized database, the producer, and the live tail. The comment at <code>process-wake.ts:514-516</code> states that <code>StreamDB</code> opens one SSE connection on <code>preload()</code> and all consumers share it. A naive design would open a catch-up connection, a live connection, and a write connection. This design opens one.</p>
+<h3>The handler</h3>
+<p>After preload, the runtime builds the handler context and calls the registered handler. The handler reads collections through <code>ctx.db</code> and writes events through the generated actions. Each action becomes an append through the producer.</p>
+<p>The handler does not return state. Any durable change must be an event. The runtime flushes the producer before it acknowledges the wake.</p>
+<h2>The full path in one diagram</h2>
+<div class="mermaid">
+sequenceDiagram
+    participant C as Client
+    participant R as entitiesRouter
+    participant M as EntityManager
+    participant PG as PostgreSQL
+    participant SC as StreamClient
+    participant DS as Durable Streams
+    participant DP as dispatch-policy
+    participant RT as Runtime
+    C-&gt;&gt;R: PUT /_electric/entities/assistant/abc
+    R-&gt;&gt;M: spawnInner(&quot;assistant&quot;, body)
+    M-&gt;&gt;M: build /assistant/abc/main
+    M-&gt;&gt;PG: INSERT entity row
+    M-&gt;&gt;SC: create(mainPath, JSON body)
+    SC-&gt;&gt;DS: PUT http://stream-host/assistant/abc/main
+    DS--&gt;&gt;SC: 201, stream created
+    SC--&gt;&gt;M: Promise void
+    R-&gt;&gt;DP: linkEntityDispatchSubscription
+    DP-&gt;&gt;DS: create or extend subscription
+    R-&gt;&gt;SC: send(initial message)
+    SC-&gt;&gt;DS: POST append
+    R--&gt;&gt;C: 201 with x-write-token
+    Note over DS: the append matches the subscription
+    DS-&gt;&gt;R: webhook notification
+    R-&gt;&gt;RT: forward signed webhook
+    RT-&gt;&gt;DS: POST callback (claim)
+    RT-&gt;&gt;DS: GET stream (SSE preload)
+    RT-&gt;&gt;RT: materialize, run handler
+    RT-&gt;&gt;DS: POST append run events
+
+</div>
+<h2>Part 3: where the stream is stored</h2>
+<h3>Storage modes</h3>
+<p>The stream server has two storage modes. The store is selected in the constructor:</p>
+<pre><code class="language-ts">// Choose store based on dataDir option
+if (options.dataDir) {
+  this.store = new FileBackedStreamStore({
+    dataDir: options.dataDir,
+    ...
+  })
+} else {
+  this.store = new StreamStore()
+}
+</code></pre>
+<p>Source: <code>durable-streams/packages/server/src/server.ts:182-188</code>.</p>
+<table><tr><th>Mode</th><th>Selection</th><th>Durability</th></tr><tr><td>In-memory</td><td>No <code>dataDir</code></td><td>Lost on process exit</td></tr><tr><td>File-backed</td><td><code>dataDir</code> is set</td><td>Survives process exit</td></tr></table>
+<p>The agents-server always sets <code>dataDir</code> for the embedded server. The default is <code>${cwd}/.streams-data</code>. Therefore the default deployment is file-backed.</p>
+<h3>The file layout</h3>
+<pre><code class="language-text">.streams-data/
+├── metadata.lmdb              LMDB database with one record per stream
+└── streams/
+    ├── &lt;directoryName&gt;.log    append-only event bytes for stream 1
+    └── &lt;directoryName&gt;.log    append-only event bytes for stream 2
+</code></pre>
+<p>The two files have different jobs. LMDB answers "does this stream exist, and what is its tail offset". The log file answers "what are the bytes". A reader needs both: the metadata gives the offset and content type, and the log gives the payload.</p>
+<div class="mermaid">
+flowchart LR
+    P[&quot;Stream path&lt;br/&gt;/assistant/7f3a/main&quot;] --&gt;|LMDB key| M[(&quot;metadata.lmdb&quot;)]
+    M --&gt;|directoryName| F[&quot;streams/L2Fzc2lzdGFudC83ZjNhL21haW4~m9x2k~a1b2c3d4.log&quot;]
+    M --&gt;|currentOffset| O[&quot;tail offset&quot;]
+    M --&gt;|contentType| C[&quot;application/json&quot;]
+    F --&gt;|append at tail| B[&quot;event bytes&quot;]
+    O --&gt; R[&quot;client read position&quot;]
+    B --&gt; R
+
+</div>
+<p><code>directoryName</code> is the bridge between the two files. It is the encoded stream path, a base-36 timestamp, and four random bytes. The timestamp and the random suffix prevent an old asynchronous delete from removing a new file with the same path.</p>
+<p>The LMDB record holds:</p>
+<table><tr><th>Field</th><th>Purpose</th></tr><tr><td><code>path</code></td><td>The stream path</td></tr><tr><td><code>contentType</code></td><td>The MIME type</td></tr><tr><td><code>currentOffset</code></td><td>The tail offset</td></tr><tr><td><code>lastSeq</code></td><td>The last <code>Stream-Seq</code> value</td></tr><tr><td><code>ttl</code></td><td>Time to live, if set</td></tr><tr><td><code>createdAt</code></td><td>Creation time</td></tr><tr><td><code>lastAccessedAt</code></td><td>Last read or write time</td></tr><tr><td><code>segmentCount</code></td><td>Always <code>1</code> in this store. The field is left from an older multi-segment layout. The active layout writes one <code>.log</code> file per stream.</td></tr><tr><td><code>totalBytes</code></td><td>Total byte count</td></tr><tr><td><code>directoryName</code></td><td>The log file name prefix</td></tr><tr><td><code>producers</code></td><td>Idempotent producer state</td></tr><tr><td><code>closed</code></td><td>Closure flag</td></tr><tr><td><code>closedBy</code></td><td>Who closed the stream</td></tr><tr><td><code>forkedFrom</code></td><td>Source stream path</td></tr><tr><td><code>forkOffset</code></td><td>Divergence offset</td></tr><tr><td><code>forkSubOffset</code></td><td>Divergence sub-offset</td></tr><tr><td><code>refCount</code></td><td>Number of live forks</td></tr><tr><td><code>softDeleted</code></td><td>Soft-deletion flag</td></tr></table>
+<p>Source: <code>durable-streams/packages/server/src/file-store.ts:40-105</code>.</p>
+<h3>The log file name</h3>
+<p>The name is generated by <code>generateUniqueDirectoryName</code>:</p>
+<pre><code class="language-ts">function generateUniqueDirectoryName(streamPath: string): string {
+  const encoded = encodeStreamPath(streamPath)
+  const timestamp = Date.now().toString(36)
+  const random = randomBytes(4).toString(`hex`)
+  return `${encoded}~${timestamp}~${random}`
+}
+</code></pre>
+<p>Source: <code>durable-streams/packages/server/src/file-store.ts:252-258</code>.</p>
+<p>The log file is:</p>
+<pre><code class="language-ts">function segmentFile(dataDir: string, dirName: string): string {
+  return path.join(dataDir, `streams`, `${dirName}.log`)
+}
+</code></pre>
+<p>Source: <code>durable-streams/packages/server/src/file-store.ts:266-268</code>.</p>
+<p>The unique suffix lets the store delete a stream and immediately reuse its path. A new stream at the same path gets a new file name, so a slow reader on the old file cannot see the new stream's bytes.</p>
+<p><strong>Note on an unused class.</strong> The file <code>file-manager.ts</code> defines <code>StreamFileManager</code>, which uses a different layout: <code>streams/<encoded>/segment_00000.log</code>. No file imports that class. The active layout is the one in <code>FileBackedStreamStore</code>. This exploration states the discrepancy so that a future reader does not follow the unused class.</p>
+<h3>Recovery on start</h3>
+<p><code>FileBackedStreamStore</code> runs <code>recover()</code> in its constructor. Recovery scans LMDB, checks each record against its log file, and reconciles the two. The rule for each mismatch is exact:</p>
+<table><tr><th>Condition found at start</th><th>Action</th></tr><tr><td>The log file is missing</td><td>Remove the metadata record from LMDB. The stream no longer exists.</td></tr><tr><td>The file has fewer bytes than <code>currentOffset</code> says</td><td>Set <code>currentOffset</code> to the offset computed from the file. The file wins.</td></tr><tr><td>The file has more bytes than <code>currentOffset</code> says</td><td>Set <code>currentOffset</code> to the offset computed from the file. The file wins.</td></tr><tr><td>A fork child exists</td><td>Compute the logical offset as the fork base byte count plus the physical bytes in the child file.</td></tr><tr><td><code>refCount</code> is not the number of live children</td><td>Rebuild <code>refCount</code> from the <code>forkedFrom</code> edges of all surviving records.</td></tr><tr><td>A record is soft-deleted and has no live child</td><td>Delete the record and cascade to the file.</td></tr></table>
+<p>The file always wins on a byte-count mismatch. The reason is that the log is the data and the metadata is a cache of the log's state. A crash between the file write and the LMDB write leaves the file ahead. A crash after a metadata write without a file write cannot happen, because the store appends to the file first.</p>
+<p>Source: <code>durable-streams/packages/server/src/file-store.ts:333-441</code>.</p>
+<p><code>scanFileForTrueOffset</code> reads the framing of each message to find the true end. The framing is a 4-byte length prefix, the payload, and a newline. A partial final message is not counted. This is why a truncated tail does not move the offset into the middle of a message.</p>
+<h3>Deployment matrix</h3>
+<table><tr><th>Deployment</th><th>Stream server</th><th>Data directory</th></tr><tr><td>Local development</td><td>Embedded <code>DurableStreamTestServer</code></td><td><code>${cwd}/.streams-data</code></td></tr><tr><td>Docker Compose full</td><td>Embedded by default, optional external</td><td><code>/var/lib/electric-agents/streams</code></td></tr><tr><td>External service</td><td>A separate Durable Streams server</td><td>Set by that service</td></tr></table>
+<p>The Docker value comes from <code>ELECTRIC_AGENTS_STREAMS_DATA_DIR=/var/lib/electric-agents/streams</code> in <code>packages/agents-server/docker-compose.full.yml</code>. The volume name is <code>electric-agents-streams-data</code>.</p>
+<p>The Durable Streams server package can also run without <code>dataDir</code>. In that mode the store is in memory and the bytes are lost when the process exits. The agents-server never selects this mode: <code>createEmbeddedStreamsServer</code> always passes a <code>dataDir</code>, and the default is <code>${cwd}/.streams-data</code>. In-memory mode is therefore a property of the server package when it is used directly, not a deployment mode of the agents-server.</p>
+<p>Source: <code>packages/agents-server/src/entrypoint-lib.ts:181-211</code> and <code>durable-streams/packages/server/src/server.ts:182-188</code>.</p>
+<h3>What is <em>not</em> in the stream</h3>
+<p>Three things live outside the stream:</p>
+<ol><li><strong>The entity row.</strong> PostgreSQL holds the status, the policy, the schemas, and the write token.</li><li><strong>The subscription.</strong> Durable Streams holds the subscription object. PostgreSQL holds the real webhook URL.</li><li><strong>The schedules.</strong> PostgreSQL holds <code>scheduled_tasks</code>. A cron stream exists, but the tick schedule is in the table.</li></ol>
+<p>This split is why the system can restart safely. The stream is the event truth. The registry is the control truth.</p>
+<h2>A concrete trace</h2>
+<p>Assume a spawn request with this body:</p>
+<pre><code class="language-json">{
+  &quot;args&quot;: { &quot;name&quot;: &quot;Ada&quot; },
+  &quot;initialMessage&quot;: &quot;Hello&quot;
+}
+</code></pre>
+<ol><li><code>instanceId</code> is a random UUID, for example <code>4f2c1e9a</code>.</li><li><code>entityURL</code> is <code>/assistant/4f2c1e9a</code>.</li><li><code>mainPath</code> is <code>/assistant/4f2c1e9a/main</code>.</li><li>The initial events are <code>entityCreated</code>, then <code>inbox</code>.</li><li><code>initialBody</code> is the JSON array <code>[{...entityCreated...},{...inbox...}]</code>.</li><li>The server sends <code>PUT <base-url>/assistant/4f2c1e9a/main</code> with that body and <code>Content-Type: application/json</code>. The path has no <code>/v1/stream</code> prefix. <code>appendPathToBaseUrl</code> joins the base URL and the path directly.</li><li>The stream server flattens the array. It stores two messages, each with its own offset. <code>StreamClient.create</code> returns <code>Promise<void></code>. This wrapper does not read the tail offset from the response, and it discards the <code>DurableStream</code> handle that <code>DurableStream.create</code> returns. Later reads learn the tail from the stream itself.</li><li>The server creates or extends subscription <code>assistant-handler:<digest></code> with the stream in its list.</li><li>On the next wake, the runtime opens the stream through <code>preload()</code>. The consumer calls <code>stream.stream({ live: true, json: true })</code> with no start offset, so the read starts at the beginning of the stream.</li><li>The materializer applies <code>entityCreated</code> and <code>inbox</code>. The inbox collection now holds one row.</li><li>The handler sees one unread message and runs.</li></ol>
+<h2>Aha summary</h2>
+<table><tr><th>Insight</th><th>Why it matters</th></tr><tr><td>The entity row is written before the stream</td><td>Prevents a wake from arriving before the entity exists</td></tr><tr><td>The body is wrapped by hand</td><td>JSON mode flattens one level; create does not wrap automatically</td></tr><tr><td>The subscription is linked before the first message</td><td>Prevents a lost first wake</td></tr><tr><td>One <code>DurableStream</code> serves three consumers</td><td>One SSE connection instead of three</td></tr><tr><td>The LMDB record is committed before the log file is opened</td><td>No reader can reach bytes that have no metadata record. The reverse case is possible for a moment, and recovery removes the empty record.</td></tr><tr><td>The log file wins a byte-count mismatch</td><td>The data is the truth and the metadata is a cache of it</td></tr><tr><td>Log file names are unique per generation</td><td>Delete and recreate at the same path is safe</td></tr></table>
+<h2>Related documents</h2>
+<ul><li><a href="03-the-durable-stream-primitive.html">03-the-durable-stream-primitive.md</a> — the protocol under this code.</li><li><a href="05-wake-dispatch-and-entity-lifecycle.html">05-wake-dispatch-and-entity-lifecycle.md</a> — what happens after the wake.</li><li><a href="agents-server/02-entity-manager.html">agents-server/02-entity-manager.md</a> — the full entity manager.</li><li><a href="agents-runtime/03-wake-processing.html">agents-runtime/03-wake-processing.md</a> — the full wake processor.</li><li><a href="durable-streams/05-storage-and-durability.html">durable-streams/05-storage-and-durability.md</a> — the store in full.</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

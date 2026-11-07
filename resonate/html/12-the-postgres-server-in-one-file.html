@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The PostgreSQL server in one file -- resonate</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/resonate/docs</span>
+    <div class="nav-actions">
+      <a href="11-observability.html" class="nav-breadcrumb">Resonate -- Observability</a><a href="11-schedules-timers-and-time.html" class="nav-breadcrumb">Schedules, timers, and time</a><a href="12-deployment.html" class="nav-breadcrumb">Resonate -- Deployment</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="12-deployment.html" class="nav-btn" title="Previous: Resonate -- Deployment">← prev</a>
+      <a href="13-data-flow.html" class="nav-btn nav-btn-next" title="Next: Resonate -- Data Flow">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>The PostgreSQL server in one file</h1>
+<p>The PostgreSQL server is one file of Structured Query Language (SQL). The file is <code>impl/server/postgres/resonate.sql</code>, and it has 1,333 lines. A user applies it to a PostgreSQL 16 or later database with <code>psql -d yourdb -f resonate.sql</code>.</p>
+<p>Resonate is a durable execution system. A server stores durable promises and the tasks that run them, and workers execute <em>registered functions</em>: functions in a worker's in-process registry, keyed by the name that the promise parameter carries. This file is that server, expressed as SQL. To <em>project</em> a record is to compute its state at <code>now</code> without writing it; the read paths do this for deadlines.</p>
+<p>Source: <code>impl/server/postgres/README.md:34-40</code>, <code>impl/server/postgres/resonate.sql:1-9</code>, <code>spec/spec/02-abstract/internal.lean:25-40</code></p>
+<p>The file is not a network listener; it is the protocol state machine, the storage, and the timer logic. A worker runs the user code, a client adapter carries envelopes, and inside PostgreSQL <code>pg_cron</code> or a connected worker calls the timeout function.</p>
+<h2>Terms</h2>
+<table><tr><th>Term</th><th>Meaning</th></tr><tr><td>Promise</td><td>A durable result slot with state, parameter, value, tags, and deadline</td></tr><tr><td>Task</td><td>A work item for a promise; one row exists for each promise with a target</td></tr><tr><td>Target</td><td>The `resonate:target` tag. Its value is the address that receives an execute message</td></tr><tr><td>External</td><td>A promise driven by a process outside the database; a target, timer tag, or external tag makes it external</td></tr><tr><td>Lease</td><td>The window in which an acquired task may run; the task `ttl` (time to live) holds its length</td></tr><tr><td>Origin</td><td>The root of a promise lineage. The `resonate:origin` tag holds its identifier</td></tr><tr><td>Awaiter</td><td>A promise with a task that waits on another promise; a callback names it in `awaiter_id`</td></tr><tr><td>Callback</td><td>A wait edge `(awaited_id, awaiter_id)` that makes the server resume the awaiter when the awaited promise settles</td></tr><tr><td>Preload</td><td>A settled promise returned with a response so a replay can short-circuit it; this server returns an empty list</td></tr><tr><td>Fence</td><td>A task-version check on a nested promise action; an old version returns status 409</td></tr><tr><td>Envelope</td><td>The request or response object with fields `kind`, `head`, and `data`</td></tr><tr><td>Outbox</td><td>The table of messages ready for delivery; a key deduplicates, and a sequence orders the drain</td></tr></table>
+<p>Source: <code>impl/server/postgres/resonate.sql:22-109</code>, <code>impl/server/postgres/resonate.sql:179-207</code>, <code>impl/sdk/ts/src/network/postgres.ts:62-68</code></p>
+<h2>What the file contains</h2>
+<p>The file has eleven sections: schema, helpers, promise actions, task actions, schedule actions, internal transitions, dispatcher, cron driver, drain, retention, and authorization.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:1-1333</code></p>
+<h2>The schema</h2>
+<p>Seven tables hold the state.</p>
+<h3>Promises and tasks</h3>
+<p>A promise has five states: <code>pending</code> (no result yet), <code>resolved</code> (success), <code>rejected</code> (error), <code>rejected_canceled</code> (a client canceled it), and <code>rejected_timedout</code> (its deadline passed). A task also has five states: <code>pending</code> (runnable), <code>acquired</code> (leased), <code>suspended</code> (waiting on a child), <code>halted</code> (paused by an operator), and <code>fulfilled</code> (done).</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:22-26</code>, <code>impl/server/postgres/resonate.sql:52-56</code></p>
+<table><tr><th>Promise column</th><th>Type</th><th>Purpose</th></tr><tr><td>`id`</td><td>`TEXT`</td><td>Primary key</td></tr><tr><td>`state`</td><td>`TEXT`</td><td>One of the five states</td></tr><tr><td>`param_headers`, `param_data`</td><td>`JSONB`, `TEXT`</td><td>The input</td></tr><tr><td>`value_headers`, `value_data`</td><td>`JSONB`, `TEXT`</td><td>The output</td></tr><tr><td>`tags`</td><td>`JSONB`</td><td>The protocol tags</td></tr><tr><td>`target`</td><td>generated `TEXT`</td><td>`tags->>'resonate:target'`</td></tr><tr><td>`origin_id`</td><td>generated `TEXT`</td><td>`tags->>'resonate:origin'`</td></tr><tr><td>`parent_id`</td><td>generated `TEXT`</td><td>`tags->>'resonate:parent'`</td></tr><tr><td>`branch_id`</td><td>generated `TEXT`</td><td>`tags->>'resonate:branch'`</td></tr><tr><td>`is_timer`</td><td>generated `BOOLEAN`</td><td>True when `tags->>'resonate:timer'` is the text `true`</td></tr><tr><td>`external`</td><td>generated `BOOLEAN`</td><td>True when a target, a timer tag, or an external tag is present</td></tr><tr><td>`timeout_at`</td><td>`BIGINT`</td><td>The promise deadline, in ms since the epoch</td></tr><tr><td>`created_at`</td><td>`BIGINT`</td><td>The creation instant</td></tr><tr><td>`settled_at`</td><td>`BIGINT`</td><td>The settlement instant, or null</td></tr></table>
+<p>Source: <code>impl/server/postgres/resonate.sql:22-45</code></p>
+<p>A tag object can hold <code>resonate:target</code>, <code>resonate:origin</code>, <code>resonate:parent</code>, <code>resonate:branch</code>, <code>resonate:timer</code>, <code>resonate:external</code>, <code>resonate:scope</code>, and <code>resonate:delay</code>. The generated columns read the first six.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:29-41</code>, <code>impl/sdk/ts/src/network/postgres.ts:62-68</code></p>
+<p>The generated columns are stored, so a query can filter on a tag without a JavaScript Object Notation (JSON) expression, and the column cannot disagree with the tag.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:29-41</code></p>
+<p>A promise is external when it has a target, a true timer tag, or a true external tag. The Lean specification calls the same predicate <code>otype.awaitable</code>. Only an external promise is awaitable, and only an external promise gets a timeout sweep.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:36-41</code>, <code>spec/spec/01-protocol/validation.lean:24-32</code>, <code>impl/server/postgres/resonate.sql:204-207</code></p>
+<p>The <code>tasks</code> table has <code>id</code>, <code>state</code>, <code>version</code>, <code>ttl</code> (time to live), <code>pid</code> (process identifier), and <code>timeout_at</code>. The foreign key is <code>tasks.id REFERENCES promises(id) ON DELETE CASCADE</code>, so the task identifier equals the promise identifier.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:52-59</code></p>
+<p><code>promise_create</code> inserts a pending task, version 0, with <code>timeout_at</code> at the first retry instant when the promise has a target. <code>task_create</code> inserts promise and task in one call, with the task <code>acquired</code> at version 1 and a lease deadline.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:393-440</code>, <code>impl/server/postgres/resonate.sql:550-575</code></p>
+<p>A worker acquires a task with <code>task.acquire</code>. The function requires a pending task, a pending promise that is not timed out, and a matching task version. It sets the task to <code>acquired</code>, raises the version by one, and sets <code>timeout_at</code> to <code>now + ttl</code>.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:600-622</code></p>
+<p><code>task_get</code> projects the task state: if the promise is settled or past its deadline, it reports the task as <code>fulfilled</code> with no lease.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:531-548</code></p>
+<h3>The wait graph</h3>
+<p><code>callbacks</code> holds <code>(awaited_id, awaiter_id)</code>. Both columns name promises. <code>awaiter_id</code> must name a promise with a target, so a task exists with the same identifier. The callback is therefore a promise-to-promise edge, and the task is reachable by its shared identifier.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:70-75</code>, <code>impl/server/postgres/resonate.sql:471-499</code></p>
+<p><code>task_resumes</code> holds <code>(task_id, awaited_id)</code>. It is the set of settled promises that a task has not yet consumed. The set is deleted when the task acquires or suspends, and it is replaced when a suspended task wakes. It is internal bookkeeping: the task JSON reports only the count in <code>resumes</code>, and the dispatcher returns an empty preload list.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:63-67</code>, <code>impl/server/postgres/resonate.sql:245-267</code>, <code>impl/server/postgres/resonate.sql:600-622</code></p>
+<p><code>listeners</code> holds <code>(awaited_id, address)</code>. A listener is a notification destination, not a task.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:77-81</code></p>
+<h3>Schedules and the outbox</h3>
+<p>A schedule row has an <code>id</code>, a <code>cron</code> expression of five fields, a <code>promise_id</code> template, a <code>promise_timeout</code>, a parameter, tags, <code>created_at</code>, <code>next_run_at</code>, and <code>last_run_at</code>.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:84-96</code></p>
+<p>The <code>outbox</code> table has <code>key</code>, <code>kind</code>, <code>address</code>, <code>task_id</code>, <code>version</code>, <code>promise</code>, <code>seq</code>, and <code>created_at</code>. <code>kind</code> is <code>execute</code> or <code>unblock</code>. <code>seq</code> is an identity column, and the dispatcher index is <code>(kind, address, seq)</code>.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:99-109</code></p>
+<p>Five indexes serve hot paths: two partial deadline indexes (<code>promises.timeout_at</code> and <code>tasks.timeout_at</code>), one partial settlement-retention index (<code>promises.settled_at</code>), and two partial lineage indexes (<code>origin_id</code> and <code>branch_id</code>). Other indexes cover callbacks, schedules, and the outbox.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:46-49</code>, <code>impl/server/postgres/resonate.sql:61</code>, <code>impl/server/postgres/resonate.sql:75</code>, <code>impl/server/postgres/resonate.sql:96</code>, <code>impl/server/postgres/resonate.sql:109</code></p>
+<h2>The function surface</h2>
+<p>Every protocol action is a PostgreSQL function. The file names each one with a letter and a number: P for promise, T for task, S for schedule. Each action function takes an explicit instant in a parameter named <code>p_now</code>, which the tables below write as <code>now</code>.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:376-882</code></p>
+<h3>Promise actions</h3>
+<table><tr><th>Identifier</th><th>Function and signature</th><th>Behavior</th></tr><tr><td>P-01</td><td>`promise_get(id, now)`</td><td>Return status 404 or 200 with the projected promise</td></tr><tr><td>P-02</td><td>`promise_create(id, timeout_at, param, tags, now)`</td><td>Return the existing promise if the id exists. Otherwise insert. A late create is born settled. A target creates a pending task</td></tr><tr><td>P-03</td><td>`promise_settle(id, state, value, now)`</td><td>Accept only `resolved`, `rejected`, or `rejected_canceled`. Settle a pending promise and run the cascade</td></tr><tr><td>P-04</td><td>`promise_register_callback(awaited, awaiter, now)`</td><td>Add a wait edge. Both promises must be pending, the awaiter must have a target, and the awaited must be external</td></tr><tr><td>P-05</td><td>`promise_register_listener(awaited, address, now)`</td><td>Add a listener. The address must be `http://`, `https://`, or a `poll://` address with an `@`</td></tr></table>
+<p>Source: <code>impl/server/postgres/resonate.sql:384-520</code></p>
+<h3>Task actions</h3>
+<table><tr><th>Identifier</th><th>Function and signature</th><th>Behavior</th></tr><tr><td>T-01</td><td>`task_get(id, now)`</td><td>Project the task. Report `fulfilled` when the promise is no longer live</td></tr><tr><td>T-02</td><td>`task_create(pid, ttl, action, now)`</td><td>Create a promise and an acquired task in one call, or acquire an existing pending task</td></tr><tr><td>T-03</td><td>`task_acquire(id, version, pid, ttl, now)`</td><td>Acquire a pending task with the matching version</td></tr><tr><td>T-04</td><td>`task_fence(id, version, action, now)`</td><td>Run a nested `promise.create` or `promise.settle` under task checks</td></tr><tr><td>T-05</td><td>`task_heartbeat(pid, tasks, now)`</td><td>Extend the lease for each acquired task with the matching pid and version</td></tr><tr><td>T-06</td><td>`task_suspend(id, version, actions, now)`</td><td>Record callbacks, set the task to `suspended`, and return status 300 if any awaited promise already settled</td></tr><tr><td>T-07</td><td>`task_fulfill(id, version, action, now)`</td><td>Settle the promise and run the cascade</td></tr><tr><td>T-08</td><td>`task_release(id, version, now)`</td><td>Return the task to `pending`, set a retry deadline, and emit execute</td></tr><tr><td>T-09</td><td>`task_halt(id, now)`</td><td>Set the task to `halted`</td></tr><tr><td>T-10</td><td>`task_continue(id, now)`</td><td>Set a halted task to `pending`, set a retry deadline, and emit execute</td></tr></table>
+<p>The three search actions are <code>promise.search</code>, <code>task.search</code>, and <code>schedule.search</code>; all return status 501. <code>task_halt</code> and <code>task_continue</code> check no task version; they are control operations, not worker operations.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:531-882</code></p>
+<h3>Schedule actions</h3>
+<table><tr><th>Identifier</th><th>Function and signature</th><th>Behavior</th></tr><tr><td>S-01</td><td>`schedule_get(id, now)`</td><td>Return status 404 or 200 with the schedule</td></tr><tr><td>S-02</td><td>`schedule_create(id, cron, promise_id, timeout, param, tags, now)`</td><td>Return the existing schedule, or parse the cron and insert</td></tr><tr><td>S-03</td><td>`schedule_delete(id, now)`</td><td>Delete the schedule</td></tr></table>
+<p>Source: <code>impl/server/postgres/resonate.sql:830-882</code></p>
+<h2>The envelope dispatcher</h2>
+<p><code>resonate_rpc(req jsonb)</code> is the one function that a client adapter calls. It accepts one envelope and returns one envelope.</p>
+<pre><code class="language-json">{&quot;kind&quot;: &quot;promise.get&quot;,
+ &quot;head&quot;: {&quot;corrId&quot;: &quot;c-1&quot;, &quot;version&quot;: &quot;1&quot;},
+ &quot;data&quot;: {&quot;id&quot;: &quot;order-42&quot;}}
+</code></pre>
+
+<pre><code class="language-json">{&quot;kind&quot;: &quot;promise.get&quot;,
+ &quot;head&quot;: {&quot;corrId&quot;: &quot;c-1&quot;, &quot;status&quot;: 200, &quot;version&quot;: &quot;1&quot;},
+ &quot;data&quot;: {&quot;promise&quot;: {&quot;id&quot;: &quot;order-42&quot;, &quot;state&quot;: &quot;pending&quot;}}}
+</code></pre>
+<p>Source: <code>impl/server/postgres/resonate.sql:1055-1064</code>, <code>impl/server/postgres/resonate.sql:1151-1154</code></p>
+<p>The <code>head.status</code> field is a protocol status, not a Hypertext Transfer Protocol (HTTP) status. The values are 200, 300, 400, 404, 409, 422, 500, and 501. The Python conformance shim always sends HTTP 200 when <code>resonate_rpc</code> returns, and uses HTTP 500 only for a shim or database failure.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:1024-1030</code>, <code>impl/server/postgres/test/conformance.py:73-102</code></p>
+<p><code>head.version</code> is echoed back unchanged. It is not the task version. Each task operation reads its own <code>version</code> from <code>data</code>; that is the concurrency guard. <code>head.resonate:debug_time</code>, when present, replaces the server clock for the whole request.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:1061</code>, <code>impl/server/postgres/resonate.sql:1096-1107</code></p>
+<p>A <code>CASE</code> statement maps every kind to one function. An unknown kind returns 501. A <code>debug.*</code> kind goes to an optional <code>resonate._debug</code> function, or returns 501 when that function is absent; the conformance shim handles the three debug kinds in Python.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:1071-1134</code>, <code>impl/server/postgres/test/conformance.py:31-51</code></p>
+<p>A deadlock retries the whole body, up to 50 times. The retry is safe because PostgreSQL rolls back the failed attempt before the exception handler runs, so no partial write remains. This is a statement about rollback, not about idempotence: an operation with the same version after a successful commit returns 409, not a duplicate result.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:1069-1070</code>, <code>impl/server/postgres/resonate.sql:1155-1163</code></p>
+<p>Any other error maps to status 400 when the SQLSTATE starts with <code>22</code> or equals <code>23502</code>, and to status 500 otherwise.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:1158-1162</code></p>
+<p><code>task.fence</code> is the one operation with a nested envelope. The inner envelope goes in <code>data.action</code>, and the outer correlation identifier is copied into the inner head.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:1138-1146</code></p>
+<div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant C as Client adapter
+    participant R as resonate_rpc
+    participant F as Action function
+    participant DB as Tables
+    C-&gt;&gt;R: envelope kind, head, data
+    R-&gt;&gt;R: now = debug_time or clock_timestamp
+    R-&gt;&gt;F: call with data and now
+    F-&gt;&gt;DB: advisory lock, then read and write
+    alt deadlock
+        DB--&gt;&gt;F: deadlock_detected
+        F--&gt;&gt;R: rollback
+        R-&gt;&gt;F: retry, at most 50 times
+    else success
+        DB--&gt;&gt;F: rows
+        F--&gt;&gt;R: status and body
+    end
+    R--&gt;&gt;C: envelope with head.status
+
+</div>
+<p>Source: <code>impl/server/postgres/resonate.sql:1055-1165</code></p>
+<h2>Row locking</h2>
+<p>Two transactions can touch one promise at the same time. The server prevents a lost update with an advisory transaction lock.</p>
+<pre><code class="language-sql">CREATE OR REPLACE FUNCTION _lock(id text) RETURNS void
+  LANGUAGE sql AS $$ SELECT pg_advisory_xact_lock(hashtextextended(id, 0)); $$;
+</code></pre>
+<p>Source: <code>impl/server/postgres/resonate.sql:381-382</code></p>
+<p>The lock is keyed by the identifier. It is an <code>xact</code> lock, so PostgreSQL releases it when the transaction ends. There is no unlock call and no lock row to clean.</p>
+<p><code>promise_register_callback</code> locks <code>LEAST(awaited, awaiter)</code> first and <code>GREATEST(awaited, awaiter)</code> second, so two registrations for one pair take the same order and cannot deadlock.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:471-479</code></p>
+<p><code>task_heartbeat</code> and <code>task_suspend</code> lock a set of identifiers in sorted order. They use a subquery with <code>ORDER BY lid</code>.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:655-670</code>, <code>impl/server/postgres/resonate.sql:690-699</code></p>
+<p>Schedules use a different key space: <code>'sched:' || id</code>. The prefix keeps a schedule lock away from a promise lock with the same text.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:848</code>, <code>impl/server/postgres/resonate.sql:873</code>, <code>impl/server/postgres/resonate.sql:943</code></p>
+<p>Ordered locks prevent one class of deadlock, not all deadlocks. A settlement locks a promise and then its awaiter task; a task action locks the task and then its awaited promises. The 50-attempt retry handles that order.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:269-298</code>, <code>impl/server/postgres/resonate.sql:673-699</code>, <code>impl/server/postgres/resonate.sql:997-1012</code></p>
+<h2>The settlement cascade</h2>
+<p>A settlement is not one row change. <code>_cascade_settle(p promises, now)</code> runs five steps in the caller's transaction.</p>
+<table><tr><th>Step</th><th>Action</th></tr><tr><td>1</td><td>Set the promise's own task to `fulfilled`, and clear its pid and ttl</td></tr><tr><td>2</td><td>Delete the task resume rows and the execute outbox rows for that task</td></tr><tr><td>3</td><td>Insert one unblock message per listener, keyed by promise and address</td></tr><tr><td>4</td><td>Delete callbacks where this promise is the awaiter and the awaited promise is still pending</td></tr><tr><td>5</td><td>Lock each awaiter in sorted order, call `_enqueue_resume`, then delete the callbacks and listeners for the settled promise</td></tr></table>
+<p>Source: <code>impl/server/postgres/resonate.sql:269-298</code></p>
+<p>Step 3 builds the unblock key as <code><promiseId>:notify:<address></code>. Step 2 finds execute rows by <code>task_id</code>, because the execute key is the task identifier. Step 4 removes wait edges that a settled promise can no longer use. Step 5 resumes the tasks that wait on this promise.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:274-296</code></p>
+<p><code>_enqueue_resume(awaited, awaiter, now)</code> reads the task row for the awaiter. If no task exists, it returns. The action depends on the task state.</p>
+<table><tr><th>Awaiter state</th><th>Action</th></tr><tr><td>`suspended`</td><td>Set to `pending`, set `timeout_at = now + _retry_timeout()`, clear the resume set, add this promise, and emit execute to the target</td></tr><tr><td>`pending`</td><td>Add this promise to the resume set</td></tr><tr><td>`acquired`</td><td>Add this promise to the resume set</td></tr><tr><td>`halted`</td><td>Add this promise to the resume set</td></tr><tr><td>`fulfilled`</td><td>Do nothing</td></tr></table>
+<p>Source: <code>impl/server/postgres/resonate.sql:245-267</code></p>
+<p>The suspended branch replaces the resume set; callbacks to other pending promises stay, and a later settlement adds them.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:252-263</code>, <code>impl/server/postgres/resonate.sql:673-737</code></p>
+<div class="mermaid">
+flowchart TB
+    A[&quot;promise_settle or task_fulfill&quot;] --&gt; B[&quot;_cascade_settle&quot;]
+    B --&gt; C[&quot;Fulfil the promise&#x27;s task&quot;]
+    C --&gt; D[&quot;Delete task resumes and execute rows&quot;]
+    D --&gt; E[&quot;Insert one unblock per listener&quot;]
+    E --&gt; F[&quot;Delete callbacks from this promise as awaiter&quot;]
+    F --&gt; G[&quot;Lock awaiters in sorted order&quot;]
+    G --&gt; H[&quot;_enqueue_resume each awaiter&quot;]
+    H --&gt; I[&quot;Suspended: pending + retry deadline + execute&quot;]
+    H --&gt; J[&quot;Pending or acquired or halted: add to resume set&quot;]
+    I --&gt; K[&quot;Delete callbacks and listeners for the promise&quot;]
+    J --&gt; K
+
+</div>
+<p>Source: <code>impl/server/postgres/resonate.sql:269-298</code></p>
+<blockquote>Aha: the wake-up path is not a timer scan. A settlement walks the callback edge and changes the waiting task inside the same transaction. The retry deadline it sets is a consequence, not the trigger. Time enters the wake path only as <code>now + 5000</code>, which tells the sweeper when to offer the task again.</blockquote>
+<p>Source: <code>impl/server/postgres/resonate.sql:245-267</code>, <code>impl/server/postgres/resonate.sql:269-298</code></p>
+<h2>Notifications and the outbox</h2>
+<p>The outbox is a keyed map and an ordered queue: the key deduplicates an offer, and the sequence orders a drain. A second offer of one task updates the row, and the <code>AFTER INSERT OR UPDATE</code> trigger fires again.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:99-109</code>, <code>impl/server/postgres/resonate.sql:165-167</code></p>
+<table><tr><th>Message</th><th>Key</th><th>Address</th><th>Payload</th></tr><tr><td>Execute</td><td>Task identifier</td><td>The promise target</td><td>`task_id` and `version`</td></tr><tr><td>Unblock</td><td>`<promiseId>:notify:<address>`</td><td>The listener address</td><td>The projected promise</td></tr></table>
+<p>Source: <code>impl/server/postgres/resonate.sql:236-243</code>, <code>impl/server/postgres/resonate.sql:279-289</code></p>
+<p>The trigger has two delivery paths.</p>
+<table><tr><th>Address form</th><th>Delivery</th></tr><tr><td>`http://` or `https://`</td><td>`net.http_post` from `pg_net`, or `http_post` from `pgsql-http` in another schema</td></tr><tr><td>Any other form, such as `poll://`</td><td>`pg_notify` on `resonate_q_<md5(address)>`</td></tr></table>
+<p>Source: <code>impl/server/postgres/resonate.sql:115-163</code></p>
+<p>The HTTP body is built by <code>_outbox_http_body</code>: an execute body has kind <code>execute</code>, an empty head, and <code>data.task</code> with <code>id</code> and <code>version</code>; an unblock body has kind <code>unblock</code>, an empty head, and <code>data.promise</code>.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:128-135</code></p>
+<p>For an HTTP address, a successful post deletes the outbox row. A failed post raises a warning and leaves the row. The trigger does not retry. For a poll address, the row stays until a worker dequeues it.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:137-163</code></p>
+<p>The outbox drain is destructive and addressed. <code>dequeue_execute(target, limit)</code> deletes execute rows for that address in <code>seq</code> order with <code>FOR UPDATE SKIP LOCKED</code>. <code>dequeue_unblock(address, limit)</code> does the same for unblock rows. The execute address is the promise target; the task identifier is inside the deleted row.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:1235-1265</code></p>
+<p>The TypeScript PostgreSQL adapter is the normal network edge. <code>send</code> calls <code>resonate_rpc</code>; <code>recv</code> opens a <code>LISTEN</code> connection on the unicast and anycast channels, and a 250 ms tick calls <code>process_timeouts()</code> and drains both queues.</p>
+<p>Source: <code>impl/sdk/ts/src/network/postgres.ts:130-136</code>, <code>impl/sdk/ts/src/network/postgres.ts:93-112</code>, <code>impl/sdk/ts/src/network/postgres.ts:147-177</code></p>
+<p>The adapter calls its delivery at-least-once. If a process crashes after it dequeues an execute row but before the task is acquired, the task stays pending, and the retry timeout emits a new execute row. A stale duplicate then fails acquire with status 409.</p>
+<p>Source: <code>impl/sdk/ts/src/network/postgres.ts:162-169</code></p>
+<h2>The cron driver</h2>
+<p>The README says <code>pg_cron</code> is required because it drives all timers. If the extension is absent, the install block warns but continues; timers then wait for an external caller of <code>process_timeouts()</code>.</p>
+<p>Source: <code>impl/server/postgres/README.md:42-45</code>, <code>impl/server/postgres/resonate.sql:1200-1203</code></p>
+<p>The TypeScript adapter is such an external caller. Its drain calls the zero-argument <code>process_timeouts()</code> on every notification and on every 250 ms fallback tick. So a deployment can run without <code>pg_cron</code> if a worker is always connected. A deployment with no worker and no <code>pg_cron</code> has no timer.</p>
+<p>Source: <code>impl/sdk/ts/src/network/postgres.ts:147-161</code>, <code>impl/sdk/ts/src/network/postgres.ts:202-207</code></p>
+<p>The install tries <code>cron.schedule_in_database</code> with <code>'5 seconds'</code>, then <code>cron.schedule</code> with <code>'5 seconds'</code>, then the five-field form <code>'<em> </em> <em> </em> *'</code>, which is one minute.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:1210-1221</code></p>
+<p>The job calls <code>process_timeouts()</code>. The zero-argument form reads the clock and calls the one-argument form. The one-argument form calls three sweeps in order.</p>
+<table><tr><th>Sweep</th><th>Selects</th><th>Calls</th></tr><tr><td>`process_promise_timeouts`</td><td>External promises with `timeout_at <= now`</td><td>`_on_promise_timeout`</td></tr><tr><td>`process_task_timeouts`</td><td>Pending or acquired tasks with `timeout_at <= now`</td><td>`_on_task_retry_timeout` or `_on_task_lease_timeout`</td></tr><tr><td>`process_schedule_timeouts`</td><td>Schedules with `next_run_at <= now`</td><td>`_on_schedule_timeout`</td></tr></table>
+<p>Source: <code>impl/server/postgres/resonate.sql:961-1012</code></p>
+<p>The promise sweep uses <code>_promise_timed</code>, which tests <code>state = 'pending' AND external</code>. An internal promise is not swept. Its own execution settles it.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:204-207</code>, <code>impl/server/postgres/resonate.sql:961-971</code></p>
+<p>Each sweep orders by deadline and then by identifier. The order is stable, so a test can predict it. No sweep has a batch limit. A large backlog runs in one cron tick.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:965-967</code>, <code>impl/server/postgres/resonate.sql:976-978</code>, <code>impl/server/postgres/resonate.sql:991-993</code></p>
+<p>The schedule sweep has an unbounded <code>WHILE</code> loop. It fires every due occurrence in one call. There is no catch-up limit, unlike the S3 server, which stops at 256 occurrences per round.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:939-958</code></p>
+<p>One occurrence calls <code>promise_create</code> with <code>now = cron_time</code>, not the current instant. A late occurrence is therefore created with <code>created_at = cron_time</code> and a deadline of <code>cron_time + promise_timeout</code>; a read later projects the timeout against the real clock. This matches Lean and differs from the Zig S3 server, which checks the real instant before insertion.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:939-958</code>, <code>spec/spec/02-abstract/internal.lean:118-122</code></p>
+<p><code>promise_create</code> gives the schedule its create-if-absent behavior. If the id exists, it returns the existing promise with status 200. A concurrent insert that loses a unique race is caught and returns the existing row.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:393-419</code>, <code>impl/server/postgres/resonate.sql:436-439</code></p>
+<p>The cron parser accepts five fields. It supports <code>*</code>, a number, a range, a list, and a step. It searches in UTC and gives up after nine years. When both the day-of-month and day-of-week fields are restricted, it accepts a match on either field.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:301-368</code></p>
+<p><code>_expand</code> replaces <code>{{.id}}</code> and <code>{{.timestamp}}</code> in the template. No other placeholder exists.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:370-373</code></p>
+<h2>Retention</h2>
+<p><code>gc(settled_before, limit)</code> deletes a bounded number of settled promises. It selects promises with <code>settled_at <= cutoff</code> and orders by <code>settled_at</code>. It refuses a promise when a pending promise has <code>id</code> equal to its <code>origin_id</code>. The origin promise is the anchor for the lineage, so the collector keeps the whole lineage while the origin is pending.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:1271-1280</code></p>
+<p>The function deletes unblock outbox rows whose <code>promise->>'id'</code> is in the deleted set, and task resume rows whose <code>awaited_id</code> is in the set. Tasks, callbacks, and listeners follow through <code>ON DELETE CASCADE</code>. Schedules are independent and are not deleted.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:1280-1289</code>, <code>impl/server/postgres/resonate.sql:52-54</code>, <code>impl/server/postgres/resonate.sql:63-81</code></p>
+<p>The README shows a daily job at 03:00 that collects workflows finished more than seven days ago. It states the reason for the horizon: an identifier is idempotent only while the row exists. A client retry after collection can create a new promise with the same id.</p>
+<p>Source: <code>impl/server/postgres/README.md:57-67</code></p>
+<h2>Installation and testing</h2>
+<p>The install is one command on PostgreSQL 16 or later. <code>pg_cron</code> drives timers, and <code>pg_net</code> or <code>pgsql-http</code> optionally enables HTTP push.</p>
+<pre><code class="language-bash">psql -d yourdb -f resonate.sql
+</code></pre>
+<p>Source: <code>impl/server/postgres/README.md:34-48</code></p>
+<p>The file revokes all schema privileges from <code>PUBLIC</code>, creates the <code>resonate_worker</code> role, marks <code>resonate_rpc</code>, <code>dequeue_execute</code>, and <code>dequeue_unblock</code> as <code>SECURITY DEFINER</code>, pins <code>search_path = resonate, pg_temp</code> on every schema function, and grants execute on six functions: <code>resonate_rpc</code>, <code>get_schema_version</code>, <code>invoke</code>, <code>dequeue_execute</code>, <code>dequeue_unblock</code>, and <code>outbox_channel</code>.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:1293-1333</code></p>
+<p><code>get_schema_version()</code> returns the text <code>0.1.0</code>. <code>invoke(id, func, args, target, version, timeout)</code> is a convenience wrapper. It builds an invocation parameter as base64 JSON, builds the tags, and calls <code>promise_create</code>. The default timeout is 86,400,000 ms, which is one day.</p>
+<p>Source: <code>impl/server/postgres/resonate.sql:18-20</code>, <code>impl/server/postgres/resonate.sql:1167-1189</code></p>
+<p>The conformance test is a small Python HTTP shim. It translates an HTTP request into <code>SELECT resonate.resonate_rpc(%s::jsonb)</code>, listens on port 8001, and uses a connection pool from 2 to 16 connections.</p>
+<p>Source: <code>impl/server/postgres/test/conformance.py:1-27</code>, <code>impl/server/postgres/test/conformance.py:73-102</code></p>
+<p>The shim handles three debug operations itself, in Python, not in SQL.</p>
+<table><tr><th>Debug operation</th><th>Test action</th></tr><tr><td>`debug.reset`</td><td>Truncate the seven tables with `CASCADE`</td></tr><tr><td>`debug.snap`</td><td>Read promises, tasks, and callbacks as JSON</td></tr><tr><td>`debug.tick`</td><td>Call `process_timeouts(time)` for the supplied instant</td></tr></table>
+<p>Source: <code>impl/server/postgres/test/conformance.py:23-51</code></p>
+<p>The reset list names child tables first, but <code>CASCADE</code> makes the order unnecessary; <code>schedules</code> is not a child of <code>promises</code>.</p>
+<p>Source: <code>impl/server/postgres/test/conformance.py:23-27</code></p>
+<p>The shim lets the standard conformance harness treat a database as a server. A real deployment uses the SQL functions through an adapter such as <code>PostgresNetwork</code>, or through the shim as an HTTP edge.</p>
+<p>Source: <code>impl/server/postgres/test/conformance.py:1-10</code>, <code>impl/sdk/ts/src/network/postgres.ts:1-17</code></p>
+<h2>Limits of the one-file server</h2>
+<table><tr><th>Cost</th><th>Reason</th></tr><tr><td>Time needs `pg_cron` or a connected worker</td><td>The SQL file cannot wake itself</td></tr><tr><td>The retry timeout is fixed at 5,000 ms</td><td>`_retry_timeout()` is a constant</td></tr><tr><td>A schedule can fire an unbounded backlog in one sweep</td><td>The `WHILE` loop has no catch-up limit</td></tr><tr><td>HTTP push has no retry</td><td>A failed post raises a warning and leaves the row</td></tr><tr><td>A deadlock can still occur</td><td>Ordered locks cover pairs and sets, not every cross-tree order. The dispatcher retries 50 times</td></tr><tr><td>One connection is held per in-flight request</td><td>Each function runs synchronously inside one transaction</td></tr><tr><td>Collection breaks idempotence after the horizon</td><td>An identifier is idempotent only while its row exists</td></tr></table>
+<p>Source: <code>impl/server/postgres/resonate.sql:175-176</code>, <code>impl/server/postgres/resonate.sql:939-958</code>, <code>impl/server/postgres/resonate.sql:137-163</code>, <code>impl/server/postgres/resonate.sql:997-1012</code>, <code>impl/server/postgres/README.md:57-67</code></p>
+<p>The design has no binary, no cache, and no timer wheel. PostgreSQL does the work.</p>
+<h2>Related documents</h2>
+<ul><li><a href="00-overview.html">00-overview.md</a> — the thesis and the component map.</li><li><a href="02-the-protocol.html">02-the-protocol.md</a> — the operations that <code>resonate_rpc</code> dispatches.</li><li><a href="06-storage-engines.html">06-storage-engines.md</a> — the other storage backends.</li><li><a href="11-schedules-timers-and-time.html">11-schedules-timers-and-time.md</a> — deadlines and the cron driver.</li><li><a href="13-the-s3-server-in-zig.html">13-the-s3-server-in-zig.md</a> — the same protocol over object storage.</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

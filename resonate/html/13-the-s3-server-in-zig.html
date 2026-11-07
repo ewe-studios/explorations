@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The S3 server in Zig -- resonate</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/resonate/docs</span>
+    <div class="nav-actions">
+      <a href="12-deployment.html" class="nav-breadcrumb">Resonate -- Deployment</a><a href="12-the-postgres-server-in-one-file.html" class="nav-breadcrumb">The PostgreSQL server in one file</a><a href="13-data-flow.html" class="nav-breadcrumb">Resonate -- Data Flow</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="13-data-flow.html" class="nav-btn" title="Previous: Resonate -- Data Flow">← prev</a>
+      <a href="14-patterns.html" class="nav-btn nav-btn-next" title="Next: Patterns">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>The S3 server in Zig</h1>
+<p>Resonate is a durable execution system: a server stores durable promises and the tasks that run them, and workers execute registered functions, functions in a worker's in-process registry keyed by the name in the promise parameter. The S3 server is a Resonate protocol server, not an S3-compatible storage service. It is the third independent server implementation in this repository, after the Rust server core and the PostgreSQL server, and it is written in Zig. Its only durable state is objects in an Amazon Simple Storage Service (S3) bucket. It has no database, no write-ahead log, no consensus protocol to agree among replicas, no object that represents a lock, no object that represents a lease, and no background compaction. The repository describes it as twenty-three thousand lines of Zig with nothing outside the standard library.</p>
+<p>In this document, a promise is a durable result slot. A task is the runnable record of a promise that has a target. To settle a promise is to write its final state. A lease is the time-limited claim that an acquired task holds, and a worker is a process that registers functions. The <em>Lean specification</em> is the formal protocol model under <code>spec/</code>.</p>
+<p>Source: <code>impl/server/s3/README.md:1-6</code>, <code>spec/spec/02-abstract/internal.lean:25-40</code></p>
+<p>This document explains the key space, the single-origin property, the conditional write, the commit order, the actor model, the deadline keys, the caches, and the validation plan. It also states plainly what the server does not contain.</p>
+<h2>Build and run</h2>
+<p>The build command is <code>zig build</code>. The build defaults to <code>ReleaseSafe</code>. That mode keeps <code>unreachable</code> as a panic, and every assertion in the code is an <code>unreachable</code>. The build comment says <code>ReleaseFast</code> and <code>ReleaseSmall</code> are not shipping modes, because those modes turn a check into a promise to the optimizer.</p>
+<p>Source: <code>impl/server/s3/README.md:9-20</code>, <code>impl/server/s3/build.zig:5-20</code></p>
+<pre><code class="language-bash">zig build
+zig-out/bin/resonate serve --store s3 --endpoint http://127.0.0.1:9000 --bucket resonate
+zig-out/bin/resonate serve --store memory --debug --port 8021
+</code></pre>
+<p>Source: <code>impl/server/s3/README.md:9-11</code></p>
+<p>The server has one request route. It is <code>POST /</code>. The body is one protocol envelope with a <code>kind</code>, a <code>head</code>, and a <code>data</code> object. The server also answers <code>GET /ready</code> and <code>GET /metrics</code>. There are twenty-four operation kinds across <code>promise.<em></code>, <code>task.</em></code>, <code>schedule.<em></code>, and <code>debug.</em></code>.</p>
+<p>Source: <code>impl/server/s3/README.md:31-43</code></p>
+<table><tr><th>Flag</th><th>Meaning</th><th>Default</th></tr><tr><td>`--store`</td><td>`memory` or `s3`</td><td>`memory`</td></tr><tr><td>`--endpoint`</td><td>Object store Uniform Resource Locator (URL)</td><td>`http://127.0.0.1:9000`</td></tr><tr><td>`--bucket`</td><td>Bucket name</td><td>`resonate`</td></tr><tr><td>`--port`</td><td>HTTP port</td><td>8001</td></tr><tr><td>`--timer-shards`</td><td>Number of shard prefixes across which deadlines spread</td><td>4</td></tr><tr><td>`--cache-entries`</td><td>Number of documents held in memory</td><td>4,096</td></tr><tr><td>`--cache-bytes`</td><td>Bytes of cached documents</td><td>67,108,864 bytes (64 mebibytes)</td></tr><tr><td>`--sole-writer`</td><td>Assume no other process writes the bucket</td><td>off</td></tr><tr><td>`--debug`</td><td>The caller owns the clock</td><td>off</td></tr><tr><td>`--shutdown-timeout`</td><td>Milliseconds allowed for in-flight work after `SIGTERM`</td><td>2,000</td></tr></table>
+<p>Source: <code>impl/server/s3/src/main.zig:35-60</code>, <code>impl/server/s3/src/applier.zig:64-92</code></p>
+<h2>The key space</h2>
+<p>The bucket has three prefixes. The keys are the schema.</p>
+<table><tr><th>Key</th><th>Holds</th><th>Written by</th></tr><tr><td>`wf/<enc(origin)>`</td><td>Every promise and task of one origin, as one document</td><td>The commit loop</td></tr><tr><td>`sched/<enc(id)>`</td><td>One schedule</td><td>The schedule service</td></tr><tr><td>`t/<NN>/<20-digit deadline>_<enc(target)>@<token>`</td><td>A deadline, as a zero-byte object</td><td>Whoever armed it</td></tr></table>
+<p><code>enc</code> is percent-encoding: letters, digits, <code>.</code> and <code>-</code> stay, and every other byte becomes <code>%XX</code> with uppercase hexadecimal digits. <code>NN</code> is the two-digit shard number, from 00 to 03 with the default of four shards. The deadline is milliseconds since the epoch. The token is the arm token described below.</p>
+<p>Source: <code>impl/server/s3/README.md:45-53</code>, <code>impl/server/s3/src/store.zig:196-320</code>, <code>impl/server/s3/src/store.zig:413-425</code></p>
+<div class="mermaid">
+flowchart TB
+    subgraph Bucket[&quot;S3 bucket&quot;]
+        direction TB
+        WF[&quot;wf/&amp;lt;origin&amp;gt;&quot;]
+        SC[&quot;sched/&amp;lt;id&amp;gt;&quot;]
+        subgraph T[&quot;t/&amp;lt;NN&amp;gt;/&quot;]
+            D1[&quot;00000001795000000000_ord%3Aroot@7812345678901&quot;]
+            D2[&quot;00000001795000040000_sched%3Adaily@42&quot;]
+            D3[&quot;00000001795000100000_ord%3Aroot@7&quot;]
+        end
+    end
+    WF --&gt;|&quot;contains promises and tasks&quot;| P[&quot;One document per origin&quot;]
+    SC --&gt;|&quot;contains one schedule&quot;| S[&quot;Cron expression and next run&quot;]
+    D1 --&gt;|&quot;names a target&quot;| WF
+    D2 --&gt;|&quot;names a schedule&quot;| SC
+    D3 --&gt;|&quot;names a target&quot;| WF
+
+</div>
+<p>Source: <code>impl/server/s3/src/store.zig:258-320</code>, <code>impl/server/s3/docs/on-s3.md:32-53</code></p>
+<p>The origin document is one header line and then one JavaScript Object Notation (JSON) line per promise and per task. The header is <code>{"v":1,"og":<origin hash>,"cl":<clock>,"gn":<generation>}</code>, with optional <code>ta</code> and <code>tgn</code> fields when a deadline is armed. The encoding is canonical: American Standard Code for Information Interchange (ASCII) only, minimal escapes, fixed key order, integers without exponents, and omission of empty fields rather than <code>null</code> or <code>[]</code>.</p>
+<p>Source: <code>impl/server/s3/src/doc.zig:1-20</code>, <code>impl/server/s3/src/doc.zig:532-560</code></p>
+<p>The canonical form does two jobs. It lets the commit loop compare bytes and decide whether a write is necessary. It also lets a writer recognise its own write after a lost response.</p>
+<p>Source: <code>impl/server/s3/src/doc.zig:17-22</code></p>
+<p>The document records two counters. <code>generation</code> counts commits and names the timer object under which this document's deadline is armed; a generation belongs to exactly one commit. <code>timer_generation</code> is the generation whose commit wrote the timer object now on the store. The store's entity tag (ETag) is the compare-and-swap token: it is the object version returned with each read and used in <code>If-Match</code>. The timer token is unique to the arm, not to the commit: a retry that arms the same deadline must produce a different name, or its orphan collector can delete the live object. The code names the timer-key parameter <code>generation</code>, but <code>fresh_arm</code> supplies this token.</p>
+<p>Source: <code>impl/server/s3/src/doc.zig:338-374</code>, <code>impl/server/s3/src/applier.zig:921-938</code></p>
+<p>The document also records a clock value. The clock is a monotonicity hint. It is excluded from the comparison that decides whether to write, because paying a write to advance a hint would make every read a write.</p>
+<p>Source: <code>impl/server/s3/src/doc.zig:355-360</code>, <code>impl/server/s3/src/doc.zig:488-510</code></p>
+<h2>The single-origin property</h2>
+<p>The whole design rests on one property of the protocol. Every operation is single-origin. An origin is everything before the first <code>:</code>, or the whole identifier when it contains no colon.</p>
+<table><tr><th>Operation</th><th>What it names</th><th>Why it is single-origin</th></tr><tr><td>`promise.create`, `promise.get`, `promise.settle`</td><td>One promise</td><td>The identifier is the whole argument</td></tr><tr><td>`task.*`</td><td>One task</td><td>A task identifier is a promise identifier</td></tr><tr><td>`promise.register_callback`</td><td>An awaited and an awaiter</td><td>The protocol refuses the pair unless the origins match</td></tr><tr><td>`promise.register_listener`</td><td>An awaited and an address</td><td>An address is not state</td></tr><tr><td>`task.fence`</td><td>A task and a nested action</td><td>The action identifier must share the task origin</td></tr><tr><td>`schedule.*`</td><td>A template</td><td>The schedule has no promises of its own</td></tr></table>
+<p>Source: <code>impl/server/s3/docs/on-s3.md:6-30</code>, <code>impl/server/s3/src/handle.zig:1277-1290</code></p>
+<p>Everything an operation reads and everything it writes therefore lives in one object. One conditional write of that object commits a whole transition. That is where atomicity comes from on a store that has no transactions.</p>
+<p>The <code>schedule.*</code> operations fit this rule because they touch only the schedule object. Firing is an internal loop, not a request: it creates the due promise objects and then commits the schedule. The code therefore describes firing as two commits, and each commit is single-origin.</p>
+<p>Source: <code>impl/server/s3/src/doc.zig:1-10</code>, <code>impl/server/s3/README.md:55-60</code></p>
+<p>The searches and <code>debug.snap</code> are the exception. They read many objects one at a time. They are surveys, not atomic steps, and the protocol never promised otherwise. The scan module says this directly.</p>
+<p>Source: <code>impl/server/s3/src/scan.zig:1-19</code></p>
+<h2>Conditional writes</h2>
+<p>The store port has six uses over four verbs (<code>get</code>, <code>put</code>, <code>delete</code>, <code>list</code>). It can read with a version, create if absent, replace if unchanged, write blindly, delete, and list in key order. Two preconditions matter.</p>
+<table><tr><th>Operation</th><th>Header</th><th>Meaning</th></tr><tr><td>Create</td><td>`If-None-Match: *`</td><td>The first writer of an origin wins</td></tr><tr><td>Replace</td><td>`If-Match: <etag>`</td><td>Replace what was read, and only that</td></tr><tr><td>Read validation</td><td>`If-None-Match: <etag>`</td><td>Send the body only if it changed</td></tr></table>
+<p>Source: <code>impl/server/s3/src/store.zig:69-90</code>, <code>impl/server/s3/src/s3.zig:118-135</code></p>
+<p>A conditional write has three failure outcomes. They are not interchangeable.</p>
+<table><tr><th>Store answer</th><th>What is known</th><th>Required action</th></tr><tr><td>`412` precondition failed</td><td>The write did not land, and the state moved</td><td>Re-decide against a fresh read</td></tr><tr><td>`409` conflict</td><td>Nothing; the store could not order the write</td><td>Retry the same conditional write</td></tr><tr><td>No answer</td><td>Nothing; the write may have landed</td><td>Answer 503 and let the caller retry</td></tr></table>
+<p>Source: <code>impl/server/s3/src/store.zig:1-27</code>, <code>impl/server/s3/docs/on-s3.md:55-73</code></p>
+<p>Re-deciding is the important case. A decision made against a state that no longer exists cannot be replayed. The promise that the decision was going to create may now exist. The task that it was going to acquire may be held by another worker. A replay would produce an answer that no sequential execution can produce.</p>
+<p>Source: <code>impl/server/s3/src/applier.zig:33-45</code>, <code>impl/server/s3/docs/on-s3.md:69-73</code></p>
+<p>The store port keeps the two write failures as separate union variants. Collapsing them into one "write failed" flag is the classic way to lose a write. The source says this in the module comment.</p>
+<p>Source: <code>impl/server/s3/src/store.zig:9-25</code></p>
+<p>The code handles the outcomes in three places. The commit loop re-decides on <code>precondition_failed</code>. It retries the same write on <code>conflict</code>. It answers 503 on <code>unavailable</code>. Each path invalidates or updates the cache in the way its outcome requires.</p>
+<p>Source: <code>impl/server/s3/src/applier.zig:634-690</code></p>
+<h2>The commit order</h2>
+<p>A commit runs five steps in a fixed order.</p>
+<div class="mermaid">
+flowchart LR
+    A[&quot;1. Arm the new deadline&quot;] --&gt; B[&quot;2. Commit the document&quot;]
+    B --&gt; C[&quot;3. Disarm the old deadline&quot;]
+    C --&gt; D[&quot;4. Send the messages&quot;]
+    D --&gt; E[&quot;5. Answer the caller&quot;]
+
+</div>
+<p>Source: <code>impl/server/s3/README.md:83-87</code>, <code>impl/server/s3/src/applier.zig:1-30</code></p>
+<p>The order is chosen so that every crash window leaves a state that something repairs.</p>
+<table><tr><th>Crash after</th><th>State left</th><th>Repair</th></tr><tr><td>Arming</td><td>A timer object with no document that points at it</td><td>It fires into a sweep with nothing due and is collected</td></tr><tr><td>Committing</td><td>The transition is durable, and the old deadline is still armed</td><td>The old deadline fires into a document that moved on and is collected</td></tr><tr><td>Disarming</td><td>The transition is durable, and the messages did not go</td><td>The task's retry deadline was committed before the message left, so it re-sends</td></tr><tr><td>Sending</td><td>The caller was told nothing</td><td>The caller retries, and every operation is idempotent</td></tr></table>
+<p>Source: <code>impl/server/s3/docs/on-s3.md:89-107</code>, <code>impl/server/s3/README.md:83-87</code></p>
+<p>The arm step is unconditional. The key carries the whole meaning of the write. Arming the same deadline twice writes the same object. Arming a different deadline writes a different object. A racing writer cannot lose it.</p>
+<p>Source: <code>impl/server/s3/src/applier.zig:601-632</code>, <code>impl/server/s3/src/timerd.zig:1-12</code></p>
+<p>The disarm step is best effort. If it fails, the old object remains. It fires later, the sweep finds that the document has moved on, and the object is collected. The collector is the same code path as a real deadline.</p>
+<p>Source: <code>impl/server/s3/src/applier.zig:710-732</code></p>
+<blockquote>Aha: the commit order is not a performance choice. It removes one unrecoverable state. A committed document whose deadline was never armed is a promise that never times out and a task that is never offered again, and no other process can detect it. Every other crash window leaves an orphan or a duplicate that some later step repairs. The arm therefore comes first, and a failed arm fails the request instead of committing the document anyway.</blockquote>
+<p>Source: <code>impl/server/s3/docs/on-s3.md:103-107</code>, <code>impl/server/s3/src/applier.zig:624-632</code></p>
+<h2>The token on a deadline key</h2>
+<p>The last part of a timer key is a token. The document records the token of the object it armed.</p>
+<p>Two operations need the token.</p>
+<p>First, disarm. A writer removes the object that its own predecessor wrote, and nothing else. Without the token, the key would name only the target and the deadline. A deadline that becomes the nearest one again, such as a promise timeout after a shorter lease disappears, could then be removed by another writer's disarm.</p>
+<p>Source: <code>impl/server/s3/docs/on-s3.md:109-123</code></p>
+<p>Second, collection. Whatever fires an orphan deletes it by name afterwards. An attempt that armed an object and then failed to commit leaves that object behind. A retry that loads the same document version computes the same deadline. If the token came from the document counter, the retry would compute the same name, and the collector for the orphan would delete the live object.</p>
+<p>Source: <code>impl/server/s3/src/applier.zig:921-960</code></p>
+<p>The token is therefore unique to the arm, not to the commit. It is 63 bits from the server's own random stream. Zero means "no deadline armed", so it is not a valid token. When no random source is available, <code>fresh_arm</code> returns <code>loaded_generation + 1</code>, and the source states that this fallback weakens the guarantee.</p>
+<p>Source: <code>impl/server/s3/src/applier.zig:938-960</code></p>
+<h2>One actor per origin</h2>
+<p>A request does not commit. It enqueues work on one actor per origin in that process. The event loop drains the actor, so every request that arrived in one poll rides one conditional write. Each request still sees the one before it, because the actor decides them in order against one document.</p>
+<p>Source: <code>impl/server/s3/src/applier.zig:1-30</code>, <code>impl/server/s3/src/applier.zig:788-900</code></p>
+<p>This buys more than throughput. A burst of operations on one origin is the common shape of a durable execution. A task acquires, settles a child, and suspends. If each of those were its own read-modify-write against S3, they would contend for the same object. The actor turns that contention into one write.</p>
+<p>Source: <code>impl/server/s3/docs/on-s3.md:129-139</code></p>
+<p>The actor has six phases: idle, loading, arming, committing, disarming, and waiting. A phase change is an assertion target, so an unexpected callback panics in <code>ReleaseSafe</code>.</p>
+<p>Source: <code>impl/server/s3/src/applier.zig:294-330</code></p>
+<p>The actor re-decides the whole batch after a failed precondition. It does not replay the batch. The version checks and identifier checks run again against the fresh document.</p>
+<p>Source: <code>impl/server/s3/src/applier.zig:634-660</code></p>
+<p>A contended actor backs off. The maximum is eight retries after the first attempt (<code>max_cas_retries = 8</code>), nine attempts in total. After that, the caller receives 503 with the message "the origin was contended for too long".</p>
+<p>Source: <code>impl/server/s3/src/applier.zig:66-72</code>, <code>impl/server/s3/src/applier.zig:680-690</code></p>
+<h2>One request, end to end</h2>
+<p>A <code>promise.create</code> arrives at <code>POST /</code>. <code>protocol.parse_envelope</code> checks the envelope, so a malformed body never reaches a subsystem. The server computes <code>now</code> and derives the origin from the promise identifier: everything before the first <code>:</code>. <code>Applier.submit</code> queues the work on that origin's actor, and <code>drain</code> runs the loop once. The actor takes the document from cache or reads it, re-decides every queued request in order, arms a new deadline if one exists, commits the document under <code>If-Match</code>, disarms the old deadline, sends the messages, and answers. A second create of the same identifier sees the first one in the same document, so it returns the existing promise instead of a duplicate.</p>
+<p>Source: <code>impl/server/s3/src/server.zig:121-170</code>, <code>impl/server/s3/src/applier.zig:1-30</code>, <code>impl/server/s3/src/main.zig:219-304</code></p>
+<h2>Deadlines as keys</h2>
+<p>A deadline object is zero bytes. Its name is the record. The 20-digit deadline field is zero-padded so that lexicographic order is time order inside one shard. A capped ascending list therefore returns the nearest deadlines in that shard.</p>
+<p>Source: <code>impl/server/s3/src/store.zig:186-192</code>, <code>impl/server/s3/src/store.zig:258-286</code></p>
+<p>The <code>NN</code> field spreads the keys across four shards by default. Deadlines only increase, and a monotone key prefix is the access pattern that object stores handle worst. The shard number is a hash of the target.</p>
+<p>Source: <code>impl/server/s3/src/store.zig:196-207</code>, <code>impl/server/s3/src/store.zig:296-320</code></p>
+<p>The deadline poller keeps an in-memory queue of near deadlines. Normal operation wakes on the queue and costs no store operations. The listing path exists for startup and for <code>debug.tick</code>. Startup lists the whole <code>t/</code> prefix, which covers every shard, and seeds the queue from all parsed keys.</p>
+<p>Source: <code>impl/server/s3/src/timerd.zig:1-30</code></p>
+<p>A fired key is deleted only after its sweep commits. If the sweep fails, the key is the only record that the deadline exists. Deleting it would lose the deadline for good. A failure re-arms the deadline in memory and tries again after 1,000 ms.</p>
+<p>Source: <code>impl/server/s3/src/timerd.zig:22-34</code>, <code>impl/server/s3/src/timerd.zig:52-54</code></p>
+<p>The sweep is the <code>drain</code> function in the state machine. It collects expired promises, expired leases, and due retries in one pass. It settles each expired promise by projection, returns each lost lease to pending, and re-offers each due retry.</p>
+<p>Source: <code>impl/server/s3/src/handle.zig:1526-1585</code></p>
+<p>The state machine applies the same timeout rule as the Lean model. A promise with a timer tag resolves. A promise without the tag receives <code>rejected_timedout</code>. The rule is in the protocol module.</p>
+<p>Source: <code>impl/server/s3/src/protocol.zig:331-340</code></p>
+<h2>Schedules</h2>
+<p>A schedule is not origin-scoped. It has no promises of its own, only a template for the promises it fires. It therefore gets its own key under <code>sched/</code>.</p>
+<p>Source: <code>impl/server/s3/src/schedules.zig:1-6</code></p>
+<p>Firing is two commits. The service first creates the promises that are due, and then moves the schedule forward. A crash between the two leaves the schedule pointing at an instant that it already fired. It fires again, and creating a promise that exists is a no-op. One run stays one run.</p>
+<p>Source: <code>impl/server/s3/src/schedules.zig:6-13</code></p>
+<p>Catch-up is bounded. One round fires at most 256 overdue occurrences. If more remain, the next instant stays in the past, and the deadline fires again at once. A long backlog drains in bounded rounds rather than one unbounded round.</p>
+<p>Source: <code>impl/server/s3/src/schedules.zig:14-24</code>, <code>impl/server/s3/src/schedules.zig:40-41</code></p>
+<p>A deleted schedule leaves a tombstone. The tombstone is what makes two concurrent deletes report one success and one 404. The object stays, and a create with the same identifier reclaims it.</p>
+<p>Source: <code>impl/server/s3/src/schedules.zig:460-475</code>, <code>impl/server/s3/src/schedules.zig:1145-1165</code></p>
+<h2>Bounded caches</h2>
+<p>The document cache is bounded twice. It has an entry limit and a byte limit. The defaults are 4,096 documents and 64 mebibytes.</p>
+<p>Source: <code>impl/server/s3/src/applier.zig:73-82</code></p>
+<p>Two bounds are necessary because a count alone does not bound memory. An origin document grows with every promise in it, so 4,096 of them is a number of bytes that nobody chose. Whichever bound binds first evicts the oldest read.</p>
+<p>Source: <code>impl/server/s3/src/applier.zig:76-81</code>, <code>impl/server/s3/docs/on-s3.md:82-87</code></p>
+<p>The cache holds canonical bytes, not a decoded document. A re-decide after a lost race must start from what the store says. One entry is always kept, however heavy, because the batch that just committed it is what reads it next.</p>
+<p>Source: <code>impl/server/s3/docs/on-s3.md:82-87</code></p>
+<p>A cached read is validated with <code>If-None-Match: <etag></code> before it is used. The store answers "not modified" and sends no body, so a cache hit costs one round trip and no transfer. Without this validation, two servers over one bucket serve stale reads.</p>
+<p>Source: <code>impl/server/s3/src/applier.zig:83-92</code>, <code>impl/server/s3/src/applier.zig:459-480</code></p>
+<p><code>--sole-writer</code> turns the validation off. The flag says in its name what it assumes. It is sound only where one process writes the bucket, and nothing in the code can check that condition. The validation plan makes the unsafe case a negative control: two servers with <code>--sole-writer</code> must be refuted by both checkers.</p>
+<p>Source: <code>impl/server/s3/src/main.zig:56-60</code>, <code>impl/server/s3/docs/validation-plan.md:495-510</code></p>
+<h2>How it is validated</h2>
+<p>The README describes eight checks and lists the eight commands that run them.</p>
+<table><tr><th>Check</th><th>Question</th><th>Tool</th></tr><tr><td>Unit tests</td><td>Does each part do what it says?</td><td>`zig build test`, 211 tests (the validation plan says 210)</td></tr><tr><td>Simulation</td><td>Is the concurrency sound?</td><td>`simulator run` and `soak`</td></tr><tr><td>Differential</td><td>Is this the same protocol as another server?</td><td>`differ`</td></tr><tr><td>Recorded history</td><td>Was a real run sound?</td><td>`simulator check`</td></tr><tr><td>Restart</td><td>Does a deadline outlive the process?</td><td>`tools/deadline-survives-a-restart.sh`</td></tr><tr><td>Memory</td><td>Does answering cost memory?</td><td>`tools/memory-stays-flat.sh`</td></tr><tr><td>Foreign checker</td><td>Does an independent model accept it?</td><td>Porcupine, from the specification repository</td></tr><tr><td>Two processes</td><td>Do two servers over one bucket agree?</td><td>`tools/two-servers-one-bucket.sh`</td></tr></table>
+<p>Source: <code>impl/server/s3/README.md:142-156</code>, <code>impl/server/s3/docs/validation-plan.md:1-16</code></p>
+<p>The simulator is a miniature deterministic model checker. One seed produces a byte-identical run. The simulator owns the clock and the store. It injects five faults:</p>
+<ul><li>no answer,</li><li>a write that lands and reports failure,</li><li>two writes whose order cannot be decided,</li><li>completions out of order,</li><li>a server crash at an arbitrary point.</li></ul>
+<p>Source: <code>impl/server/s3/docs/validation-plan.md:24-52</code>, <code>impl/server/s3/src/simulator.zig:22-50</code></p>
+<p>The specification used by the search is the server itself, stepped one operation at a time over an in-memory store. The search asks whether a concurrent history has a sequential explanation in the same state machine, ending in the state that the bucket actually holds. That is a linearizability check.</p>
+<p>Source: <code>impl/server/s3/docs/validation-plan.md:53-84</code>, <code>impl/server/s3/src/sim/model.zig:1-60</code></p>
+<p>Two invariants are checked against the bucket after every operation. Every deadline that a document records must have an object of that name. Nothing runnable may be stranded: a pending task must owe a retry deadline, and an acquired task must owe a lease.</p>
+<p>Source: <code>impl/server/s3/docs/validation-plan.md:85-110</code></p>
+<p><code>fakes3</code> is a stand-in S3. It implements the six operations that the store port needs, with real conditional writes. It runs as a library and as a process. The simulator drives the in-memory store; the checks over the S3 path use <code>fakes3</code>. It is not S3, and it has no signing, no policies, no multipart, and no versioning.</p>
+<p>Source: <code>impl/server/s3/src/fakes3.zig:1-16</code>, <code>impl/server/s3/src/fakes3.zig:25-37</code></p>
+<p>The differential tool sends one seeded trajectory to two servers and compares both the answers and the state snapshot. Both servers must run in debug mode, so time is an input and nothing runs on wall time. A difference is a protocol difference, because no faults are injected.</p>
+<p>Source: <code>impl/server/s3/src/differ.zig:1-27</code></p>
+<p>The Porcupine check hands a recorded history to a checker that nobody in this directory wrote. The script first alters one answer in a real history and requires the checker to refuse it. A checker that cannot be made to fail is not evidence.</p>
+<p>Source: <code>impl/server/s3/docs/validation-plan.md:357-385</code></p>
+<p>The simulator found eight bugs. The README lists all eight. Three of them are these. A cached read served stale state. A disarm removed another writer's deadline. An arm left an orphan under the name that the retry would use. The differential found two more. One is an outbox key collision for one address that listens on two promises. The other is a late schedule occurrence offered to a worker for work that was already over. A further problem, an arena leak of about five kilobytes per request, was found by the memory check.</p>
+<p>Source: <code>impl/server/s3/README.md:180-208</code>, <code>impl/server/s3/docs/validation-plan.md:296-315</code></p>
+<h2>What is not there</h2>
+<p>The server states its omissions as clearly as its features.</p>
+<table><tr><th>Not present</th><th>Reason or consequence</th></tr><tr><td>`ui.*` console read model</td><td>Refused with 404, like any server built without it</td></tr><tr><td>Transport Layer Security (TLS)</td><td>A proxy terminates it</td></tr><tr><td>Authentication and authorization</td><td>A proxy performs them</td></tr><tr><td>Wall time under `--debug`</td><td>The clock belongs to the caller, which makes a differential comparable</td></tr><tr><td>A real bucket test</td><td>The process-level checks use `fakes3`, and the simulator uses the in-memory store; neither is a real bucket</td></tr><tr><td>Store retry</td><td>A 503 from the store is a 503 to the caller; the caller retries</td></tr></table>
+<p>Source: <code>impl/server/s3/README.md:210-231</code>, <code>impl/server/s3/docs/validation-plan.md:518-532</code></p>
+<p>The missing real bucket test is the largest gap. If the shared reading of the S3 documentation is wrong about <code>If-Match</code>, both the client and the fake are wrong together, and no check in the repository would notice. The Rust tree has the test that this needs, in <code>resonate-server-blob/tests/live.rs</code>, and it is skipped unless a bucket is configured.</p>
+<p>Source: <code>impl/server/s3/README.md:220-225</code>, <code>impl/server/s3/docs/validation-plan.md:518-532</code></p>
+<p>The searches are the other stated limit. A search reads every document in the prefix, one object at a time. It is O(origins) reads per query. The scan module names this as the seam where a secondary index would go, and states that adding one would not touch the state machine or the commit loop.</p>
+<p>Source: <code>impl/server/s3/src/scan.zig:1-10</code></p>
+<p>The server also does not retry the store on a <code>503 SlowDown</code>. The source gives the reason. Backing off inside the store would hide from the caller how long the request has been outstanding. Every operation is idempotent. The retry therefore belongs where the deadline is known.</p>
+<p>Source: <code>impl/server/s3/README.md:226-231</code></p>
+<p><code>SIGTERM</code> stops the server gracefully. It stops accepting connections and waits up to <code>--shutdown-timeout</code> milliseconds for work in flight. The wait is not needed for safety, because every transition is committed before it is answered. It exists for the caller that was about to receive an answer.</p>
+<p>Source: <code>impl/server/s3/README.md:232-236</code></p>
+<h2>Related documents</h2>
+<ul><li><a href="00-overview.html">00-overview.md</a> — the thesis and the component map.</li><li><a href="03-durable-promises-and-tasks.html">03-durable-promises-and-tasks.md</a> — the state machine the Zig code implements.</li><li><a href="06-storage-engines.html">06-storage-engines.md</a> — the other backends.</li><li><a href="11-schedules-timers-and-time.html">11-schedules-timers-and-time.md</a> — deadlines in every backend.</li><li><a href="12-the-postgres-server-in-one-file.html">12-the-postgres-server-in-one-file.md</a> — the same protocol with a database as the durable state.</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

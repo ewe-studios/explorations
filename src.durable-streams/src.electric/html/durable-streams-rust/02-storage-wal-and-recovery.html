@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Storage, WAL, and Recovery -- src.electric</title>
+  <link rel="stylesheet" href="../styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue('--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        toolbar.appendChild(mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); }));
+        toolbar.appendChild(mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); }));
+        toolbar.appendChild(mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); }));
+        toolbar.appendChild(mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); }));
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.electric/docs</span>
+    <div class="nav-actions">
+      <a href="00-overview.html" class="nav-breadcrumb">Overview</a><a href="01-architecture.html" class="nav-breadcrumb">Architecture</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="01-architecture.html" class="nav-btn" title="Previous: Architecture">← prev</a>
+      <a href="03-conformance-benchmarks-and-operations.html" class="nav-btn nav-btn-next" title="Next: Conformance, Benchmarks, and Operations">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Storage, WAL, and Recovery</h1>
+<p>In <code>wal</code> mode, the server writes every append to two places. The first place is the per-stream data file plus a small metadata sidecar. The second place is a record in a sharded write-ahead log (WAL). The data file receives the stream's encoded bytes, which are not always the exact response body, and its write is only a page-cache write. The WAL record holds a second copy of those bytes, and the WAL <code>fdatasync</code> is the barrier that makes the append durable. A checkpoint does not copy data from the WAL. It syncs the already-written data files, persists the per-stream durable-tail proofs, and then recycles the WAL segments whose records are no longer needed.</p>
+<p>In <code>memory</code> mode, the data-file write is the only copy, and an operating-system crash or a power loss can lose or tear it. This document is about <code>wal</code> mode. This two-copy model is the centre of the document. The data file is the read surface. The WAL is the durability surface. A checkpoint joins the two: it makes the data-file copy durable before it removes the WAL copy.</p>
+<div class="mermaid">
+flowchart LR
+    A[Append bytes] --&gt; DF[&quot;Data file page cache&lt;br/&gt;reader-visible after barrier&quot;]
+    A --&gt; WR[&quot;WAL record payload&lt;br/&gt;second copy&quot;]
+    WR --&gt; FS[&quot;fdatasync&lt;br/&gt;durability point&quot;]
+    FS --&gt; PUB[&quot;Publish durable tail&lt;br/&gt;acknowledge&quot;]
+    DF -.-&gt; CK[&quot;Checkpoint: syncfs per lane&lt;br/&gt;makes data-file copy durable&quot;]
+    FS -.-&gt; CK
+    CK --&gt; REC[&quot;Persist tails + recycle floor&quot;]
+    REC --&gt; DEL[&quot;Unlink WAL segments&quot;]
+
+</div>
+<p>An arrow means "leads to". The dashed arrows show the checkpoint path. The checkpoint never reads a record and rewrites it into a data file; the data file already holds the bytes. The checkpoint supplies the missing durability for that copy.</p>
+<p>This document gives the on-disk layout, the WAL record, the group-commit protocol, the checkpoint, the recovery algorithm, and the lock inventory. It also lists the five defects that the crash simulation found.</p>
+<h2>On-disk layout</h2>
+<p>Sizes use binary units: one mebibyte (MiB) is 1,048,576 bytes, and one gibibyte (GiB) is 1,073,741,824 bytes.</p>
+<pre><code class="language-text">&lt;data-dir&gt;/
+├── streams/
+│   ├── .lanes                        lane count (decimal text)
+│   ├── &lt;encoded-path&gt;~&lt;id&gt;           data file (flat layout, --stream-lanes 1)
+│   ├── &lt;encoded-path&gt;~&lt;id&gt;.meta      metadata sidecar (JavaScript Object Notation)
+│   └── &lt;0..N-1&gt;/                     data files and sidecars when --stream-lanes N
+├── wal/
+│   ├── shards                        persisted shard count N (decimal text)
+│   └── &lt;0..N-1&gt;/
+│       ├── 1.wal                     segment named by its first log sequence number
+│       ├── &lt;start-lsn&gt;.wal           later segments, 128 MiB each
+│       ├── checkpoint                recycle floor (decimal log sequence number)
+│       └── tails                     cumulative &quot;stream_id durable_tail&quot; lines
+└── segments/                         staged sealed chunk files, 8 MiB each (tiering only)
+</code></pre>
+<p>With <code>--stream-lanes N</code>, the data files live in <code>streams/<0..N-1>/</code> (<code>src/store.rs:190-229</code>). The file name is the percent-encoded stream path, a tilde, and the numeric stream identifier (<code>src/store.rs:1085-1087</code>). The lane is the Fowler-Noll-Vo 1a hash of that file name, modulo the lane count (<code>src/store.rs:207-217</code>). The lane count is a layout choice. It must match the on-disk layout across restarts. The store records the count in <code>streams/.lanes</code>, and a mismatch stops the server instead of hiding existing streams (<code>src/store.rs:519-556</code>).</p>
+<p>Sealed chunk files are staged in <code>segments/</code>, which is separate from <code>streams/</code> so the data-file scan never treats them as stream data (<code>src/store.rs:650-654</code>). The test-only local blobstore uses <code>cold/</code> as its "remote" directory; an S3 deployment stores the objects in the bucket (<code>src/store.rs:1265-1280</code>).</p>
+<p>Two structures use the word "segment". A <strong>WAL segment</strong> is up to 128 MiB and belongs to one WAL shard (<code>src/wal/segment.rs:20-22</code>). A <strong>cold-tier segment</strong> is 8 MiB and belongs to one stream's sealed history (<code>src/tier.rs:33-35</code>). The sizes differ because the readers differ: the committer <code>fdatasync</code>s whole WAL segments, while a reader range-fetches one cold segment through an object store. Do not use one size for the other.</p>
+<p>The WAL shard count is also a layout choice. The server writes it to <code>wal/shards</code> on the first boot. A later boot with a different <code>--wal-shards</code> value exits with code 2 (<code>src/wal/walset.rs:60-68</code>, <code>src/wal/walset.rs:91-126</code>).</p>
+<h2>The data file</h2>
+<p>The data file has no per-message header or length prefix. A binary stream stores the posted bytes unchanged. A JSON stream stores each encoded value followed by a comma. An array body flattens one level, so each element becomes one value and one comma (<code>src/store.rs:1-8</code>, <code>src/handlers.rs:641-670</code>). The stored bytes are therefore the stream's encoded form, not always the exact response body. A JSON response wraps the stored range as <code>[</code> + range minus its trailing comma + <code>]</code> (<code>src/handlers.rs:1318-1353</code>). A binary response is the stored range with no wrapper.</p>
+<p>A read maps a logical offset to a byte position with <code>file_pos = logical - file_base</code>. The <code>file_base</code> is the logical offset of the first byte in the live file. It starts equal to <code>base_offset</code>: 0 for a root stream and the fork point for a fork. Compaction can move <code>file_base</code> forward, above <code>base_offset</code> (<code>src/store.rs:62-72</code>, <code>src/store.rs:1108-1116</code>).</p>
+<p>The invariants are:</p>
+<pre><code class="language-text">base_offset &lt;= file_base &lt;= sealed_offset &lt;= durable_tail &lt;= tail
+</code></pre>
+<p><code>base_offset</code> is where this stream's own history starts: 0 for a root stream, the fork point for a fork. <code>file_base</code> is the logical offset of the first byte in the live file; compaction can raise it above <code>base_offset</code>. <code>tail</code> is the writer end. <code>durable_tail</code> is the reader end. <code>sealed_offset</code> is the end of the sealed prefix that the cold tier owns (<code>src/store.rs:62-72</code>, <code>src/store.rs:280-282</code>, <code>src/tier.rs:80-83</code>).</p>
+<h3>The sidecar</h3>
+<p>The <code>.meta</code> sidecar is JSON. It holds the stream configuration, the sealed-segment manifest, the sealed offset, the file base, any pending compaction, and the durable tail (<code>src/store.rs:1406-1435</code>). The write is per-stream serialized. It writes a temporary file, fsyncs the temporary file, renames it over the final name, and optionally fsyncs the parent directory (<code>src/store.rs:1446-1474</code>).</p>
+<p>The sidecar file always gets a data fsync, even for a non-durable flush. The <code>durable</code> flag controls only the parent-directory fsync. This prevents a crash from leaving a renamed but empty sidecar (<code>src/store.rs:1459-1466</code>). Create, close, delete, and recovery pass <code>durable = true</code>, so their sidecar rename survives a power loss (<code>src/store.rs:1167</code>, <code>src/handlers.rs:1233</code>, <code>src/store.rs:1004</code>, <code>src/wal/recovery.rs:394-396</code>). A checkpoint flush passes <code>durable = false</code>; the durability proof comes from the shard <code>tails</code> file instead.</p>
+<h2>The WAL record</h2>
+<p>Each record has a 38-byte header and a payload (<code>src/wal/codec.rs:3-38</code>).</p>
+<pre><code class="language-text">offset  size  field
+0       4     len             payload length
+4       4     header_crc32c   CRC32C over the other header fields
+8       8     lsn             monotonic within the shard
+16      1     kind            1=Append 2=StreamCreate 3=StreamClose 4=StreamDelete
+17      8     stream_id       stable per-stream identifier
+25      8     stream_offset   logical offset before this append
+33      1     flags           bit 0 = payload is checksummed
+34      4     payload_crc32c  CRC32C over the payload
+38      len   payload
+</code></pre>
+<p>The format defines four record kinds (<code>src/wal/codec.rs:49-57</code>). The current code writes only <code>Append</code> records (<code>src/handlers.rs:724-729</code>). A create, close, or delete changes the sidecar and is not staged as its own record. The other three kinds remain in the format for compatibility, and replay skips them because the sidecar pass owns identity and lifecycle (<code>src/wal/recovery.rs:193-201</code>).</p>
+<p>CRC32C is a 32-bit Cyclic Redundancy Check that uses the Castagnoli polynomial (<code>Cargo.toml:30-32</code>). The header checksum covers the sequence <code>[lsn, kind, stream_id, stream_offset, len, flags, payload_crc]</code> in little-endian order (<code>src/wal/codec.rs:104-129</code>).</p>
+<p>The decoder returns one of three results (<code>src/wal/codec.rs:81-102</code>):</p>
+<table><tr><th>Result</th><th>Meaning</th></tr><tr><td><code>Record</code></td><td>The header checksum is valid, the payload is present, and the payload checksum matches</td></tr><tr><td><code>Incomplete</code></td><td>Too few bytes for a header, or an all-zero header. This is the clean end of the log, at the preallocated but unwritten tail</td></tr><tr><td><code>Torn</code></td><td>A header is present but its checksum is wrong, its kind byte is unknown, or the payload is incomplete or fails its checksum. The durable log ends here, and the remaining bytes are ignored (<code>src/wal/codec.rs:94-102</code>, <code>src/wal/codec.rs:190-238</code>)</td></tr></table>
+<p>The difference matters to an operator. <code>Incomplete</code> is the normal state after the newest record. <code>Torn</code> means the log contains bytes that cannot be trusted.</p>
+<p>The decoder applies the payload rule in one place (<code>src/wal/codec.rs:227-235</code>):</p>
+<pre><code class="language-rust">if flags &amp; PAYLOAD_CHECKSUMMED == 0
+    || crc32c::crc32c(&amp;seg[payload_off..payload_off + len]) != payload_crc
+{
+    return Decoded::Torn;
+}
+</code></pre>
+<p>Every writer sets the payload checksum flag (<code>src/wal/codec.rs:22-28</code>, <code>src/wal/codec.rs:40-43</code>). A record whose flag is clear is treated as torn, even if its payload checksum matches (<code>src/wal/codec.rs:227-235</code>). The segment is preallocated to its full size. On Linux this is <code>fallocate</code>; on macOS the code falls back to <code>set_len</code>, which grows the file without reserving blocks (<code>src/wal/segment.rs:54-82</code>). A crash can therefore leave a valid header over a zeroed payload. The payload checksum detects that case (<code>ARCHITECTURE.md:218</code>).</p>
+<h3>WAL segments</h3>
+<p>A WAL segment is 128 MiB by default (<code>src/wal/segment.rs:20-22</code>). On Linux, a new segment is created at full size with <code>fallocate</code>, a system call that reserves the disk blocks without writing them, and named by its first log sequence number (<code>src/wal/segment.rs:26</code>, <code>src/wal/segment.rs:59</code>).</p>
+<p>One record must fit inside one segment. The framed size is the 38-byte header plus the payload. <code>reserve_and_stage</code> returns an error when that size exceeds the segment size (<code>src/wal/shard.rs:639-646</code>). With the default segment, a <code>wal</code>-mode append above roughly 128 MiB fails, even though the Hypertext Transfer Protocol (HTTP) parser accepts a body of up to 1 GiB (<code>src/api.rs:65-67</code>). When the next record would not fit, the server seals the active segment. Sealing truncates the file to the exact written length and fsyncs it. An exactly packed segment lets recovery find the next segment without ambiguity (<code>src/wal/shard.rs:660-712</code>).</p>
+<p>After the seal, the server opens a new segment and fsyncs the parent directory. A record's data fsync does not persist the directory entry. Without the directory fsync, a crash could orphan the new segment and lose acked records (<code>src/wal/shard.rs:699-711</code>).</p>
+<p>Boot opens an existing segment non-destructively. <code>FileSegment::open_existing</code> opens the file without truncating or preallocating it (<code>src/wal/segment.rs:93-99</code>). This is the fix for crash finding 1.</p>
+<h2>Sharding</h2>
+<p>The WAL has N shards. Each shard owns a disjoint set of streams. The routing function is the Fowler-Noll-Vo 1a hash of the stream identifier, modulo N (<code>src/wal/walset.rs:146-148</code>). The lane hash uses the file name instead, because the lane directory is chosen before the <code>StreamState</code> exists (<code>src/store.rs:207-217</code>). The hash uses only the persisted N and the stream identifier, so the route is the same on every boot and on every machine (<code>src/wal/walset.rs:142-145</code>).</p>
+<p>On a fresh data directory, the default N is the <code>--worker-threads</code> value, which defaults to available parallelism, normally the number of central processing unit (CPU) cores (<code>src/main.rs:335-337</code>, <code>src/main.rs:398-401</code>, <code>src/wal/walset.rs:67-68</code>). Each shard has one dedicated operating-system thread for its commits (<code>src/wal/walset.rs:169-177</code>).</p>
+<div class="mermaid">
+flowchart LR
+    S1[stream 17] --&gt; H{hash mod N}
+    S2[stream 18] --&gt; H
+    S3[stream 19] --&gt; H
+    H --&gt; W0[&quot;shard 0&lt;br/&gt;committer thread&quot;]
+    H --&gt; W1[&quot;shard 1&lt;br/&gt;committer thread&quot;]
+    H --&gt; W2[&quot;shard 2&lt;br/&gt;committer thread&quot;]
+    W0 --&gt; D0[&quot;0/1.wal&quot;]
+    W1 --&gt; D1[&quot;1/1.wal&quot;]
+    W2 --&gt; D2[&quot;2/1.wal&quot;]
+
+</div>
+<h2>Group commit</h2>
+<p><code>fdatasync</code> is a system call that forces a file's data to stable storage. A group commit is one <code>fdatasync</code> that covers many records.</p>
+<p>An append follows this path in the WAL:</p>
+<ol><li>Register the stream in the shard's dirty set.</li><li>Reserve a log sequence number (LSN) and a byte range under the shard lock.</li><li>Release the lock, encode the record, and write it at the reserved offset.</li><li>Mark the LSN as written and wake the committer.</li><li>The committer takes a snapshot of the highest contiguous written LSN.</li><li>The committer <code>fdatasync</code>s the active segment and any sealed segment that holds a record not yet covered by a barrier. A segment seal uses <code>fsync</code> because it changes the file size, but the seal call covers only bytes already written. A record reserved before the seal but written after it is covered by the committer's re-<code>fdatasync</code> of <code>sealed_pending</code>, before the watermark passes it (<code>src/wal/shard.rs:663-673</code>, <code>src/wal/shard.rs:1450-1475</code>).</li><li>The committer publishes the snapshot as the durable LSN.</li><li>Waiters at or below the durable LSN wake.</li></ol>
+<p>The reservation is under a short lock. The write and the <code>fdatasync</code> run off the lock (<code>src/wal/shard.rs:650-722</code>, <code>src/wal/shard.rs:724-769</code>).</p>
+<p>The "contiguous" word is important. The committer cannot publish LSN 10 if LSN 9 is still unwritten. A gap would make a later record durable while an earlier record is not (<code>src/wal/shard.rs:1445-1474</code>). The server tests this rule directly.</p>
+<h3>Waiters</h3>
+<p>A waiter registers a one-shot channel in a heap ordered by LSN (<code>src/wal/shard.rs:1333-1379</code>). A commit pops only the waiters whose LSN the new watermark satisfies. The server does not broadcast to every parked subscriber (<code>src/wal/shard.rs:1415-1440</code>).</p>
+<p>The registration and the watermark check have a lost-wakeup guard. The committer stores the durable LSN before it drains the heap. The waiter pushes before it re-reads the durable LSN. The heap mutex orders the two operations (<code>src/wal/shard.rs:1346-1354</code>). There are only two possible interleavings. The push runs first, and the committer's later drain finds it. Or the push runs after the committer's store, and the waiter's later re-read sees the new durable LSN and does not park. In both cases the waiter either is woken or never sleeps.</p>
+<h3>Failure policy</h3>
+<p>A WAL write gets one attempt and then two retries, for three attempts in total. The encoded bytes stay in hand, so a failed positioned write is safe to repeat. A persistent write error aborts the process (<code>src/wal/shard.rs:732-756</code>). An error before the reservation returns a clean error and consumes no LSN; the test hook models that case (<code>src/wal/shard.rs:615-622</code>). A partial write after the reservation is retried in full or aborts. The reason is that a reserved but unwritten LSN is a permanent hole. Every later append would wait forever with no acknowledgement.</p>
+<p>A failed <code>fdatasync</code> also aborts the process (<code>src/wal/shard.rs:1490-1503</code>). On Linux, a failed fsync can mark the dirty pages clean and consume the error. A retry can then return success without writing the data. The PostgreSQL project calls this failure mode "fsyncgate". Aborting is safe because the durable LSN did not advance, so no at-risk append was acknowledged.</p>
+<h2>The lock inventory</h2>
+<p>The server has no global write lock. It has a small set of locks, each with one job. This table is the map.</p>
+<table><tr><th>Lock</th><th>Type</th><th>Where</th><th>Protects</th><th>Held during I/O?</th></tr><tr><td><code>StreamState.appender</code></td><td>asynchronous mutual exclusion (mutex)</td><td><code>src/store.rs:285</code>; taken at <code>src/handlers.rs:979</code>; released at <code>src/handlers.rs:1212</code></td><td>One append per stream at a time: producer validation, the data-file write, the pre-append offset, and the WAL stage stay in byte order</td><td>Yes for the page-cache write and the stage; no for the durability wait</td></tr><tr><td><code>StreamState.shared</code></td><td>reader-writer lock</td><td><code>src/store.rs:286</code></td><td>The stream fields that a reader and a writer share: <code>tail</code>, <code>durable_tail</code>, <code>file_base</code>, closed state, producer state</td><td>No. Held only for short reads and writes</td></tr><tr><td><code>Shard.inner</code></td><td>mutex</td><td><code>src/wal/shard.rs:278</code></td><td>The active segment, the reserved LSN counter, and the segment roll</td><td>No. The write runs after the lock. The contention study's T1b candidate (atomic reservation) is not implemented; the reservation still takes this lock (<code>src/wal/shard.rs:650-658</code>)</td></tr><tr><td><code>Shard.dirty</code></td><td>mutex</td><td><code>src/wal/shard.rs:323</code></td><td>The list of streams touched in this checkpoint interval</td><td>No. Taken only on the first touch per interval</td></tr><tr><td><code>Shard.dirty_epoch</code></td><td>atomic counter</td><td><code>src/wal/shard.rs:333</code></td><td>The interval number that the dirty list belongs to</td><td>Not a lock. A compare-and-swap claims a stream for the interval (<code>src/wal/shard.rs:795-824</code>)</td></tr><tr><td><code>Shard.waiters</code></td><td>mutex</td><td><code>src/wal/shard.rs:290</code></td><td>The LSN-ordered heap of parked durability waiters</td><td>No. One short critical section per commit</td></tr><tr><td><code>StreamState.meta_lock</code></td><td>mutex</td><td><code>src/store.rs:309</code></td><td>The sidecar temporary file, so two writers cannot reorder their renames</td><td>Yes, across the sidecar write, fsync, and rename (<code>src/store.rs:1446-1474</code>)</td></tr><tr><td><code>StreamState.last_chunk</code></td><td>reader-writer lock</td><td><code>src/store.rs:318</code></td><td>The resident tail cache: the newest appended chunk, served to live readers. This chunk is not a cold-tier chunk file</td><td>No</td></tr><tr><td><code>TierState.manifest</code></td><td>mutex</td><td><code>src/tier.rs:237</code></td><td>The sealed-segment manifest and the seal cut</td><td>No. The object-store work runs outside it</td></tr></table>
+<p><strong>Aha:</strong> the durability wait is the only long operation in the append path, and the code keeps it off the per-stream lock on purpose. The comment at <code>src/handlers.rs:734-735</code> states the rule: among the WAL operations, only the LSN reservation needs the shard lock, and the fsync wait must not serialize same-stream appenders. The data-file write and the stage stay under the per-stream appender lock, because their order defines the stream offset. Everything after the stage runs off the lock.</p>
+<p>The append path acquires the locks in this order:</p>
+<pre><code class="language-text">appender (per stream)
+  -&gt; shared read (closed checks)
+  -&gt; shared write (producer, sequence, closed state)
+  -&gt; shared read (file_base and stream offset)
+  -&gt; Shard.dirty_epoch CAS, then Shard.dirty (first touch only)
+  -&gt; Shard.inner (LSN reservation)
+  -&gt; appender released
+  -&gt; Shard.waiters (registration and wake)
+  -&gt; shared write (publish durable tail)
+  -&gt; last_chunk write (fill the resident tail cache)
+</code></pre>
+<p>No path takes these locks in the opposite order. The checkpoint reads the floor from the <code>durable_lsn</code> atomic without a lock, then takes the dirty lock to bump the epoch and drain the list, then takes <code>meta_lock</code> per stream. It never takes <code>appender</code> (<code>src/wal/shard.rs:859-888</code>).</p>
+<h2>Checkpoint</h2>
+<p>The checkpoint does not move data. The data files already hold every byte, because the append path writes each byte to the data file before it stages the WAL record (<code>src/handlers.rs:1121-1126</code>, <code>src/handlers.rs:1169-1174</code>). The checkpoint makes the data-file copy durable, records the per-stream proof of that durability, and then frees the WAL copy. It has two triggers:</p>
+<table><tr><th>Trigger</th><th>Flag</th><th>Default</th></tr><tr><td>Time since the shard's last checkpoint</td><td><code>--wal-checkpoint-interval-ms</code></td><td>3,000 milliseconds (<code>src/wal/shard.rs:383</code>)</td></tr><tr><td>Retained WAL size</td><td><code>--wal-checkpoint-wal-bytes</code></td><td>0, disabled (<code>src/wal/shard.rs:390</code>)</td></tr></table>
+<p>The checkpoint has a strict order (<code>src/wal/shard.rs:826-848</code>, <code>src/wal/shard.rs:915-1022</code>):</p>
+<ol><li>Snapshot the committer's durable LSN as the recycle floor.</li><li>Drain the dirty set in one constant-time lock section.</li><li>Capture each touched stream's writer tail and file handle, before the barrier.</li><li>Barrier the per-stream files. This step makes the data-file copy durable. On Linux it is one <code>syncfs</code> call per stream lane. <code>syncfs</code> is a Linux system call that flushes every dirty page on one file system, so one call covers every stream file in that lane. On other systems it is a serial <code>fdatasync</code> loop (<code>src/wal/shard.rs:960-962</code>).</li><li>Persist the cumulative durable-tail map to <code>tails</code>.</li><li>Persist the recycle floor to <code>checkpoint</code>.</li><li>Unlink every segment whose whole LSN range is below the floor.</li><li>Flush the metadata sidecars of touched streams that have a pending non-durable change. This step runs after the recycle. It carries producer state, the last-access time used by a sliding TTL, and expiry state, not the durability proof (<code>src/wal/shard.rs:1000-1022</code>).</li></ol>
+<p>The captured value in step 3 is the writer tail, not the durable tail. The barrier then makes the file durable up to at least that tail. A later append can extend the file past it, and that later append lands in the next checkpoint.</p>
+<p>The order is the safety proof. Before step 4, the WAL record is the only guaranteed durable copy of the bytes. A previous checkpoint may have flushed the page cache by accident, but the server does not rely on that. Step 4 makes the second copy durable. The recycle in step 7 must therefore happen strictly after step 4. The durable-tail map in step 5 must be durable before step 7, because it is the only proof of a stream's durable end after the WAL records are gone (<code>src/wal/shard.rs:1000-1022</code>, <code>src/wal/shard.rs:1055-1102</code>).</p>
+<p>The <code>tails</code> file earns that role. The writer writes a temporary file, fsyncs its bytes, renames it, and fsyncs the shard directory (<code>src/wal/shard.rs:1082-1093</code>). The <code>checkpoint</code> file holds only the recycle floor. The code writes and renames it without an fsync (<code>src/wal/shard.rs:994-997</code>). That is safe because recovery always replays from the oldest retained record, not from the checkpoint floor (<code>src/wal/recovery.rs:189-190</code>).</p>
+<p>Step 8 is not part of the durability proof. If the server crashes between the recycle in step 7 and the sidecar flush in step 8, recovery takes the stream's durable end from <code>tails</code>, which step 5 already persisted (<code>src/wal/recovery.rs:149-159</code>). A sidecar write that crashes before its rename leaves the previous sidecar, and the maximum rule still selects the newer proof.</p>
+<p>The proof is per stream, not per shard. The <code>tails</code> map records the tail of each touched stream at the moment its file is synced. A stream that no append touched in this interval keeps its earlier proof (or its sidecar proof). The recycle floor is the committer's durable LSN at step 1, so no record below the floor can be unlinked while its bytes lack a synced data-file copy (<code>src/wal/shard.rs:915-1022</code>).</p>
+<p>A checkpoint never takes a stream's appender lock, and an append never waits for a checkpoint to finish (<code>src/wal/shard.rs:841-845</code>). The checkpoint does take short <code>shared</code> reads to capture tails and the per-stream <code>meta_lock</code> for a sidecar flush. Neither serializes an append's stage. A slow checkpoint delays WAL recycling and disk reclamation. It can also saturate the disk and slow the committer's <code>fdatasync</code>, which in turn delays acknowledgements. That is a device effect, not a lock effect.</p>
+<div class="mermaid">
+sequenceDiagram
+    participant AP as Append path
+    participant D as Dirty set
+    participant F as Stream files
+    participant T as tails and checkpoint
+    participant W as WAL segments
+    AP-&gt;&gt;D: register stream (first touch per epoch)
+    Note over AP,W: acks wait only on committer durable LSN
+    D-&gt;&gt;F: capture tail and file handle
+    F-&gt;&gt;F: syncfs per lane or fdatasync each file
+    F-&gt;&gt;T: persist durable tails
+    T-&gt;&gt;T: persist checkpoint LSN
+    T-&gt;&gt;W: unlink segments below checkpoint LSN
+
+</div>
+<h2>The cold tier</h2>
+<p>Tiering is optional and off by default. With tiering off, no stream seals, the manifest stays empty, and the read path is one live data file (<code>src/tier.rs:1-16</code>).</p>
+<p>With <code>--tier s3</code> and a build that has the <code>tier</code> feature, the server seals the prefix of a stream once the unsealed part reaches <code>--tier-segment-bytes</code>, 8 MiB by default (<code>src/tier.rs:33-35</code>, <code>src/tier.rs:534-537</code>). It cuts only at <code>durable_tail</code>, so a byte that is not yet durable never enters a sealed object (<code>src/tier.rs:522-533</code>). For a JSON stream, the cut also lands on a whole-value boundary (<code>src/tier.rs:551-563</code>).</p>
+<p>The seal writes a separate chunk file, fsyncs it, and fsyncs its directory. It then adds a <code>Local</code> entry to the per-stream manifest, raises <code>sealed_offset</code>, and persists the sidecar durably (<code>src/tier.rs:570-609</code>). The offload path then uploads the object, verifies its size with a head request, flips the entry to <code>Remote</code> durably, and only then unlinks the local chunk (<code>src/tier.rs:622-624</code>, <code>src/tier.rs:631-680</code>).</p>
+<p>A read below <code>sealed_offset</code> resolves to one or more segments. A read at or above it uses the live file. A range that crosses the boundary becomes a mix of slices, and a range below <code>base_offset</code> follows the parent chain of a fork (<code>src/tier.rs:905-944</code>).</p>
+<p>The live file keeps its sealed prefix until compaction. When that prefix reaches <code>--tier-compact-bytes</code>, 64 MiB by default, compaction rewrites the file with only the hot tail, which is the residual <code>[cut, tail)</code> that is not sealed. It writes that residual to a temp file and fsyncs the file and its directory. It then persists a <code>PendingCompaction { new_file_base, tail }</code> intent in the sidecar with the durable write, before it renames the temp file over the live file and raises <code>file_base</code> (<code>src/tier.rs:37-41</code>, <code>src/tier.rs:408-490</code>, <code>src/store.rs:369-372</code>). A crash after the intent is recoverable: the temp file holds the fsynced residual, so boot promotes it into place (<code>src/store.rs:800-812</code>). Sealing never weakens durability: it runs after the append is durable, and the manifest change is durable before the local chunk is removed. On boot, a segment still marked <code>Local</code> is offloaded again (<code>src/tier.rs:321-337</code>).</p>
+<h2>Recovery</h2>
+<p>Recovery has two passes. The first pass is the sidecar pass inside <code>Store::new_with_tier</code>. It rebuilds stream identity and state from the data files and the <code>.meta</code> sidecars (<code>src/main.rs:349-351</code>, <code>src/store.rs:661</code>). The second pass is the WAL replay. It repairs each stream's file tail to its durable frontier (<code>src/wal/recovery.rs:1-45</code>).</p>
+<p>The boot order is:</p>
+<div class="mermaid">
+sequenceDiagram
+    participant M as main
+    participant S as Store
+    participant W as WalSet
+    participant R as recovery
+    M-&gt;&gt;S: new_with_tier
+    S-&gt;&gt;S: sidecar pass rebuilds streams
+    M-&gt;&gt;W: open existing segments
+    Note over W: non-destructive open; replay scans from the oldest retained record
+    M-&gt;&gt;R: recover(store, walset)
+    R-&gt;&gt;R: replay from oldest retained record
+    R-&gt;&gt;R: truncate or extend each file to frontier
+    R-&gt;&gt;R: fdatasync each repaired file
+    M-&gt;&gt;W: reset_after_recovery
+    W-&gt;&gt;W: unlink old segments, create fresh 1.wal
+    W-&gt;&gt;W: fsync shard directory
+    M-&gt;&gt;W: attach WAL, spawn committers, serve
+
+</div>
+<h3>The replay</h3>
+<p>Each shard replays in parallel, because the shards own disjoint stream sets (<code>src/wal/recovery.rs:105-117</code>). The replay starts at the oldest retained record, not at the checkpoint LSN (<code>src/wal/recovery.rs:124-160</code>, <code>src/wal/recovery.rs:189</code>). The code passes start LSN 0, so the scan begins below any retained segment. The persisted checkpoint LSN is not a start point.</p>
+<p>The sidecar pass is also the identity filter. An orphan data file, left by a crash between file creation and a durable sidecar write, is unlinked. An unparsable sidecar is renamed to <code>.meta.corrupt</code>; its data file is kept and the stream is skipped for that boot, so an operator can repair it instead of losing acked data (<code>src/store.rs:700-735</code>).</p>
+<p>Recovery applies only <code>Append</code> records. It skips <code>StreamCreate</code>, <code>StreamClose</code>, and <code>StreamDelete</code> records, because the sidecar pass already rebuilt stream identity, closure state, and deletion state (<code>src/wal/recovery.rs:189-201</code>).</p>
+<p>For each <code>Append</code> record, recovery does this:</p>
+<ol><li>If the stream has no state, skip the record. Recovery does not resurrect a deleted stream (<code>src/wal/recovery.rs:198-201</code>).</li><li>If the record offset is below <code>file_base</code>, skip the record. Those bytes are already in a sealed chunk (<code>src/wal/recovery.rs:202-207</code>).</li><li>Otherwise write the payload at <code>stream_offset - file_base</code> and raise the stream's recovered end (<code>src/wal/recovery.rs:208-223</code>). A gap is impossible: the first replayed record must start at or below the file's pre-replay end, because one of the three proofs covers the bytes below it (<code>src/wal/recovery.rs:273-292</code>).</li></ol>
+<h3>The frontier</h3>
+<p>The durable frontier for a stream is the maximum of three proofs:</p>
+<ul><li>the <code>durable_tail</code> stored in the sidecar;</li><li>the durable tail recorded in the shard's <code>tails</code> map;</li><li>the highest end of a replayed record (<code>src/wal/recovery.rs:162-173</code>, <code>src/wal/recovery.rs:222-223</code>).</li></ul>
+<p>The maximum is sound. Every acknowledged byte is covered by at least one proof: the WAL record is retained until a checkpoint persists the tail, and the sidecar or <code>tails</code> entry then covers it. A proof can exceed the last acknowledged byte. The <code>tails</code> entry captures the writer tail before its barrier, and that tail can include an append that is staged but not yet acknowledged. The barrier makes those bytes durable, so recovery may expose them. The delivery contract for such an append is at-least-once: it can appear, and a client that did not receive an acknowledgement may send it again. A producer identifier and sequence number suppress the duplicate only while the producer deduplication state survives. That state lives in the sidecar, which can lag the data, so a producer must start a new epoch after a restart to be safe (source package <code>README.md:147</code>). What recovery never does is expose a byte that no proof covers. Bytes in the data file above the maximum are unproven page-cache bytes, and recovery discards them.</p>
+<p>Recovery then reconciles the file to that frontier. A longer file has a torn page-cache tail that never became durable. Recovery truncates it. A shorter file was extended by the replay writes. A file exactly at the frontier takes a fast path and gets no I/O (<code>src/wal/recovery.rs:235-294</code>, <code>src/wal/recovery.rs:330-359</code>).</p>
+<p>The chain that makes a shorter-file repair sound is: the checkpoint syncs the data file before it persists the <code>tails</code> proof. A persisted proof therefore never describes bytes that the data file lacks, unless a retained record can supply them. The replay writes those records, and <code>reconcile_tail</code> extends the file to the frontier (<code>src/wal/shard.rs:915-1022</code>, <code>src/wal/recovery.rs:235-294</code>).</p>
+<p>Recovery fsyncs every repaired file before it publishes the new tail (<code>src/wal/recovery.rs:350-356</code>). Without that fsync, a second crash after recovery could lose the repair.</p>
+<h3>Reset</h3>
+<p>Before the reset, recovery writes each repaired stream's durable tail to its sidecar with the durable path, including the parent-directory fsync (<code>src/wal/recovery.rs:388-396</code>). This keeps a proof after the old <code>tails</code> file is gone.</p>
+<p>After the replay, <code>reset_after_recovery</code> deletes every old segment and the old <code>checkpoint</code> and <code>tails</code> files. It creates a fresh <code>1.wal</code> at LSN 1 and fsyncs the shard directory (<code>src/wal/shard.rs:540-590</code>).</p>
+<p>The reset is not cosmetic. The live WAL writer starts at LSN 1 and offset 0. If the old segment stayed in place, a new and possibly shorter record could overwrite the start of the old segment. A stale suffix of valid framed records would remain. A second crash would replay that suffix as if it were new data (<code>src/main.rs:371-391</code>).</p>
+<h2>The durable-tail proof chain</h2>
+<table><tr><th>Source</th><th>Written when</th><th>Survives a crash</th><th>Survives WAL recycle</th><th>Citation</th></tr><tr><td><code>Shared.durable_tail</code></td><td>after every group commit</td><td>no: in memory only</td><td>not applicable; it is the live value</td><td><code>src/store.rs:48-61</code></td></tr><tr><td><code>.meta</code> sidecar <code>durable_tail</code></td><td>create, close, recovery, and checkpoint when a sidecar flush is pending</td><td>yes</td><td>yes</td><td><code>src/store.rs:1431-1435</code>, <code>src/wal/shard.rs:1000-1022</code></td></tr><tr><td>shard <code>tails</code> map</td><td>every checkpoint</td><td>yes</td><td>yes, until the reset wipes the file</td><td><code>src/wal/shard.rs:1055-1102</code></td></tr><tr><td>replayed record end</td><td>recovery</td><td>recomputed at boot from the retained WAL</td><td>until reset</td><td><code>src/wal/recovery.rs:189-229</code></td></tr></table>
+<p>Recovery uses the maximum of the three persisted or replayable values: the sidecar proof, the <code>tails</code> proof, and the replayed record ends. <code>Shared.durable_tail</code> is not a fourth proof. It is the live value that the sidecar and <code>tails</code> writers capture. A stream whose WAL records were all recycled still gets a correct truncation proof from the sidecar or the <code>tails</code> map (<code>src/wal/recovery.rs:149-173</code>).</p>
+<h2>Key insight</h2>
+<p><strong>Aha:</strong> recovery replays from the oldest retained record, not from the checkpoint. That looks wasteful. The checkpoint LSN is the point below which all data is already in the per-stream files. The reason is the torn page-cache tail. An append can write bytes to the data file and then crash before its WAL record is durable. No client saw those bytes, so they must be removed. If the WAL record was already checkpointed and recycled, the checkpoint LSN alone gives no per-stream frontier. The <code>tails</code> map and the sidecar supply the older frontier, but neither is written on every append. A stream can therefore have a proof that is older than its newest bytes, and it can have no retained record that reaches those bytes. Replaying every retained record supplies the newest record ends. Starting at the checkpoint would leave that stream with a stale proof and a torn tail above it, and the torn bytes would become reader-visible. Crash finding 4 is the case where a WAL-quiet stream had no proof at all; its fix is the sidecar durable-tail proof (<code>CRASH_SIM_FINDINGS.md:89-113</code>). Replaying from the oldest retained record is what puts the replayed record ends into the same maximum.</p>
+<h2>The five crash findings</h2>
+<p>The seeded simulation drives the real handler path, drops the runtime, injects power-loss disk faults, reboots through the real recovery sequence, and checks a no-loss and no-torn oracle (<code>CRASH_SIM_FINDINGS.md:3-9</code>). Four of the five findings are code or format defects. Finding 3 is different: it is a defect in the architecture description, which claimed visibility before the fsync. The correction is in this document and in the source package (<code>CRASH_SIM_FINDINGS.md:70-77</code>).</p>
+<table><tr><th>Finding</th><th>Defect</th><th>Fix</th></tr><tr><td>1</td><td>Boot re-preallocated a sealed or recycled first segment and silently dropped acked records</td><td>Open existing segments non-destructively (<code>CRASH_SIM_FINDINGS.md:27-54</code>)</td></tr><tr><td>2</td><td>A debug assert panicked on a healthy multi-boot recovery</td><td>Assert the real invariant: no hole above the pre-replay end, which is the data-file logical end before replay writes (<code>CRASH_SIM_FINDINGS.md:56-69</code>)</td></tr><tr><td>3</td><td>The architecture document described pre-fsync visibility</td><td>Document and test durability-gated visibility (<code>CRASH_SIM_FINDINGS.md:71-78</code>)</td></tr><tr><td>4</td><td>A WAL-quiet stream exposed a torn, never-acked tail after power loss</td><td>Persist a <code>durable_tail</code> proof in the sidecar (<code>CRASH_SIM_FINDINGS.md:89-113</code>)</td></tr><tr><td>5</td><td>An acked DELETE could be resurrected after a crash</td><td>Await durable unlinks and a parent-directory fsync before the 204 (<code>CRASH_SIM_FINDINGS.md:115-131</code>)</td></tr></table>
+<h2>Cross-references</h2>
+<p>Citations of <code>ARCHITECTURE.md</code>, <code>README.md</code>, <code>WAL_TUNING.md</code>, <code>CRASH_SIM_FINDINGS.md</code>, and the other package documents refer to files inside the source package, not inside this exploration directory. Citations of <code>src/</code> paths are also relative to the source package.</p>
+<ul><li><a href="01-architecture.html">01-architecture.md</a> shows where each WAL call occurs in the append path.</li><li><a href="00-overview.html">00-overview.md</a> gives the boot sequence and the durability invariant.</li><li><a href="03-conformance-benchmarks-and-operations.html">03-conformance-benchmarks-and-operations.md</a> gives the tests, the throughput ladder, and the operational flags.</li><li><a href="../durable-streams/05-storage-and-durability.html">../durable-streams/05-storage-and-durability.md</a> gives the protocol-level storage model.</li><li><a href="../sync-service/03-shape-log-and-storage.html">../sync-service/03-shape-log-and-storage.md</a> shows a different storage design for the Electric shape protocol.</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

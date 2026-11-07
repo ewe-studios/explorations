@@ -9,6 +9,7 @@ Codebase documentation and reference docs. Organized by project.
 | [Pi](./pi/markdown/) | Modular AI agent framework (TypeScript, 7 packages) | [Overview](./pi/markdown/00-overview.md), [Architecture](./pi/markdown/01-architecture.md), [Tool System](./pi/markdown/09-tool-system.md) |
 | [Hermes](./hermes/markdown/) | Self-improving AI agent (Python, 40+ tools, 10+ platforms) | [Overview](./hermes/markdown/00-overview.md), [Architecture](./hermes/markdown/01-architecture.md), [Data Flow](./hermes/markdown/11-data-flow.md) |
 | [markdown.engineering](./markdown_engineering/) | Site analysis + build-your-own guide | [Overview](./markdown_engineering/00-overview.md), [Build Guide](./markdown_engineering/build-your-own/00-architecture.md) |
+| [Durable Streams, Electric, and Resonate](./src.durable-streams/index.md) | Stream protocol laws, sync engines, durable promise laws, and TanStack DB | [Index](./src.durable-streams/index.md), [Laws of Durable Streams](./src.durable-streams/src.electric/html/durable-streams/11-laws-entities-and-models.html), [Laws of Durable Promises](./src.durable-streams/src.resonate/html/18-laws-of-durable-promises.html) |
 
 ## Rendered HTML
 
@@ -16,6 +17,7 @@ Each project has a `html/` directory with browser-ready HTML generated from mark
 
 - [Pi HTML](./pi/html/index.html) -- 14 pages with Mermaid diagrams, dark/light theme
 - [Hermes HTML](./hermes/html/index.html) -- 14 pages with Mermaid diagrams, dark/light theme
+- [Durable Streams, Electric, and Resonate HTML](./src.durable-streams/index.html) -- the consolidated exploration with Mermaid diagrams and dark/light theme
 
 ## Build System
 
