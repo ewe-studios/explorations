@@ -171,7 +171,7 @@ The exported `MultiShapeMessages` type maps each shape name to its own message t
 
 **Key insight:** the package merges message batches, not rows. Each child shape stream keeps its own offsets, retry logic, and up-to-date control messages. `MultiShapeStream` adds a `shape` name and forwards the batch. This is why the package needs no database and no global offset. It also means that "all shapes are up to date" is a derived property, not a stored one.
 
-The class computes that property in `isUpToDate` by checking every child (`src/multi-shape-stream.ts:337-339`). `isUpToDate` is a getter, so a caller reads `stream.isUpToDate` and does not call it. The value is true only when each child's own `isUpToDate` property is true, which means that each child has delivered an `up-to-date` control message at least once and has no pending catch-up work. The transactional subclass uses the same idea to decide when a transaction is complete.
+The class computes that property in `isUpToDate` by checking every child (`src/multi-shape-stream.ts:337-339`). `isUpToDate` is a getter, so a caller reads `stream.isUpToDate` and does not call it. The value is true only when each child's own `isUpToDate` property is true. That means each child has delivered an `up-to-date` control message at least once and has no pending catch-up work. The transactional subclass uses the same idea to decide when a transaction is complete.
 
 **Aha:** the package never needs a global offset, because it never merges the children into one log. Each child stays at its own position. "All shapes are current" is computed on demand from the children. This is why the class can start with already-created `ShapeStream` objects and why a slow child does not move the position of a fast child.
 

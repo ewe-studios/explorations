@@ -4,7 +4,7 @@ title: Glossary
 
 # Glossary
 
-This glossary defines every term and every abbreviation used in this exploration. Terms are grouped by area. Each entry names the source file when the term is a code identifier.
+This glossary defines the key terms and abbreviations used in this exploration. Terms are grouped by area. Each entry names the source file when the term is a code identifier.
 
 **Aha: the vocabulary follows the architecture.** Most terms describe a position in a log or a rule for delivering the next position. Few terms describe business data. That imbalance is the design: the system stores events, and the meaning of an event belongs to the handler.
 
@@ -28,7 +28,7 @@ flowchart TD
 | **Entity** | The unit of agent identity. An entity has a type, an identifier, a status, one main stream, and a set of permissions. Source: `packages/agents-server/src/entity-manager.ts`. |
 | **Entity type** | A named template. It declares the state collections, the inbox schemas, the slash commands, the creation schema, and the default dispatch policy. |
 | **Handler** | The async function that runs on each wake. It receives a handler context and the wake description. |
-| **Durable stream** | A URL-addressable, append-only byte sequence with ordered offsets and live reads. |
+| **Durable stream** | An append-only byte sequence, reachable by HTTP at a URL, with ordered offsets and live reads. |
 | **Wake** | A request to run a handler because something changed. |
 | **Materialization** | The process of reading stream events and applying them to typed in-memory collections. |
 | **Projection** | A derived view of events. The collections are a projection. The `/_entities/` streams are another projection. |
@@ -44,12 +44,12 @@ flowchart TD
 | **Long-poll read** | A read that waits for new data until data arrives or a timeout expires. |
 | **Server-Sent Events (SSE)** | A one-way HTTP streaming mode. The server pushes events on an open response. |
 | **JSON mode** | The special behavior of streams created with `Content-Type: application/json`. Message boundaries are preserved, arrays flatten one level, and reads return arrays. |
-| **Content type** | The Media Internet Mail Extension (MIME) type set at stream creation. |
+| **Content type** | The Multipurpose Internet Mail Extensions (MIME) type set at stream creation. |
 | **Closed stream** | A stream in the terminal state. It rejects appends. |
 | **Soft-deleted stream** | A deleted stream whose data remains for live forks. Its own URL returns `410 Gone`. |
 | **Fork** | A stream that inherits a prefix from a source stream without copying bytes. |
 | **Fork offset** | The divergence point between a source stream and its fork. |
-| **Sub-offset** | A second addressing dimension inside one offset, used when a fork splits a producer batch. |
+| **Sub-offset** | A position inside one message, used as the fork point when the split must occur inside a message: an element count in JSON mode, a byte count in binary mode. |
 | **Reference count** | The number of forks that point at a source stream. |
 | **Time to live (TTL)** | An optional expiry rule for a stream. |
 | **Segment** | One append-only log file that holds stream bytes. |
@@ -73,13 +73,14 @@ flowchart TD
 | **Subscription** | A server-side rule that watches streams and delivers new data to a target. |
 | **Webhook subscription** | A subscription that sends an HTTP `POST` to a URL. |
 | **Pull-wake subscription** | A subscription that writes a wake record into a wake stream for a runner to claim. |
+| **Wake record** | One JSON message in a wake stream, with the subscription identifier, the changed stream, the generation, and a timestamp. |
 | **Wake stream** | The stream that receives pull-wake records for one runner. |
 | **Claim** | The act of taking ownership of a wake. A claim has a lease. |
 | **Ack** | The act of marking a wake complete. |
 | **Release** | The act of returning a claimed wake so another worker can take it. |
 | **Lease** | A time limit on a claim. An expired lease allows another worker to reclaim the wake. |
 | **Wake registry** | The agents-server component that holds wake conditions and matches events to them. Source: `packages/agents-server/src/wake-registry.ts`. |
-| **Manifest** | A stream event that declares a side effect, such as a cron schedule, a future send, a shared state link, or a child entity. |
+| **Manifest** | A stream event that declares a side effect, such as a future send, a shared state link, or an entity source. |
 | **Forward route** | The agents-server path `/_electric/subscription-webhooks/:subscriptionId` that receives stream notifications and forwards them to the real target. |
 | **Loopback rewrite** | The replacement of `127.0.0.1` with `host.docker.internal` so a container can reach the host. |
 
@@ -99,7 +100,7 @@ flowchart TD
 | **PostgreSQL sync (pg-sync)** | A bridge that replicates entity events into PostgreSQL. |
 | **Scheduler** | The component that runs delayed sends and cron ticks. Source: `packages/agents-server/src/scheduler.ts`. |
 | **Delayed send** | A scheduled message append. |
-| **Cron tick** | A scheduled event on a cron stream. |
+| **Cron tick** | A scheduled event on a cron stream. Cron schedules are declared by rows in `wake_registrations`, not by a manifest. |
 | **Cron stream** | A stream whose path encodes a cron expression and timezone: `/_cron/<base64url>`. |
 | **Shared state** | A stream that several entities can read and write: `/_electric/shared-state/<id>`. |
 
@@ -108,12 +109,13 @@ flowchart TD
 | Term | Definition |
 |------|------------|
 | **Principal** | An identity with a kind, an identifier, a key, and a URL. |
-| **Tenant** | An isolated workspace. The identifier prefixes every stream path and appears in every table. |
+| **Tenant** | An isolated workspace. The identifier selects the PostgreSQL rows and appears in their composite keys. The default routing adapter does not add it to stream paths. |
 | **Permission grant** | A record that allows a subject to perform one verb on one resource. |
 | **Propagation** | Whether a grant applies to the entity alone or to its descendants. |
 | **Authorization hook** | A caller-supplied function that makes the final access decision. |
-| **Write token** | A per-entity secret that authorizes stream appends. |
-| **Claim token** | A per-wake secret that authorizes appends during one wake. |
+| **Per-entity write token** | A secret stored as `entities.write_token` and returned in the `x-write-token` response header at spawn. One entity. |
+| **Per-wake write token** | A secret minted at the wake claim callback. It authorizes appends to the entity stream for one wake. |
+| **Pull-wake lease claim token** | A secret returned by a runner claim. It is the bearer token for acknowledge and release. |
 | **JSON Web Key Set (JWKS)** | A JSON document that publishes public signing keys. Served at `/__ds/jwks.json`. |
 | **Ed25519** | An elliptic-curve signature algorithm. Used for webhook signatures. |
 | **Webhook signature** | A header with the form `t=<timestamp>,kid=<key id>,ed25519=<signature>`. |
@@ -150,7 +152,7 @@ flowchart TD
 
 | Term | Definition |
 |------|------------|
-| **Package** | One workspace unit with its own `package.json` or `mix.exs`. |
+| **Package** | One workspace unit with its own `package.json` or `mix.exs`. Each package in this exploration has its own `markdown/` directory. |
 | **Workspace** | A monorepo managed by pnpm. |
 | **Changeset** | A release note file used by the Changesets tool. |
 | **Conformance test** | A test suite that checks whether an implementation follows a protocol. |
@@ -209,7 +211,7 @@ This is why the glossary lists each event type beside its collection. The pair i
 
 | Status | Meaning |
 |--------|---------|
-| `spawning` | Creation in progress |
+| `spawning` | Creation in progress. Declared in the type; the open-source server never sets it. |
 | `running` | A handler is active |
 | `idle` | No handler is active |
 | `paused` | Paused by `SIGSTOP` |
@@ -228,6 +230,30 @@ This is why the glossary lists each event type beside its collection. The pair i
 | `SIGSTOP` | Pause |
 | `SIGCONT` | Continue |
 | `SIGUSR` | Application-defined signal |
+
+## Abbreviations
+
+| Abbreviation | Expansion |
+|--------------|-----------|
+| API | Application Programming Interface |
+| CDN | Content Delivery Network |
+| CLI | Command-line interface |
+| CRDT | Conflict-free Replicated Data Type |
+| HTTP | Hypertext Transfer Protocol |
+| JSON | JavaScript Object Notation |
+| JWKS | JSON Web Key Set |
+| JWT | JSON Web Token |
+| LMDB | Lightning Memory-Mapped Database |
+| MCP | Model Context Protocol |
+| MIME | Multipurpose Internet Mail Extensions |
+| OAuth | Open Authorization, a delegated-access protocol |
+| RPC | Remote Procedure Call |
+| SDK | Software Development Kit |
+| SPA | Single-page application |
+| SSE | Server-Sent Events |
+| TTL | Time to live |
+| URL | Uniform Resource Locator |
+| UUID | Universally Unique Identifier |
 
 ## Related documents
 

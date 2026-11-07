@@ -4,7 +4,7 @@ title: durable-streams-rust
 
 # durable-streams-rust
 
-`durable-streams-rust` is the native Rust server for the Durable Streams protocol. It is one self-contained binary with no database and no broker. It stores each stream as encoded bytes in one contiguous file, so a write is an append and a read is a byte range. For a binary stream the encoded bytes are the posted bytes. For a JavaScript Object Notation (JSON) stream they are each value plus a comma. In its default `wal` mode, a sharded write-ahead log carries a second copy of each append and makes it durable with `fdatasync`, a POSIX call that flushes file data to the storage device, before any reader sees it. The optional `memory` mode has no WAL and is not crash-safe.
+`durable-streams-rust` is the native Rust server for the Durable Streams protocol. It is one self-contained binary with no database and no broker. It stores each stream as encoded bytes in one contiguous file, so a write is an append and a read is a byte range. For a binary stream the encoded bytes are the posted bytes. For a JavaScript Object Notation (JSON) stream they are each value plus a comma. In its default `wal` mode, a sharded write-ahead log carries a second copy of each append. It makes that copy durable with `fdatasync`, a POSIX call that flushes file data to the storage device, before any reader sees it. The optional `memory` mode has no WAL and is not crash-safe.
 
 Five terms are used throughout:
 
@@ -24,7 +24,7 @@ The parent study is [Electric and Durable Streams](../README.md). The protocol s
 
 1. **Speaks the Durable Streams protocol over HTTP.** One request dispatcher handles create, append, read, head, and delete (`src/handlers.rs:248-282`).
 2. **Stores encoded bytes contiguously.** The stream data file has no per-message header. A binary response is that byte range unchanged; a JSON response wraps the range in `[` and `]` and drops its final comma (`src/store.rs:1-8`, `src/handlers.rs:1318-1353`).
-3. **Makes appends durable.** A sharded WAL groups many appends into one `fdatasync` call per shard. A segment roll adds a file sync and a parent-directory sync, but only to the append that fills the segment; the usual case is one barrier for many appends (`src/wal/shard.rs:663-673`, `src/wal/shard.rs:699-711`, `src/wal/shard.rs:1450-1475`).
+3. **Makes appends durable.** A sharded WAL groups many appends into one `fdatasync` call per shard. A segment roll adds a file sync and a parent-directory sync, but only to the append that fills the segment. The usual case is one barrier for many appends (`src/wal/shard.rs:663-673`, `src/wal/shard.rs:699-711`, `src/wal/shard.rs:1450-1475`).
 4. **Gates visibility on durability.** A reader sees bytes only after the WAL barrier covers them (`src/handlers.rs:772-802`, `ARCHITECTURE.md:78`).
 5. **Serves live reads.** Long-poll requests park for up to 30 seconds. Server-Sent Events (SSE) stream frames for up to 60 seconds (`src/handlers.rs:32`, `src/handlers.rs:110-114`).
 6. **Offloads cold history.** Optional tiering seals cold-tier segments of 8 MiB each to an Amazon Simple Storage Service (S3)-compatible object store (`src/tier.rs:33-41`, `src/tier.rs:499-626`). A cold-tier segment is not a WAL segment; the WAL segment is 128 MiB (`src/wal/segment.rs:20-22`).

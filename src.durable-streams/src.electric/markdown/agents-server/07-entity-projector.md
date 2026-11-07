@@ -168,7 +168,7 @@ The principal scope is necessary. Membership includes a permission test. Two pri
 
 `autoClaim` is an `IdempotentProducer` option from the Durable Streams client. This package sets it and does not implement it. The producer starts at epoch 0. The Durable Streams server remembers the highest epoch for a producer identifier. When the client presents an older epoch, the server rejects the append. With `autoClaim`, the client reads the current epoch and retries the same append with epoch plus one. That covers a restart that reuses the producer identifier after an earlier process advanced the epoch. See [04-stream-layout-and-stream-client.md](04-stream-layout-and-stream-client.md).
 
-Inside one run, a retry is safe because the producer keeps the same `(producerId, epoch, seq)` triple and the server drops the duplicate. Across a restart, the rebuild is what makes the stream correct: the projection reads its own history, so a write that the old process lost is recomputed from the shared map. The code does not persist a sequence number; it relies on the producer object and on the rebuild.
+Inside one run, a retry is safe because the producer keeps the same `(producerId, epoch, seq)` triple and the server drops the duplicate. Across a restart, the rebuild is what makes the stream correct. The projection reads its own history, so a write that the old process lost is recomputed from the shared map. The code does not persist a sequence number; it relies on the producer object and on the rebuild.
 
 After step 3 the projection has a stored set. After step 4 it has a computed set: every entity in the shared map with the same tenant, matching tags, and a passing read check. The reconcile walks the stored set, removes each entity that is also in the computed set, and appends a `delete` for every URL that remains. It then appends `insert` or `update` for each computed entity. A member that disappears from the shared map entirely is handled by this same rule: it stays in the stored set, so it gets one `delete`.
 
@@ -208,7 +208,7 @@ const event =
 this.producer.append(JSON.stringify(event))
 ```
 
-A member row carries only what a peer needs to display and route work: URL, type, status, tags, spawn arguments, sandbox descriptor, parent URL, type revision, the two schema maps, and the two timestamps. The field names match the `entities` columns (`spawn_args`, `type_revision`, `inbox_schemas`, `state_schemas`, `created_at`, `updated_at`). The row drops `tenant_id`, `created_by`, and the permission graph. `tenant_id` is implicit in the stream, because the projection belongs to one tenant. `created_by` is a permission input, not a display field, and the permission test already consumed it.
+A member row carries only what a peer needs to display and route work. The fields are URL, type, status, tags, spawn arguments, sandbox descriptor, parent URL, type revision, the two schema maps, and the two timestamps. The field names match the `entities` columns (`spawn_args`, `type_revision`, `inbox_schemas`, `state_schemas`, `created_at`, `updated_at`). The row drops `tenant_id`, `created_by`, and the permission graph. `tenant_id` is implicit in the stream, because the projection belongs to one tenant. `created_by` is a permission input, not a display field, and the permission test already consumed it.
 
 ## Tag matching
 

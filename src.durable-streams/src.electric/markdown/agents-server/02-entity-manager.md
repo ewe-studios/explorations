@@ -147,7 +147,7 @@ const [mainStreamResult, entityResult] = await this.spawnPersistQueue.push(
 )
 ```
 
-`createEntity` is one Postgres transaction. It runs five statements: it inserts the entity row, the dispatch state row, and the self lineage row with depth 0; when the entity has a parent, it also copies the parent's ancestor lineage rows with depth increased by one; and finally it materializes the `descendants` grants that now reach the new entity into `entity_effective_permissions`. It returns `pg_current_xact_id()::xid::text` as the transaction identifier. See [03-entity-registry-and-postgres.md](03-entity-registry-and-postgres.md).
+`createEntity` is one Postgres transaction. It runs five statements. It inserts the entity row, the dispatch state row, and the self lineage row with depth 0. When the entity has a parent, it also copies the parent's ancestor lineage rows with depth increased by one. Finally, it materializes the `descendants` grants that now reach the new entity into `entity_effective_permissions`. It returns `pg_current_xact_id()::xid::text` as the transaction identifier. See [03-entity-registry-and-postgres.md](03-entity-registry-and-postgres.md).
 
 ### Rollback
 
@@ -366,6 +366,8 @@ stateDiagram-v2
     stopped --> [*]
     killed --> [*]
 ```
+
+The open-source server never writes `spawning`. `entityData` sets `status: idle` before the insert (`packages/agents-server/src/entity-manager.ts:748-750`). The status appears in the type and in the database constraint, but no code sets it.
 
 The handler is `serverHandlingForSignal()` at `packages/agents-server/src/entity-manager.ts:3610`. Key rules:
 

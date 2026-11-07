@@ -352,7 +352,7 @@ flowchart TD
     L --> M
 ```
 
-The recovery is not a general repair tool. It handles a partial final frame and a stale offset. It does not validate the frame contents. The scan trusts the 4-byte length. If a length in the middle of the file is corrupt, the scan can move to a wrong position, or it can compute an end past the file end and stop. In the second case the stream appears to end at that frame. A corrupt payload with a correct length passes the scan without detection.
+The recovery is not a general repair tool. It handles a partial final frame and a stale offset. It does not validate the frame contents. The scan trusts the 4-byte length. If a length in the middle of the file is corrupt, the scan can move to a wrong position. It can also compute an end past the file end and stop. In the second case the stream appears to end at that frame. A corrupt payload with a correct length passes the scan without detection.
 
 The scan stops at the first partial frame, but the store does not remove that frame from the file. It writes the true offset to LMDB and leaves the bytes in place. This has a second effect. The write pool opens every file in append mode (`flags: \`a\`` at `file-store.ts:142`). A later append therefore lands after the partial bytes, not at the true offset.
 
@@ -397,7 +397,7 @@ This block is from `packages/server/src/file-store.ts:1638`.
 
 Three variables control the loop. `baseByteOffset` is the fork base: zero for a normal stream, and the source byte position for a fork. `physicalDataOffset` counts bytes in this file, including frame overhead. `capByte` is the end of the requested logical range; `undefined` means read to the tail. A message is included when its end offset is greater than `startByte` and not greater than `capByte` (`file-store.ts:1655-1662`).
 
-The method reads the whole file with `fs.readFileSync`. It then walks the frames. `subarray` returns a view, not a copy. The design is simple, but it has the partial-tail limit above. It also does not scale to a multi-gigabyte stream, because each read allocates the full file content. Reads use the synchronous call because they need the full file and a simple snapshot; writes use the handle pool because they must append and flush one frame at a time.
+The method reads the whole file with `fs.readFileSync`. It then walks the frames. `subarray` returns a view, not a copy. The design is simple, but it has the partial-tail limit above. It also does not scale to a multi-gigabyte stream, because each read allocates the full file content. Reads use the synchronous call because they need the full file and a simple snapshot. Writes use the handle pool because they must append and flush one frame at a time.
 
 The timestamp of a message is set to `0`. The file format does not store the append time. The in-memory store has a real timestamp. This is a behavioural difference between the two stores.
 

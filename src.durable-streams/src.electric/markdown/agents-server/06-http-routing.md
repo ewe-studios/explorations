@@ -94,7 +94,7 @@ flowchart TB
 
 ## The internal router
 
-The internal router holds the top-level control routes and mounts the control sub-routers. This excerpt shows the top-level routes and the first sub-router mount; the `...` stands for the remaining sub-router mounts, the entity type routes, the observations routes, and the Electric proxy mount:
+The internal router holds the top-level control routes and mounts the control sub-routers. This excerpt shows the top-level routes and the first sub-router mount. The `...` stands for the remaining sub-router mounts, the entity type routes, the observations routes, and the Electric proxy mount:
 
 ```ts
 // packages/agents-server/src/routing/internal-router.ts:130-154
@@ -250,7 +250,7 @@ An *observation* is an entity's declared interest in a source of change. The ent
 
 The proxy is not a transparent pass-through. For the `/v1/shape` path, `buildElectricProxyTarget()` enforces four rules:
 
-1. The request must name exactly one `table`. The table must be one of nine in the *proxy chain*, the fixed list of tables that the route is allowed to expose: `entities`, `entity_types`, `runners`, `users`, `entity_effective_permissions`, `runner_runtime_diagnostics`, `entity_dispatch_state`, `wake_notifications`, or `consumer_claims`. Any other name falls to the default-deny branch and returns `403 TABLE_NOT_ALLOWED`.
+1. The request must name exactly one `table`. The table must be one of nine in the *proxy chain*, the fixed list of tables that the route is allowed to expose. The nine tables are: `entities`, `entity_types`, `runners`, `users`, `entity_effective_permissions`, `runner_runtime_diagnostics`, `entity_dispatch_state`, `wake_notifications`, or `consumer_claims`. Any other name falls to the default-deny branch and returns `403 TABLE_NOT_ALLOWED`.
 2. The client `where` parameter must be a balanced, self-contained clause. The server wraps that clause in its own parentheses and appends its own conditions. A clause that could close the server's parenthesis and add its own `OR` returns `400 INVALID_WHERE`. For example, the server builds `where = (<client clause>) AND tenant_id = '...'`. A client clause that contains an unmatched `)` would close the group early, so the balance check rejects it before the string is used.
 3. The server adds its own `where`: the tenant, and for the entity tables a readable-entity filter for the caller. The server sets a fixed `columns` list for each table, so a client cannot ask for a column outside that list.
 4. The Electric secret is added from the server option.
@@ -354,7 +354,7 @@ A path that matches no resource class passes through. The source comment states 
 
 The handler cannot apply an entity permission to these paths, because no entity owns them. A read on one of these classes reaches the Durable Streams backend without an entity permission check. The deployment must protect them by other means, for example a network boundary or the Durable Streams bearer token.
 
-The guard also depends on the method. `authorizeDurableStreamAccess` checks only `GET` and `HEAD`, plus `PUT` and `POST` on shared state. A `PUT` or `DELETE` to an entity stream path is not a `POST`, so `streamAppend` does not handle it and `proxyPassThrough` forwards it after a check that does nothing for that method. Such a request reaches the backend without an entity permission check and without the write-token check (the write token is defined in the append path below). The backend still enforces its own rules, but this package adds no entity guard for it. A client that needs to delete or replace a stream directly must be trusted by the deployment.
+The guard also depends on the method. `authorizeDurableStreamAccess` checks only `GET` and `HEAD`, plus `PUT` and `POST` on shared state. A `PUT` or `DELETE` to an entity stream path is not a `POST`. Therefore `streamAppend` does not handle it and `proxyPassThrough` forwards it after a check that does nothing for that method. Such a request reaches the backend without an entity permission check and without the write-token check (the write token is defined in the append path below). The backend still enforces its own rules, but this package adds no entity guard for it. A client that needs to delete or replace a stream directly must be trusted by the deployment.
 
 An attachment read is different. A `GET` or `HEAD` attachment path uses the owning entity for its `read` check. When that entity row does not exist, the request returns 404. The append path answers the same missing entity with 401 instead, as described below.
 
@@ -416,7 +416,7 @@ Two token types can satisfy the check:
 - A **static write token** is the value stored on the entity row.
 - A **claim write token** is the value that the wake callback mints for one claim. `ClaimWriteTokenStore` keeps it in memory, keyed by `service` and stream path.
 
-`ElectricAgentsServer` and `AgentsHost` always install a claim-token validator, so the static row token is not accepted through those entry points. The minting flow is: the runner claims upstream and gets a `claimToken`, the runner calls the wake callback with the `wakeId`, the callback mints a claim write token, and the runner uses it for appends. The token ends when the runner sends `done` or `stop`, or when a new claim replaces it. A bad token returns 401 before any work. The token is checked only for an entity stream. A shared-state append has no entity, so it has no write-token check; the earlier `authorizeDurableStreamAccess` call is its only guard.
+`ElectricAgentsServer` and `AgentsHost` always install a claim-token validator, so the static row token is not accepted through those entry points. The minting flow is as follows. The runner claims upstream and gets a `claimToken`. The runner calls the wake callback with the `wakeId`. The callback mints a claim write token, and the runner uses it for appends. The token ends when the runner sends `done` or `stop`, or when a new claim replaces it. A bad token returns 401 before any work. The token is checked only for an entity stream. A shared-state append has no entity, so it has no write-token check; the earlier `authorizeDurableStreamAccess` call is its only guard.
 
 The handler reads the whole body into a byte array before the forward. It parses the same bytes as JSON. The package sets no body size limit of its own, so the listener and any upstream limit decide the maximum. When the body is not valid JSON, `decodeStreamAppendEvent` returns `null`. The handler then skips schema validation and the wake and manifest side effects, and forwards the buffered bytes unchanged. A non-JSON append is therefore a plain proxy write: the stream receives it, but no wake fires and no manifest index updates. A caller that needs those effects must send valid JSON.
 

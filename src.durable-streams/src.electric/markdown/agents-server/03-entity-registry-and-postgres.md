@@ -71,7 +71,7 @@ Some key columns need a definition:
 - `delivery_status` tracks one wake row through `queued`, `delivered`, `failed`, or `superseded`.
 - `claim_status` tracks the same row through `unclaimed`, `claimed`, `completed`, or `expired`.
 - `shape_handle` is the resume handle that the Electric shape stream returns. A bridge stores it to continue from the same point after a restart.
-- `source_ref` is a deterministic key for a bridge source. For a Postgres sync bridge it is a hash of the canonical options plus identity metadata; for an entity bridge it is a hash of the tags plus the principal scope. The tenant is a separate column, not part of the entity bridge hash.
+- `source_ref` is a deterministic key for a bridge source. For a Postgres sync bridge it is a hash of the canonical options plus identity metadata. For an entity bridge it is a hash of the tags plus the principal scope. The tenant is a separate column, not part of the entity bridge hash.
 
 The check constraints for `delivery_status`, `claim_status`, and the other status columns are also in this file.
 

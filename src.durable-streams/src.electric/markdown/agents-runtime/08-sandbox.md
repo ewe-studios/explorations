@@ -200,7 +200,7 @@ This walk follows symbolic links. It defends against a path that looks clean but
 
 The defense has a time window. The check and the write are separate operations. The walk checks the path at check time. A time-of-check time-of-use race is the gap between those two moments. For a path that does not yet exist, the walk checks the deepest existing ancestor. Before the caller writes, an attacker can replace an intermediate component with a symbolic link. The write then follows the link outside the workspace.
 
-The comment says the provider is safe for a single-tenant trusted-code contract. A multi-tenant use would need a write that cannot follow a link in its final component, for example a descriptor opened with `O_NOFOLLOW`, or a realpath containment check of the resolved target after the file operation. The source comment names the post-operation check, not a check just before the operation. Each option closes only part of the window; none makes the provider a containment boundary.
+The comment says the provider is safe for a single-tenant trusted-code contract. A multi-tenant use would need a write that cannot follow a link in its final component. For example, it would need a descriptor opened with `O_NOFOLLOW` or a realpath containment check of the resolved target after the file operation. The source comment names the post-operation check, not a check just before the operation. Each option closes only part of the window; none makes the provider a containment boundary.
 
 Path containment applies to file operations only. `exec` runs `sh -c` as a child process with host access, so a shell command can read or write outside the workspace. The provider assumes trusted code.
 

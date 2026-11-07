@@ -144,4 +144,4 @@ The package does not resolve conflicts. Yjs resolves conflicts. The provider onl
 
 The package does not persist resume state by itself. It emits a `resumeState` event. A persistence class must subscribe to that event. The citation is `src/y-electric.ts:335` and `src/y-electric.ts:384`.
 
-Read [01-yjs-provider-bridge.md](01-yjs-provider-bridge.md) for the full lifecycle, the send and receive paths, and the awareness protocol.
+Read [01-yjs-provider-bridge.md](01-yjs-provider-bridge.md) for the full lifecycle, the send and receive paths, and the awareness protocol. Read [../typescript-client/00-overview.md](../typescript-client/00-overview.md) for the shape client that the provider uses.

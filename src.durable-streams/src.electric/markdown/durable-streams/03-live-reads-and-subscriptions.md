@@ -108,7 +108,7 @@ The control events stay JSON. They are never base64-encoded. A client must remov
 
 ### Connection lifetime
 
-The protocol says that a server should close an SSE connection after about 60 seconds. The client reconnects with the last offset. This short lifetime is not a bug. It lets a Content Delivery Network (CDN) collapse many clients onto one origin request: clients that ask within the same short window receive the same cached response, and a short lifetime keeps that shared response fresh.
+The protocol says that a server should close an SSE connection after about 60 seconds. The client reconnects with the last offset. This short lifetime is not a bug. It lets a Content Delivery Network (CDN) collapse many clients onto one origin request. Clients that ask within the same short window receive the same cached response. A short lifetime keeps that shared response fresh.
 
 When the stream closes, the final control event has `streamClosed: true`. The server then closes the connection. The client must not reconnect.
 

@@ -163,4 +163,4 @@ The package does not call `claimResources` from the command. The function is exp
 
 The package does not remove or update a generated project.
 
-Read [01-quickstart-cli.md](01-quickstart-cli.md) for the full command flow and the file-level behavior.
+Read [01-quickstart-cli.md](01-quickstart-cli.md) for the full command flow and the file-level behavior. Read [../sync-service/00-overview.md](../sync-service/00-overview.md) for the service that the generated application syncs from.

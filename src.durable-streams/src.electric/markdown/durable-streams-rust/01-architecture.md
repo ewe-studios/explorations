@@ -50,7 +50,7 @@ A close is a `POST` with `Stream-Closed: true` and an empty body (`src/handlers.
 
 ### Step 1: validate the request
 
-The handler loads the stream from the store. A missing stream returns 404. A soft-deleted stream returns 410 (`src/handlers.rs:924-936`). A soft-deleted stream still exists on disk but is closed to reads and appends; the server removes it when its last fork reference is released, as the delete section below explains. The handler checks the producer headers and the body content type (`src/handlers.rs:937-963`).
+The handler loads the stream from the store. A missing stream returns 404. A soft-deleted stream returns 410 (`src/handlers.rs:924-936`). A soft-deleted stream still exists on disk but is closed to reads and appends. The server removes it when its last fork reference is released, as the delete section below explains. The handler checks the producer headers and the body content type (`src/handlers.rs:937-963`).
 
 A producer sends `Producer-Id`, `Producer-Epoch`, and `Producer-Seq`. The identifier names the producer. The epoch names one incarnation of that producer; a new epoch replaces the old one. The sequence number counts appends inside one epoch. A repeat of the same triple returns a success without a second append (`src/handlers.rs:812-884`). A lower epoch returns 403. A higher epoch is accepted only when its sequence is 0; otherwise it returns 400 (`src/handlers.rs:864-869`). A sequence gap returns 409 (`src/handlers.rs:1052-1073`). The deduplication state lives in the sidecar and can lag an acknowledged append, so a producer should start a new epoch after a server restart (source package `README.md:147`).
 
@@ -88,7 +88,7 @@ The stage function does three things:
 
 The WAL record is the second copy, not a staging area for a later copy. A checkpoint never reads this record and rewrites it. It syncs the data-file copy and then unlinks whole segments whose records are below the recycle floor (`src/handlers.rs:1121-1126`, `src/handlers.rs:1169-1174`).
 
-The register-before-stage order closes a race with checkpoint recycling. If the server staged the record first, a checkpoint could make the record durable, take a recycle floor above it, and unlink its segment without ever syncing the stream's data file. Registering first guarantees that any checkpoint that can recycle a record of this stream also syncs that stream's file (`src/handlers.rs:720-723`).
+The register-before-stage order closes a race with checkpoint recycling. If the server staged the record first, a checkpoint could make the record durable and take a recycle floor above it. It could then unlink its segment without ever syncing the stream's data file. Registering first guarantees that any checkpoint that can recycle a record of this stream also syncs that stream's file (`src/handlers.rs:720-723`).
 
 ### Step 6: wait for durability without the lock
 

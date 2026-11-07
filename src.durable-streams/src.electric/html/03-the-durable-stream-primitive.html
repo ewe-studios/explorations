@@ -133,8 +133,8 @@
 <p>A durable stream is a URL that accepts bytes at the end and returns bytes from any saved position. That is the whole primitive. Everything else in Electric Agents is a convention layered on top: which bytes to write, which content type to use, and which subscription should hear about them.</p>
 <p>This document explains the protocol at the depth needed to read the runtime code. The full specification is <code>PROTOCOL.md</code> in the Durable Streams repository.</p>
 <h2>Stream model</h2>
-<p>A stream has six properties. Four are essential for understanding the agent runtime.</p>
-<table><tr><th>Property</th><th>Meaning</th></tr><tr><td>Append-only</td><td>Bytes at an offset never change. New bytes go only at the tail.</td></tr><tr><td>Ordered</td><td>Every byte has a strictly increasing offset.</td></tr><tr><td>Typed</td><td>The stream has one content type, set at creation.</td></tr><tr><td>Addressable</td><td>The stream is a URL. Any client that knows the URL can read it.</td></tr><tr><td>Closeable</td><td>A stream can move to a closed state. The move is durable and monotonic.</td></tr><tr><td>Forkable</td><td>A stream can share a prefix with a source stream without copying bytes.</td></tr></table>
+<p>A stream has six properties. The first four matter most for the agent runtime; the last two matter for lifecycle and forking.</p>
+<table><tr><th>Property</th><th>Meaning</th></tr><tr><td>Append-only</td><td>Bytes at an offset never change. New bytes go only at the tail.</td></tr><tr><td>Ordered</td><td>Every byte has a strictly increasing offset.</td></tr><tr><td>Typed</td><td>The stream has one content type, set at creation.</td></tr><tr><td>Addressable</td><td>The stream is reachable at a URL. Any client that knows the URL can read it.</td></tr><tr><td>Closeable</td><td>A stream can move to a closed state. The move is durable and monotonic.</td></tr><tr><td>Forkable</td><td>A stream can share a prefix with a source stream without copying bytes.</td></tr></table>
 <p>Source: <code>PROTOCOL.md</code>, section 4.</p>
 <h2>The six operations</h2>
 <p>The protocol defines six operations. Each operation is an ordinary HTTP method on the stream URL.</p>
@@ -145,8 +145,9 @@
 <pre><code class="language-http">PUT /v1/stream/assistant/abc/main HTTP/1.1
 Content-Type: application/json
 
-[{&quot;type&quot;:&quot;entityCreated&quot;,&quot;key&quot;:&quot;entity-created&quot;,...}]
+[{&quot;type&quot;:&quot;entity_created&quot;,&quot;key&quot;:&quot;entity-created&quot;,...}]
 </code></pre>
+<p>The examples in this document include the backend base path <code>/v1/stream</code>. The stream path itself is <code>/assistant/abc/main</code>. A client joins its configured base URL and the stream path. Entity paths never contain <code>/v1/stream</code>.</p>
 <p>A create request on an existing stream with the same configuration returns <code>200 OK</code>. A create request that conflicts with the existing stream returns <code>409 Conflict</code>. This behavior makes create idempotent for identical configuration.</p>
 <h3>Append</h3>
 <p>The append request adds bytes at the tail.</p>
@@ -172,21 +173,21 @@ Stream-Seq: 0000000001
 <p><strong>Aha:</strong> opacity is what makes storage independent. Because clients never parse offsets, a server can change the offset format without breaking a client. The Node.js server can encode a segment file identifier in an offset. A future server can encode an object-store key. The client still treats the value as an opaque cursor.</p>
 <p>Source: <code>PROTOCOL.md</code>, section 8.</p>
 <h2>JSON mode: how the agent runtime gets message boundaries</h2>
-<p>The agent runtime creates every entity stream with <code>Content-Type: application/json</code>. JSON mode has four rules that the runtime depends on.</p>
-<ol><li><strong>Message boundaries are preserved.</strong> One append request becomes one stored message. A read returns an array of messages.</li><li><strong>Arrays are flattened exactly one level.</strong> An append body <code>[a, b]</code> stores two messages. A body <code>[[a, b]]</code> stores one message.</li><li><strong>Empty arrays are rejected on append.</strong> <code>POST []</code> returns <code>400 Bad Request</code>.</li><li><strong>Reads always return a JSON array.</strong> An empty range returns <code>[]</code>.</li></ol>
+<p>The agent runtime creates every entity stream with <code>Content-Type: application/json</code>. JSON mode has four rules that the runtime depends on. These rules describe the HTTP request body. They do not describe the value that a client library passes to its <code>append</code> method: that method wraps the value in <code>[...]</code> before it sends the request.</p>
+<ol><li><strong>Message boundaries are preserved.</strong> Each stored message is returned as one element of the read array. A POST of a single object stores one message. A POST whose body is an array is flattened one level, so <code>[a, b]</code> stores two messages.</li><li><strong>Arrays are flattened exactly one level.</strong> An append body <code>[a, b]</code> stores two messages. A body <code>[[a, b]]</code> stores one message.</li><li><strong>Empty arrays are rejected on append.</strong> <code>POST []</code> returns <code>400 Bad Request</code>.</li><li><strong>Reads always return a JSON array.</strong> An empty range returns <code>[]</code>.</li></ol>
 <p>Source: <code>PROTOCOL.md</code>, section 9.1.</p>
 <p>The flattening rule explains a line of server code that looks strange at first. In <code>entity-manager.ts</code>, the spawn path builds the initial body by hand:</p>
 <pre><code class="language-ts">// JSON-mode streams: server flattens one level. Append auto-wraps the
 // body in [...] but create does not, so we wrap it ourselves.
 const initialBody = `[${initialEvents.map((e) =&gt; JSON.stringify(e)).join(`,`)}]`
 </code></pre>
-<p>Source: <code>packages/agents-server/src/entity-manager.ts:824-826</code>.</p>
-<p>The comment states the reason. The client library's <code>append</code> method wraps a single value in an array. The <code>create</code> method does not. If the spawn path passed an unwrapped array, the stream server would store the array as one message, not as separate messages. The manual wrap makes each event a separate message.</p>
+<p>Source: <code>packages/agents-server/src/entity-manager.ts:829-831</code>.</p>
+<p>The comment states the reason. The client library wraps a value differently in each method. <code>append</code> wraps the value in <code>[...]</code> before it sends the request. <code>create</code> does not. The spawn path therefore builds the JSON array itself. The stream server parses that array and flattens it one level, so each event becomes its own stored message and its own offset. A single object body would store one message.</p>
 <h2>Idempotent producers</h2>
 <p>A network retry can duplicate an append. The protocol prevents duplicates with producer headers.</p>
 <table><tr><th>Header</th><th>Meaning</th></tr><tr><td><code>Producer-Id</code></td><td>Stable identifier for the writer</td></tr><tr><td><code>Producer-Epoch</code></td><td>Generation number for the writer</td></tr><tr><td><code>Producer-Seq</code></td><td>Sequence number within the epoch</td></tr></table>
 <p>Rules:</p>
-<ul><li>An append with a <code>(Producer-Id, Producer-Epoch, Producer-Seq)</code> tuple that the server already accepted returns success without writing again.</li><li>An append with a lower sequence number in the same epoch returns <code>409 Conflict</code>.</li><li>An append with a stale epoch returns <code>403 Forbidden</code> and the current epoch.</li></ul>
+<ul><li>An append with a <code>(Producer-Id, Producer-Epoch, Producer-Seq)</code> tuple that the server already accepted returns success without writing again.</li><li>An append whose sequence number is lower than or equal to the last accepted sequence in the same epoch returns <code>204 No Content</code> as a duplicate.</li><li>An append whose sequence number is greater than the last accepted sequence plus one returns <code>409 Conflict</code> as a sequence gap.</li><li>An append with a stale epoch returns <code>403 Forbidden</code> and the current epoch.</li></ul>
 <p>Source: <code>PROTOCOL.md</code>, section 5.2.1.</p>
 <p>The runtime creates one producer per entity on each wake:</p>
 <pre><code class="language-ts">const producer = new IdempotentProducer(stream, `entity-${entityUrl}`)
@@ -194,6 +195,7 @@ const initialBody = `[${initialEvents.map((e) =&gt; JSON.stringify(e)).join(`,`)
 <p>Source: <code>packages/agents-runtime/src/process-wake.ts</code>.</p>
 <p>This identifier is stable across wakes. If a wake retries after a network error, the server deduplicates the second attempt.</p>
 <p><strong>Aha:</strong> idempotency belongs to the transport layer, not the handler. The handler does not need to know that a retry occurred. It writes an event; the producer guarantees one stored copy.</p>
+<p><code>Stream-Seq</code> is a different mechanism. It is one ordering value per writer, not a tuple. The server rejects a value that is not strictly greater than <code>lastSeq</code> with <code>409 Conflict</code>. Producer deduplication runs first: a duplicate producer tuple returns <code>204 No Content</code> before the server checks <code>Stream-Seq</code>. Source: <code>durable-streams/packages/server/src/file-store.ts:1288-1308</code>.</p>
 <h2>Subscriptions</h2>
 <p>A subscription is a server-side rule that watches one or more streams and delivers new data to a target. Two delivery types exist.</p>
 <h3>Webhook subscriptions</h3>
@@ -204,14 +206,15 @@ const initialBody = `[${initialEvents.map((e) =&gt; JSON.stringify(e)).join(`,`)
   &quot;webhook&quot;: { &quot;url&quot;: &quot;https://server.example/_electric/subscription-webhooks/assistant-handler&quot; }
 }
 </code></pre>
-<p>The webhook payload contains the stream path, the offsets, and a callback URL. The receiver acknowledges the wake by calling the callback.</p>
+<p>The stream server's notification names the stream and the new offsets. In Electric Agents, the agents-server forward route adds more fields before it signs and forwards the request. <code>enrichPayload</code> adds the entity record, the principal, and the trigger event (<code>packages/agents-server/src/entity-manager.ts:3856-3880</code>). The forward route adds the wake identifier, the generation, the stream path, and the claim token (<code>packages/agents-server/src/routing/internal-router.ts:611-625</code>). The receiver claims the wake by calling the callback with <code>{ epoch, wakeId }</code>. It acknowledges the wake by calling the same callback with <code>{ epoch, done: true }</code> after the producer flushes.</p>
 <p>Source: <code>PROTOCOL.md</code>, sections 6 and 7.1.</p>
+<p>When a subscription is created, the server links each named existing stream at its current tail offset. Creation therefore does not replay history. A stream discovered later by a matching append is linked before that append, so its first message still creates a wake. Source: <code>PROTOCOL.md:895, 965</code>.</p>
 <h3>Pull-wake subscriptions</h3>
-<p>A pull-wake subscription writes a wake record into a separate <em>wake stream</em>. A runner then claims the wake.</p>
+<p>A pull-wake subscription writes a wake record into a separate <em>wake stream</em>. A wake record is one JSON message with the subscription identifier, the stream that changed, the generation, and a timestamp. A runner then claims the wake.</p>
 <pre><code class="language-json">{
   &quot;type&quot;: &quot;pull-wake&quot;,
   &quot;streams&quot;: [&quot;/assistant/abc/main&quot;],
-  &quot;wake_stream&quot;: &quot;/_electric/runners/runner-1/wakes&quot;
+  &quot;wake_stream&quot;: &quot;/runners/runner-1/wake&quot;
 }
 </code></pre>
 <p>The runner claims a wake, processes it, and acknowledges it. Claims have a lease. An expired lease makes the wake claimable again.</p>
@@ -247,7 +250,7 @@ Stream-Fork-Offset: &lt;offset returned by the source&gt;
 <p>Rules that matter:</p>
 <ul><li>Reads on the fork stitch source bytes and fork bytes into one sequence.</li><li>The fork does not inherit producer state. A producer must re-bootstrap on the fork.</li><li>The source stream gains a reference count. A deleted source with live forks becomes soft-deleted and returns <code>410 Gone</code> on its own URL.</li><li>A fork can outlive its source.</li></ul>
 <p>Source: <code>PROTOCOL.md</code>, sections 4.2 and 5.1.</p>
-<p>The agents-server uses forking to implement entity fork. The method <code>forkSubtree</code> reads a source entity at a frozen offset and creates forks for the root and selected descendants. Source: <code>packages/agents-server/src/entity-manager.ts:929-1000</code>.</p>
+<p>The agents-server uses forking to implement entity fork. The method <code>forkSubtree</code> reads a source entity at a frozen offset and creates forks for the root and selected descendants. Source: <code>packages/agents-server/src/entity-manager.ts:946-960</code>.</p>
 <p><strong>Aha:</strong> forking turns "branch this conversation" into a constant-time metadata operation. The server does not copy the conversation history. It records a divergence offset and copies only future writes. This is why an agent can fork a long conversation instantly.</p>
 <h2>Stream states</h2>
 <div class="mermaid">

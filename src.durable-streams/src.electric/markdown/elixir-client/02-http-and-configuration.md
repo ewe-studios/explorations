@@ -4,7 +4,7 @@ title: HTTP and Configuration
 
 # HTTP and Configuration
 
-This document lists every configuration option of `electric_client`, the path a request takes through the HTTP layer, the retry policy, the authentication hooks, and the optional Ecto, embedded, and mock backends. Every claim cites a path relative to the package root.
+This document lists every configuration option of `electric_client`, the path a request takes through the HTTP layer, the retry policy, and the authentication hooks. It also lists the optional Ecto, embedded, and mock backends. Every claim cites a path relative to the package root.
 
 The client has one required decision: give it a `:base_url` or a full `:endpoint`. Every other option has a default. The default configuration creates an unauthenticated Hypertext Transfer Protocol (HTTP) client that retries transient failures and maps integers and floats.
 

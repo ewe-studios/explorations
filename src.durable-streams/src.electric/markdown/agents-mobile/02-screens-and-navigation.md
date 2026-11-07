@@ -233,7 +233,7 @@ const start = async () => {
 
 A **wake** is a request to run an entity handler. Three rules are visible in this function:
 
-- The runner is mandatory. Without a runner, the function shows an error and starts nothing. The source comment explains why: the server would fall back to the entity type's default dispatch policy, which is typically a webhook to a local endpoint that a cloud server cannot reach.
+- The runner is mandatory. Without a runner, the function shows an error and starts nothing. The source comment explains why. The server would fall back to the entity type's default dispatch policy. That policy is typically a webhook to a local endpoint that a cloud server cannot reach.
 - The sandbox profile is optional. A **sandbox profile** selects the execution environment, such as a local process or a container. When the profile uses the default entity scope, the runtime uses the entity URL as the sandbox key, so the workspace persists across wakes. Source: `packages/agents-runtime/src/sandbox/identity.ts:64-72`.
 - With image attachments, the first message is sent after spawn, because the upload needs the new entity URL.
 

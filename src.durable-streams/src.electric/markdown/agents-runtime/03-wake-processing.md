@@ -143,7 +143,7 @@ preloaded = true
 
 The citation is `packages/agents-runtime/src/process-wake.ts:1206-1211`.
 
-The claim callback and the stream preload do not depend on each other. Running them in parallel shortens the critical path. The claim callback posts `{ epoch, wakeId }` to the callback URL. A successful claim can return a claim token, a write token, or both. `claimPromise` is the POST request. The claim counts as accepted when the body has an explicit `ok: true`, or when the body has no `ok` field, the request is successful, and the body carries no error. All other results are rejected claims. A network failure is different: it rejects the promise and the error reaches the caller.
+The claim callback and the stream preload do not depend on each other. Running them in parallel shortens the critical path. The claim callback posts `{ epoch, wakeId }` to the callback URL. A successful claim can return a claim token, a write token, or both. `claimPromise` is the POST request. The claim counts as accepted when the body has an explicit `ok: true`. It also counts as accepted when the body has no `ok` field, the request is successful, and the body carries no error. All other results are rejected claims. A network failure is different: it rejects the promise and the error reaches the caller.
 
 If the claim response is rejected, the function returns `null`. The runtime does not run the handler and does not acknowledge. If the claim request itself fails, the function throws.
 

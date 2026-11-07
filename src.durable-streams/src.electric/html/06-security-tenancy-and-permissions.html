@@ -141,8 +141,8 @@
   url: string
 }
 </code></pre>
-<p>Source: <code>packages/agents-server/src/principal.ts:3-8</code>.</p>
-<p>The kind is one of <code>user</code>, <code>agent</code>, <code>service</code>, or <code>system</code>. The key has the form <code>kind:id</code>. The URL is <code>/principal/<encoded key></code>.</p>
+<p>Source: <code>packages/agents-server/src/principal.ts:5-10</code>.</p>
+<p>The kind is one of <code>user</code>, <code>agent</code>, <code>service</code>, or <code>system</code>. The key has the form <code>kind:id</code>. The URL is <code>/principal/<encoded key></code>. The URL names the principal entity; its main stream is <code><url>/main</code>, so <code>/principal/<encoded key>/main</code>. The stream namespace in <a href="02-system-architecture.html">02-system-architecture.md</a> lists this path.</p>
 <pre><code class="language-ts">export function parsePrincipalKey(input: string): Principal {
   const colon = input.indexOf(`:`)
   if (colon &lt;= 0) throw new Error(`Invalid principal identifier`)
@@ -154,11 +154,11 @@
   return { kind, id, key, url: `/principal/${encodeURIComponent(key)}` }
 }
 </code></pre>
-<p>Source: <code>packages/agents-server/src/principal.ts:20-30</code>.</p>
+<p>Source: <code>packages/agents-server/src/principal.ts:21-30</code>.</p>
 <h3>How a request gets a principal</h3>
 <p><code>buildTenantContext</code> tries three sources in order:</p>
 <ol><li>The <code>authenticateRequest</code> hook, when the embedding application provides one.</li><li>The <code>electric-principal</code> request header.</li><li>The development principal <code>system:dev-local</code>.</li></ol>
-<p>Source: <code>packages/agents-server/src/server.ts:389-405</code>.</p>
+<p>Source: <code>packages/agents-server/src/server.ts:392-421</code>.</p>
 <div class="mermaid">
 sequenceDiagram
     participant C as Client
@@ -189,28 +189,33 @@ sequenceDiagram
   Boolean(this.options.durableStreamsServer)
 )
 </code></pre>
-<p>Source: <code>packages/agents-server/src/server.ts:393-401</code>.</p>
-<p><strong>Warning:</strong> an embedded stream server is enough to enable the fallback. A production deployment that embeds the stream server without <code>NODE_ENV=production</code> and without an authentication hook accepts anonymous requests as <code>system:dev-local</code>. Document <a href="07-critical-assessment.html">07-critical-assessment.md</a> treats this as a deployment risk.</p>
+<p>Source: <code>packages/agents-server/src/server.ts:385-389</code>.</p>
+<p><strong>Warning:</strong> an embedded stream server is enough to enable the fallback, because the three conditions combine with a logical OR. A production deployment that embeds the stream server accepts anonymous requests as <code>system:dev-local</code>, even when <code>NODE_ENV=production</code>, unless it sets <code>allowDevPrincipalFallback: false</code> or its authentication hook rejects every anonymous request. Document <a href="07-critical-assessment.html">07-critical-assessment.md</a> treats this as a deployment risk.</p>
 <h3>Built-in system principals</h3>
 <p>Three system principal identifiers bypass permission checks:</p>
 <table><tr><th>Identifier</th><th>Purpose</th></tr><tr><td><code>system:framework</code></td><td>Internal framework operations</td></tr><tr><td><code>system:auth-sync</code></td><td>Identity synchronization</td></tr><tr><td><code>system:dev-local</code></td><td>Local development</td></tr></table>
 <p>Source: <code>packages/agents-server/src/principal.ts:74-78</code>.</p>
 <p>The function <code>isPermissionBypassPrincipal</code> returns true for these three identities.</p>
 <h2>Tenancy</h2>
-<p>A tenant is a service identifier. The default is <code>default</code>. The runtime, the registry, and the scheduler all take a <code>tenantId</code>.</p>
-<p>Stream paths receive a tenant prefix through <code>prefixTenantStreamPath</code>:</p>
-<pre><code class="language-ts">export function prefixTenantStreamPath(path: string, tenantId: string): string {
-  const normalized = withoutLeadingSlash(path)
-  if (!normalized || normalized === tenantId) return tenantId
-  if (normalized.startsWith(`${tenantId}/`)) return normalized
-  return `${tenantId}/${normalized}`
-}
+<p>A tenant is a service identifier. The server resolves it as <code>service ?? tenantId ?? 'default'</code>, so <code>ELECTRIC_AGENTS_SERVICE</code> wins over <code>ELECTRIC_AGENTS_TENANT_ID</code>, and both unset gives <code>default</code>. The tenant runtime, the registry, and the scheduler all take this value (<code>packages/agents-server/src/standalone-runtime.ts:70</code>, <code>packages/agents-server/src/tenant.ts:1</code>).</p>
+<p>The default routing adapter removes the leading slash and adds no tenant prefix:</p>
+<pre><code class="language-ts">export const streamRootDurableStreamsRoutingAdapter: DurableStreamsRoutingAdapter =
+  {
+    streamUrl: appendRequestPathToStreamRoot,
+    controlUrl: appendRequestPathToStreamRoot,
+    toBackendStreamPath(_serviceId, streamPath) {
+      return streamPath.replace(/^\/+/, ``)
+    },
+    toRuntimeStreamPath(_serviceId, streamPath) {
+      return streamPath.replace(/^\/+/, ``)
+    },
+  }
 </code></pre>
-<p>Source: <code>packages/agents-server/src/routing/tenant-stream-paths.ts:8-14</code>.</p>
-<p>In a multi-tenant deployment, the same entity URL in two tenants maps to two different stream paths:</p>
-<table><tr><th>Tenant</th><th>Entity URL</th><th>Stream path</th></tr><tr><td><code>acme</code></td><td><code>/assistant/abc</code></td><td><code>/acme/assistant/abc/main</code></td></tr><tr><td><code>globex</code></td><td><code>/assistant/abc</code></td><td><code>/globex/assistant/abc/main</code></td></tr></table>
+<p>Source: <code>packages/agents-server/src/routing/durable-streams-routing-adapter.ts:35-47</code>.</p>
+<p>The helper <code>prefixTenantStreamPath</code> in <code>tenant-stream-paths.ts:9-14</code> can add a prefix, but no code calls it. A search of the repository finds only its definition. The exported single-tenant and tenant-root adapters are aliases of the stream-root adapter. As a result, two tenants that use the same entity path share one stream unless the deployment gives each tenant a separate <code>durableStreamsUrl</code> or supplies a custom adapter:</p>
+<table><tr><th>Tenant</th><th>Entity URL</th><th>Stream path with the default adapter</th></tr><tr><td><code>acme</code></td><td><code>/assistant/abc</code></td><td><code>/assistant/abc/main</code></td></tr><tr><td><code>globex</code></td><td><code>/assistant/abc</code></td><td><code>/assistant/abc/main</code></td></tr></table>
 <p>PostgreSQL tables carry a <code>tenant_id</code> column. The wake registry adds a tenant filter to its Shape query. The permission tables carry the tenant identifier in their primary selection.</p>
-<p><strong>Aha: tenancy is enforced at the path level, not only at the query level.</strong> Even if two tenants use the same entity identifier, the stream backend sees different paths. A path mistake cannot leak bytes across tenants unless the prefix is removed deliberately.</p>
+<p><strong>Aha: tenancy is enforced by the PostgreSQL tenant filter, not by the stream path.</strong> The default stream path holds only the entity path. Two tenants that use the same entity path therefore need separate stream backends or a custom prefixing adapter, or they share one stream.</p>
 <h2>Permission grants</h2>
 <p>An entity permission is one of eight verbs:</p>
 <table><tr><th>Verb</th><th>Allows</th></tr><tr><td><code>read</code></td><td>Read the entity and its stream</td></tr><tr><td><code>write</code></td><td>Send messages and write collections</td></tr><tr><td><code>delete</code></td><td>Kill the entity</td></tr><tr><td><code>signal</code></td><td>Send a signal</td></tr><tr><td><code>fork</code></td><td>Fork the entity</td></tr><tr><td><code>schedule</code></td><td>Create and delete schedules</td></tr><tr><td><code>spawn</code></td><td>Create child entities</td></tr><tr><td><code>manage</code></td><td>Manage grants</td></tr></table>
@@ -249,7 +254,7 @@ sequenceDiagram
   })
 }
 </code></pre>
-<p>Source: <code>packages/agents-server/src/permissions.ts:30-49</code>.</p>
+<p>Source: <code>packages/agents-server/src/permissions.ts:29-53</code>.</p>
 <p>The rule is: <strong>the creator always has access, and a grant can add access.</strong> The function then passes the decision to an optional authorization hook.</p>
 <div class="mermaid">
 flowchart TD
@@ -278,8 +283,8 @@ flowchart TD
 <table><tr><th>Field</th><th>Meaning</th></tr><tr><td><code>tenant</code></td><td>The service identifier</td></tr><tr><td><code>principal</code></td><td>The caller</td></tr><tr><td><code>verb</code></td><td>The requested permission</td></tr><tr><td><code>resource</code></td><td>The entity, type, or shared state</td></tr><tr><td><code>request</code></td><td>Method, URL, and headers</td></tr><tr><td><code>builtInAllowed</code></td><td>The result of the built-in check</td></tr></table>
 <p>It returns <code>{ decision: 'allow' | 'deny', expires_at?: string }</code>.</p>
 <p>The hook can override the built-in decision in either direction. A failed hook is treated as a denial, not as an error. A decision with <code>expires_at</code> is cached until that time.</p>
-<p>Source: <code>packages/agents-server/src/permissions.ts:158-210</code>.</p>
-<p><strong>Aha: the built-in rules are a floor, not a ceiling.</strong> An embedding application can deny access that the built-in rules would allow. It can also allow access that the built-in rules would deny, because it receives <code>builtInAllowed</code> as input and returns the final answer. This is how a product adds organization roles, billing checks, or policy engines without forking the server.</p>
+<p>Source: <code>packages/agents-server/src/permissions.ts:158-197</code>.</p>
+<p><strong>Aha: the built-in rules are a default input, not a fixed answer.</strong> The hook receives <code>builtInAllowed</code>. It returns the final decision, so it can override the built-in result in either direction. An embedding application can deny access that the built-in rules would allow, or allow access that the built-in rules would deny. This is how a product adds organization roles, billing checks, or policy engines without forking the server.</p>
 <h3>Shared state</h3>
 <p>Shared state has a second authorization rule. Access is allowed if the caller can access <strong>any</strong> linked entity.</p>
 <pre><code class="language-ts">for (const entityUrl of linkedEntityUrls) {
@@ -293,7 +298,7 @@ flowchart TD
   }
 }
 </code></pre>
-<p>Source: <code>packages/agents-server/src/permissions.ts:99-155</code>.</p>
+<p>Source: <code>packages/agents-server/src/permissions.ts:99-156</code>.</p>
 <p>This rule lets two agents collaborate through a shared board when either agent has access to the board through its own entity.</p>
 <h2>Webhook signatures</h2>
 <p>Every webhook delivery carries a <code>webhook-signature</code> header. The format is:</p>
@@ -311,14 +316,19 @@ flowchart TD
 </code></pre>
 <p>Source: <code>packages/agents-server/src/webhook-signing.ts:100-110</code>.</p>
 <p>The signing key is Ed25519. The server generates one at start if no key is provided. The public key is published as a JSON Web Key Set at <code>/__ds/jwks.json</code>.</p>
-<p>The runtime verifies the signature before it processes a wake. The verification also rejects an old timestamp outside the tolerance window.</p>
+<p>The runtime verifies the signature before it processes a wake. The verification also rejects an old timestamp outside the tolerance window. The default tolerance is 300 seconds (<code>packages/agents-runtime/src/webhook-signature.ts:33</code>).</p>
 <p>Source: <code>packages/agents-runtime/src/create-handler.ts</code> (<code>handleWebhookRequest</code>).</p>
+<p>Verification is on by default. The server context option <code>durableStreamsWebhookSignature</code> controls it. Setting the option to <code>false</code> disables the check (<code>packages/agents-server/src/routing/internal-router.ts:261-263</code>). The open-source entrypoint does not set it to <code>false</code>; only tests do. A deployment that sets it to <code>false</code> accepts any request that reaches the wake endpoint.</p>
 <h3>Why sign the body and the timestamp</h3>
 <p>The timestamp prevents a replay attack. An attacker who captures one valid request cannot replay it later, because the verified timestamp moves outside the tolerance window. The body signature prevents tampering. An attacker cannot change the stream path or the callback URL without breaking the signature.</p>
 <p><strong>Aha: the runtime never trusts the request fields.</strong> The stream path, the entity URL, and the callback URL all arrive in the signed body. The runtime verifies the signature first, then parses the body. An unsigned request is dropped before any lookup.</p>
 <h2>Write tokens</h2>
-<p>A runner often has no principal. The server issues a per-entity <code>write_token</code> when it creates the entity. The token authorizes appends to that entity's stream.</p>
-<p>The claim callback returns a write token scoped to one wake. The runtime attaches it to producer writes:</p>
+<p>A runner often has no principal, so writes use tokens instead of permission grants. Three tokens exist. Each has a different scope, lifetime, and validator.</p>
+<table><tr><th>Name</th><th>Created</th><th>Scope</th><th>Presented in</th></tr><tr><td>Per-entity write token (also called the static write token)</td><td>At spawn, as <code>entities.write_token</code>; returned in the <code>x-write-token</code> response header</td><td>One entity stream</td><td><code>Authorization: Bearer <token></code> or <code>Electric-Claim-Token: <token></code></td></tr><tr><td>Per-wake write token (also called the claim write token)</td><td>At the wake claim callback, held in memory by <code>ClaimWriteTokenStore</code></td><td>One wake on one entity stream</td><td>The claim-token header selected by <code>claimTokenHeader</code></td></tr><tr><td>Pull-wake lease claim token (also called the upstream claim token)</td><td>At a runner claim, issued by the stream subscription</td><td>One pull-wake lease</td><td>Bearer token for the claim, acknowledge, and release routes</td></tr></table>
+<p>Source for the entity column: <code>packages/agents-server/src/entity-manager.ts:696, 757</code>; <code>packages/agents-server/src/routing/entities-router.ts:1540</code>.</p>
+<p><code>writeTokenFromRequest</code> and <code>writeTokenFromHeaders</code> read the same two header positions (<code>packages/agents-server/src/routing/entities-router.ts:68-76</code>, <code>packages/agents-server/src/routing/stream-append.ts:190-198</code>).</p>
+<p><code>EntityManager.isValidWriteToken</code> is the single check point. When the constructor received no <code>writeTokenValidator</code>, the test is <code>token === entity.write_token</code>. The standalone runtime passes a validator that accepts only a per-wake token (<code>packages/agents-server/src/runtime.ts:95-100</code>). The default server therefore authorizes appends with the per-wake token. The per-entity token is available to an embedding application that supplies its own validator.</p>
+<p>The wake claim callback mints the per-wake token and returns it as <code>writeToken</code> in the response body (<code>packages/agents-server/src/routing/internal-router.ts:717-726, 904-912</code>). The store keeps one active token per stream. A new claim replaces the previous token and invalidates it. The store is in memory, so a server restart clears every per-wake token. A per-wake token stays valid while its handler runs. The stream server does not issue a new wake while a wake is in flight or a worker lease is held (<code>PROTOCOL.md:1006</code>). The runtime attaches the token to producer writes:</p>
 <pre><code class="language-ts">const producer = new IdempotentProducer(stream, `entity-${entityUrl}`, {
   epoch,
   autoClaim: true,
@@ -337,11 +347,11 @@ flowchart TD
 })
 </code></pre>
 <p>Source: <code>packages/agents-runtime/src/process-wake.ts:536-553</code>.</p>
-<p>The claim token can travel in three header positions, selected by <code>claimTokenHeader</code>:</p>
-<table><tr><th>Value</th><th>Header</th></tr><tr><td><code>authorization</code></td><td><code>Authorization: Bearer <token></code></td></tr><tr><td><code>electric-claim-token</code></td><td><code>Electric-Claim-Token: <token></code></td></tr><tr><td><code>both</code></td><td>Either header</td></tr></table>
-<p>Source: <code>packages/agents-runtime/src/process-wake.ts:214-236</code>.</p>
+<p>The per-wake write token can travel in three header positions, selected by <code>claimTokenHeader</code>:</p>
+<table><tr><th>Value</th><th>Header</th></tr><tr><td><code>authorization</code></td><td><code>Authorization: Bearer <token></code></td></tr><tr><td><code>electric-claim-token</code></td><td><code>Electric-Claim-Token: <token></code></td></tr><tr><td><code>both</code></td><td>Both headers: <code>Authorization: Bearer <token></code> (unless an <code>Authorization</code> header already exists) and <code>Electric-Claim-Token: <token></code></td></tr></table>
+<p>Source: <code>packages/agents-runtime/src/process-wake.ts:221-239</code>.</p>
 <h2>Threat summary</h2>
-<table><tr><th>Threat</th><th>Control</th></tr><tr><td>Anonymous caller in production</td><td>Authentication hook or production mode; development fallback is disabled</td></tr><tr><td>Cross-tenant data read</td><td>Tenant prefix on every stream path; <code>tenant_id</code> on every table</td></tr><tr><td>Unauthorized entity access</td><td>Creator rule plus grant check plus optional hook</td></tr><tr><td>Forged wake</td><td>Ed25519 signature over timestamp and body</td></tr><tr><td>Replayed wake</td><td>Timestamp tolerance window</td></tr><tr><td>Unauthorized append</td><td>Per-wake claim token</td></tr><tr><td>Duplicate append after retry</td><td>Idempotent producer tuple</td></tr><tr><td>Deleted stream still readable through a fork</td><td>Soft deletion with <code>410 Gone</code> on the source URL</td></tr></table>
+<table><tr><th>Threat</th><th>Control</th></tr><tr><td>Anonymous caller in production</td><td>Authentication hook or <code>electric-principal</code> header; the development fallback activates under three conditions (see above)</td></tr><tr><td>Cross-tenant data read</td><td><code>tenant_id</code> on every PostgreSQL table; a separate stream backend or a custom path adapter for each tenant</td></tr><tr><td>Unauthorized entity access</td><td>Creator rule plus grant check plus optional hook</td></tr><tr><td>Forged wake</td><td>Ed25519 signature over timestamp and body</td></tr><tr><td>Replayed wake</td><td>Timestamp tolerance window</td></tr><tr><td>Unauthorized append</td><td>Per-wake write token in the claim-token header; a per-entity <code>write_token</code> when no custom validator is configured</td></tr><tr><td>Duplicate append after retry</td><td>Idempotent producer tuple</td></tr><tr><td>Deleted stream still readable through a fork</td><td>Soft deletion with <code>410 Gone</code> on the source URL</td></tr></table>
 <h2>Related documents</h2>
 <ul><li><a href="05-wake-dispatch-and-entity-lifecycle.html">05-wake-dispatch-and-entity-lifecycle.md</a> — where the signature is checked.</li><li><a href="agents-server/08-tenancy-permissions-and-principals.html">agents-server/08-tenancy-permissions-and-principals.md</a> — server detail.</li><li><a href="durable-streams/02-protocol-operations.html">durable-streams/02-protocol-operations.md</a> — protocol security rules.</li><li><a href="07-critical-assessment.html">07-critical-assessment.md</a> — the development fallback risk.</li></ul>
   </article>

@@ -155,8 +155,8 @@ site. The other half is `../src.resonate/`, and the comparison page is
 | 6 | Write agents-server package documents | DONE |
 | 7 | Write durable-streams package documents | DONE |
 | 8 | Write all remaining package documents | DONE |
-| 9 | Grandfather review of every document against source | TODO |
-| 10 | Fresh-reader review of every document | TODO |
+| 9 | Grandfather review of every document against source | DONE |
+| 10 | Fresh-reader review of every document | DONE |
 | 11 | Build HTML and verify navigation | DONE |
 
 ## 6. Build System
@@ -209,8 +209,10 @@ After reading, an engineer can:
 
 ## 9. Resume Point
 
-Document writing is complete. The remaining work is the grandfather review,
-the fresh-reader review, and the final build. To change a page, edit Markdown
-in this consolidated tree under `src.durable-streams/src.electric/markdown/` and
-run `python3 -I build.py .` from `/Users/darkvoid/Dev/explorations/src.durable-streams`.
-Do not edit generated HTML by hand.
+Document writing and both review phases are complete. The final build passes,
+the link check reports zero broken links, and the sentence scan finds no
+sentence over thirty words. The only remaining step is to commit and push the
+review fixes. To change a page, edit Markdown in this consolidated tree under
+`src.durable-streams/src.electric/markdown/` and run `python3 -I build.py .`
+from `/Users/darkvoid/Dev/explorations/src.durable-streams`. Do not edit
+generated HTML by hand.

@@ -314,7 +314,7 @@ The entry point reads `ELECTRIC_AGENTS_DISPATCH_RECOVERY_INTERVAL_MS` and `ELECT
 - `consumer_claims` allows the status `expired`, but no statement in `src/` writes it.
 - `wake_notifications` allows the claim status `expired`, but no statement in `src/` writes it.
 
-So the periodic recovery loop described by the comment is not present in version 0.6.4. The safest statement is: **expired claims are recovered by the stream server lease and by a new claim, not by a Postgres sweep.** A claim row that is never released stays `active` in Postgres. A later claim with a new epoch inserts a new row, because the primary key is `(tenant_id, consumer_id, epoch)`; it does not overwrite the stale row. Treat the two environment variables as unused. This is an open question for the reader to confirm against a later version.
+So the periodic recovery loop described by the comment is not present in version 0.6.4. The safest statement is this. **Expired claims are recovered by the stream server lease and by a new claim, not by a Postgres sweep.** A claim row that is never released stays `active` in Postgres. A later claim with a new epoch inserts a new row, because the primary key is `(tenant_id, consumer_id, epoch)`; it does not overwrite the stale row. Treat the two environment variables as unused. This is an open question for the reader to confirm against a later version.
 
 ## Logging and tracing
 
@@ -448,7 +448,7 @@ The coverage script uses that flag around the main run, then runs the conformanc
 | Mock agent | `runMockAgentTests` | The agent handler and wake pipeline |
 | Command line interface with mock agent | `runMockAgentCliTests` | Both layers together |
 
-The suite package has 28 `describe` groups and one further `describe.skip` group. Across all groups are 111 `test` declarations: 97 ordinary declarations and 14 `test.skip` declarations. Three of the ordinary declarations are inside the skipped group, so at most 94 cases can run. The active groups cover spawn, send, list, kill, entity type registration, typed spawn, schema validation gates, and schema evolution. They also cover the serve endpoint, random action sequences, tools, state protocol formats, error paths, type revisions, concurrency, the auth boundary, eight command line groups, and the mock agent end to end.
+The suite package has 28 `describe` groups and one further `describe.skip` group. Across all groups are 111 `test` declarations: 97 ordinary declarations and 14 `test.skip` declarations. Three of the ordinary declarations are inside the skipped group, so at most 94 cases can run. The active groups cover spawn, send, list, kill, entity type registration, typed spawn, schema validation gates, and schema evolution. They also cover the serve endpoint, random action sequences, tools, state protocol formats, error paths, type revisions, concurrency, and the auth boundary. The coverage also includes eight command line groups and the mock agent end to end.
 
 The conformance suite is a specification, not a smoke test. The same package can run against any server that claims the Electric Agents protocol. That is why it lives in its own workspace package.
 
@@ -468,7 +468,7 @@ flowchart LR
     I --> J["global teardown: compose down -v"]
 ```
 
-**Aha: the test backend is a shared, mutable system, so correctness depends on serialization.** The reset lock, `maxWorkers: 1`, and the schema check all defend the same property: one schema, one stream, one test at a time. Without them, a parallel suite would create false failures and false passes.
+**Aha: the test backend is a shared, mutable system.** Correctness therefore depends on serialization. The reset lock, `maxWorkers: 1`, and the schema check all defend the same property: one schema, one stream, one test at a time. Without them, a parallel suite would create false failures and false passes.
 
 ## Behavioural tests
 
@@ -477,7 +477,7 @@ Some routes are proven by direct tests against the server:
 - `runners-router.test.ts` covers owner checks, claims, heartbeats, and health.
 - `wake-registry.test.ts` is 1,602 lines and covers registration, conditions, and delivery.
 - `electric-agents-routes.test.ts` is 1,620 lines, the largest test file, and covers the entity routes.
-- `pg-sync-bridge-manager.test.ts` covers the probe (one shape page fetched at registration to prove the source is a shape endpoint), the retry, and `must-refetch` (the control message that tells a shape client its cursor is invalid).
+- `pg-sync-bridge-manager.test.ts` covers the probe, the retry, and `must-refetch`. The probe is one shape page fetched at registration to prove the source is a shape endpoint. `must-refetch` is the control message that tells a shape client its cursor is invalid.
 - `entity-bridge-manager.test.ts` covers the bootstrap and the membership events.
 - `server-claim-write-token.test.ts` covers the claim token lifecycle: the runner claims, receives a `claimToken`, then receives a write token on the wake callback, and loses both at `done` or `stop`.
 - `scheduler-integration.test.ts` starts a real server and a real scheduler.

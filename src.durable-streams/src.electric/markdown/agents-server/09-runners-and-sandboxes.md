@@ -165,7 +165,7 @@ The system has two leases, and they are not the same:
 
 Durable Streams enforces the claim lease. The agents-server records the value and never sweeps it. When the lease passes, another consumer can claim the same stream. This package does not revoke the old write token at that moment; a new claim mints a new token and replaces the old one in `ClaimWriteTokenStore`. The old runner can still append until that replacement if it still holds the token, so the lease is a coordination signal, not a hard write barrier in this package.
 
-The runner heartbeat route writes the liveness lease. `heartbeatRunner` sets it to `now + leaseMs`, and `leaseMs` defaults to `DEFAULT_RUNNER_LEASE_MS`, which is 30,000 ms. The request field is `lease_ms`, and the alternative absolute field is `liveness_lease_expires_at`. The absolute field wins when both are present: the code is `livenessLeaseExpiresAt ?? now + leaseMs`. The route also stores `wake_stream_offset`, the runner's read position on its wake stream, and a sanitized diagnostics object. The word *sanitized* is literal: the route copies only known keys, drops wrong types, and limits status strings to a fixed set, so arbitrary fields from a runner never reach the table (`packages/agents-server/src/routing/runners-router.ts:158-206`).
+The runner heartbeat route writes the liveness lease. `heartbeatRunner` sets it to `now + leaseMs`, and `leaseMs` defaults to `DEFAULT_RUNNER_LEASE_MS`, which is 30,000 ms. The request field is `lease_ms`, and the alternative absolute field is `liveness_lease_expires_at`. The absolute field wins when both are present: the code is `livenessLeaseExpiresAt ?? now + leaseMs`. The route also stores `wake_stream_offset`, the runner's read position on its wake stream, and a sanitized diagnostics object. The word *sanitized* is literal. The route copies only known keys, drops wrong types, and limits status strings to a fixed set. Arbitrary fields from a runner therefore never reach the table (`packages/agents-server/src/routing/runners-router.ts:158-206`).
 
 The claim lease does not change on that route. It changes only through `materializeHeartbeatClaim`, which the wake callback calls. That method updates `last_heartbeat_at`, and it updates `lease_expires_at` only when the callback supplies a value:
 
@@ -225,7 +225,7 @@ The response also includes the active claims and the dispatch statistics. Each a
 | `entities_with_outstanding_wake` | `outstanding_wake_id` is set and `active_consumer_id` is not |
 | `entities_with_pending_work` | `pending_source_streams` is a non-empty array |
 
-The query first selects rows where `active_runner_id` is this runner. The three conditions then apply inside that set, so every count describes rows already assigned to this runner. Two of the three counters are always zero in version 0.6.4. No code writes `outstanding_wake_id`, and the only write of `pending_source_streams` is the empty array in `createEntity` (`packages/agents-server/src/entity-registry.ts:788`). The fields and the query are in place for a recovery pass: a periodic job that would find a claim whose lease has passed or a wake that never produced a claim, and would clear or retry it. No such job runs in this package. See [03-entity-registry-and-postgres.md](03-entity-registry-and-postgres.md).
+The query first selects rows where `active_runner_id` is this runner. The three conditions then apply inside that set, so every count describes rows already assigned to this runner. Two of the three counters are always zero in version 0.6.4. No code writes `outstanding_wake_id`, and the only write of `pending_source_streams` is the empty array in `createEntity` (`packages/agents-server/src/entity-registry.ts:788`). The fields and the query are in place for a recovery pass. That pass is a periodic job that would find a claim whose lease has passed or a wake that never produced a claim. It would then clear or retry it. No such job runs in this package. See [03-entity-registry-and-postgres.md](03-entity-registry-and-postgres.md).
 
 The active-claim list has no time filter. `getActiveClaimsForRunner` reads every row with `status = 'active'` for the runner and does not compare `lease_expires_at` with the current time (`packages/agents-server/src/entity-registry.ts:575-591`). A claim whose lease has passed still appears as active until a release or a new claim rewrites the row. The phrase "expiry is detected" in [Claims in Postgres](#claims-in-postgres) means detected from the timestamp by a reader, not by a written status. Durable Streams is the component that enforces the lease when a new claim arrives.
 
@@ -266,7 +266,7 @@ const cleared = await this.db
   )
 ```
 
-**Aha: the epoch is the fencing token.** A delayed release from an old consumer cannot clear a new consumer's state, because the row only clears when both the consumer identifier and the epoch match. No distributed lock is involved.
+**Aha: the epoch is the fencing token.** A delayed release from an old consumer cannot clear a new consumer's state. The row only clears when both the consumer identifier and the epoch match. No distributed lock is involved.
 
 The dispatch state also records the pending source streams and the last claim times. It is the bookkeeping that a recovery pass would use. In version 0.6.4 no such pass runs: the server options declare `dispatchRecoveryIntervalMs` and `staleOutstandingWakeAfterMs`, but no code reads them. [11-operations-testing-and-conformance.md](11-operations-testing-and-conformance.md) describes that gap.
 
@@ -334,7 +334,7 @@ A pinned runner that does not advertise the name returns 400. The error lists th
 
 The server also decides whether the profile is remote. With pinned runners, the profile is remote only when every pinned runner marks it `remote: true`. With no pin, it is remote only when every advertiser marks it remote.
 
-The validation does not look at `admin_status`. A disabled runner still counts as an advertiser, in both the pinned path and the tenant-wide path (`packages/agents-server/src/entity-registry.ts:286-316`). A spawn can therefore pass profile validation for a profile that only a disabled runner offers, and the first claim cannot go to that runner. The choice is stored and fails later, at wake time. The failure is visible in the runner claim loop: that runner returns `409 NOT_RUNNING` for every claim, so no consumer starts the sandbox, and the entity stays waiting until the runner is enabled or another runner advertises the same profile.
+The validation does not look at `admin_status`. A disabled runner still counts as an advertiser, in both the pinned path and the tenant-wide path (`packages/agents-server/src/entity-registry.ts:286-316`). A spawn can therefore pass profile validation for a profile that only a disabled runner offers, and the first claim cannot go to that runner. The choice is stored and fails later, at wake time. The failure is visible in the runner claim loop: that runner returns `409 NOT_RUNNING` for every claim. No consumer starts the sandbox, and the entity stays waiting until the runner is enabled or another runner advertises the same profile.
 
 ### Co-location
 
@@ -361,7 +361,7 @@ A remote shared sandbox skips the rule, because every runner can reach it. A loc
 
 A profile advertisement has a name, a label, an optional description, and an optional `remote` flag. The runner owns the list. A registration with a list replaces the whole list. A registration without a list keeps it.
 
-The server never starts a sandbox. It records the choice and the profile advertisement. The runner reads the entity snapshot from the claim response and acts on the `sandbox` field: it resolves the key or scope, finds or starts the named profile, and either owns the sandbox or attaches to an existing one. The agent runtime in `packages/agents-runtime/src/sandbox/identity.ts` performs that resolution; this package only stores the selection.
+The server never starts a sandbox. It records the choice and the profile advertisement. The runner reads the entity snapshot from the claim response and acts on the `sandbox` field. It resolves the key or scope, finds or starts the named profile, and either owns the sandbox or attaches to an existing one. The agent runtime in `packages/agents-runtime/src/sandbox/identity.ts` performs that resolution; this package only stores the selection.
 
 ## Related documents
 

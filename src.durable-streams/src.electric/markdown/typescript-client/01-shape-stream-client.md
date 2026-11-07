@@ -10,7 +10,7 @@ The class is in `src/client.ts`. The declaration runs from line 649 to line 2417
 
 ## Construction
 
-The constructor receives a `ShapeStreamOptions` object. The object requires a `url`. It accepts an offset, a handle, headers, parameters, a subscribe flag, a Server-Sent Events (SSE) flag, a log mode, an abort signal, a fetch client, a visibility adapter, backoff options, a live request timeout, a parser, a transformer, a column mapper, an error handler, a subset method, and an HTTP warning flag. The citation is `src/client.ts:300-555`.
+The constructor receives a `ShapeStreamOptions` object. The object requires a `url`. It accepts an offset, a handle, headers, parameters, a subscribe flag, a Server-Sent Events (SSE) flag, a log mode, and an abort signal. It also accepts a fetch client, a visibility adapter, backoff options, a live request timeout, a parser, and a transformer. The remaining options are a column mapper, an error handler, a subset method, and an HTTP warning flag. The citation is `src/client.ts:300-555`.
 
 The constructor does six things in order:
 

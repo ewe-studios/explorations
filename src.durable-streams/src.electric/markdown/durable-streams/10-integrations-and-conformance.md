@@ -170,7 +170,7 @@ The `POST` body is the Yjs synchronization protocol framed by the `lib0` library
 
 The `{id}` in the subscription route is chosen by the caller. It must be 1 to 256 characters and must not contain a slash (`snapshot-subscriptions.ts:38`). The server maps it to the delivery identifier `yjs:<base64url service>:<base64url id>` (`snapshot-subscriptions.ts:229`). `base64url` is the URL-safe base64 alphabet. The delivery identifier is the subscription name in the Durable Streams control plane: the Yjs server forwards the request to `/v1/stream/__ds/subscriptions/{deliveryId}` on the Durable Streams server (`snapshot-subscriptions.ts:226`). The Durable Streams server owns the stored subscription, not the Yjs server.
 
-`PUT` is idempotent by the configuration hash. The server hashes the normalized configuration, which includes the type, the pattern, the explicit streams, the delivery settings, the lease Time To Live, and the description, and compares the hash on a repeated `PUT`. A different hash is a conflict (`PROTOCOL.md:885`). `GET` returns the stored subscription, and `DELETE` removes it.
+`PUT` is idempotent by the configuration hash. The server hashes the normalized configuration. That configuration includes the type, the pattern, the explicit streams, the delivery settings, the lease Time To Live, and the description. The server compares the hash on a repeated `PUT`. A different hash is a conflict (`PROTOCOL.md:885`). `GET` returns the stored subscription, and `DELETE` removes it.
 
 The route parser is at `yjs-server.ts:66`; the method checks are at `:286` to `:294`. The `:service` part cannot contain a slash. The `:docPath` part can: `project/chapter-1` is valid. The parser normalizes the path and rejects traversal.
 
@@ -386,7 +386,7 @@ A generation is one model response run. The recommended flow stores the stream p
 
 This flow is a recommendation in `packages/aisdk-transport/README.md:90`. The reconnect endpoint is application code, not a library route. The method is `GET`; authentication is whatever the application uses.
 
-The AI SDK transport provides `reconnectToStream` (`packages/aisdk-transport/src/client.ts:159`). It calls the reconnect endpoint and gets the URL. The endpoint is `reconnectApi` when the caller sets it, or `${api}/${chatId}/stream` by default (`client.ts:161`). The transport does not pass a stored offset to the reader. `readUiMessageChunksFromDurableStream` calls the client `stream()` with no `offset` value (`client.ts:84`), so the Durable Streams client applies its own default `-1`, the sentinel that means "beginning of the stream", and replays the whole stream (`client.ts:79`).
+The AI SDK transport provides `reconnectToStream` (`packages/aisdk-transport/src/client.ts:159`). It calls the reconnect endpoint and gets the URL. The endpoint is `reconnectApi` when the caller sets it, or `${api}/${chatId}/stream` by default (`client.ts:161`). The transport does not pass a stored offset to the reader. `readUiMessageChunksFromDurableStream` calls the client `stream()` with no `offset` value (`client.ts:84`). So the Durable Streams client applies its own default `-1`, the sentinel that means "beginning of the stream", and replays the whole stream (`client.ts:79`).
 
 The stream path is stored per chat and replaced at the start of each generation. The README does not say whether an application gives each generation a new stream path or reuses one path for the chat. The stored value decides the replay scope: a path for one generation replays that generation, and a reused path also replays earlier turns.
 
@@ -534,7 +534,7 @@ The suite has many `describe` blocks. The exact group names show the scope. In t
 | `Fork - Edge Cases` | `:11149` |
 | `Reserved subscription APIs` | `:11354` |
 
-The property group has seven sub-groups: `Byte-Exactness Property` (`:4944`), `Operation Sequence Properties` (`:5118`), `Immutability Properties` (`:5340`), `Offset Validation Properties` (`:5400`), `Sequence Ordering Properties` (`:5446`), `Concurrent Writer Stress Tests` (`:5534`), and `State Hash Verification` (`:5743`). Each uses `fc.assert` and `fc.asyncProperty` from `fast-check`, a property-based testing library. In this style, a test generates many inputs and checks that one rule holds for all of them. The alias `fc` is the library import. The state hash group hashes content with the Fowler-Noll-Vo (FNV-1a) hash (`:5746-5748`) and checks that a replay produces the same hash (`:5758`).
+The property group has seven sub-groups. They are `Byte-Exactness Property` (`:4944`), `Operation Sequence Properties` (`:5118`), `Immutability Properties` (`:5340`), `Offset Validation Properties` (`:5400`), `Sequence Ordering Properties` (`:5446`), `Concurrent Writer Stress Tests` (`:5534`), and `State Hash Verification` (`:5743`). Each uses `fc.assert` and `fc.asyncProperty` from `fast-check`, a property-based testing library. In this style, a test generates many inputs and checks that one rule holds for all of them. The alias `fc` is the library import. The state hash group hashes content with the Fowler-Noll-Vo (FNV-1a) hash (`:5746-5748`) and checks that a replay produces the same hash (`:5758`).
 
 ### Use
 
@@ -552,7 +552,7 @@ The programmatic form takes a config object:
 runConformanceTests(config)
 ```
 
-The function returns `void` (`src/index.ts:287`). It does not run tests by itself. It calls `describe` and `test`, so it registers the tests in the test runner that calls it. The caller must be inside a test file, for example a `vitest` file. The reference pattern calls `runConformanceTests(config)` at file top level, and registers two hooks around that call: a `beforeAll` hook starts the server and assigns `config.baseUrl`, and an `afterAll` hook stops the server (`packages/server-conformance-tests/README.md:63-71`). The top-level call registers the tests during file load. The hooks run later, when the test runner starts the file. The suite reads `options.baseUrl` through a getter on each call, so the later assignment works (`src/index.ts:290`).
+The function returns `void` (`src/index.ts:287`). It does not run tests by itself. It calls `describe` and `test`, so it registers the tests in the test runner that calls it. The caller must be inside a test file, for example a `vitest` file. The reference pattern calls `runConformanceTests(config)` at file top level, and registers two hooks around that call. A `beforeAll` hook starts the server and assigns `config.baseUrl`, and an `afterAll` hook stops the server (`packages/server-conformance-tests/README.md:63-71`). The top-level call registers the tests during file load. The hooks run later, when the test runner starts the file. The suite reads `options.baseUrl` through a getter on each call, so the later assignment works (`src/index.ts:290`).
 
 `ConformanceTestOptions` has three fields (`src/index.ts:20`):
 

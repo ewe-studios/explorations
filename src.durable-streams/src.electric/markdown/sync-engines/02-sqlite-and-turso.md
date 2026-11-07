@@ -188,7 +188,7 @@ The hook is also same-process only. A library that opens the writer connection c
 
 The transaction boundary is recoverable with two more hooks. `sqlite3_commit_hook` fires when a transaction commits, and `sqlite3_rollback_hook` fires when a transaction rolls back. The contract is at `sqlite3.h:6738-6785`. Both hooks are per connection. A capture layer can buffer preupdate records in memory and flush them on commit. A rollback discards the buffer.
 
-This combination gives complete row images and exact transaction boundaries. It gives them only inside the writer process, and it gives them only in memory until the commit hook runs. The commit hook must not modify the invoking connection, because a write during commit can recurse into the commit path or deadlock against the write lock that the connection already holds. The callback can enqueue a batch to another thread. This document proposes that the durable write then happens after the commit, outside the write lock. A crash between the commit and that write loses the batch. The ordering is an implementation choice, not a guarantee from the header.
+This combination gives complete row images and exact transaction boundaries. It gives them only inside the writer process, and it gives them only in memory until the commit hook runs. The commit hook must not modify the invoking connection. A write during commit can recurse into the commit path or deadlock against the write lock that the connection already holds. The callback can enqueue a batch to another thread. This document proposes that the durable write then happens after the commit, outside the write lock. A crash between the commit and that write loses the batch. The ordering is an implementation choice, not a guarantee from the header.
 
 > **Inference.** The preupdate hook plus the commit hook is the best capture path for a library that owns the writer connection. It is not a crash-safe path by itself. Durability needs a second copy of the change that commits with the data. Only a trigger, or another write in the same transaction, can make that copy. A hook cannot, because its callback runs before the commit and must not write.
 
@@ -223,8 +223,8 @@ sqlite3session_delete(session);
 
 The session design has four rules that shape any use of it.
 
-1. **A primary key is required.** "Changes can only be recorded for tables that have a PRIMARY KEY explicitly defined as part of their CREATE TABLE statement." The rule is at `sqlite3session.h:192-200`. A table without a primary key is ignored, unless the caller enables the rowid mode. The rowid mode treats the table as if it had an `INTEGER PRIMARY KEY` column named `_rowid_`. The option is `SQLITE_SESSION_OBJCONFIG_ROWID`, documented at `sqlite3session.h:113-123` and defined at `:126`.
-2. **Each primary key is recorded once.** "For each unique primary key value, data is only recorded once - the first time a row with said primary key is inserted, updated or deleted in the lifetime of the session." The rule is at `sqlite3session.h:310-318`.
+1. **A primary key is required**. "Changes can only be recorded for tables that have a PRIMARY KEY explicitly defined as part of their CREATE TABLE statement." The rule is at `sqlite3session.h:192-200`. A table without a primary key is ignored, unless the caller enables the rowid mode. The rowid mode treats the table as if it had an `INTEGER PRIMARY KEY` column named `_rowid_`. The option is `SQLITE_SESSION_OBJCONFIG_ROWID`, documented at `sqlite3session.h:113-123` and defined at `:126`.
+2. **Each primary key is recorded once**. The rule is at `sqlite3session.h:310-318`. "For each unique primary key value, data is only recorded once - the first time a row with said primary key is inserted, updated or deleted in the lifetime of the session."
 3. **Changes can cancel.** An insert followed by a delete of the same key produces no change in the change set. The generation rules at `sqlite3session.h:320-345` describe how the module compares the accumulated records with the current table content. If a row returns to its original values, the record is discarded. If a key is inserted and then deleted, the pair cancels.
 4. **A primary key update becomes a delete plus an insert.** "It is not possible for an UPDATE change to represent a change that modifies the values of primary key columns. If such a change is made, it is represented in a changeset as a DELETE followed by an INSERT." The rule is at `sqlite3session.h:277-281`.
 
@@ -254,7 +254,7 @@ What it cannot report:
 
 The primary key may be composite, and a `WITHOUT ROWID` table with a primary key works. The module requires the key declaration; it does not require an integer key.
 
-The session module installs its own preupdate hook. A capture layer must not also register its own preupdate hook on the same connection. The header states that the two cannot coexist: an application cannot register a preupdate hook on a handle with sessions attached, nor create a session on a handle with a preupdate hook. The result of either attempt is undefined. The implementation keeps the previous hook as a chain pointer, so the outcome is not a clean replacement.
+The session module installs its own preupdate hook. A capture layer must not also register its own preupdate hook on the same connection. The header states that the two cannot coexist. An application cannot register a preupdate hook on a handle with sessions attached, nor create a session on a handle with a preupdate hook. The result of either attempt is undefined. The implementation keeps the previous hook as a chain pointer, so the outcome is not a clean replacement.
 
 The session extension is a diff engine, not a replication source. It is designed to synchronize two copies of a database that both apply the same change set. It is not designed to feed an append-only shape log.
 
@@ -264,7 +264,7 @@ The session extension is a diff engine, not a replication source. It is designed
 
 The value is not stored in the database file. `src/btree.c:10346-10363` explains that the value comes from the pager and adds a B-tree-local offset. The pager increments the counter at `src/pager.c:1809` (on a pager reset) and at `src/pager.c:6748` (on commit phase two). A pager reset is the point at which a connection drops its page cache and re-reads the database header, for example after another connection commits. Commit phase two is the point at which the commit becomes durable. The value 15 is the internal opcode that `PRAGMA data_version` maps to; a client never sees it.
 
-The counter is per connection, but the events that move it are shared. Each connection's pager holds its own counter. When another connection commits, the first connection notices the changed file header at its next read and bumps its counter. The public comment at `libsql-sqlite3/src/sqlite.h.in:1179-1182` states the contract: the pragma "provides a mechanism to detect changes to a single attached database that occur due to other database connections, but omits changes implemented by the database connection on which it is called."
+The counter is per connection, but the events that move it are shared. Each connection's pager holds its own counter. When another connection commits, the first connection notices the changed file header at its next read and bumps its counter. The public comment at `libsql-sqlite3/src/sqlite.h.in:1179-1182` states the contract. The pragma "provides a mechanism to detect changes to a single attached database that occur due to other database connections, but omits changes implemented by the database connection on which it is called."
 
 The client must compare the current value with the value it stored earlier. The pragma does not send an event, and it does not say how many transactions passed. The design must treat any difference as "something changed," not as a count.
 
@@ -441,7 +441,7 @@ What it cannot report:
 - Changes to the change table itself. The self-exclusion check compares the changed table name with the CDC table name and the CDC version table name (`emitter/mod.rs:1162-1172`). The source does not show a view or virtual-table exclusion in this check.
 - Automatic retention. The table grows until the application deletes rows.
 
-The CDC table is durable and transactional. It avoids the limits of the SQLite hooks. It adds two operational requirements: each writer connection must set the pragma, and the reader must discover new rows. A polling reader adds latency. A trigger on the CDC table is a poor wake-up mechanism: it runs inside every writer's transaction, so it adds a second write. The emitter excludes the change table from capture (`turso/core/translate/emitter/mod.rs:1162-1172`), so the trigger cannot use the change table itself as the notification channel; it needs a separate table, which is another write. The design must poll or use an external notification.
+The CDC table is durable and transactional. It avoids the limits of the SQLite hooks. It adds two operational requirements: each writer connection must set the pragma, and the reader must discover new rows. A polling reader adds latency. A trigger on the CDC table is a poor wake-up mechanism: it runs inside every writer's transaction, so it adds a second write. The emitter excludes the change table from capture (`turso/core/translate/emitter/mod.rs:1162-1172`). The trigger cannot use the change table itself as the notification channel; it needs a separate table, which is another write. The design must poll or use an external notification.
 
 A poller runs a range query such as `SELECT * FROM turso_cdc WHERE change_id > :last ORDER BY change_id LIMIT :n`. The `change_id` column is `INTEGER PRIMARY KEY AUTOINCREMENT` in the created table (`turso/core/vdbe/execute.rs:16304-16307`), so the primary-key index makes this a range scan, not a table scan. The change rows and their commit record commit in one transaction, so a visible commit record means that the whole transaction is visible. The poller must not publish a transaction before it sees that record.
 
@@ -463,7 +463,7 @@ pub enum LogicalOpType {
 }
 ```
 
-A `LogicalOp` at lines 54-92 carries `op_type`, `table_name`, `rowid`, `record`, `sql`, `user_version`, `application_id`, `schema_action`, `schema_kind`, `schema_name`, and `stable_table_id`. Only the fields that the operation type needs are populated. Row operations use `table_name`, `rowid`, and optionally `record`. Schema operations use the schema fields. Header updates use `user_version` or `application_id`. `stable_table_id` is a stable table identifier from the portable MVCC format; a row operation may omit `table_name` when it is set, and the sync engine keeps the identifier-to-name map from schema operations (`client_proto.rs:54-89`).
+A `LogicalOp` at lines 54-92 carries `op_type`, `table_name`, `rowid`, `record`, `sql`, `user_version`, `application_id`, `schema_action`, `schema_kind`, `schema_name`, and `stable_table_id`. Only the fields that the operation type needs are populated. Row operations use `table_name`, `rowid`, and optionally `record`. Schema operations use the schema fields. Header updates use `user_version` or `application_id`. `stable_table_id` is a stable table identifier from the portable MVCC format. A row operation may omit `table_name` when it is set, and the sync engine keeps the identifier-to-name map from schema operations (`client_proto.rs:54-89`).
 
 A `LogicalTxnData` at lines 96-112 carries `end_offset`, `commit_ts`, `ops`, and `origin_client_id`. The comment on `ops` says "Logical operations in commit order." `origin_client_id` names the client that originated the transaction, when the source knows it. The comment on `commit_ts` carries a warning: "TODO: confirm the long-term replay-time semantics before relying on this as user-visible change time."
 
@@ -497,7 +497,7 @@ What it cannot report:
 - The old row image for a delete, beyond an optional key record.
 - Whether an upsert is an insert or an update.
 
-The missing old image is the important gap for the Electric design. A shape with a `where` clause needs the old row to detect when a row leaves the shape. The design can recover the old row from its own state, but only if the shape engine keeps a copy of every row that it has emitted, including the columns that the predicate reads. Part 5 explains the consequence.
+The missing old image is the important gap for the Electric design. A shape with a `where` clause needs the old row to detect when a row leaves the shape. The design can recover the old row from its own state. It can do so only if the shape engine keeps a copy of every row that it has emitted, including the columns that the predicate reads. Part 5 explains the consequence.
 
 ### 2.4 What exists and what is planned
 
@@ -652,7 +652,7 @@ The whole-row rule simplifies the design. The shape engine never has to reconstr
 | Durable with the data | Yes | Yes | No | Yes | Yes | Yes | Yes |
 | Ready for shapes | Yes | No | Partly | Partly | No | Yes | Partly |
 
-The table is the answer to question 3. PostgreSQL is not better because it is faster. It is better because it supplies invariants 1, 2, 4, and 5 at once: committed row changes in commit order and both row images (1 and 2), a resumable total order (4), and a snapshot plus a tail (5). The shape engine still supplies invariants 3 and 6, predicate evaluation and projection. "Partly" in the last row has a specific meaning for each source. For SQLite hooks, the row images exist only inside the writer process and are not durable. For the Turso MVCC log, the new row and the boundary exist, but the old row does not. In both cases the shape engine must still evaluate the predicate, keep the index, and project the columns.
+The table is the answer to question 3. PostgreSQL is not better because it is faster. It is better because it supplies invariants 1, 2, 4, and 5 at once. It gives committed row changes in commit order and both row images (1 and 2), a resumable total order (4), and a snapshot plus a tail (5). The shape engine still supplies invariants 3 and 6, predicate evaluation and projection. "Partly" in the last row has a specific meaning for each source. For SQLite hooks, the row images exist only inside the writer process and are not durable. For the Turso MVCC log, the new row and the boundary exist, but the old row does not. In both cases the shape engine must still evaluate the predicate, keep the index, and project the columns.
 
 ## Part 4: A proposed Electric-style design on SQLite
 
@@ -886,15 +886,15 @@ LIMIT :chunk_size;
 
 Write each chunk into the shape log at a virtual offset. The first chunk gets offset `{0, 0}`, the next `{0, 1}`, and so on; these offsets sort before every real change. Record `S` in the shape's in-memory state when the watermark is read, so retention can use it during the snapshot. Commit the read transaction, then write `S` to `electric_shape.snapshot_seq`, set `applied_seq` to `S`, and set `status` to `active`. The shape now needs every change with `seq > S`.
 
-The snapshot query applies the shape filter and projection in SQL. The change table stores the full row, so the change path can evaluate the same filter on every row. The two paths must use the same column types; if the change path decodes a JSON row and the snapshot path reads SQLite values, the converter must normalize both to the same representation.
+The snapshot query applies the shape filter and projection in SQL. The change table stores the full row, so the change path can evaluate the same filter on every row. The two paths must use the same column types. If the change path decodes a JSON row and the snapshot path reads SQLite values, the converter must normalize both to the same representation.
 
-> **This document proposes.** The normalization rule. Apply one SQLite-to-text conversion on both paths: integer to decimal text, real to a fixed canonical text form, text unchanged, null as null, and blob as lowercase hexadecimal with a `blob:` prefix. Do not let an arbitrary JSON encoder choose the format for one path and the query encoder choose it for the other.
+> **This document proposes.** The normalization rule. Apply one SQLite-to-text conversion on both paths. The rule is: integer to decimal text, real to a fixed canonical text form, text unchanged, null as null, and blob as lowercase hexadecimal with a `blob:` prefix. Do not let an arbitrary JSON encoder choose the format for one path and the query encoder choose it for the other.
 
 **Step 7. Tail the log.** One reader per source polls `electric_change` for rows with `seq` greater than the minimum shape watermark, in ascending order. It routes each transaction to the shapes that may be affected. Each shape keeps its own applied sequence.
 
 The reader never starts in the middle of a transaction. The watermark `S` is a commit record, so the next row after `S` is the first row of a transaction that committed after it. All rows of that transaction are present, and its commit record is present. For each row, the reader appends to the open transaction buffer for that `txn`. A shape ignores rows with `seq <= its snapshot_seq`; the shared reader may see rows that are too old for a later shape. When it sees the commit record, it hands the complete transaction to the converter.
 
-For a transaction that produces at least one record, a shape advances its applied sequence only after it appends all of that transaction's records, and it records the applied sequence in the same durable step as the last append. A crash before that step replays the whole transaction. The append must therefore be idempotent: the shape log key is `(tx_offset, op_offset)`, so a replay overwrites the same position instead of duplicating it.
+For a transaction that produces at least one record, a shape advances its applied sequence only after it appends all of that transaction's records. It records the applied sequence in the same durable step as the last append. A crash before that step replays the whole transaction. The append must therefore be idempotent: the shape log key is `(tx_offset, op_offset)`, so a replay overwrites the same position instead of duplicating it.
 
 **Step 8. Convert and append.** For each change in the transaction, the filter index returns candidate shapes. For each candidate, the converter does this:
 
@@ -936,7 +936,7 @@ The hook path is viable for an embedded library that owns the writer connection.
 
 The flush target must be a separate durable log, not the same database through a second connection. While the commit runs, the second connection cannot take the write lock; it would block until after the commit. Even after the lock is released, the write is a separate transaction, so a crash between the two transactions loses the batch.
 
-The design closes the gap with startup reconciliation, but reconciliation cannot rebuild the lost detail. The current table reveals a net difference, not the old rows for deletes, the intermediate updates, or the transaction boundaries. The correct recovery is to record the last sequence written before the crash, discard the shape logs after that point, and resnapshot every shape whose watermark is older than the gap. That is correct, but it is expensive.
+The design closes the gap with startup reconciliation, but reconciliation cannot rebuild the lost detail. The current table reveals a net difference, not the old rows for deletes, the intermediate updates, or the transaction boundaries. The correct recovery is to record the last sequence written before the crash and discard the shape logs after that point. It must also resnapshot every shape whose watermark is older than the gap. That is correct, but it is expensive.
 
 > **Inference.** The hook path is faster and simpler while the process runs, but it needs a reconciliation pass after a crash. The trigger path is slower and needs writer cooperation, but it has no reconciliation gap. A production design should pick the trigger path and treat the hook path as an optimisation for known writers.
 
@@ -946,7 +946,7 @@ The trigger path needs a transaction identifier. SQLite does not supply one. The
 
 **Option A. An application-defined function.** The writer registers `electric_txn_id()` on every connection. The function allocates an identifier on the first call in a transaction and caches it in the connection object. The commit hook clears the cache after the commit, and the rollback hook clears it after a rollback. Step 2 gives the implementation. Allocation is an `UPDATE` on the counter table, so it takes the write lock. This is the cleanest option. It matches what Turso does internally with `conn_txn_id` (`turso/core/translate/emitter/mod.rs:1537-1553`, `turso/core/function.rs:1414`).
 
-**Option B. A counter table without a custom function.** The wrapper runs `UPDATE electric_txn_counter SET value = value + 1, current = value + 1 RETURNING current` at the start of each transaction. The right-hand sides read the old row, so `current = value + 1` stores the new value; `current = value` would store the previous value and leave the triggers one transaction behind. The capture triggers read `(SELECT current FROM electric_txn_counter)`. This option needs no custom function and no connection state. It needs the wrapper at the start of the transaction, and the counter table needs a `current` column. A writer that starts a transaction without the wrapper makes the triggers read a stale value. Under Option B, replace `electric_txn_id()` with `(SELECT current FROM electric_txn_counter)` in every trigger from Step 2.
+**Option B. A counter table without a custom function**. The wrapper runs `UPDATE electric_txn_counter SET value = value + 1, current = value + 1 RETURNING current` at the start of each transaction. The right-hand sides read the old row, so `current = value + 1` stores the new value. By contrast, `current = value` would store the previous value and leave the triggers one transaction behind. The capture triggers read `(SELECT current FROM electric_txn_counter)`. This option needs no custom function and no connection state. It needs the wrapper at the start of the transaction, and the counter table needs a `current` column. A writer that starts a transaction without the wrapper makes the triggers read a stale value. Under Option B, replace `electric_txn_id()` with `(SELECT current FROM electric_txn_counter)` in every trigger from Step 2.
 
 **Option C. Infer from sequence gaps.** The reader treats the end of a run of rows as a transaction boundary. This option is wrong. Two transactions can commit back to back with no observable gap, so the reader sees one run. A transaction that changes one row and commits is indistinguishable from the middle of another transaction. The design loses the boundary.
 
@@ -1145,7 +1145,7 @@ Offsets in the shape log are written `tx_offset_op_offset`. `1_0` means transact
 | 2 | update id 2, owner bo | none; the old row and the new row both fail the predicate |
 | 3 | delete id 1, owner ana | `DeletedRecord` with `key = "main"."todo"/"1"` at offset `3_0`, `last? = true` |
 
-The projection removes `owner` from both records. The key format follows `sync-service/lib/electric/replication/changes.ex:375-377` and `sync-service/lib/electric/shapes/querying.ex:162-164`. Electric uses the PostgreSQL schema name `public`; the SQLite design uses the database name `main`, because that is the name in the hook callback and in the engine's own `PRAGMA database_list`. The trigger cannot read the pragma at run time, so the name is written into the trigger text.
+The projection removes `owner` from both records. The key format follows `sync-service/lib/electric/replication/changes.ex:375-377` and `sync-service/lib/electric/shapes/querying.ex:162-164`. Electric uses the PostgreSQL schema name `public`. The SQLite design uses the database name `main`, because that is the name in the hook callback and in the engine's own `PRAGMA database_list`. The trigger cannot read the pragma at run time, so the name is written into the trigger text.
 
 The values in this table are typed, because they are internal change records. The HTTP wire format converts every value to text (section 6.5), so a client receives `"id": "3"`, not `"id": 3`.
 
@@ -1155,7 +1155,7 @@ The design has six failure modes. Each one must be handled before the design is 
 
 1. **A writer that does not set up the triggers.** The change is invisible. The design must fail closed: check the schema at startup and refuse to serve shapes if a table has no capture trigger.
 2. **A writer that forgets the commit record.** The transaction stays open. The reader can time it out, but a timeout can split a long transaction. The design needs a maximum transaction age and a clear error.
-3. **A schema change.** A trigger refers to column names. `ALTER TABLE` can break the trigger or change the JSON shape. SQLite increments `PRAGMA schema_version` on every schema change. The design must compare the value at startup, after every data definition language (DDL) statement that it executes, and on every new writer connection, then rebuild the registry and the triggers when it moves. `PRAGMA data_version` also moves on a schema change, but it does not identify the schema, so `schema_version` is the right signal.
+3. **A schema change.** A trigger refers to column names. `ALTER TABLE` can break the trigger or change the JSON shape. SQLite increments `PRAGMA schema_version` on every schema change. The design must compare the value at startup, after every data definition language (DDL) statement that it executes, and on every new writer connection. It must then rebuild the registry and the triggers when it moves. `PRAGMA data_version` also moves on a schema change, but it does not identify the schema, so `schema_version` is the right signal.
 4. **A large transaction.** The change table grows by one row per changed row. A bulk insert of one million rows writes one million change rows in one transaction. The assembler must spill the transaction to a staging table or a file and publish it only at the commit record. Downstream still sees the whole transaction, but memory stays bounded. Electric bounds a transaction at 250 mebibytes (MiB) of buffered changes (`sync-service/lib/electric/config.ex:56`; the replication client passes the value as `max_tx_size`). The SQLite design should apply the same bound to the decoded change bytes.
 5. **A checkpoint against a slow reader.** The design reads the change table, not the WAL, so a checkpoint does not delete its data. The retention rule is the only limit. The risk moves from the WAL to the change table.
 6. **An `INSERT OR REPLACE` that deletes a different key.** Recursive triggers are off by default. When a `REPLACE` deletes a conflicting row to satisfy a `UNIQUE` constraint, the delete trigger does not fire (`insert.c:2500-2507`). The change table then has the new row but no delete for the old key. A downstream shape keeps a row that the database removed. The design must enable recursive triggers, reject `REPLACE`, or capture the delete by another path.
@@ -1207,7 +1207,7 @@ The costs are the same as the trigger path:
 - Capture is opt-in per connection. A connection that does not set the pragma writes no change rows.
 - The writer pays the insert cost.
 - The table grows until the application deletes rows.
-- The reader must poll. A trigger on `turso_cdc` is a poor wake-up mechanism: it runs inside every writer's transaction, so it adds a second write to the writer. The emitter excludes the CDC table from capture (`turso/core/translate/emitter/mod.rs:1162-1172`), so the trigger cannot use the CDC table itself as the notification channel; it needs a separate table, which is another write.
+- The reader must poll. A trigger on `turso_cdc` is a poor wake-up mechanism: it runs inside every writer's transaction, so it adds a second write to the writer. The emitter excludes the CDC table from capture (`turso/core/translate/emitter/mod.rs:1162-1172`). The trigger cannot use the CDC table itself as the notification channel; it needs a separate table, which is another write.
 
 The last point is a design constraint, not a bug. It means the sync engine cannot be woken cheaply by a SQL trigger on the change table. It must poll on a timer, or the application must send an external notification.
 
@@ -1226,7 +1226,7 @@ The transaction boundary and the total order are present. The conversion at `dat
 
 The shape engine has three ways to close the gap.
 
-**Option 1. Keep a row cache.** For each table that a shape watches, keep a map from rowid to the last row, with the union of the selected columns and the predicate columns. On an update, look up the old row in the cache. On a delete, look up the old row in the cache. This works, but the cache duplicates the table. The memory cost is proportional to the rows that the shape has seen, not only to the rows that it emits.
+**Option 1. Keep a row cache**. For each table that a shape watches, keep a map from rowid to the last row, with the union of the selected columns and the predicate columns. On an update, look up the old row in the cache. On a delete, look up the old row in the cache. This works, but the cache duplicates the table. The memory cost is proportional to the rows that the shape has seen, not only to the rows that it emits.
 
 **Option 2. Use both surfaces.** Use the logical log for the total order and the transaction boundary, and read the CDC table for the old image. The two surfaces must agree on the transaction. That requires a mapping from `LogicalTxnData` to `change_txn_id`. The source does not show such a mapping. This option is therefore speculative. It needs a test that proves that both surfaces name the same commit before it can be trusted.
 
@@ -1319,7 +1319,7 @@ The source must send the union of four sets:
 1. Every primary-key column.
 2. Every selected column.
 3. Every column that the `where` clause reads.
-4. Every column that the design needs for its own metadata. For PostgreSQL, those are the table's key columns; `REPLICA IDENTITY FULL` makes the whole old row available as well. For SQLite, the identity is either the primary key or the rowid; the trigger must send the primary-key columns, and it must send the rowid when the table has no primary key.
+4. Every column that the design needs for its own metadata. For PostgreSQL, those are the table's key columns; `REPLICA IDENTITY FULL` makes the whole old row available as well. For SQLite, the identity is either the primary key or the rowid. The trigger must send the primary-key columns, and it must send the rowid when the table has no primary key.
 
 Electric gets the whole row from PostgreSQL, so the union is automatic. SQLite triggers must write the whole row to the change table, because a trigger is static and cannot know which shapes exist. The hook path can project early, because the callback runs in the process that owns the shape registry. The Turso CDC table stores the whole row in `full` mode. The Turso logical log stores the whole new row for an upsert, but it stores only the key for a delete.
 
@@ -1426,7 +1426,7 @@ The seventh table is the subquery index. `SubqueryIndex.new/1` creates it at `fi
 
 A **condition tree** is the parsed boolean predicate for a table; its **root** is the top-level `AND` or `OR` node. The filter index uses the root to choose the index tables.
 
-The index stores condition identifiers as small integers, not references. The comment at `filter.ex:42-49` gives the reason: "a boxed reference costs ~3 words on every ETS row that embeds one", and "small ints are immediates stored inline in the key tuple." This is a real memory optimisation.
+The index stores condition identifiers as small integers, not references. The comment at `filter.ex:42-49` gives the reason. It says: "a boxed reference costs ~3 words on every ETS row that embeds one". And "small ints are immediates stored inline in the key tuple." This is a real memory optimisation.
 
 The `other_shapes` map holds the shapes that cannot use an index. `WhereCondition.add_shape` falls back to this map when `optimise_where` returns `:not_optimised` (`filter/where_condition.ex:41-64`; the fallback is at line 55). The optimiser recognises equality, containment (`@>`), and inclusion (`<@`) on a constant. It also handles `any` comparisons and subquery membership. The clauses are at `where_condition.ex:88-169`. A shape with an arbitrary predicate lands in `other_shapes` and is evaluated for every change to its table. The map has no fixed size limit; its cost grows with the number of unindexed shapes, and every change to their table pays a predicate evaluation.
 
@@ -1458,7 +1458,7 @@ The defaults are in `sync-service/lib/electric/config.ex:42-160`:
 | `snapshot_timeout_to_first_data` | 30 seconds | The maximum wait for the first snapshot data |
 | `subquery_buffer_max_transactions` | 1000 | The buffer for subquery shapes |
 
-The chunk threshold is also defined at `sync-service/lib/electric/shape_cache/log_chunker.ex:1-5`, with the comment "Default chunk size of 10 MB to ensure caches accept them." The comment uses `MB` loosely; the configured value is a binary size, 10 mebibytes (MiB).
+The chunk threshold is also defined at `sync-service/lib/electric/shape_cache/log_chunker.ex:1-5`. The comment is "Default chunk size of 10 MB to ensure caches accept them." The comment uses `MB` loosely; the configured value is a binary size, 10 mebibytes (MiB).
 
 The less obvious settings mean the following. `cache_max_age` is how long a cached shape stays fresh. `cache_stale_age` is how long a stale shape is still served before it is rebuilt. `shape_hibernate_after` is the idle time after which the consumer process hibernates, which frees its heap. `shape_enable_suspend?` enables suspension of idle shapes; when it is false, `shape_suspend_after` has no effect. `snapshot_timeout_to_first_data` bounds the wait for the first snapshot chunk. A subquery shape is a shape whose predicate contains a subquery; `subquery_buffer_max_transactions` bounds its buffer. This document's design has no subqueries, so that buffer does not apply.
 
@@ -1578,7 +1578,7 @@ The prototype should not try to solve multi-process writers, schema changes, or 
 4. **Change-table growth.** The table grows without bound unless the design prunes it. A prune that is too aggressive breaks a slow shape. The design needs a minimum-offset watermark across all shapes.
 5. **Transaction identification.** The `electric_txn_id()` function is per connection. A connection pool must register it, the commit hook, and the rollback hook on every connection. The hooks clear the cached identifier, so a pooled connection cannot carry a value into its next transaction. A connection that uses a different function or a different counter breaks the grouping.
 6. **Turso old-row gap.** The logical path has no old row. A row cache fixes it but costs memory proportional to the observed rows. A large shape with a selective predicate still needs the old row for every update to decide whether the row left.
-7. **Turso stability.** The logical protocol has guards that reject it in some contexts (`database_sync_operations.rs:147-166`), a compatibility path that still accepts older named row operations (`client_proto.rs:86-89`), and a provisional comment on the replay change time (`client_proto.rs:99-104`). A production design cannot depend on it as a stable contract yet.
+7. **Turso stability.** The logical protocol has guards that reject it in some contexts (`database_sync_operations.rs:147-166`). It has a compatibility path that still accepts older named row operations (`client_proto.rs:86-89`), and a provisional comment on the replay change time (`client_proto.rs:99-104`). A production design cannot depend on it as a stable contract yet.
 8. **libSQL replica gap.** A replica cannot derive row changes from page frames without a decoder. The practical answer is to capture at the primary. That answer changes the deployment topology.
 9. **Snapshot cost.** A large shape takes a long read transaction. In WAL mode a long read transaction prevents a checkpoint from reclaiming WAL space. A large snapshot can therefore grow the WAL and the disk. The design should bound the snapshot duration or spill it.
 

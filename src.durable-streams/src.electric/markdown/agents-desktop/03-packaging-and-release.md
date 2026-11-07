@@ -192,7 +192,7 @@ The artifact name is `Electric-Agents-${os}-${arch}.${ext}`. The output director
 
 ### Publish channel
 
-The update provider is `generic`, not `github`. A generic provider is a static file host. The updater reads a metadata file, such as `latest-mac.yml`, from the configured URL. That file names the newest version and the installer files. The configuration comment explains why the project does not use the GitHub provider: the repository publishes many packages to the same Releases page, and GitHub's "latest" marker follows the most recent tag from any package. A desktop build would then find the wrong release metadata.
+The update provider is `generic`, not `github`. A generic provider is a static file host. The updater reads a metadata file, such as `latest-mac.yml`, from the configured URL. That file names the newest version and the installer files. The configuration comment explains why the project does not use the GitHub provider. The repository publishes many packages to the same Releases page. GitHub's "latest" marker follows the most recent tag from any package. A desktop build would then find the wrong release metadata.
 
 ```yaml
 # packages/agents-desktop/electron-builder.yml:84

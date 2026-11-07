@@ -90,7 +90,7 @@ The default controls are (`src/wal/sim_tests.rs:1069-1082`):
 | `DS_SIM_GENS` | 3 | generations per seed |
 | `DS_SIM_STEPS` | 100 | operations per generation |
 
-The workload includes creates, appends, client-disconnect cancellations, closes, forks, deletes, and checkpoints. The fault model includes data-file truncation, scribbling (writing random bytes over a region), zeroing in the un-fsynced region, write-ahead log (WAL) suffix damage above the durable log sequence number (LSN), torn staged appends, and in-flight appends at the crash (`CRASH_SIM_FINDINGS.md:138-142`).
+The workload includes creates, appends, client-disconnect cancellations, closes, forks, deletes, and checkpoints. The fault model includes data-file truncation, scribbling (writing random bytes over a region), and zeroing in the un-fsynced region. It also includes write-ahead log (WAL) suffix damage above the durable log sequence number (LSN). It also includes torn staged appends and in-flight appends at the crash (`CRASH_SIM_FINDINGS.md:138-142`).
 
 The provenance differs by finding. Finding 1 came from the first default seed, finding 2 from seed 89840, and findings 4 and 5 from the 1,000-seed hunts (`CRASH_SIM_FINDINGS.md:27-35`, `CRASH_SIM_FINDINGS.md:56-58`, `CRASH_SIM_FINDINGS.md:133-137`). Finding 3 came from a documentation review, not a simulation run (`CRASH_SIM_FINDINGS.md:70-77`). The full findings are in [02-storage-wal-and-recovery.md](02-storage-wal-and-recovery.md).
 
@@ -255,7 +255,7 @@ The `ds.request` span records only bounded attributes. It does not record the st
 | `--wal-checkpoint-interval-ms` | 3,000 | time trigger (`src/wal/shard.rs:383`) |
 | `--wal-checkpoint-wal-bytes` | 0 | size trigger, 0 disables it (`src/wal/shard.rs:390`) |
 
-Memory mode cannot start over a WAL from an earlier `wal` run (`src/main.rs:298-322`). Memory mode also cannot be combined with tiering (`src/main.rs:298-305`). Tiering seals only bytes below the durable tail and treats a sealed object as permanent history. In memory mode the durable tail advances on the page-cache write, so a sealed segment could contain bytes that a crash erases, and no recovery pass trims a sealed segment (`src/tier.rs:522-533`).
+Memory mode cannot start over a WAL from an earlier `wal` run (`src/main.rs:298-322`). Memory mode also cannot be combined with tiering (`src/main.rs:298-305`). Tiering seals only bytes below the durable tail and treats a sealed object as permanent history. In memory mode the durable tail advances on the page-cache write. So a sealed segment could contain bytes that a crash erases, and no recovery pass trims a sealed segment (`src/tier.rs:522-533`).
 
 ### Read flags
 
@@ -296,7 +296,7 @@ The two fast-fsync variables are benchmark aids. `DS_UNSAFE_FAST_FSYNC` affects 
 
 The server raises the soft open-file limit to the hard limit at startup (`src/main.rs:84-111`). In the measured 1,000,000-stream run, each live stream held one file descriptor; a fork can also need its parent file, and a cold read opens a chunk file. At 1,000,000 streams the server held about 1,005,724 descriptors, which is 96% of the default 1,048,576 limit (`WAL_TUNING.md:113-116`). Raise `LimitNOFILE` for a deployment near that scale.
 
-A shutdown on `SIGINT` or `SIGTERM` stops accepting connections, stops the Server-Sent Events reactor on Linux, waits up to 25 seconds for in-flight requests, joins the WAL committers, and flushes telemetry (`src/main.rs:445-464`, `src/main.rs:575-591`). It does not force a checkpoint, so the next boot may replay the WAL.
+A shutdown on `SIGINT` or `SIGTERM` stops accepting connections and stops the Server-Sent Events reactor on Linux. It waits up to 25 seconds for in-flight requests, joins the WAL committers, and flushes telemetry (`src/main.rs:445-464`, `src/main.rs:575-591`). It does not force a checkpoint, so the next boot may replay the WAL.
 
 ### Security boundary
 

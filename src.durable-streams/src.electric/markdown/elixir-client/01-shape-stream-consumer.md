@@ -224,7 +224,7 @@ A `must-refetch` resets the offset to `"-1"` (`lib/electric/client/shape_state.e
 
 `Message.parse/4` is a set of pattern matches (`lib/electric/client/message.ex:318-373`):
 
-"Input shape" means the pattern that the parser matches. A nested key such as `headers.control` is a map field `headers` whose value is a map with a field `control`; it is not a literal key with a dot in its name.
+"Input shape" means the pattern that the parser matches. A nested key such as `headers.control` is a map field `headers` whose value is a map with a field `control`. It is not a literal key with a dot in its name.
 
 | Input shape | Output | Citation |
 |-------------|--------|----------|

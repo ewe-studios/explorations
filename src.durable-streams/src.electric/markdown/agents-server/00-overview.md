@@ -17,7 +17,7 @@ The package name is `@electric-ax/agents-server`. The executable name is `electr
 
 ## The one-sentence architecture
 
-The server keeps the *control record* of every entity in Postgres, keeps the *event truth* in one append-only Durable Stream per entity, and connects the two with wake subscriptions and a scheduler.
+The server keeps the *control record* of every entity in Postgres and keeps the *event truth* in one append-only Durable Stream per entity. It connects the two with wake subscriptions and a scheduler.
 
 ```mermaid
 flowchart TB

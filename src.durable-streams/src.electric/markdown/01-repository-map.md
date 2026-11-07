@@ -4,7 +4,7 @@ title: Repository Map
 
 # Repository map: every package and what it does
 
-The Electric repository is a pnpm workspace monorepo. It holds eighteen packages. The Durable Streams repository is a second pnpm workspace with twenty-three packages. This document maps every package in both repositories.
+The Electric repository is a pnpm workspace monorepo. It holds eighteen packages. The Durable Streams repository is a second pnpm workspace. Its `packages/` directory has twenty-two subdirectories. Fifteen hold a `package.json` and are workspace packages; the other seven are language-client projects without one. This document maps every package in both repositories.
 
 ## Top-level layout of the Electric repository
 
@@ -25,7 +25,7 @@ electric/
 
 ## Electric package inventory
 
-The table orders packages by role, not alphabetically. The source-file count shows the relative size of each package. The count includes TypeScript and Elixir source files but excludes tests and generated code.
+The table orders packages by role, not alphabetically. The source-file count shows the relative size of each package. The count includes every TypeScript, TSX, and Elixir source file in the package, including test files. It excludes generated Durable Streams clients, which the table lists separately.
 
 ### Agent platform packages
 
@@ -64,7 +64,7 @@ durable-streams/
 ├── PROTOCOL.md              The complete protocol specification
 ├── CLIENT_MATURITY.md       Support level for each language client
 ├── IMPLEMENTATION_TESTING.md  Testing guidance for implementations
-├── packages/                23 workspace packages
+├── packages/                22 directories, 15 workspace packages
 ├── examples/                Example applications
 ├── docs/                    Protocol and implementation notes
 └── scripts/                 Release and test scripts
@@ -133,11 +133,13 @@ flowchart TD
     SRV --> PG[(PostgreSQL client)]
     AG["agents"] --> RT
     AG --> MCP["agents-mcp"]
-    CLI["electric-ax"] --> SRV
+    CLI["electric-ax"] --> RT
+    CLI --> AG
     UI["agents-server-ui"] --> RT
     UI --> DSCLIENT
     DESK["agents-desktop"] --> UI
     MOB["agents-mobile"] --> RT
+    MOB --> UI
     CONF["conformance-tests"] --> SRV
 ```
 
@@ -159,7 +161,7 @@ The three priority packages have the deepest coverage. They are `agents-runtime`
 
 ## Aha: the runtime has no server dependency
 
-`@electric-ax/agents-runtime` does not import `agents-server`. It talks to the control plane through HTTP only. The file `src/runtime-server-client.ts` defines `createRuntimeServerClient`, which wraps `fetch` calls to `/_electric/entity-types`, `/_electric/entities`, and related routes.
+`@electric-ax/agents-runtime` does not import `agents-server`. It talks to the control plane through HTTP only. The file `src/runtime-server-client.ts` defines `createRuntimeServerClient`, which wraps `fetch` calls to `/_electric/entities`, `/_electric/wake`, `/_electric/wake/unregister`, `/_electric/shared-state`, `/_electric/observations`, `/_electric/pg-sync/register`, and `/_electric/webhook-sources`.
 
 This separation means a runtime can run anywhere that can reach the server:
 
@@ -180,4 +182,4 @@ The server never calls runtime code directly except through the webhook endpoint
 
 ## Next
 
-Read [02-system-architecture.md](02-system-architecture.md) for the full request path.
+Read [02-system-architecture.md](02-system-architecture.md) for the full request path. Read [00-overview.md](00-overview.md) for the one-sentence architecture, and [README.md](README.md) for the reading order.

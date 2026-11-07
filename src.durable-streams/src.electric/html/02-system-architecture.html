@@ -130,10 +130,10 @@
   </nav>
   <article class="prose">
 <h1>System architecture: control plane, data plane, execution plane</h1>
-<p>Electric Agents has three planes. The <strong>control plane</strong> is a PostgreSQL-backed HTTP server. The <strong>data plane</strong> is a Durable Streams service. The <strong>execution plane</strong> is one or more agent runtimes. The planes communicate through HTTP and through signed webhooks. No plane shares memory with another.</p>
+<p>Electric Agents has three planes. The <strong>control plane</strong> is a PostgreSQL-backed HTTP server. The <strong>data plane</strong> is a Durable Streams service. The <strong>execution plane</strong> is one or more agent runtimes. The planes communicate through HTTP and through signed webhooks. The default deployment co-locates the control plane and the stream server in one process, but no plane shares application state with another.</p>
 <p>This document shows the full process topology, the boot order, the request path, the stream namespace, and the configuration surface.</p>
 <h2>Process topology</h2>
-<p>A production deployment runs four or more processes. The Docker Compose file <code>docker-compose.full.yml</code> defines three containers and one external service.</p>
+<p>A deployment needs at least two processes: PostgreSQL and the <code>electric-agents</code> server, which can embed the stream server. The Docker Compose file <code>docker-compose.full.yml</code> defines three services: <code>postgres</code>, <code>electric</code>, and <code>electric-agents</code>. The <code>electric</code> service is optional; it supplies the Electric Sync service that the wake registry uses to follow its registrations. A deployment that sets <code>ELECTRIC_AGENTS_DURABLE_STREAMS_URL</code> adds the external stream server as another process. The embedded stream server shares the <code>electric-agents</code> process.</p>
 <div class="mermaid">
 flowchart TB
     subgraph Browser[&quot;Browser&quot;]
@@ -141,8 +141,10 @@ flowchart TB
     end
     subgraph Server[&quot;agents-server container&quot;]
         HTTP[&quot;HTTP application&lt;br/&gt;port 4437&quot;]
-        RUNTIME_IN[&quot;embedded agents-runtime&quot;]
-        EMB[&quot;embedded DurableStreamTestServer&lt;br/&gt;optional&quot;]
+        EMB[&quot;embedded DurableStreamTestServer&lt;br/&gt;same process&quot;]
+    end
+    subgraph Runtime[&quot;agent runtime process&quot;]
+        RT[&quot;agents-runtime&lt;br/&gt;processWake and handler&quot;]
     end
     subgraph Streams[&quot;Durable Streams&quot;]
         DS[&quot;Durable Streams server&lt;br/&gt;/v1/stream&quot;]
@@ -158,13 +160,14 @@ flowchart TB
     HTTP --&gt; PG
     HTTP --&gt; DS
     HTTP --&gt; EL
+    HTTP --&gt;|signed webhook| RT
+    RT --&gt; DS
     DS --&gt; VOL
     EMB -.-&gt; DS
-    HTTP --&gt; RUNTIME_IN
-    RUNTIME_IN --&gt; DS
 
 </div>
-<p>The embedded stream server is optional. When <code>ELECTRIC_AGENTS_DURABLE_STREAMS_URL</code> is set, the server does not start an embedded one. When the variable is absent, the server starts <code>DurableStreamTestServer</code> in its own process and uses it as the backend.</p>
+<p>The entrypoint starts no handler. The agents-server forwards each subscription webhook to the runtime's registered URL, and the agents-runtime package processes it. The one handler that can share the server process is the mock handler: <code>createMockAgentBootstrap</code> registers a <code>chat</code> type and serves it at <code>/_electric/mock-agent-handler</code> when <code>mockStreamFn</code> is supplied programmatically (<code>packages/agents-server/src/server.ts:107-136, 262-270</code>).</p>
+<p>The embedded stream server is optional. When <code>ELECTRIC_AGENTS_DURABLE_STREAMS_URL</code> is set, the server does not start an embedded one. When the variable is absent, the server starts <code>DurableStreamTestServer</code> inside the same Node.js process and uses it as the backend.</p>
 <h2>Boot sequence</h2>
 <p>The entrypoint does six things in order. The order matters because the runtime needs the database before it can rebuild the wake registry, and it needs the stream server before it can serve any stream request.</p>
 <div class="mermaid">
@@ -195,9 +198,11 @@ sequenceDiagram
 <h3>Step 1: environment load</h3>
 <p><code>main()</code> calls <code>process.loadEnvFile()</code> and ignores the error when no <code>.env</code> file exists. Source: <code>packages/agents-server/src/entrypoint-lib.ts</code>.</p>
 <h3>Step 2: option resolution</h3>
-<p><code>resolveElectricAgentsEntrypointOptions(env, cwd)</code> reads every environment variable. It validates each URL and each port number. It returns a typed options object.</p>
-<table><tr><th>Setting</th><th>Environment variable</th><th>Default</th></tr><tr><td>Service identifier</td><td><code>ELECTRIC_AGENTS_SERVICE</code> or <code>SERVICE</code></td><td><code>default</code></td></tr><tr><td>Tenant identifier</td><td><code>ELECTRIC_AGENTS_TENANT_ID</code> or <code>TENANT_ID</code></td><td>none</td></tr><tr><td>Public base URL</td><td><code>ELECTRIC_AGENTS_BASE_URL</code> or <code>BASE_URL</code></td><td>derived from the listen address</td></tr><tr><td>Postgres URL</td><td><code>ELECTRIC_AGENTS_DATABASE_URL</code> or <code>DATABASE_URL</code></td><td>required</td></tr><tr><td>Durable Streams URL</td><td><code>ELECTRIC_AGENTS_DURABLE_STREAMS_URL</code>, <code>DURABLE_STREAMS_URL</code>, <code>STREAMS_URL</code></td><td>none; embedded server starts</td></tr><tr><td>Durable Streams bearer</td><td><code>ELECTRIC_AGENTS_DURABLE_STREAMS_BEARER</code></td><td>none</td></tr><tr><td>Streams data directory</td><td><code>ELECTRIC_AGENTS_STREAMS_DATA_DIR</code> or <code>STREAMS_DATA_DIR</code></td><td><code>${cwd}/.streams-data</code></td></tr><tr><td>Streams host</td><td><code>ELECTRIC_AGENTS_STREAMS_HOST</code></td><td><code>127.0.0.1</code></td></tr><tr><td>Streams port</td><td><code>ELECTRIC_AGENTS_STREAMS_PORT</code></td><td><code>0</code> (operating system chooses)</td></tr><tr><td>Electric URL</td><td><code>ELECTRIC_AGENTS_ELECTRIC_URL</code> or <code>ELECTRIC_URL</code></td><td>none</td></tr><tr><td>Electric secret</td><td><code>ELECTRIC_AGENTS_ELECTRIC_SECRET</code></td><td>none</td></tr><tr><td>Webhook signing key</td><td><code>ELECTRIC_AGENTS_WEBHOOK_SIGNING_PRIVATE_KEY</code></td><td>generated at start</td></tr><tr><td>HTTP host</td><td><code>ELECTRIC_AGENTS_HOST</code> or <code>HOST</code></td><td><code>0.0.0.0</code></td></tr><tr><td>HTTP port</td><td><code>ELECTRIC_AGENTS_PORT</code> or <code>PORT</code></td><td><code>4437</code></td></tr><tr><td>Working directory</td><td><code>ELECTRIC_AGENTS_WORKING_DIRECTORY</code> or <code>WORKING_DIRECTORY</code></td><td>process working directory</td></tr><tr><td>Dispatch recovery interval</td><td><code>ELECTRIC_AGENTS_DISPATCH_RECOVERY_INTERVAL_MS</code></td><td>disabled</td></tr><tr><td>Stale wake age</td><td><code>ELECTRIC_AGENTS_STALE_OUTSTANDING_WAKE_AFTER_MS</code></td><td>equal to the recovery interval</td></tr></table>
-<p>Source: <code>packages/agents-server/src/entrypoint-lib.ts:113-186</code>.</p>
+<p><code>resolveElectricAgentsEntrypointOptions(env, cwd)</code> reads the environment variables in the table below, including the listed aliases. It validates each URL and each port number. It returns a typed options object.</p>
+<table><tr><th>Setting</th><th>Environment variable</th><th>Default</th></tr><tr><td>Service identifier</td><td><code>ELECTRIC_AGENTS_SERVICE</code> or <code>SERVICE</code></td><td>None; falls back to the tenant identifier, then <code>default</code></td></tr><tr><td>Tenant identifier</td><td><code>ELECTRIC_AGENTS_TENANT_ID</code> or <code>TENANT_ID</code></td><td>Used only when the service identifier is unset; both unset gives <code>default</code></td></tr><tr><td>Public base URL</td><td><code>ELECTRIC_AGENTS_BASE_URL</code> or <code>BASE_URL</code></td><td>derived from the listen address</td></tr><tr><td>Postgres URL</td><td><code>ELECTRIC_AGENTS_DATABASE_URL</code> or <code>DATABASE_URL</code></td><td>required</td></tr><tr><td>Durable Streams URL</td><td><code>ELECTRIC_AGENTS_DURABLE_STREAMS_URL</code>, <code>DURABLE_STREAMS_URL</code>, <code>STREAMS_URL</code></td><td>none; embedded server starts</td></tr><tr><td>Durable Streams bearer</td><td><code>ELECTRIC_AGENTS_DURABLE_STREAMS_BEARER</code> or <code>DURABLE_STREAMS_BEARER</code></td><td>none</td></tr><tr><td>Streams data directory</td><td><code>ELECTRIC_AGENTS_STREAMS_DATA_DIR</code> or <code>STREAMS_DATA_DIR</code></td><td><code>${cwd}/.streams-data</code></td></tr><tr><td>Streams host</td><td><code>ELECTRIC_AGENTS_STREAMS_HOST</code> or <code>STREAMS_HOST</code></td><td><code>127.0.0.1</code></td></tr><tr><td>Streams port</td><td><code>ELECTRIC_AGENTS_STREAMS_PORT</code> or <code>STREAMS_PORT</code></td><td><code>0</code> (operating system chooses)</td></tr><tr><td>Electric URL</td><td><code>ELECTRIC_AGENTS_ELECTRIC_URL</code> or <code>ELECTRIC_URL</code></td><td>none</td></tr><tr><td>Electric secret</td><td><code>ELECTRIC_AGENTS_ELECTRIC_SECRET</code></td><td>none</td></tr><tr><td>Webhook signing key</td><td><code>ELECTRIC_AGENTS_WEBHOOK_SIGNING_PRIVATE_KEY</code> or <code>WEBHOOK_SIGNING_PRIVATE_KEY</code></td><td>generated at start</td></tr><tr><td>HTTP host</td><td><code>ELECTRIC_AGENTS_HOST</code> or <code>HOST</code></td><td><code>0.0.0.0</code></td></tr><tr><td>HTTP port</td><td><code>ELECTRIC_AGENTS_PORT</code> or <code>PORT</code></td><td><code>4437</code></td></tr><tr><td>Working directory</td><td><code>ELECTRIC_AGENTS_WORKING_DIRECTORY</code> or <code>WORKING_DIRECTORY</code></td><td>process working directory</td></tr><tr><td>Dispatch recovery interval</td><td><code>ELECTRIC_AGENTS_DISPATCH_RECOVERY_INTERVAL_MS</code></td><td>Disabled; parsed, but no open-source code consumes it</td></tr><tr><td>Stale wake age</td><td><code>ELECTRIC_AGENTS_STALE_OUTSTANDING_WAKE_AFTER_MS</code></td><td>Defaults to the recovery interval; parsed, but no open-source code consumes it</td></tr></table>
+<p>Source: <code>packages/agents-server/src/entrypoint-lib.ts:115-179</code>.</p>
+<p>The effective tenant identifier is <code>service ?? tenantId ?? 'default'</code> (<code>packages/agents-server/src/standalone-runtime.ts:70</code>, <code>packages/agents-server/src/tenant.ts:1</code>). The service identifier therefore wins over the tenant identifier.</p>
+<p>Electric Sync is optional. When <code>ELECTRIC_AGENTS_ELECTRIC_URL</code> is set, <code>rebuildWakeRegistry</code> calls <code>WakeRegistry.startSync</code>, which follows the <code>wake_registrations</code> table through a Shape stream. When it is absent, <code>rebuildWakeRegistry</code> calls <code>loadRegistrations</code> once (<code>packages/agents-server/src/entity-manager.ts:428-438</code>). A single server still receives registrations through in-process <code>register()</code> calls; the Shape stream keeps several server instances consistent. The Docker Compose file runs an <code>electric</code> service and sets the URL.</p>
 <h3>Step 3: embedded stream server</h3>
 <p><code>createEmbeddedStreamsServer</code> returns <code>undefined</code> when an external URL is set. Otherwise it constructs a <code>DurableStreamTestServer</code> with three settings:</p>
 <pre><code class="language-ts">return new DurableStreamTestServer({
@@ -207,16 +212,18 @@ sequenceDiagram
   webhooks: true,
 })
 </code></pre>
-<p>Source: <code>packages/agents-server/src/entrypoint-lib.ts:195-217</code>.</p>
+<p>Source: <code>packages/agents-server/src/entrypoint-lib.ts:181-211</code>.</p>
 <p>The <code>webhooks: true</code> flag is important. Without it, the stream server would not deliver subscription webhooks. The wake model depends on that delivery.</p>
+<p>The function <code>durableStreamTestServerBackendUrl</code> appends <code>/v1/stream</code> to the origin that the embedded server returns (<code>packages/agents-server/src/server.ts:141-149</code>). A user-supplied <code>durableStreamsUrl</code> is already a backend prefix, so it is used unchanged. Stream paths do not include the prefix. <code>StreamClient</code> joins the base URL and the stream path.</p>
 <h3>Step 4: migrations and database handle</h3>
-<p><code>runMigrations(postgresUrl)</code> applies migrations <code>0000</code> through <code>0016</code>. <code>createDb(postgresUrl)</code> opens a Drizzle database handle and a raw PostgreSQL client. Source: <code>packages/agents-server/src/server.ts:228-233</code>.</p>
+<p><code>runMigrations(postgresUrl)</code> applies migrations <code>0000</code> through <code>0016</code>. <code>createDb(postgresUrl)</code> opens a Drizzle database handle and a raw PostgreSQL client. Source: <code>packages/agents-server/src/server.ts:234-236</code>.</p>
 <h3>Step 5: standalone runtime</h3>
 <p><code>startStandaloneAgentsRuntime</code> constructs seven long-lived components:</p>
 <table><tr><th>Component</th><th>Responsibility</th></tr><tr><td><code>StreamClient</code></td><td>HTTP client for the Durable Streams server</td></tr><tr><td><code>PostgresRegistry</code></td><td>Entity, type, permission, and runner records</td></tr><tr><td><code>WakeRegistry</code></td><td>In-memory wake conditions, synchronized from PostgreSQL</td></tr><tr><td><code>Scheduler</code></td><td>Delayed sends and cron ticks</td></tr><tr><td><code>EntityBridgeManager</code></td><td>Bridges between entity streams and external sources</td></tr><tr><td><code>PgSyncBridgeManager</code></td><td>Bridges that replicate entity events to PostgreSQL</td></tr><tr><td><code>EntityManager</code></td><td>Entity lifecycle operations</td></tr></table>
-<p>It then runs <code>rebuildWakeRegistry</code>, <code>rehydrateCronSchedules</code>, and starts the bridge managers and the scheduler. Source: <code>packages/agents-server/src/standalone-runtime.ts:122-190</code>.</p>
+<p>It then runs <code>rebuildWakeRegistry</code>, <code>rehydrateCronSchedules</code>, and starts the bridge managers and the scheduler. Source: construction at <code>packages/agents-server/src/standalone-runtime.ts:65-118</code>; start sequence at <code>:150-181</code>.</p>
+<p>The <code>runtime</code> field of this result is an <code>ElectricAgentsTenantRuntime</code>, not the <code>agents-runtime</code> package. It performs control-plane work: wake dispatch, scheduler execution, bridge management, and per-wake token minting. The <code>agents-runtime</code> package materializes entity streams and runs handlers. It reaches the server over HTTP and never imports the server.</p>
 <h3>Step 6: HTTP listen</h3>
-<p>The server builds a WHATWG <code>Request</code>/<code>Response</code> adapter with <code>createServerAdapter</code>. The Node.js <code>http.Server</code> wraps the adapter. The server listens on the configured host and port. Source: <code>packages/agents-server/src/server.ts:246-252</code>.</p>
+<p>The server builds a WHATWG <code>Request</code>/<code>Response</code> adapter with <code>createServerAdapter</code>. The Node.js <code>http.Server</code> wraps the adapter. The server listens on the configured host and port. Source: <code>packages/agents-server/src/server.ts:253-260</code>.</p>
 <h2>Request path</h2>
 <p>A request passes through five stages.</p>
 <div class="mermaid">
@@ -238,25 +245,25 @@ sequenceDiagram
     M-&gt;&gt;M: spawnInner(typeName, body)
     M-&gt;&gt;DS: create(/assistant/abc/main, initial events)
     DS--&gt;&gt;M: stream created
-    M--&gt;&gt;C: 200 entity record
+    M--&gt;&gt;C: 201 entity record and x-write-token
 
 </div>
 <h3>Stage 1: tenant context</h3>
 <p><code>handleRequest</code> calls <code>buildTenantContext(request)</code>. This function resolves the calling principal. It calls the optional <code>authenticateRequest</code> hook first. If that returns nothing, it reads the <code>electric-principal</code> header. If no principal is found and the development fallback is allowed, it uses <code>system:dev-local</code>.</p>
 <p>The fallback is allowed when any of three conditions is true:</p>
 <ul><li><code>ELECTRIC_INSECURE === 'true'</code>.</li><li><code>NODE_ENV !== 'production'</code>.</li><li>The server owns an embedded Durable Streams server.</li></ul>
-<p>Source: <code>packages/agents-server/src/server.ts:389-405</code>.</p>
+<p>An explicit <code>allowDevPrincipalFallback</code> option overrides these conditions. Source: <code>packages/agents-server/src/server.ts:380-389</code>.</p>
 <h3>Stage 2: top-level routing</h3>
 <p>The <code>ossServerRouter</code> handles four cases in order:</p>
-<ol><li><code>/</code> redirects to <code>/__agent_ui/</code>.</li><li><code>/__agent_ui/*</code> serves the user interface.</li><li><code>/_electric/mock-agent-handler</code> serves the mock agent webhook.</li><li>Everything else goes to <code>globalRouter</code>.</li></ol>
-<p>Source: <code>packages/agents-server/src/routing/oss-server-router.ts:33-41</code>.</p>
+<ol><li><code>/</code> redirects to <code>/__agent_ui/</code>.</li><li><code>/__agent_ui/*</code> serves the user interface.</li><li><code>/_electric/mock-agent-handler</code> serves the mock agent webhook. Its handler uses the built-in <code>MOCK_CHAT_MODEL</code>, so a developer can test an entity without a model provider.</li><li>Everything else goes to <code>globalRouter</code>.</li></ol>
+<p>Source: <code>packages/agents-server/src/routing/oss-server-router.ts:37-41</code>.</p>
 <h3>Stage 3: global routing</h3>
 <p><code>globalRouter</code> routes by prefix:</p>
-<table><tr><th>Prefix</th><th>Handler</th><th>Purpose</th></tr><tr><td><code>/_electric/shared-state/*</code></td><td><code>durableStreamsRouter</code></td><td>Shared state streams</td></tr><tr><td><code>/_electric/pg-sync/register</code></td><td><code>internalRouter</code></td><td>Register a PostgreSQL sync bridge</td></tr><tr><td><code>/_electric/pg-sync/*</code></td><td><code>durableStreamsRouter</code></td><td>Read and write PostgreSQL sync streams</td></tr><tr><td><code>/_electric/*</code></td><td><code>internalRouter</code></td><td>All control-plane routes</td></tr><tr><td><code>*</code></td><td><code>durableStreamsRouter</code></td><td>Direct stream paths</td></tr></table>
+<table><tr><th>Prefix</th><th>Handler</th><th>Purpose</th></tr><tr><td><code>/_electric/shared-state/*</code></td><td><code>durableStreamsRouter</code></td><td>Shared state streams</td></tr><tr><td><code>/_electric/pg-sync/register</code></td><td><code>internalRouter</code></td><td>Register a PostgreSQL sync bridge</td></tr><tr><td><code>/_electric/pg-sync/*</code></td><td><code>durableStreamsRouter</code> for GET and HEAD; <code>internalRouter</code> (<code>pgSyncRouter</code>) for other methods</td><td>Read via the stream backend; write through the PostgreSQL sync router</td></tr><tr><td><code>/_electric/*</code></td><td><code>internalRouter</code></td><td>All control-plane routes</td></tr><tr><td><code>*</code></td><td><code>durableStreamsRouter</code></td><td>Direct stream paths</td></tr></table>
 <p>Source: <code>packages/agents-server/src/routing/global-router.ts:31-36</code>.</p>
 <p>The last rule is the key to the data plane. A request to <code>/assistant/abc/main</code> is not a control-plane request. It is a stream request. <code>durableStreamsRouter</code> forwards it to the Durable Streams backend.</p>
 <h3>Stage 4: internal routing</h3>
-<p><code>internalRouter</code> has base path <code>/_electric</code>. It handles health, wake registration, subscription webhooks, wake callbacks, runners, entities, entity types, PostgreSQL sync, observations, and the Electric proxy.</p>
+<p><code>internalRouter</code> has base path <code>/_electric</code>. It handles health, wake registration, subscription webhooks, wake callbacks, runners, entities, entity types, PostgreSQL sync, observations, and the Electric proxy. The observations routes under <code>/_electric/observations</code> create the backing streams for entity membership and cron schedules. The Electric proxy forwards Shape reads under <code>/_electric/electric/*</code> to the configured Electric Sync service.</p>
 <pre><code class="language-ts">internalRouter.get(`/health`, () =&gt; json({ status: `ok` }))
 internalRouter.post(`/wake`, withSchema(wakeRegistrationBodySchema), registerWake)
 internalRouter.post(`/wake/unregister`, withSchema(wakeUnregisterBodySchema), unregisterWake)
@@ -266,14 +273,14 @@ internalRouter.all(`/runners`, runnersRouter.fetch)
 internalRouter.all(`/entities/*`, entitiesRouter.fetch)
 internalRouter.all(`/entity-types/*`, entityTypesRouter.fetch)
 </code></pre>
-<p>Source: <code>packages/agents-server/src/routing/internal-router.ts:135-153</code>.</p>
+<p>Source: <code>packages/agents-server/src/routing/internal-router.ts:130-154</code>.</p>
 <h3>Stage 5: entity operations</h3>
-<p><code>entitiesRouter</code> has base path <code>/_electric/entities</code>. It exposes twenty-five routes. The most important routes are:</p>
+<p><code>entitiesRouter</code> has base path <code>/_electric/entities</code>. It exposes twenty-four routes. The most important routes are:</p>
 <table><tr><th>Method and path</th><th>Operation</th></tr><tr><td><code>GET /</code></td><td>List entities</td></tr><tr><td><code>PUT /:type/:instanceId</code></td><td>Spawn an entity</td></tr><tr><td><code>GET /:type/:instanceId</code></td><td>Get an entity</td></tr><tr><td><code>HEAD /:type/:instanceId</code></td><td>Check entity existence</td></tr><tr><td><code>DELETE /:type/:instanceId</code></td><td>Kill an entity</td></tr><tr><td><code>POST /:type/:instanceId/signal</code></td><td>Send a signal</td></tr><tr><td><code>POST /:type/:instanceId/send</code></td><td>Send a message</td></tr><tr><td><code>POST /:type/:instanceId/collections/:collection</code></td><td>Write to a collection</td></tr><tr><td><code>POST /:type/:instanceId/fork</code></td><td>Fork the entity subtree</td></tr><tr><td><code>PUT /:type/:instanceId/schedules/:scheduleId</code></td><td>Upsert a schedule</td></tr><tr><td><code>POST /:type/:instanceId/grants</code></td><td>Grant a permission</td></tr></table>
-<p>Source: <code>packages/agents-server/src/routing/entities-router.ts:385-530</code>.</p>
+<p>Source: <code>packages/agents-server/src/routing/entities-router.ts:385-533</code>.</p>
 <h2>Stream namespace</h2>
 <p>Every stream has a path. The path determines its purpose.</p>
-<table><tr><th>Path pattern</th><th>Owner</th><th>Purpose</th></tr><tr><td><code>/{entityType}/{instanceId}/main</code></td><td>One entity</td><td>The entity event log</td></tr><tr><td><code>/principal/{encodedPrincipalKey}</code></td><td>One principal</td><td>The principal identity stream</td></tr><tr><td><code>/_electric/shared-state/{sharedStateId}</code></td><td>Several entities</td><td>Shared state between entities</td></tr><tr><td><code>/_cron/{base64url spec}</code></td><td>Scheduler</td><td>Cron tick stream</td></tr><tr><td><code>/_entities/{sourceRef}</code></td><td>Entity projector</td><td>Membership and tag projection</td></tr><tr><td><code>/{entityType}/{instanceId}/attachments/{attachmentId}</code></td><td>One entity</td><td>Attachment bytes</td></tr><tr><td><code>{runnerWakeStream}</code></td><td>One runner</td><td>Pull-wake delivery stream</td></tr></table>
+<table><tr><th>Path pattern</th><th>Owner</th><th>Purpose</th></tr><tr><td><code>/{entityType}/{instanceId}/main</code></td><td>One entity</td><td>The entity event log</td></tr><tr><td><code>/principal/{encodedPrincipalKey}/main</code></td><td>One principal</td><td>The main stream of the principal entity</td></tr><tr><td><code>/_electric/shared-state/{sharedStateId}</code></td><td>Several entities</td><td>Shared state between entities</td></tr><tr><td><code>/_cron/{base64url spec}</code></td><td>Scheduler</td><td>Cron tick stream</td></tr><tr><td><code>/_entities/{sourceRef}</code></td><td>Entity projector</td><td>Membership and tag projection</td></tr><tr><td><code>/{entityType}/{instanceId}/attachments/{attachmentId}</code></td><td>One entity</td><td>Attachment bytes</td></tr><tr><td><code>/runners/{runnerId}/wake</code></td><td>One runner</td><td>Pull-wake delivery stream</td></tr></table>
 <p>Source: <code>packages/agents-runtime/src/runtime-server-client.ts</code>, <code>packages/agents-runtime/src/cron-utils.ts</code>, <code>packages/agents-runtime/src/tags.ts</code>.</p>
 <h2>Storage in one view</h2>
 <p>The data plane stores three kinds of bytes:</p>
@@ -300,9 +307,9 @@ flowchart LR
 <p>The full storage analysis is in <a href="04-how-the-runtime-sets-up-a-stream.html">04-how-the-runtime-sets-up-a-stream.md</a> and <a href="durable-streams/05-storage-and-durability.html">durable-streams/05-storage-and-durability.md</a>.</p>
 <h2>Aha: the server is also a stream proxy</h2>
 <p>The same HTTP port serves the control plane and the data plane. A request to <code>/_electric/entities/...</code> goes to the control plane. A request to <code>/assistant/abc/main</code> goes to the stream backend. The router chooses by prefix.</p>
-<p>This design lets a browser read an entity stream without knowing the stream server address. The browser talks only to the agents-server. The server forwards the request with the correct bearer token. Source: <code>packages/agents-server/src/routing/durable-streams-router.ts</code>.</p>
+<p>This design lets a browser read an entity stream without knowing the stream server address. The browser talks only to the agents-server. The server replaces the <code>Authorization</code> header with the configured <code>durableStreamsBearer</code> value, which comes from <code>ELECTRIC_AGENTS_DURABLE_STREAMS_BEARER</code> (<code>packages/agents-server/src/routing/durable-streams-router.ts:136, 157-158</code>). Source: <code>packages/agents-server/src/routing/durable-streams-router.ts</code>.</p>
 <h2>Aha: the embedded server makes development instant</h2>
-<p>The default configuration needs one command and one database. The server starts its own stream server on an operating-system-chosen port. It stores data in <code>.streams-data</code> relative to the working directory. No container, no external service, and no network configuration are necessary.</p>
+<p>The default configuration needs one command and one PostgreSQL database. The server starts its own stream server on an operating-system-chosen port. It stores data in <code>.streams-data</code> relative to the working directory. Electric Sync is optional, and the entrypoint needs no model provider. No container, no external stream service, and no network configuration are necessary. An agent still needs a separate runtime process; the saving is that the control plane and the stream server need no external service.</p>
 <p>The tradeoff is that the embedded server is called a <em>test server</em>. It is not designed for multi-node production. Production deployments set <code>ELECTRIC_AGENTS_DURABLE_STREAMS_URL</code> and use a dedicated stream service.</p>
 <h2>Related documents</h2>
 <ul><li><a href="03-the-durable-stream-primitive.html">03-the-durable-stream-primitive.md</a> — the stream model.</li><li><a href="04-how-the-runtime-sets-up-a-stream.html">04-how-the-runtime-sets-up-a-stream.md</a> — stream creation.</li><li><a href="05-wake-dispatch-and-entity-lifecycle.html">05-wake-dispatch-and-entity-lifecycle.md</a> — wake delivery.</li><li><a href="agents-server/01-boot-and-configuration.html">agents-server/01-boot-and-configuration.md</a> — server detail.</li></ul>

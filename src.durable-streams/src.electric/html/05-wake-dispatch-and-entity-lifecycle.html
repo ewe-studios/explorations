@@ -130,12 +130,14 @@
   </nav>
   <article class="prose">
 <h1>Wake dispatch and entity lifecycle</h1>
-<p>A wake is a request to run an entity handler. Four sources can produce a wake: a stream subscription, a runner pull, a delayed send, and a cron tick. This document explains all four, how they are deduplicated, and how an entity moves between statuses.</p>
-<h2>The four wake sources</h2>
-<table><tr><th>Source</th><th>Produced by</th><th>Target</th><th>Transport</th></tr><tr><td>Stream subscription</td><td>Durable Streams</td><td>Runtime webhook</td><td>Signed HTTP <code>POST</code></td></tr><tr><td>Pull wake</td><td>Durable Streams subscription of type <code>pull-wake</code></td><td>Runner poll loop</td><td>Claim, ack, release</td></tr><tr><td>Delayed send</td><td>PostgreSQL <code>scheduled_tasks</code></td><td>Entity stream</td><td>Internal append</td></tr><tr><td>Cron tick</td><td>PostgreSQL <code>scheduled_tasks</code></td><td>Cron stream</td><td>Internal append</td></tr></table>
+<p>A wake is a request to run an entity handler. Five sources can produce a wake: a stream subscription, a runner pull, a delayed send, a cron tick, and a condition registration. This document explains all five, how they are deduplicated, and how an entity moves between statuses.</p>
+<h2>The five wake sources</h2>
+<table><tr><th>Source</th><th>Produced by</th><th>Target</th><th>Transport</th></tr><tr><td>Stream subscription</td><td>Durable Streams</td><td>Runtime webhook</td><td>Signed HTTP <code>POST</code></td></tr><tr><td>Pull wake</td><td>Durable Streams subscription of type <code>pull-wake</code></td><td>Runner poll loop</td><td>Claim, ack, release</td></tr><tr><td>Delayed send</td><td>PostgreSQL <code>scheduled_tasks</code></td><td>Entity stream</td><td>Internal append</td></tr><tr><td>Cron tick</td><td>PostgreSQL <code>scheduled_tasks</code></td><td>Cron stream</td><td>Internal append</td></tr><tr><td>Condition wake</td><td><code>WakeRegistry</code> condition match</td><td>Subscriber entity stream</td><td>Internal append of a <code>wake</code> event</td></tr></table>
+<p>The first two sources start at the stream transport. A delayed send starts at the scheduler, which appends to the entity stream, so it becomes a stream subscription wake. A cron tick starts at the scheduler, which appends to the cron stream; a cron wake registration is a condition on that stream, so the tick becomes a condition wake. The fifth source starts at a rule: a condition registration matches an event and writes a <code>wake</code> event into another entity's stream. That append then uses the first source. The sections below explain both layers.</p>
 <div class="mermaid">
 flowchart TD
     APP[&quot;Append to entity stream&quot;] --&gt; SUB{&quot;Subscription type&quot;}
+    APP --&gt; COND[&quot;Wake registration matches&quot;]
     SUB --&gt;|webhook| FW[&quot;Forward route&lt;br/&gt;/_electric/subscription-webhooks/:id&quot;]
     FW --&gt; RT[&quot;Runtime webhook&quot;]
     SUB --&gt;|pull-wake| WS[&quot;Runner wake stream&quot;]
@@ -143,8 +145,9 @@ flowchart TD
     CLAIM --&gt; RT
     SEND[&quot;Delayed send task&quot;] --&gt; APP
     CRON[&quot;Cron tick task&quot;] --&gt; CS[&quot;Cron stream /_cron/...&quot;]
-    CS --&gt; SUB2[&quot;Cron subscription&quot;]
-    SUB2 --&gt; RT
+    CS --&gt; COND
+    COND --&gt; WAPP[&quot;Append wake event&lt;br/&gt;to subscriber stream&quot;]
+    WAPP --&gt; SUB
     RT --&gt; HANDLER[&quot;Entity handler&quot;]
 
 </div>
@@ -156,19 +159,23 @@ flowchart TD
 <p>The subscription webhook URL is the agents-server forward route:</p>
 <pre><code class="language-text">${publicUrl}/_electric/subscription-webhooks/${encodeURIComponent(subscriptionId)}
 </code></pre>
-<p>Source: <code>packages/agents-server/src/routing/dispatch-policy.ts:326-331</code>.</p>
+<p>Source: <code>packages/agents-server/src/routing/dispatch-policy.ts:327-330</code>.</p>
 <p>The real target URL is in the <code>subscription_webhooks</code> table. The forward route reads it and rewrites loopback addresses when the target runs in another container.</p>
 <h3>Step 3: the forward route signs the request</h3>
-<p>The server adds a <code>webhook-signature</code> header. The signature is an Ed25519 signature over the request body. The runtime verifies it against the JSON Web Key Set (JWKS) at <code>/__ds/jwks.json</code>.</p>
-<p>Source: <code>packages/agents-server/src/webhook-signing.ts</code>.</p>
+<p>The server adds a <code>webhook-signature</code> header. The signature is an Ed25519 signature over the timestamp, a dot, and the request body, in that order. The runtime verifies it against the JSON Web Key Set (JWKS) at <code>/__ds/jwks.json</code>.</p>
+<p>Source: <code>packages/agents-server/src/webhook-signing.ts:88-106</code>; the signed bytes are built by <code>bytesWithTimestamp</code>. The runtime rebuilds the same bytes at <code>packages/agents-runtime/src/webhook-signature.ts:81</code>.</p>
 <h3>Step 4: the runtime claims the wake</h3>
-<p><code>processWake</code> calls the notification's callback with <code>{ epoch, wakeId }</code>. The callback returns a write token. The write token authorizes appends for this wake.</p>
+<p><code>processWake</code> calls the notification's callback with <code>{ epoch, wakeId }</code>. A claim request makes the server mint a <strong>per-wake write token</strong> (<code>routing/internal-router.ts:717-726, 904-912</code>). The token authorizes appends to the entity stream during this wake. The runtime sends it on producer writes.</p>
+<p>Three different secrets exist. They have different scopes, and the documentation must not merge them:</p>
+<table><tr><th>Name</th><th>Scope</th><th>Travels in</th></tr><tr><td>Per-entity write token</td><td>One entity stream</td><td><code>Authorization: Bearer</code> or <code>Electric-Claim-Token</code></td></tr><tr><td>Per-wake write token</td><td>One wake on one entity stream</td><td>The claim-token header selected by <code>claimTokenHeader</code></td></tr><tr><td>Pull-wake lease claim token</td><td>One pull-wake lease</td><td>Bearer token for the claim, acknowledge, and release routes</td></tr></table>
+<p>The entity row stores the per-entity token, and the spawn response returns it in the <code>x-write-token</code> header. The append path reads a token from <code>Authorization: Bearer</code> or <code>Electric-Claim-Token</code>. <code>EntityManager.isValidWriteToken</code> accepts the per-entity token only when no custom validator is configured. The standalone runtime supplies a validator that accepts only per-wake tokens, so the default server authorizes appends with the per-wake token. <a href="06-security-tenancy-and-permissions.html">06-security-tenancy-and-permissions.md</a> explains the validator.</p>
 <p>The claim and the stream preload run in parallel:</p>
 <pre><code class="language-ts">const [claimed] = await Promise.all([claimPromise, preloadPromise])
 </code></pre>
 <p>Source: <code>packages/agents-runtime/src/process-wake.ts:1210</code>.</p>
 <h3>Step 5: the runtime acknowledges</h3>
-<p>After the handler returns and the producer flushes, the runtime acknowledges the wake. A failed acknowledge leaves the wake open for recovery.</p>
+<p>After the handler returns and the producer flushes, the runtime acknowledges the wake by posting <code>{ epoch, done: true }</code> to the same callback. The server releases the claim row and clears the per-wake write token if this consumer still owns it (<code>packages/agents-server/src/routing/internal-router.ts:807-880</code>).</p>
+<p>A failed acknowledge leaves the wake unacknowledged. The subscription can deliver it again after the claim lease expires, and the dispatch deduplication prevents a second concurrent handler. The server declares two options for a periodic recovery loop: <code>ELECTRIC_AGENTS_DISPATCH_RECOVERY_INTERVAL_MS</code> and <code>ELECTRIC_AGENTS_STALE_OUTSTANDING_WAKE_AFTER_MS</code>. The entrypoint parses them (<code>packages/agents-server/src/entrypoint-lib.ts:168-175</code>), but no code in the open-source server consumes them. Recovery is therefore limited to the subscription lease.</p>
 <h2>Pull-wake dispatch</h2>
 <p>A pull-wake subscription is used when the runtime cannot accept inbound webhooks. Common cases are a laptop behind a network address translator, a sandbox, and a runner that the server cannot reach.</p>
 <h3>Setup</h3>
@@ -183,15 +190,20 @@ flowchart TD
 <p>Source: <code>packages/agents-server/src/routing/dispatch-policy.ts:297-310</code>.</p>
 <p>The wake stream is <code>runner.wake_stream</code> if the runner record has one. Otherwise it is <code>runnerWakeStream(runnerId)</code>.</p>
 <h3>Claim, ack, release</h3>
-<table><tr><th>Operation</th><th>Endpoint</th><th>Effect</th></tr><tr><td>Claim</td><td><code>POST /_electric/runners/:id/claim</code></td><td>Takes one wake, returns a claim token and a lease</td></tr><tr><td>Ack</td><td><code>POST /_electric/wake-callbacks/:consumerId</code></td><td>Marks the wake complete</td></tr><tr><td>Release</td><td>subscription release route</td><td>Returns the wake for another runner</td></tr></table>
+<table><tr><th>Operation</th><th>Endpoint</th><th>Effect</th></tr><tr><td>Claim</td><td><code>POST /_electric/runners/:id/claim</code></td><td>Takes one wake. <code>:id</code> is the runner identifier. Returns a pull-wake lease claim token and a lease</td></tr><tr><td>Ack</td><td><code>POST /_electric/wake-callbacks/:consumerId</code></td><td>Marks the wake complete. <code>:consumerId</code> is the wake identifier returned in the claim response. The bearer token is the pull-wake lease claim token</td></tr><tr><td>Release</td><td><code>POST {stream-base}/__ds/subscriptions/:id/release</code></td><td>Returns the wake for another runner. <code>:id</code> is the subscription identifier that owns the wake stream. The bearer token is the pull-wake lease claim token</td></tr></table>
 <p>A claim has a lease. If the runner crashes, the lease expires and another runner can claim the same wake.</p>
 <p>Source: <code>packages/agents-server/src/routing/runners-router.ts:130</code>.</p>
-<h2>Wake conditions</h2>
+<h2>Condition wakes: the wake registry</h2>
 <p>A wake registration has a condition. The <code>WakeRegistry</code> checks every event against every condition.</p>
 <table><tr><th>Condition</th><th>Matches when</th></tr><tr><td><code>runFinished</code></td><td>A <code>run</code> event changes to status <code>completed</code> or <code>failed</code></td></tr><tr><td><code>{ on: 'change', collections?, ops? }</code></td><td>A matching collection event occurs with a matching operation</td></tr></table>
 <p>Source: <code>packages/agents-server/src/wake-registry.ts:19-31</code>.</p>
+<h3>Where the events come from</h3>
+<p>The registry receives its registrations from a Shape stream, but it receives the events to match from the server's own append points. The server's append helper calls <code>evaluateWakePayload</code> after an append (<code>packages/agents-server/src/routing/stream-append.ts:151</code>). The PostgreSQL sync bridge calls <code>evaluateWakes</code> for each bridged event (<code>packages/agents-server/src/runtime.ts:107</code>). The cron scheduler calls it for each tick.</p>
+<h3>How a match becomes a wake</h3>
+<p><code>WakeRegistry.evaluate</code> returns one result for each matching registration. <code>deliverWakeResult</code> then appends one <code>wake</code> event to the subscriber entity's main stream. The producer identifier is <code>wake-reg-<registration database id>-<source event key></code>, so a repeated match is not a second wake. The append uses <code>appendIdempotent</code>, which starts every call at epoch 0 and sequence 1, so the same producer identifier presents the same tuple (<code>packages/agents-server/src/stream-client.ts:313-336</code>). That append is an ordinary stream append, so the subscriber's own subscription delivers the wake by webhook or by runner pull. Source: <code>packages/agents-server/src/entity-manager.ts:3289-3363</code>.</p>
+<p>This is why the registry is a wake source, not a wake transport. It turns a condition into a wake event; the stream subscription does the delivery.</p>
 <p>A registration also carries:</p>
-<table><tr><th>Field</th><th>Purpose</th></tr><tr><td><code>subscriberUrl</code></td><td>Where to send the wake</td></tr><tr><td><code>sourceUrl</code></td><td>Which stream to watch</td></tr><tr><td><code>debounceMs</code></td><td>Wait this long and merge events</td></tr><tr><td><code>timeoutMs</code></td><td>Fire even if no event arrives</td></tr><tr><td><code>oneShot</code></td><td>Remove the registration after the first wake</td></tr><tr><td><code>includeResponse</code></td><td>Include the matching event data</td></tr><tr><td><code>manifestKey</code></td><td>Tie the registration to a manifest entry</td></tr></table>
+<table><tr><th>Field</th><th>Purpose</th></tr><tr><td><code>subscriberUrl</code></td><td>The entity URL that receives the wake event</td></tr><tr><td><code>sourceUrl</code></td><td>The stream to watch</td></tr><tr><td><code>debounceMs</code></td><td>Wait this long and merge events</td></tr><tr><td><code>timeoutMs</code></td><td>Fire even if no event arrives</td></tr><tr><td><code>oneShot</code></td><td>Remove the registration after the first wake</td></tr><tr><td><code>includeResponse</code></td><td>Include the matching event data</td></tr><tr><td><code>manifestKey</code></td><td>Tie the registration to a manifest entry</td></tr></table>
 <p><strong>Aha: the wake registry is a shape consumer.</strong> The registry does not poll PostgreSQL. It opens an Electric Shape stream:</p>
 <pre><code class="language-ts">const stream = new ShapeStream&lt;WakeRegistrationShapeRow&gt;({
   url: electricUrlWithPath(electricUrl, `/v1/shape`).toString(),
@@ -231,8 +243,8 @@ flowchart TD
 <p>A cron schedule is encoded in a stream path:</p>
 <pre><code class="language-text">/_cron/&lt;base64url of {expression, timezone}&gt;
 </code></pre>
-<p><code>getCronStreamPath</code> in <code>packages/agents-runtime/src/cron-utils.ts</code> builds the path. <code>parseCronStreamPath</code> reverses it.</p>
-<p>On each tick the runtime appends a <code>cron_tick</code> event with an idempotent producer:</p>
+<p><code>getCronStreamPath</code> in <code>packages/agents-runtime/src/cron-utils.ts</code> builds the path. <code>parseCronStreamPath</code> reverses it. The <code>cron_tick</code> event is not one of the twenty entity event types; it belongs to the cron stream only.</p>
+<p>On each tick the agents-server scheduler calls <code>executeCronTick</code>, which appends a <code>cron_tick</code> event with an idempotent producer:</p>
 <pre><code class="language-ts">const tickEvent = {
   type: `cron_tick`,
   key: `tick-${tickNumber}`,
@@ -252,24 +264,26 @@ await this.streamClient.appendIdempotent(
 await this.manager.evaluateWakes(streamPath, tickEvent)
 </code></pre>
 <p>Source: <code>packages/agents-server/src/runtime.ts:388-419</code>.</p>
-<p>The producer identifier includes the tick number. A retry of the same tick deduplicates. A new tick gets a new identifier.</p>
+<p>The producer identifier includes the tick number. A retry of the same tick deduplicates. A new tick gets a new identifier. <code>appendIdempotent</code> creates a fresh <code>IdempotentProducer</code> with epoch 0. Its sequence starts at 1, so two calls with the same producer identifier present the same <code>(Producer-Id, 0, 1)</code> tuple (<code>packages/agents-server/src/stream-client.ts:313-336</code>).</p>
+<h3>How a cron tick becomes a wake</h3>
+<p>A cron schedule is a wake registration with three fields: <code>sourceUrl</code> is the cron stream path, <code>subscriberUrl</code> is the entity URL, and <code>condition</code> is <code>{ on: 'change' }</code> (<code>packages/agents-server/src/entity-manager.ts:2984-2997</code>). The registration also carries <code>manifestKey: schedule:<id></code>, and the entity stream holds a matching <code>manifest</code> event. The registration row is the source of truth on startup: <code>rehydrateCronSchedules</code> reads it, and the manifest replay does not recreate cron registrations.</p>
+<p><code>executeCronTick</code> appends the tick event and then calls <code>evaluateWakes(streamPath, tickEvent)</code>. The registry matches the registration's <code>change</code> condition against the <code>cron_tick</code> event. <code>deliverWakeResult</code> appends a <code>wake</code> event to the subscriber entity's main stream, and that stream's own subscription delivers the wake. No subscription watches the cron stream, and the cron stream has no handler of its own.</p>
 <h3>Rehydration on restart</h3>
 <p><code>rehydrateCronSchedules()</code> rebuilds cron state after a restart:</p>
 <ol><li>Read <code>wake_registrations</code>.</li><li>For each source that starts with <code>/_cron/</code>, parse the spec.</li><li>Recreate the cron stream if it is missing.</li><li>Register the next tick.</li></ol>
-<p>Then it replays each entity's <code>manifest</code> events from its main stream. A manifest entry can declare a cron schedule, a future send, a shared state link, or a child entity. Replay recreates those side effects.</p>
-<p>Source: <code>packages/agents-server/src/runtime.ts</code>.</p>
-<p><strong>Aha: schedules are derived, not primary.</strong> The manifest events in the entity stream are the source of truth for an entity's schedules. The <code>scheduled_tasks</code> table is a projection. After a restart, the server replays the manifests and rebuilds the projection. This means a schedule survives a database restore, as long as the stream survives.</p>
+<p>Then it replays each entity's <code>manifest</code> events from its main stream. Replay recreates three side effects: the entity-source projection for membership and tags, the shared-state link, and a pending future-send task. It does not recreate cron registrations, which come from <code>wake_registrations</code>, or child entities, which are separate rows.</p>
+<p>Source: <code>packages/agents-server/src/runtime.ts:148-186, 511-532</code>.</p>
+<p><strong>Aha: future sends are derived, not primary.</strong> The manifest events in the entity stream are the source of truth for an entity's future sends. The <code>scheduled_tasks</code> table is a projection. After a restart, the server replays the manifests and rebuilds the projection for each entity that it can list in the registry. Replay is idempotent: it closes the previous pending row for the same manifest key and inserts one fresh row (<code>packages/agents-server/src/scheduler.ts:126-165</code>). A future send therefore survives the loss of its task row, as long as the entity row and the stream survive. Cron schedules are different: <code>rehydrateCronSchedules</code> reads their specifications from <code>wake_registrations</code>, so they need that row too.</p>
 <h2>Entity lifecycle</h2>
-<p>An entity has seven statuses.</p>
+<p>The status type declares seven values.</p>
 <div class="mermaid">
 stateDiagram-v2
-    [*] --&gt; spawning: PUT entity
-    spawning --&gt; idle: spawn complete
+    [*] --&gt; idle: PUT entity
     idle --&gt; running: wake accepted
     running --&gt; idle: handler returns
+    idle --&gt; paused: SIGSTOP
     running --&gt; paused: SIGSTOP
     paused --&gt; idle: SIGCONT
-    idle --&gt; stopping: SIGTERM
     running --&gt; stopping: SIGTERM
     stopping --&gt; stopped: run ends
     idle --&gt; stopped: SIGTERM while idle
@@ -277,12 +291,13 @@ stateDiagram-v2
     running --&gt; killed: SIGKILL
 
 </div>
-<table><tr><th>Status</th><th>Meaning</th><th>Accepts normal writes</th></tr><tr><td><code>spawning</code></td><td>Creation in progress</td><td>No</td></tr><tr><td><code>running</code></td><td>A handler is active</td><td>Yes</td></tr><tr><td><code>idle</code></td><td>No handler is active</td><td>Yes</td></tr><tr><td><code>paused</code></td><td>Stopped by <code>SIGSTOP</code></td><td>Yes</td></tr><tr><td><code>stopping</code></td><td>A stop was requested</td><td>No</td></tr><tr><td><code>stopped</code></td><td>Stopped normally</td><td>No</td></tr><tr><td><code>killed</code></td><td>Killed</td><td>No</td></tr></table>
-<p>Source: <code>packages/agents-server/src/electric-agents-types.ts:19-26, 357-363</code>.</p>
+<table><tr><th>Status</th><th>Meaning</th><th>Accepts normal writes</th></tr><tr><td><code>spawning</code></td><td>Declared in the type; the open-source server never sets it</td><td>No</td></tr><tr><td><code>running</code></td><td>A handler is active</td><td>Yes</td></tr><tr><td><code>idle</code></td><td>No handler is active</td><td>Yes</td></tr><tr><td><code>paused</code></td><td>Stopped by <code>SIGSTOP</code></td><td>Yes</td></tr><tr><td><code>stopping</code></td><td>A stop was requested</td><td>No</td></tr><tr><td><code>stopped</code></td><td>Stopped normally</td><td>No</td></tr><tr><td><code>killed</code></td><td>Killed</td><td>No</td></tr></table>
+<p>Source: <code>packages/agents-server/src/electric-agents-types.ts:17-26, 28-36, 361-383</code>.</p>
+<p><code>entityData</code> sets <code>status: idle</code> before the insert (<code>packages/agents-server/src/entity-manager.ts:748-750</code>). No code writes <code>spawning</code>.</p>
 <p><code>rejectsNormalWrites</code> returns true for <code>stopping</code>, <code>stopped</code>, and <code>killed</code>. A write to such an entity returns an error, except for the system signal path that performs the transition.</p>
 <h3>Signals</h3>
 <p>Seven signals exist:</p>
-<table><tr><th>Signal</th><th>Expected result</th></tr><tr><td><code>SIGINT</code></td><td>Abort the active handler</td></tr><tr><td><code>SIGHUP</code></td><td>Reload or notify</td></tr><tr><td><code>SIGTERM</code></td><td>Stop; <code>idle</code> becomes <code>stopped</code>, <code>running</code> becomes <code>stopping</code></td></tr><tr><td><code>SIGKILL</code></td><td>Kill immediately; status becomes <code>killed</code></td></tr><tr><td><code>SIGSTOP</code></td><td>Pause; <code>idle</code> becomes <code>paused</code></td></tr><tr><td><code>SIGCONT</code></td><td>Resume; <code>paused</code> becomes <code>idle</code></td></tr><tr><td><code>SIGUSR</code></td><td>Application-defined</td></tr></table>
+<table><tr><th>Signal</th><th>Expected result</th></tr><tr><td><code>SIGINT</code></td><td>Abort the active handler</td></tr><tr><td><code>SIGHUP</code></td><td>Reload or notify</td></tr><tr><td><code>SIGTERM</code></td><td>Stop; <code>idle</code> becomes <code>stopped</code>, <code>running</code> becomes <code>stopping</code></td></tr><tr><td><code>SIGKILL</code></td><td>Kill immediately; status becomes <code>killed</code></td></tr><tr><td><code>SIGSTOP</code></td><td>Pause; <code>idle</code> or <code>running</code> becomes <code>paused</code></td></tr><tr><td><code>SIGCONT</code></td><td>Resume; <code>paused</code> becomes <code>idle</code></td></tr><tr><td><code>SIGUSR</code></td><td>Application-defined</td></tr></table>
 <p>Source: <code>packages/agents-server/src/electric-agents-types.ts:23-31, 366-380</code>.</p>
 <p>A signal is stored as an event in the entity stream, not only as a database update. This keeps the stream as the audit log. The runtime also reacts to signals during a wake. For example, <code>SIGINT</code> aborts the active handler invocation.</p>
 <p>Source: <code>packages/agents-runtime/src/process-wake.ts:868-872</code>.</p>
@@ -295,7 +310,7 @@ stateDiagram-v2
 <ol><li><strong>Idempotent producers.</strong> The producer tuple <code>(Producer-Id, Producer-Epoch, Producer-Seq)</code> deduplicates append retries.</li><li><strong>Wake identity.</strong> A wake has a <code>wakeId</code>. The server records the notification and the claim. A repeated delivery with the same identifier is not a new unit of work.</li><li><strong>Per-entity wake queue.</strong> The runtime tracks pending wakes per entity. A new wake for a busy entity waits in the queue instead of running two handlers in parallel.</li></ol>
 <p>Source: <code>packages/agents-runtime/src/create-handler.ts</code> (<code>dispatchWake</code>, <code>pendingWakes</code>) and <code>packages/agents-runtime/src/process-wake.ts</code> (<code>queuedNextWake</code>).</p>
 <h2>Aha summary</h2>
-<table><tr><th>Insight</th><th>Why it matters</th></tr><tr><td>The wake registry consumes an Electric Shape</td><td>Control-plane changes propagate through the same sync engine as user data</td></tr><tr><td>Cron schedules are projections of stream manifests</td><td>A schedule survives a database restore</td></tr><tr><td>Signals are stream events</td><td>The audit log and the control path agree</td></tr><tr><td>Claims have leases</td><td>A crashed runner does not block a wake forever</td></tr><tr><td>The forward route signs every delivery</td><td>The stream server never needs the runtime's address or secret</td></tr></table>
+<table><tr><th>Insight</th><th>Why it matters</th></tr><tr><td>The wake registry consumes an Electric Shape</td><td>Control-plane changes propagate through the same sync engine as user data</td></tr><tr><td>Cron schedules are stored as wake registrations</td><td>A restart rebuilds them from <code>wake_registrations</code>; the stream alone is not enough</td></tr><tr><td>Future sends are projections of stream manifests</td><td>A pending send survives the loss of its task row</td></tr><tr><td>Signals are stream events</td><td>The audit log and the control path agree</td></tr><tr><td>Claims have leases</td><td>A crashed runner does not block a wake forever</td></tr><tr><td>The forward route signs every delivery</td><td>The stream server never needs the runtime's address or secret</td></tr></table>
 <h2>Related documents</h2>
 <ul><li><a href="04-how-the-runtime-sets-up-a-stream.html">04-how-the-runtime-sets-up-a-stream.md</a> — stream creation.</li><li><a href="06-security-tenancy-and-permissions.html">06-security-tenancy-and-permissions.md</a> — signatures and grants.</li><li><a href="agents-server/05-wake-registry-and-scheduler.html">agents-server/05-wake-registry-and-scheduler.md</a> — server detail.</li><li><a href="agents-runtime/03-wake-processing.html">agents-runtime/03-wake-processing.md</a> — runtime detail.</li><li><a href="durable-streams/03-live-reads-and-subscriptions.html">durable-streams/03-live-reads-and-subscriptions.md</a> — protocol detail.</li></ul>
   </article>

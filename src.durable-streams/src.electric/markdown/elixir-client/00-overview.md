@@ -8,7 +8,7 @@ title: Overview
 
 A **shape** is a filtered subset of one PostgreSQL table. A **change message** describes one insert, update, or delete of one row. A **control message** describes protocol state. The values are `up-to-date` (the stream caught up) and `must-refetch` (the handle is invalid). An **offset** is a position in the stream that the client sends to resume. A **long poll** is one HTTP request that the server holds open until a change arrives or a timeout expires. A **409** is the HTTP status code Conflict; in this protocol it means that the server no longer holds the shape handle. A **cache buster** is a random query parameter that changes the URL so an HTTP cache cannot reuse an old response.
 
-The package has one central rule: **the protocol is the same for every consumer, and only the driving loop differs.** The streaming interface and the polling interface call the same `Electric.Client.Poll.request/3` function (`lib/electric/client/stream.ex:163`, `lib/electric/client.ex:606-625`). The streaming interface adds a buffer, an `Enumerable` implementation, and **fast-loop recovery**: detection of a server or cache that returns the same offset before the first `up-to-date`, with a reset and a backoff. It does not add a second protocol.
+The package has one central rule: **the protocol is the same for every consumer, and only the driving loop differs**. The streaming interface and the polling interface call the same `Electric.Client.Poll.request/3` function (`lib/electric/client/stream.ex:163`, `lib/electric/client.ex:606-625`). The streaming interface adds a buffer, an `Enumerable` implementation, and **fast-loop recovery**. Fast-loop recovery is detection of a server or cache that returns the same offset before the first `up-to-date`, with a reset and a backoff. It does not add a second protocol.
 
 ## Package facts
 
@@ -52,7 +52,7 @@ flowchart TD
     ENGINE --> STATE[ShapeState]
 ```
 
-An arrow means "the left box calls the right box". The shape definition feeds the client. The client builds either a stream or a direct poll call. Both use the same poll engine. The engine uses the HTTP fetch, the tag tracker, and the shape state, but the diagram omits the message parser and the expired-shape cache for space; both are part of the engine path.
+An arrow means "the left box calls the right box". The shape definition feeds the client. The client builds either a stream or a direct poll call. Both use the same poll engine. The engine uses the HTTP fetch, the tag tracker, and the shape state, but the diagram omits the message parser and the expired-shape cache for space. Both are part of the engine path.
 
 The shared engine is the key design choice. A correction to offset handling, cache busting, or move-out logic reaches both interfaces at the same time.
 
@@ -118,7 +118,7 @@ The client defines five message structs (`lib/electric/client/message.ex:7-314`)
 
 The table lists six rows because the two control values share one struct. The client also defines a `MoveInMessage` and a `MoveOutMessage` that the parser consumes internally.
 
-A `ChangeMessage` holds a `key`, a `value`, an optional `old_value`, a `headers` struct, and a request timestamp (`lib/electric/client/message.ex:117-147`). The `key` is the row identity string; the `value` is a map of column name to value, mapped by the configured `ValueMapper`; `old_value` holds the previous row for an update when the replica mode sends it (`lib/electric/client/message.ex:144`, `:149-153`).
+A `ChangeMessage` holds a `key`, a `value`, an optional `old_value`, a `headers` struct, and a request timestamp (`lib/electric/client/message.ex:117-147`). The `key` is the row identity string. The `value` is a map of column name to value, mapped by the configured `ValueMapper`. `old_value` holds the previous row for an update when the replica mode sends it (`lib/electric/client/message.ex:144`, `:149-153`).
 
 The `headers` struct carries `operation`, `relation`, `handle`, `lsn`, `txids`, `op_position`, `tags`, `removed_tags`, and `active_conditions` (`lib/electric/client/message.ex:39-50`). `lsn` is the PostgreSQL Log Sequence Number of the change. `txids` is the list of transaction identifiers that the change belongs to. `op_position` is the position inside the transaction. The three tag fields support the move-out algorithm.
 

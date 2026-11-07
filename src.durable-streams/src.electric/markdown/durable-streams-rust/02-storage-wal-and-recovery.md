@@ -118,7 +118,7 @@ Every writer sets the payload checksum flag (`src/wal/codec.rs:22-28`, `src/wal/
 
 ### WAL segments
 
-A WAL segment is 128 MiB by default (`src/wal/segment.rs:20-22`). On Linux, a new segment is created at full size with `fallocate`, a system call that reserves the disk blocks without writing them, and named by its first log sequence number (`src/wal/segment.rs:26`, `src/wal/segment.rs:59`).
+A WAL segment is 128 MiB by default (`src/wal/segment.rs:20-22`). On Linux, a new segment is created at full size with `fallocate`, a system call that reserves the disk blocks without writing them. The segment is named by its first log sequence number (`src/wal/segment.rs:26`, `src/wal/segment.rs:59`).
 
 One record must fit inside one segment. The framed size is the 38-byte header plus the payload. `reserve_and_stage` returns an error when that size exceeds the segment size (`src/wal/shard.rs:639-646`). With the default segment, a `wal`-mode append above roughly 128 MiB fails, even though the Hypertext Transfer Protocol (HTTP) parser accepts a body of up to 1 GiB (`src/api.rs:65-67`). When the next record would not fit, the server seals the active segment. Sealing truncates the file to the exact written length and fsyncs it. An exactly packed segment lets recovery find the next segment without ambiguity (`src/wal/shard.rs:660-712`).
 
@@ -233,11 +233,11 @@ The checkpoint has a strict order (`src/wal/shard.rs:826-848`, `src/wal/shard.rs
 
 The captured value in step 3 is the writer tail, not the durable tail. The barrier then makes the file durable up to at least that tail. A later append can extend the file past it, and that later append lands in the next checkpoint.
 
-The order is the safety proof. Before step 4, the WAL record is the only guaranteed durable copy of the bytes. A previous checkpoint may have flushed the page cache by accident, but the server does not rely on that. Step 4 makes the second copy durable. The recycle in step 7 must therefore happen strictly after step 4. The durable-tail map in step 5 must be durable before step 7, because it is the only proof of a stream's durable end after the WAL records are gone (`src/wal/shard.rs:1000-1022`, `src/wal/shard.rs:1055-1102`).
+The order is the safety proof. Before step 4, the WAL record is the only guaranteed durable copy of the bytes. A previous checkpoint may have flushed the page cache by accident, but the server does not rely on that. Step 4 makes the second copy durable. The recycle in step 7 must therefore happen strictly after step 4. The durable-tail map in step 5 must be durable before step 7. It is the only proof of a stream's durable end after the WAL records are gone (`src/wal/shard.rs:1000-1022`, `src/wal/shard.rs:1055-1102`).
 
 The `tails` file earns that role. The writer writes a temporary file, fsyncs its bytes, renames it, and fsyncs the shard directory (`src/wal/shard.rs:1082-1093`). The `checkpoint` file holds only the recycle floor. The code writes and renames it without an fsync (`src/wal/shard.rs:994-997`). That is safe because recovery always replays from the oldest retained record, not from the checkpoint floor (`src/wal/recovery.rs:189-190`).
 
-Step 8 is not part of the durability proof. If the server crashes between the recycle in step 7 and the sidecar flush in step 8, recovery takes the stream's durable end from `tails`, which step 5 already persisted (`src/wal/recovery.rs:149-159`). A sidecar write that crashes before its rename leaves the previous sidecar, and the maximum rule still selects the newer proof.
+Step 8 is not part of the durability proof. If the server crashes between the recycle in step 7 and the sidecar flush in step 8, recovery takes the stream's durable end from `tails`. Step 5 already persisted that value (`src/wal/recovery.rs:149-159`). A sidecar write that crashes before its rename leaves the previous sidecar, and the maximum rule still selects the newer proof.
 
 The proof is per stream, not per shard. The `tails` map records the tail of each touched stream at the moment its file is synced. A stream that no append touched in this interval keeps its earlier proof (or its sidecar proof). The recycle floor is the committer's durable LSN at step 1, so no record below the floor can be unlinked while its bytes lack a synced data-file copy (`src/wal/shard.rs:915-1022`).
 
@@ -263,13 +263,13 @@ sequenceDiagram
 
 Tiering is optional and off by default. With tiering off, no stream seals, the manifest stays empty, and the read path is one live data file (`src/tier.rs:1-16`).
 
-With `--tier s3` and a build that has the `tier` feature, the server seals the prefix of a stream once the unsealed part reaches `--tier-segment-bytes`, 8 MiB by default (`src/tier.rs:33-35`, `src/tier.rs:534-537`). It cuts only at `durable_tail`, so a byte that is not yet durable never enters a sealed object (`src/tier.rs:522-533`). For a JSON stream, the cut also lands on a whole-value boundary (`src/tier.rs:551-563`).
+With `--tier s3` and a build that has the `tier` feature, the server seals the prefix of a stream. It does this once the unsealed part reaches `--tier-segment-bytes`, 8 MiB by default (`src/tier.rs:33-35`, `src/tier.rs:534-537`). It cuts only at `durable_tail`, so a byte that is not yet durable never enters a sealed object (`src/tier.rs:522-533`). For a JSON stream, the cut also lands on a whole-value boundary (`src/tier.rs:551-563`).
 
 The seal writes a separate chunk file, fsyncs it, and fsyncs its directory. It then adds a `Local` entry to the per-stream manifest, raises `sealed_offset`, and persists the sidecar durably (`src/tier.rs:570-609`). The offload path then uploads the object, verifies its size with a head request, flips the entry to `Remote` durably, and only then unlinks the local chunk (`src/tier.rs:622-624`, `src/tier.rs:631-680`).
 
 A read below `sealed_offset` resolves to one or more segments. A read at or above it uses the live file. A range that crosses the boundary becomes a mix of slices, and a range below `base_offset` follows the parent chain of a fork (`src/tier.rs:905-944`).
 
-The live file keeps its sealed prefix until compaction. When that prefix reaches `--tier-compact-bytes`, 64 MiB by default, compaction rewrites the file with only the hot tail, which is the residual `[cut, tail)` that is not sealed. It writes that residual to a temp file and fsyncs the file and its directory. It then persists a `PendingCompaction { new_file_base, tail }` intent in the sidecar with the durable write, before it renames the temp file over the live file and raises `file_base` (`src/tier.rs:37-41`, `src/tier.rs:408-490`, `src/store.rs:369-372`). A crash after the intent is recoverable: the temp file holds the fsynced residual, so boot promotes it into place (`src/store.rs:800-812`). Sealing never weakens durability: it runs after the append is durable, and the manifest change is durable before the local chunk is removed. On boot, a segment still marked `Local` is offloaded again (`src/tier.rs:321-337`).
+The live file keeps its sealed prefix until compaction. When that prefix reaches `--tier-compact-bytes`, 64 MiB by default, compaction rewrites the file with only the hot tail, which is the residual `[cut, tail)` that is not sealed. It writes that residual to a temp file and fsyncs the file and its directory. It then persists a `PendingCompaction { new_file_base, tail }` intent in the sidecar with the durable write. After that, it renames the temp file over the live file and raises `file_base` (`src/tier.rs:37-41`, `src/tier.rs:408-490`, `src/store.rs:369-372`). A crash after the intent is recoverable: the temp file holds the fsynced residual, so boot promotes it into place (`src/store.rs:800-812`). Sealing never weakens durability: it runs after the append is durable, and the manifest change is durable before the local chunk is removed. On boot, a segment still marked `Local` is offloaded again (`src/tier.rs:321-337`).
 
 ## Recovery
 
@@ -301,7 +301,7 @@ sequenceDiagram
 
 Each shard replays in parallel, because the shards own disjoint stream sets (`src/wal/recovery.rs:105-117`). The replay starts at the oldest retained record, not at the checkpoint LSN (`src/wal/recovery.rs:124-160`, `src/wal/recovery.rs:189`). The code passes start LSN 0, so the scan begins below any retained segment. The persisted checkpoint LSN is not a start point.
 
-The sidecar pass is also the identity filter. An orphan data file, left by a crash between file creation and a durable sidecar write, is unlinked. An unparsable sidecar is renamed to `.meta.corrupt`; its data file is kept and the stream is skipped for that boot, so an operator can repair it instead of losing acked data (`src/store.rs:700-735`).
+The sidecar pass is also the identity filter. An orphan data file, left by a crash between file creation and a durable sidecar write, is unlinked. An unparsable sidecar is renamed to `.meta.corrupt`; its data file is kept and the stream is skipped for that boot. An operator can then repair it instead of losing acked data (`src/store.rs:700-735`).
 
 Recovery applies only `Append` records. It skips `StreamCreate`, `StreamClose`, and `StreamDelete` records, because the sidecar pass already rebuilt stream identity, closure state, and deletion state (`src/wal/recovery.rs:189-201`).
 

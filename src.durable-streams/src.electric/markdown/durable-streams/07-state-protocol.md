@@ -393,7 +393,7 @@ case `reset`:
 
 This block is from `packages/state/src/stream-db.ts:360`.
 
-The reset also clears the key tracking and the pending writes. A reset that arrives in the middle of a batch discards the buffered writes that have not yet committed; the `onEvent` callbacks for events already seen in that batch have already run. The producer must send the new snapshot after the reset event; the document gives this as an implementation expectation, not a protocol rule.
+The reset also clears the key tracking and the pending writes. A reset that arrives in the middle of a batch discards the buffered writes that have not yet committed. The `onEvent` callbacks for events already seen in that batch have already run. The producer must send the new snapshot after the reset event; the document gives this as an implementation expectation, not a protocol rule.
 
 A `snapshot-start` or `snapshot-end` event does nothing in this implementation. The protocol defines them as hints, so this is allowed.
 

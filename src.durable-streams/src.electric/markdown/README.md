@@ -26,7 +26,7 @@ The most important question in this exploration is: **how does the runtime set u
 | 6 | [05-wake-dispatch-and-entity-lifecycle.md](05-wake-dispatch-and-entity-lifecycle.md) | Webhook wakes, pull wakes, the scheduler, and entity states |
 | 7 | [06-security-tenancy-and-permissions.md](06-security-tenancy-and-permissions.md) | Principals, grants, bearer tokens, signatures, tenancy |
 | 8 | [07-critical-assessment.md](07-critical-assessment.md) | Limits, risks, and open questions |
-| 9 | [08-glossary.md](08-glossary.md) | Every term and abbreviation |
+| 9 | [08-glossary.md](08-glossary.md) | Key terms and abbreviations |
 
 **Aha: one stream is the unit of everything.** An entity, its memory, its inbox, its audit log, and its wake cursor are all views of one append-only stream. The master documents follow that stream from creation, through delivery, to the stored bytes.
 
@@ -92,7 +92,7 @@ Each package has its own directory. Each directory has a `README.md` that indexe
 
 ## The one-paragraph architecture
 
-A user sends a message to an entity through the agents-server HTTP interface. The server writes an `inbox` event into the entity's stream. Durable Streams stores the event and notifies the entity's subscription. The subscription forwards a signed webhook to the agent runtime. The runtime reads the stream from its last acknowledged offset. It materializes the events into typed collections. It runs the entity handler. The handler writes new `runs`, `steps`, `texts`, and `toolCalls` events back into the same stream. The stream is the database, the message bus, and the audit log at the same time.
+A user sends a message to an entity through the agents-server HTTP interface. The server writes an `inbox` event into the entity's stream. Durable Streams stores the event and notifies the entity's subscription. The subscription forwards a signed webhook to the agent runtime. The runtime reads the stream from its last acknowledged offset. It materializes the events into typed collections. It runs the entity handler. The handler writes new `run`, `step`, `text`, and `tool_call` events back into the same stream. The stream is the database, the message bus, and the audit log at the same time.
 
 ```mermaid
 flowchart LR
@@ -112,8 +112,8 @@ Every claim in this exploration comes from the source code at the two commits ab
 ## Build
 
 ```bash
-cd electric
+cd src.durable-streams
 python3 -I build.py .
 ```
 
-The build reads `markdown/**/*.md` and writes `html/**/*.html` with the same directory layout.
+The build reads every `src.*/markdown/**/*.md` tree, including this one, and writes the matching `html/**/*.html` files with the same directory layout. It also writes the Resonate tree and the shared index.

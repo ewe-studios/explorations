@@ -17,7 +17,7 @@ Four steps turn a protocol into a testable model.
 3. **Law.** Write one sentence that must stay true.
 4. **Scenario.** Write the law as a Behavior-Driven Development (BDD) case.
 
-The operations are: create (a `PUT` request), append (a `POST` request), close (a `POST` request with `Stream-Closed: true`), read (a `GET` request), head (a `HEAD` request), delete (a `DELETE` request), fork (a `PUT` request with the headers `Stream-Forked-From`, `Stream-Fork-Offset`, and `Stream-Fork-Sub-Offset`), subscription create (a `PUT` request under the `__ds` prefix), and the four subscription actions (callback, claim, acknowledgement, and release). For each operation, five questions apply: what changes, what must not change, what is the inverse, what happens twice, and what happens when the order changes. Append is the worked example.
+The operations are create, append, close, read, head, delete, fork, subscription create, and four subscription actions. Create is a `PUT` request and append is a `POST` request. Close is a `POST` request with `Stream-Closed: true`. Read is a `GET` request, head is a `HEAD` request, and delete is a `DELETE` request. Fork is a `PUT` request with the headers `Stream-Forked-From`, `Stream-Fork-Offset`, and `Stream-Fork-Sub-Offset`. Subscription create is a `PUT` request under the `__ds` prefix. The four subscription actions are callback, claim, acknowledgement, and release. For each operation, five questions apply: what changes, what must not change, what is the inverse, what happens twice, and what happens when the order changes. Append is the worked example.
 
 | Question | Example for append |
 |----------|--------------------|
@@ -176,7 +176,7 @@ This table names the protocol errors. The model in Section 10 implements the err
 
 The text `INVALID_OFFSET` names two results with different statuses. A malformed read offset reports status 400. An acknowledgement that is `-1`, that moves the cursor back, that exceeds the tail, or that names an unlinked stream reports status 409. A reader must use the status and the operation, not the code text alone.
 
-The abbreviations are: BDD (Behavior-Driven Development), DS (Durable Stream), GC (Garbage Collection), HTTP (Hypertext Transfer Protocol), JSON (JavaScript Object Notation), LMDB (Lightning Memory-Mapped Database), SHA-256 (Secure Hash Algorithm 256-bit), TTL (Time To Live), and URL (Uniform Resource Locator).
+The abbreviations are: BDD (Behavior-Driven Development), DS (Durable Stream), GC (Garbage Collection), HTTP (Hypertext Transfer Protocol), and JSON (JavaScript Object Notation). The other abbreviations are LMDB (Lightning Memory-Mapped Database), SHA-256 (Secure Hash Algorithm 256-bit), TTL (Time To Live), and URL (Uniform Resource Locator).
 
 ### 3.1 The terms
 
@@ -202,7 +202,7 @@ These terms are used before their full explanation in the laws. A reader can ret
 - **Expiry.** The effect of either control. An expired stream is treated as absent. A delete or another access that finds a live fork marks the stream soft deleted instead. A create removes or replaces the stream and does not apply that mark (DS-8). Expiry is evaluated on access, not stored as a state.
 - **Subscription.** A stored rule with an identifier, a path pattern or a stream list, a delivery type, and a lease time in milliseconds.
 - **Wake.** One notification that a subscription sends to its worker after its linked streams grow. A wake is either a webhook call or a message on a wake stream.
-- **Wake payload.** The webhook body or the pull-wake event. It holds the subscription identifier, the wake identifier, the generation, and one record per linked stream with the path, the link type, the acknowledged offset, the tail offset, and the pending flag.
+- **Wake payload.** The webhook body or the pull-wake event. It holds the subscription identifier, the wake identifier, and the generation. It also holds one record per linked stream, with the path, the link type, the acknowledged offset, the tail offset, and the pending flag.
 - **Callback.** The webhook worker's report. It carries the wake identifier, the generation, an optional list of acknowledgements, and a `done` flag.
 - **Claim.** The pull-wake worker's request for the lease. It names the worker, and the reply carries the wake identifier, the generation, a token, the linked streams, and the lease time.
 - **Acknowledgement (ack).** A request that records a processed offset for one stream. An ack without `done` extends the lease.
@@ -226,7 +226,7 @@ Two facts drive every later rule.
 
 **DS-3.** Closure is part of the configuration. A create that asks for a closed stream and finds an open stream is a conflict. The same rule applies in the other direction.
 
-**DS-4.** Create may carry initial bytes. The server commits the stream record, opens the log file, writes the initial bytes, and then applies the closure state. A fork that takes a sub-offset writes and flushes its prefix frame before the record commit, so the record never names bytes that are not on disk. Two crash windows are central. A crash after the record commit and before the file open leaves a record with no file, and recovery removes the record. A crash after the file open and before the initial write leaves an empty file, and recovery keeps an empty stream. A later create then returns that empty stream. A failed initial write, as opposed to a crash, rolls the record back. Two results are different for a sub-offset fork, because its file already holds the prefix frame: a crash after the record commit keeps a file that is not empty, and a crash after the file open does not leave an empty stream. Section 13.1 lists all five crash points and the sub-offset variant.
+**DS-4.** Create may carry initial bytes. The server commits the stream record, opens the log file, writes the initial bytes, and then applies the closure state. A fork that takes a sub-offset writes and flushes its prefix frame before the record commit, so the record never names bytes that are not on disk. Two crash windows are central. A crash after the record commit and before the file open leaves a record with no file, and recovery removes the record. A crash after the file open and before the initial write leaves an empty file, and recovery keeps an empty stream. A later create then returns that empty stream. A failed initial write, as opposed to a crash, rolls the record back. A sub-offset fork has a different result for the two crash windows, because its file already holds the prefix frame. A crash after the record commit keeps a file that is not empty. A crash after the file open does not leave an empty stream. Section 13.1 lists all five crash points and the sub-offset variant.
 
 **DS-5.** A new stream starts open unless the create request closes it.
 
@@ -234,7 +234,7 @@ Two facts drive every later rule.
 
 **DS-7.** A create on a soft-deleted path reports status 409. The path is not free until the last fork is removed.
 
-**DS-8.** A create on an expired path replaces the expired stream. Expiry is checked before the soft-deleted check, so this rule also applies to an expired soft-deleted stream. The store applies its delete rule first: with no live fork it removes the stream; with a live fork it marks the record soft deleted. It then writes the new stream record over that path. The response is status 201, because `has` reports an expired path as absent (`packages/server/src/server.ts:709`, `packages/server/src/file-store.ts:806-810`, `:1122-1126`). The soft-deleted mark does not survive the replacement. The in-memory store has no reference count, so it removes the entry in both cases and then creates the new one. In the file store the new record gets a new log directory, so the old segment file is left behind. The live fork keeps its record, but its inherited range resolves the source path to the new record and returns no messages: the replacement silently removes the prefix that the fork inherited.
+**DS-8.** A create on an expired path replaces the expired stream. Expiry is checked before the soft-deleted check, so this rule also applies to an expired soft-deleted stream. The store applies its delete rule first: with no live fork it removes the stream; with a live fork it marks the record soft deleted. It then writes the new stream record over that path. The response is status 201, because `has` reports an expired path as absent (`packages/server/src/server.ts:709`, `packages/server/src/file-store.ts:806-810`, `:1122-1126`). The soft-deleted mark does not survive the replacement. The in-memory store has no reference count, so it removes the entry in both cases and then creates the new one. In the file store the new record gets a new log directory, so the old segment file is left behind. The live fork keeps its record, but its inherited range resolves the source path to the new record and returns no messages. The replacement silently removes the prefix that the fork inherited.
 
 ### 4.2 Offset and read
 
@@ -296,7 +296,7 @@ Two facts drive every later rule.
 
 **DS-34.** An append with a close is atomic. A reader sees the appended messages and the closed state together.
 
-**DS-35.** An append to a closed stream is rejected with status 409, `Stream-Closed: true`, and the final offset. The one exception is a retry of the request that closed the stream: if the `(producer identifier, epoch, sequence)` triple equals the stored `closedBy` triple, the server returns status 204. The server checks the closed state before it applies the producer duplicate rule, so an old sequence from a producer that did not close the stream reports status 409, not status 204 under DS-28.
+**DS-35.** An append to a closed stream is rejected with status 409, `Stream-Closed: true`, and the final offset. The one exception is a retry of the request that closed the stream: if the `(producer identifier, epoch, sequence)` triple equals the stored `closedBy` triple, the server returns status 204. The server checks the closed state before it applies the producer duplicate rule. This means an old sequence from a producer that did not close the stream reports status 409, not status 204 under DS-28.
 
 **DS-36.** Delete of a stream with no live fork removes it at once. A second delete then reports status 404.
 
@@ -304,7 +304,7 @@ Two facts drive every later rule.
 
 **DS-38.** Delete of the last live fork removes that fork and then its soft-deleted source. The cascade repeats while the reference count is zero.
 
-**DS-39.** A time to live counts from the last access. The value is a sliding window in seconds. A read extends the deadline, including a long-poll wait and each pass of a Server-Sent Events stream. A close-only request extends it, except a producer close that the server refuses or answers as a duplicate: every one of those paths returns before the touch. An append that also closes the stream follows the append rule below: the server touches the stream after the store call returns, before it handles any duplicate or refusal result (`packages/server/src/server.ts:1539`). A `HEAD` request does not extend it. An append extends it when the store call returns a verdict. That covers an accepted append, a duplicate, a stale epoch, a sequence gap, and a refusal because another request closed the stream. It does not cover a refusal that the store raises as an error: a soft-deleted stream, a content-type mismatch, a `Stream-Seq` conflict, or invalid JSON. A create that finds an existing stream does not extend it.
+**DS-39.** A time to live counts from the last access. The value is a sliding window in seconds. A read extends the deadline, including a long-poll wait and each pass of a Server-Sent Events stream. A close-only request extends it, except a producer close that the server refuses or answers as a duplicate: every one of those paths returns before the touch. An append that also closes the stream follows the append rule below. The server touches the stream after the store call returns, before it handles any duplicate or refusal result (`packages/server/src/server.ts:1539`). A `HEAD` request does not extend it. An append extends it when the store call returns a verdict. That covers an accepted append, a duplicate, a stale epoch, a sequence gap, and a refusal because another request closed the stream. It does not cover a refusal that the store raises as an error: a soft-deleted stream, a content-type mismatch, a `Stream-Seq` conflict, or invalid JSON. A create that finds an existing stream does not extend it.
 
 **DS-39a.** An absolute expiry time is a fixed instant. The stream expires when the server clock reaches that instant, and no access moves it. A request that supplies both forms is rejected under DS-40. The two controls therefore do not interact: a stream uses one or the other.
 
@@ -329,7 +329,7 @@ Two facts drive every later rule.
 5. The fork offset must be within the range from the zero offset to the source tail, inclusive (400). This bounds check is not optional. It also rejects `-1` and `now`, because neither text sorts inside the range.
 6. The sub-offset must resolve inside the first message after the fork offset (400). A value past the end of that message is an error.
 
-The protocol does not define which condition the server checks first. The reference server checks the offset form and the sub-offset form in the Hypertext Transfer Protocol (HTTP) layer before it calls the store, and it checks the source conditions and the bounds inside the store.
+The protocol does not define which condition the server checks first. The reference server checks the offset form and the sub-offset form in the Hypertext Transfer Protocol (HTTP) layer before it calls the store. It checks the source conditions and the bounds inside the store.
 
 **DS-46.** A closed source is forkable. The source closure state does not carry over. The fork starts in the state that its own create request gives; with no close header, it starts open.
 
@@ -343,7 +343,7 @@ The protocol does not define which condition the server checks first. The refere
 
 **DS-50.** A subscription names either a path pattern or a list of streams. Its configuration is the type, the pattern, the sorted unique stream list, the delivery settings, the lease time in milliseconds, and the description. The delivery settings are the webhook address, or the wake stream, for the chosen type.
 
-**DS-51.** A subscription is idempotent by the hash of its normalized configuration. The normalization is: the type, the pattern, the stream list with duplicates removed and sorted, the webhook address, the wake stream, the lease time, and the description, in that fixed order. The hash is SHA-256 (Secure Hash Algorithm 256-bit) over the JavaScript Object Notation (JSON) text of that object. A second create with the same hash returns the same subscription with status 200. A create with the same identifier and a different hash reports status 409.
+**DS-51.** A subscription is idempotent by the hash of its normalized configuration. The normalization is: the type, the pattern, the stream list with duplicates removed and sorted, and the webhook address. The remaining fields are the wake stream, the lease time, and the description, in that fixed order. The hash is SHA-256 (Secure Hash Algorithm 256-bit) over the JavaScript Object Notation (JSON) text of that object. A second create with the same hash returns the same subscription with status 200. A create with the same identifier and a different hash reports status 409.
 
 **DS-52.** A subscription links an existing stream at its current tail. It does not replay history. A named stream that does not exist yet is linked at the zero offset, so its first message is pending. A stream that a pattern matches later is linked at `-1`, before its first matching append is delivered, so its whole history is pending. The difference is deliberate: a stream that existed at subscription creation is current, and a stream that arrives later is new.
 
@@ -407,7 +407,7 @@ Expiry is evaluated on access. It is not a stored state. The expiry edges are sh
 | Open or closed | Expiry, live fork | Soft deleted | The next access marks it |
 | Soft deleted | Expiry, live fork | Soft deleted | No change; the fork still holds it |
 
-The expiry rows apply only to an open or a closed stream. A removed stream has no record to expire. A soft-deleted stream with no fork cannot exist, because the cascade removes it. The diagram shows a Soft deleted → Removed edge for expiry without a fork, but a request never finds that state: the cascade removes the record as soon as its last reference goes. The edge is defensive only.
+The expiry rows apply only to an open or a closed stream. A removed stream has no record to expire. A soft-deleted stream with no fork cannot exist, because the cascade removes it. The diagram shows a Soft deleted → Removed edge for expiry without a fork, but a request never finds that state. The cascade removes the record as soon as its last reference goes. The edge is defensive only.
 
 Two rows need a note.
 
@@ -493,13 +493,13 @@ The diagram shows the success path. Each check has a failure outcome:
 - Step 6 returns 409 for a sequence regression.
 - Step 7 returns 400 for invalid JSON or an empty array.
 
-The protocol recommends the order in steps 3, 4, and 6; it is not mandatory. The recommendation puts the closed check before the content type check so that the client receives `Stream-Closed: true` when both conditions hold. The producer check comes before `Stream-Seq` so that a retry with both header sets is deduplicated. The header completeness check in step 2 is not in the protocol precedence list; the reference server applies it first because it cannot build a producer triple from a partial set.
+The protocol recommends the order in steps 3, 4, and 6; it is not mandatory. The recommendation puts the closed check before the content type check so that the client receives `Stream-Closed: true` when both conditions hold. The producer check comes before `Stream-Seq` so that a retry with both header sets is deduplicated. The header completeness check in step 2 is not in the protocol precedence list. The reference server applies it first because it cannot build a producer triple from a partial set.
 
 A close-only request with producer headers uses the producer rules. It can be a duplicate, a stale epoch, or a gap. A close-only request without producer headers is a simple idempotent close.
 
 A rejected append writes nothing. A duplicate append writes nothing and still reports success. The response alone does not tell a first write from a duplicate write. The client uses the producer triple as its transaction identifier. A duplicate body append still extends the time to live, because the request reaches the origin server. A duplicate close-only request with producer headers returns before the reference server updates the access time, so that one case does not extend it.
 
-The commit in step 9 is one LMDB transaction. The bytes in step 8 are written and flushed before that commit, so the metadata never acknowledges bytes that are not on disk. The commit advances the recorded tail with the producer state, the `Stream-Seq`, and the closure flag. If the process stops between steps 8 and 9, recovery reads the file and raises the recorded offset to the bytes on disk. The producer state and `Stream-Seq` are not advanced, so a retry is accepted and writes the bytes a second time. If the crash is after every frame of the batch, the log holds the batch twice. If the crash is inside the batch, the log holds the complete frames before the crash and the retry adds the whole batch, so the early messages appear twice and the later messages appear once. This is the cost of not writing the producer state first; the protocol does not define a repair for it.
+The commit in step 9 is one LMDB transaction. The bytes in step 8 are written and flushed before that commit, so the metadata never acknowledges bytes that are not on disk. The commit advances the recorded tail with the producer state, the `Stream-Seq`, and the closure flag. If the process stops between steps 8 and 9, recovery reads the file and raises the recorded offset to the bytes on disk. The producer state and `Stream-Seq` are not advanced, so a retry is accepted and writes the bytes a second time. If the crash is after every frame of the batch, the log holds the batch twice. If the crash is inside the batch, the log holds the complete frames before the crash and the retry adds the whole batch. This means the early messages appear twice and the later messages appear once. This is the cost of not writing the producer state first; the protocol does not define a repair for it.
 
 Source: `packages/server/src/file-store.ts:1221-1400`, `packages/server/src/server.ts:1355-1545`, `PROTOCOL.md:355-362`.
 
@@ -549,7 +549,7 @@ The model uses the same offset shape as the reference server: two zero-padded 16
 
 A message holds the decoded value. In JSON mode that value is a dictionary, a list, or a scalar; in every other mode it is the raw bytes. The model never mutates a stored value, and a caller must not. The real server stores the original bytes.
 
-The model has no HTTP layer, no byte framing, no recovery, no sub-offset, and no subscriptions. It commits the messages and the metadata together, because both live in memory. The real server writes the bytes first and commits the metadata after, which is the window that Section 8 describes. The model is also permissive in one place: it treats an omitted `Content-Type` on an append as the stream type, while the reference server requires the header on a body append.
+The model has no HTTP layer, no byte framing, no recovery, no sub-offset, and no subscriptions. It commits the messages and the metadata together, because both live in memory. The real server writes the bytes first and commits the metadata after, which is the window that Section 8 describes. The model is also permissive in one place. It treats an omitted `Content-Type` on an append as the stream type, while the reference server requires the header on a body append.
 
 ```python
 """A small executable model of the Durable Streams laws.
@@ -2118,7 +2118,7 @@ The server links a stream in two ways. An explicit stream list is linked at subs
 
 The third row is the reason for the difference. A stream that is linked at creation starts at its tail, and a stream that is linked later starts before its first message. A pattern subscription therefore does not replay the history of the streams that it saw at creation. It replays the whole history of a stream that arrives later.
 
-Each wake increments the generation. A callback, acknowledgement, or release must present the current generation, the current wake identifier, and a token from the current generation, or the server returns status 409 with the body `FENCED`. A claim takes no token. It reports status 409 `ALREADY_CLAIMED` when another holder is active. A lease timer bounds the work. When the timer fires, the server clears the holder and wakes the subscription again if an acknowledgement cursor is behind a tail. The pending test is `tail > acked_offset`. The cursor is inclusive, so a cursor equal to the tail is not pending. A cursor of `-1` is always pending for a stream with data.
+Each wake increments the generation. A callback, acknowledgement, or release must present the current generation, the current wake identifier, and a token from the current generation. If it does not, the server returns status 409 with the body `FENCED`. A claim takes no token. It reports status 409 `ALREADY_CLAIMED` when another holder is active. A lease timer bounds the work. When the timer fires, the server clears the holder and wakes the subscription again if an acknowledgement cursor is behind a tail. The pending test is `tail > acked_offset`. The cursor is inclusive, so a cursor equal to the tail is not pending. A cursor of `-1` is always pending for a stream with data.
 
 The protocol calls a subscription a durable cursor (DS-56). The Node.js reference server keeps the subscription map in memory, so a restart loses every subscription. The Cloudflare server implements no subscriptions at all: every `__ds` control request returns status 404 (`packages/server-cloudflare/src/handler.ts:115-120`). The Node.js server therefore does not meet DS-56 across a restart, and the Cloudflare server does not offer the feature. A server that must meet DS-56 needs persistent storage for the subscription records.
 

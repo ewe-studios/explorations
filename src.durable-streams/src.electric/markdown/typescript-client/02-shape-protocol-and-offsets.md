@@ -169,7 +169,7 @@ The entry has a maximum of 250 shapes. The cache removes the oldest entry when t
 
 The `electric-schema` header is a JSON object. Each key is a column name. Each value is a column description with a `type` and optional metadata. The citation is `src/types.ts:159-227`.
 
-The column types include `varchar` with a maximum length, `bpchar` with a length, time types with a precision, interval types with fields and precision, `bit` with a length, and `numeric` with precision and scale. The citation is `src/types.ts:164-215`.
+The column types include `varchar` with a maximum length, `bpchar` with a length, and time types with a precision. They also include interval types with fields and precision, `bit` with a length, and `numeric` with precision and scale. The citation is `src/types.ts:164-215`.
 
 The parser maps these types to JavaScript values:
 

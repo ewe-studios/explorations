@@ -82,7 +82,7 @@ The type is in `src/client.ts:300-555`.
 
 Reserved parameter names are `cursor`, `handle`, `live`, `offset`, and `cache-buster`. The client throws `ReservedParamError` when a caller supplies one. The citation is `src/client.ts:93-99`, `src/client.ts:165-171`, and `src/client.ts:2446-2455`.
 
-The `params` object also accepts the PostgreSQL-specific fields `table` (string), `columns` (array of column names), `where` (SQL string), `params` (array or numeric-keyed object of `WHERE` values), and `replica` (`default` or `full`). The citation is `src/client.ts:113-151`.
+The `params` object also accepts the PostgreSQL-specific fields `table` (string), `columns` (array of column names), and `where` (SQL string). It also accepts `params` (array or numeric-keyed object of `WHERE` values), and `replica` (`default` or `full`). The citation is `src/client.ts:113-151`.
 
 The subset request parameters use the prefix `subset__`. They are `subset__where`, `subset__params`, `subset__limit`, `subset__offset`, `subset__order_by`, `subset__where_expr`, and `subset__order_by_expr`. These names are internal to `requestSnapshot` and `fetchSnapshot`; they are not in the reserved-name set. The citation is `src/constants.ts:26-33`.
 

@@ -12,7 +12,7 @@ This document states what the code does well, what it does not do, and where a p
 
 The entity stream serves as the database, the message queue, the audit log, and the live feed. This removes a whole class of synchronization bugs. A reader that replays the stream gets the same state as a reader that never disconnected.
 
-The proof is in `packages/agents-runtime/src/entity-stream-db.ts`. The same `createStreamDB` call serves catch-up and live reads, because the underlying `DurableStream` handles both through one connection.
+The proof is in `packages/agents-runtime/src/entity-stream-db.ts`. The same `createEntityStreamDB` call, a wrapper over `createStreamDB`, serves catch-up and live reads, because the underlying `DurableStream` covers both through one SSE read connection.
 
 ### 2. Clean plane separation
 
@@ -30,7 +30,7 @@ The producer tuple makes retries safe without handler cooperation. `process-wake
 
 ## Limits and risks
 
-The twelve risks fall into four groups. The grouping shows which team must act: an operator, an application author, or the upstream project.
+The twelve risks fall into four groups. The grouping shows which team must act: an operator, the upstream project, or a documentation author.
 
 ```mermaid
 flowchart TD
@@ -57,14 +57,15 @@ flowchart TD
     CFG --> OP["Operator action"]
     STO --> UP["Upstream fix or reconciliation"]
     SCL --> UP
-    PKG --> DOC["Documentation work"]
+    R11 --> UP
+    R12 --> DOC["Documentation work"]
 ```
 
-**Aha: the deepest risk is not a defect in a component. It is that the default configuration is a development configuration.** Each individual mechanism is sound. The danger comes from the composition of defaults: an embedded test server, a development principal, and an unsigned-webhook option can all be active at once in a process that looks like production.
+**Aha: the deepest risk is not a defect in a component. It is that the default configuration is a development configuration.** Each individual mechanism is sound. The danger comes from the composition of defaults. An embedded test server, a development principal, and an unsigned-webhook option can all be active at once in a process that looks like production.
 
 ### 1. The default stream server is a test server
 
-The class is named `DurableStreamTestServer`. The agents-server uses it by default whenever `ELECTRIC_AGENTS_DURABLE_STREAMS_URL` is absent. Source: `packages/agents-server/src/entrypoint-lib.ts:195-217`.
+The class is named `DurableStreamTestServer`. The agents-server uses it by default whenever `ELECTRIC_AGENTS_DURABLE_STREAMS_URL` is absent. Source: `packages/agents-server/src/entrypoint-lib.ts:181-211`.
 
 A test server may lack:
 
@@ -79,9 +80,9 @@ The Docker Compose file names it as the default. A production deployment must se
 
 ### 2. The development principal can be enabled by accident
 
-`allowDevPrincipalFallback()` returns true when any of three conditions holds. One condition is simply that the server owns an embedded stream server. Source: `packages/agents-server/src/server.ts:393-401`.
+`allowDevPrincipalFallback()` returns true when any of three conditions holds. One condition is simply that the server owns an embedded stream server. An explicit option overrides these conditions. Source: `packages/agents-server/src/server.ts:380-389`.
 
-A server started with `NODE_ENV` unset and an embedded stream server accepts anonymous requests as `system:dev-local`. That principal bypasses every permission check.
+A server with an embedded stream server accepts anonymous requests as `system:dev-local`, even when `NODE_ENV=production`, unless the deployment sets `allowDevPrincipalFallback: false` or its authentication hook rejects every anonymous request. That principal bypasses every permission check.
 
 **Recommendation:** make the fallback opt-in through one explicit flag, and log a warning on every request that uses it.
 
@@ -89,19 +90,18 @@ A server started with `NODE_ENV` unset and an embedded stream server accepts ano
 
 PostgreSQL holds the entity row. Durable Streams holds the event bytes. The spawn path writes the row first and the stream second. If the process dies between the two writes, the row exists without a stream.
 
-The code handles the normal error path with a rollback. It cannot handle a process crash in the middle. Source: `packages/agents-server/src/entity-manager.ts:833-925`.
+The code handles the normal error path with a rollback. It cannot handle a process crash in the middle. Source: `packages/agents-server/src/entity-manager.ts:836-940`.
 
 ```mermaid
 sequenceDiagram
     participant M as EntityManager
     participant P as PostgreSQL
     participant D as Durable Streams
-    M->>P: INSERT entity row (status idle)
+    M->>P: INSERT entity row (status idle, streams.main set)
     P-->>M: committed
     Note over M,D: crash window<br/>the row exists, the stream does not
     M->>D: create main stream with initial body
     D-->>M: stream created
-    M->>P: update row with stream metadata
     Note over M,D: normal error path rolls back the row;<br/>a process crash cannot
 ```
 
@@ -131,9 +131,11 @@ The runtime mitigates this with an idle timeout. The worker stays warm for `idle
 
 ### 6. Webhook delivery depends on network reachability
 
-A webhook target must be reachable from the stream server. The code rewrites loopback addresses for Docker through `rewriteLoopbackWebhookUrl`. Source: `packages/agents-server/src/routing/dispatch-policy.ts:322`.
+A webhook target must be reachable from the stream server. The code rewrites loopback addresses for Docker through `rewriteLoopbackWebhookUrl`. Source: `packages/agents-server/src/utils/webhook-url.ts:1`; the call is at `packages/agents-server/src/routing/dispatch-policy.ts:319`.
 
 A runtime behind network address translation cannot use a webhook. It must use a pull-wake subscription and a runner.
+
+The server also declares `dispatchRecoveryIntervalMs` and `staleOutstandingWakeAfterMs` for a periodic loop that recovers expired dispatch claims and stale outstanding wakes (`packages/agents-server/src/server.ts:77-87`). The entrypoint parses both environment variables, but no open-source code reads the options after that. A wake stranded by a failed acknowledgement is therefore recovered only by the subscription's own claim lease.
 
 **Consequence:** the simple path works only when the runtime is on the same network as the server or has a public address.
 
@@ -155,7 +157,7 @@ const builtInAllowed =
   (await ctx.entityManager.registry.hasEntityPermission(...))
 ```
 
-Source: `packages/agents-server/src/permissions.ts:37-44`.
+Source: `packages/agents-server/src/permissions.ts:38-44`.
 
 A grant cannot revoke the creator's access. Only the authorization hook can deny it.
 
@@ -198,7 +200,7 @@ Neither the agents server nor the durable stream store has a limitations documen
 
 | Question | Why it matters |
 |----------|----------------|
-| How does a multi-node agents-server coordinate entity claims? | The `consumer_claims` table exists, but the OSS entrypoint starts one runtime |
+| How does a multi-node agents-server coordinate entity claims? | The `consumer_claims` table (a lease table for stream consumers) exists, but the OSS entrypoint starts one runtime |
 | What is the intended production stream backend? | The embedded server is a test server; no first-party production server for Node.js is named |
 | How should an operator repair a row without a stream? | No repair command exists |
 | How large can one entity stream grow before preload is unacceptable? | No benchmark in the repository answers this |

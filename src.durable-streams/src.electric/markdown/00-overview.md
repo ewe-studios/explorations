@@ -67,11 +67,11 @@ The runtime defines twenty event types. The five most important types are:
 
 | Event type | Collection | Meaning |
 |-----------|------------|---------|
-| `entityCreated` | `entityCreated` | The entity started, with its type, arguments, and parent |
+| `entity_created` | `entityCreated` | The entity started, with its type, arguments, and parent |
 | `inbox` | `inbox` | A message arrived for the entity |
 | `run` | `runs` | One handler execution started, finished, or failed |
 | `text` | `texts` | One complete text output from the model |
-| `toolCall` | `toolCalls` | One tool invocation, with its arguments and result |
+| `tool_call` | `toolCalls` | One tool invocation, with its arguments and result |
 
 Source: `packages/agents-runtime/src/entity-schema.ts` defines the full set of event types and their collections. `packages/agents-server/src/entity-manager.ts` writes the creation and inbox events.
 
@@ -91,7 +91,7 @@ sequenceDiagram
     D-->>R: events up to the tail
     R->>R: materialize events into collections
     R->>R: run handler
-    R->>D: append run, text, and toolCall events
+    R->>D: append run, text, and tool_call events
 ```
 
 The handler never receives state in the wake message. The wake carries a stream path, an offset, and a wake identifier. The handler rebuilds its state by reading the stream. This is why a restart loses nothing: the state is not in the process that died.

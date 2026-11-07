@@ -65,7 +65,7 @@ The hash includes every option key, but some values are lossy. A function is rep
 
 The hook builds `options` by removing `selector`. A custom selector is not part of the stream identity.
 
-**Aha:** the cache key is a serialized option object, not a uniform resource locator (URL). This choice makes cache sharing correct for authentication headers, user-specific parameters, and protocol flags. A URL-only key would merge two users into one stream and leak data. The cost is that functions are compared by source text, not by captured values, so a function that closes over user-specific data needs an explicit option that also changes the hash.
+**Aha:** the cache key is a serialized option object, not a uniform resource locator (URL). This choice makes cache sharing correct for authentication headers, user-specific parameters, and protocol flags. A URL-only key would merge two users into one stream and leak data. The cost is that functions are compared by source text, not by captured values. So a function that closes over user-specific data needs an explicit option that also changes the hash.
 
 ## `getShapeStream`
 

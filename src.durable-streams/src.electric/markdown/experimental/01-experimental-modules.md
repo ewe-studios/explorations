@@ -243,7 +243,7 @@ flowchart TD
 
 A shape marks a transaction complete in two ways. The two paths use different LSNs, and the difference is deliberate.
 
-**Path 1: the last change message.** When the whole group is up to date at the start of the batch and a change message has `headers.last === true`, the shape records that message's own `headers.lsn` (`src/multi-shape-stream.ts:445-454`). The code sets the entry to `max(current, lsn)`.
+**Path 1: the last change message**. When the whole group is up to date at the start of the batch and a change message has `headers.last === true`, the shape records that message's own `headers.lsn` (`src/multi-shape-stream.ts:445-454`). The code sets the entry to `max(current, lsn)`.
 
 The `isUpToDate` test is evaluated once at the start of `#accumulate`, before the method processes any message in the batch (`src/multi-shape-stream.ts:434`). This gives a strict rule: the batch that first makes the group up to date cannot also mark itself complete. That batch only proves that all shapes are now current. A later batch with `last === true` supplies the proof that the data was already current at the start. The cost is one extra batch of delay in some cases.
 
