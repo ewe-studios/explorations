@@ -87,7 +87,7 @@ The stream database merges the two maps with the built-in map first and the cust
 
 That override is narrow. The replacement entry keeps the custom definition. Its event type defaults to `state:<name>` unless the definition sets `type`, so it does not silently take over the built-in event type.
 
-The registration body has a different merge. It merges schemas into the registration JSON, and an explicit `stateSchemas` entry replaces a built-in schema with the same key. Document [02-runtime-handler-and-registration.md](02-runtime-handler-and-registration.md) shows that merge. Do not confuse the two sites.
+The registration body has a different merge. It merges schemas into the registration body in JavaScript Object Notation (JSON). An explicit `stateSchemas` entry replaces a built-in schema with the same key. Document [02-runtime-handler-and-registration.md](02-runtime-handler-and-registration.md) shows that merge. Do not confuse the two sites.
 
 ## The 20 built-in event schemas
 
@@ -264,7 +264,7 @@ Child status accepts `spawning`, `running`, `idle`, `paused`, `stopping`, `stopp
 
 ## Key insight
 
-**Key insight:** the built-in event set is a fixed contract, not a suggestion. Every entity starts with the same 20 collections even when it never uses most of them. A custom collection that reuses a built-in name replaces that entry, so the built-in collection is no longer addressable under its old name in that entity. The base set costs little at rest because the collections are projections. It gives every consumer, from the user interface to a replay tool, one stable vocabulary.
+**Key insight:** the built-in event set is a fixed contract, not a suggestion. Every entity starts with the same 20 collections even when it never uses most of them. A custom collection that reuses a built-in name replaces that entry. The built-in collection is then no longer addressable under its old name in that entity. The base set costs little at rest because the collections are projections. It gives every consumer, from the user interface to a replay tool, one stable vocabulary.
 
 The custom state layer is additive. A custom collection gets the default type `state:<name>` and the default primary key `key`. The runtime wraps the custom schema with virtual columns for timeline order and, when the collection is externally writable, the writing principal. The writing principal is the identity that sent the write. Document [04-entity-stream-db.md](04-entity-stream-db.md) explains those columns.
 

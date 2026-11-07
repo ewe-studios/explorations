@@ -87,7 +87,7 @@ export type { BuiltinAgentsServerOptions } from './server.js'
 
 Source: `packages/agents/src/index.ts:17-18`.
 
-The third group is the Model Context Protocol (MCP) type re-exports. An embedder uses these types to subscribe to registry state changes.
+The third group is the MCP type re-exports. An embedder uses these types to subscribe to registry state changes.
 
 ```ts
 export type {

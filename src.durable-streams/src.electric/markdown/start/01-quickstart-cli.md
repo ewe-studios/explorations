@@ -4,7 +4,7 @@ title: The Quickstart Command
 
 # The Quickstart Command
 
-`@electric-sql/start` is a sequential command. It parses arguments, obtains credentials, writes a project, installs packages, optionally runs migrations, and prints next steps. Each step depends on the result of the previous step. The command has no rollback.
+`@electric-sql/start` is a sequential command. It parses arguments, gets credentials, writes a project, installs packages, optionally runs migrations, and prints next steps. Each step depends on the result of the previous step. The command has no rollback.
 
 The entry point is `src/bin.ts:1-6`. The command logic is `src/cli.ts:169-281`.
 
@@ -23,13 +23,13 @@ The entry point is `src/bin.ts:1-6`. The command logic is `src/cli.ts:169-281`.
 
 A flag consumes the next array element and skips it. The citation is `src/cli.ts:24-29`.
 
-An unknown flag that starts with `-` is ignored. The parser has no branch for it. For example, `start --sorce my-app` ignores `--sorce` and treats `my-app` as the application name. The command then runs in the default provisioned mode. The citation is `src/cli.ts:44-46`.
+The parser ignores an unknown flag that starts with `-`. The parser has no branch for it. For example, `start --sorce my-app` ignores `--sorce` and treats `my-app` as the application name. The command then runs in the default provisioned mode. The citation is `src/cli.ts:44-46`.
 
 The parser exits with code 1 in three cases:
 
 1. A flag has no value.
-2. There is no application name.
-3. There is more than one application name.
+2. The parser finds no application name.
+3. The parser finds more than one application name.
 
 The citation is `src/cli.ts:25-28`, `src/cli.ts:49-57`, and `src/cli.ts:59-67`.
 
@@ -72,7 +72,7 @@ When `--source` is present, the command does not call the cloud interface. It re
 
 The citation is `src/cli.ts:197-225`.
 
-The secret is trimmed before storage. The database URL is trimmed before storage. The citation is `src/cli.ts:219-223`.
+The command trims the secret before storage. It trims the database URL before storage. The citation is `src/cli.ts:219-223`.
 
 The command sets `userProvidedCredentials` to true. The citation is `src/cli.ts:224`.
 
@@ -137,7 +137,7 @@ The function returns this object:
 
 The citation is `src/electric-api.ts:137-142`.
 
-Any error is wrapped with the prefix `Failed to provision Electric resources:`. The citation is `src/electric-api.ts:143-150`.
+The interface wraps any error with the prefix `Failed to provision Electric resources:`. The citation is `src/electric-api.ts:143-150`.
 
 ## The password prompt
 
@@ -150,11 +150,11 @@ Any error is wrapped with the prefix `Failed to provision Electric resources:`. 
 | Control-C | Write a newline and exit with code 1 | `src/cli.ts:120-123` |
 | Any printable character | Append the character and write `*` | `src/cli.ts:124-128` |
 
-The function saves `stdin.isRaw` and restores it on Enter. It does not restore raw mode on Control-C; it writes a newline and calls `process.exit(1)`. A terminal that stays in raw mode after cancel is possible. The citation is `src/cli.ts:97-98`, `src/cli.ts:107-113`, and `src/cli.ts:120-123`.
+The function saves `stdin.isRaw` and restores it on Enter. It does not restore raw mode on Control-C. It writes a newline and calls `process.exit(1)`. The terminal can stay in raw mode after a cancel. The citation is `src/cli.ts:97-98`, `src/cli.ts:107-113`, and `src/cli.ts:120-123`.
 
 When the input is not a TTY, the function falls back to a plain question. The citation is `src/cli.ts:89-92`.
 
-**Aha:** the non-TTY fallback is what makes the command automatable. A piped run cannot use raw mode, so the function uses `readline` and the secret appears in the input stream. The same code path serves an interactive user and a continuous integration (CI) job, without a separate non-interactive flag.
+**Aha:** the non-TTY fallback makes the command automatable. A piped run cannot use raw mode, so the function uses `readline` and the secret appears in the input stream. The same code path serves an interactive user and a continuous integration (CI) job. It needs no separate non-interactive flag.
 
 The command uses `promptPassword` only for the secret in the user-provided path. The database URL uses the visible `prompt`. The citation is `src/cli.ts:201-213`.
 
@@ -162,7 +162,7 @@ The command uses `promptPassword` only for the secret in the user-provided path.
 
 ## Template setup
 
-`setupTemplate` receives the application name and credentials. It computes the target path. A name of `.` uses the current working directory. Any other name is joined to the current working directory. The citation is `src/template-setup.ts:24-28`.
+`setupTemplate` receives the application name and credentials. It computes the target path. A name of `.` uses the current working directory. It joins any other name to the current working directory. The citation is `src/template-setup.ts:24-28`.
 
 ```mermaid
 flowchart TD
@@ -194,9 +194,9 @@ The citation is `src/template-setup.ts:32-37`.
 
 `gitpick` copies a subdirectory from a Git repository. It runs with `stdio: inherit`, so its output appears in the terminal. The citation is `src/template-setup.ts:34-37`.
 
-For `.`, the command does not pull a template. It configures the files that already exist. The function always writes `.env`, so the directory must be writable. It creates `.gitignore` when absent, or appends the environment entries when the existing text does not contain `.env`. It patches `package.json` only when that file exists; when `package.json` is absent, it skips the script patch without an error. The citation is `src/template-setup.ts:63-74` for `.gitignore` and `src/template-setup.ts:76-97` for `package.json`.
+For `.`, the command does not pull a template. It configures the files that already exist. The function always writes `.env`, so the directory must be writable. It creates `.gitignore` when absent, or appends the environment entries when the existing text does not contain `.env`. It patches `package.json` only when that file exists. When `package.json` is absent, it skips the script patch without an error. The citation is `src/template-setup.ts:63-74` for `.gitignore` and `src/template-setup.ts:76-97` for `package.json`.
 
-The command does not check whether the target directory exists or is empty. It passes the name to `gitpick`; the behavior for an existing directory is the behavior of that tool, not of this package. The citation is `src/template-setup.ts:32-37`.
+The command does not check whether the target directory exists or is empty. It passes the name to `gitpick`. The behavior for an existing directory is the behavior of that tool, not of this package. The citation is `src/template-setup.ts:32-37`.
 
 ### Environment file
 
@@ -218,7 +218,7 @@ ELECTRIC_SECRET=<value>
 BETTER_AUTH_SECRET=<value>
 ```
 
-The file is written with `writeFileSync`. An existing `.env` is replaced. The citation is `src/template-setup.ts:60`.
+The command writes the file with `writeFileSync`. It replaces an existing `.env`. The citation is `src/template-setup.ts:60`.
 
 ### Git ignore
 
@@ -255,9 +255,9 @@ The `<dashboard>` value is `getElectricDashboardUrl()`. It reads `ELECTRIC_DASHB
 
 The `claim` script opens a browser. It does not call the `claimResources` function in the package. The citation is `src/template-setup.ts:90` and `src/electric-api.ts:153-189`.
 
-The package file is written with two-space indentation. The citation is `src/template-setup.ts:93-95`.
+The command writes the package file with two-space indentation. The citation is `src/template-setup.ts:93-95`.
 
-Any error in this function is wrapped with the prefix `Template setup failed:`. The citation is `src/template-setup.ts:99-103`.
+The function wraps any error with the prefix `Template setup failed:`. The citation is `src/template-setup.ts:99-103`.
 
 ## Install and migrate
 
@@ -267,11 +267,11 @@ The working directory is the target application directory. For `.`, it is the cu
 
 A failed install does not stop silently. The command prints the failure, prints next steps with `showInstall` and `showMigrate` enabled, and exits with code 1. The citation is `src/cli.ts:240-248`.
 
-In the provisioned mode, the command then runs `pnpm migrate`. This runs the `migrate` script from the generated template `package.json`; that script applies the application schema to the database. The command does not define the script itself. The citation is `src/cli.ts:250-257` and `src/template-setup.ts:76-86`.
+In the provisioned mode, the command then runs `pnpm migrate`. This runs the `migrate` script from the generated template `package.json`. That script applies the application schema to the database. The command does not define the script itself. The citation is `src/cli.ts:250-257` and `src/template-setup.ts:76-86`.
 
 A failed migration prints next steps with `showMigrate` enabled and exits with code 1. The citation is `src/cli.ts:258-265`.
 
-The migrate step is skipped when the caller provided credentials. The citation is `src/cli.ts:251`.
+The command skips the migrate step when the caller provided credentials. The citation is `src/cli.ts:251`.
 
 ## Next steps
 
@@ -303,13 +303,13 @@ The command has two recovery paths and one generic path:
 
 | Failure | Behavior |
 |---------|----------|
-| Install | Print next steps with `showInstall` and `showMigrate`; exit 1 |
-| Migrate | Print next steps with `showMigrate`; exit 1 |
-| Provision, template, or any other error | Print `Setup failed:`; exit 1; no next steps |
+| Install | Print next steps with `showInstall` and `showMigrate`. Exit 1 |
+| Migrate | Print next steps with `showMigrate`. Exit 1 |
+| Provision, template, or any other error | Print `Setup failed:`. Exit 1. No next steps |
 
 The citations are `src/cli.ts:240-248`, `src/cli.ts:258-265`, and `src/cli.ts:274-280`.
 
-**Aha:** the command is a transaction with no rollback and no journal. For the two package-command failures, the recovery mechanism is the next-steps message. Each of those paths prints the exact commands that remain. Provisioning and template failures do not print recovery commands; the user must read the error and retry. The design assumes that a failed scaffold is easier to finish than to delete and repeat, but only for the install and migrate stages.
+**Aha:** the command is a transaction with no rollback and no journal. For the two package-command failures, the recovery mechanism is the next-steps message. Each of those paths prints the exact commands that remain. Provisioning and template failures do not print recovery commands. The user must read the error and retry. The design assumes that a failed scaffold is easier to finish than to delete and repeat, but only for the install and migrate stages.
 
 ## Related documents
 

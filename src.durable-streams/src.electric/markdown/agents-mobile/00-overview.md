@@ -96,7 +96,7 @@ Source: `packages/agents-mobile/package.json:19-61`.
 4. Users. The people who can receive access grants.
 5. Entity effective permissions. The computed permissions for the current user. One row answers one question: can this principal perform this action on this entity?
 
-The collections read shapes. User actions use Hypertext Transfer Protocol (HTTP) requests.
+The collections read shapes. User actions use HTTP requests.
 
 ```ts
 // packages/agents-mobile/src/lib/AgentsProvider.tsx:47-59
@@ -115,7 +115,7 @@ const value = useMemo<AgentsContextValue>(() => {
 }, [serverUrl])
 ```
 
-`AgentsContextValue` is the context type. It exposes the five collections and two actions. `signalEntity` sends a POSIX-style signal to an entity, such as `SIGINT` to stop the current run. `forkEntity` creates a new entity from a point in the source stream.
+`AgentsContextValue` is the context type. It exposes the five collections and two actions. `signalEntity` sends a Portable Operating System Interface (POSIX)-style signal to an entity, such as `SIGINT` to stop the current run. `forkEntity` creates a new entity from a point in the source stream.
 
 Each collection reads one table from the Electric shape endpoint. The entity collection is the largest:
 
@@ -215,7 +215,7 @@ A cloud URL with an agents token receives `Authorization: Bearer <token>`. A kno
 
 After the loading check, the root layout applies three redirect rules in order:
 
-1. A cold-start authentication callback goes to `/oauth/callback`. A cold-start callback is a launch Uniform Resource Locator (URL) that is an Open Authorization (OAuth) callback, delivered by the operating system when the application was not running.
+1. A cold-start authentication callback goes to `/oauth/callback`. A cold-start callback is a launch URL that is an Open Authorization (OAuth) callback. The operating system delivers it when the application was not running.
 2. A user who has not finished onboarding goes to `/onboarding`.
 3. A user without a server URL goes to `/server-setup`.
 
@@ -234,11 +234,11 @@ flowchart TD
 
 Source: `packages/agents-mobile/app/_layout.tsx:77-140`.
 
-`AgentsProvider` is mounted only when a server URL exists. Five route files call `useAgentsRouteGuard` because their screens call `useAgents()`: `index`, `new-session`, `session`, `session-share`, and `diagnostics`. The guard returns null while the application loads. It returns a redirect when onboarding is incomplete or when no server URL is set. Without the guard, a protected screen could render during a redirect chain and call `useAgents()` outside its provider, which throws `useAgents must be used inside AgentsProvider`. Expo Router can mount the destination route for a render or two before the root layout redirect catches up. Source: `packages/agents-mobile/src/lib/useAgentsRouteGuard.tsx:1-34`, `packages/agents-mobile/app/index.tsx:7`, and `packages/agents-mobile/app/session.tsx:77`.
+The root layout mounts `AgentsProvider` only when a server URL exists. Five route files call `useAgentsRouteGuard` because their screens call `useAgents()`: `index`, `new-session`, `session`, `session-share`, and `diagnostics`. The guard returns null while the application loads. It returns a redirect when onboarding is incomplete or when no server URL is set. Without the guard, a protected screen could render during a redirect chain. The screen could call `useAgents()` outside its provider, which throws `useAgents must be used inside AgentsProvider`. Expo Router can mount the destination route for a render or two before the root layout redirect catches up. Source: `packages/agents-mobile/src/lib/useAgentsRouteGuard.tsx:1-34`, `packages/agents-mobile/app/index.tsx:7`, and `packages/agents-mobile/app/session.tsx:77`.
 
 ## What this package does not own
 
-- **The agent runtime.** The device does not run wakes. The server dispatches them to a runner. A runner can be the desktop runtime on a computer, or a remote worker: a process on a server host that claims wakes over the network.
+- **The agent runtime.** The device does not run wakes. The server dispatches them to a runner. A runner can be the desktop runtime on a computer. It can also be a remote worker. A remote worker is a process on a server host that claims wakes over the network.
 - **The durable state.** Entities, streams, inbox rows, and grants live on the server.
 - **The chat transcript.** The chat log and state explorer are `agents-server-ui` code inside an Expo DOM component.
 - **The web application.** The package embeds two components from the web package. It does not embed the full single-page application.
@@ -248,7 +248,7 @@ Source: `packages/agents-mobile/app/_layout.tsx:77-140`.
 
 **Aha:** The mobile application has one active server URL but a remembered list of servers. `MobileAppState` stores the active URL in one key. `savedServers` stores every server that the user connected to. The server picker merges the saved list with the cloud list from `useCloudAgentServers`. That cloud list is live only while Electric Cloud answers. After the shutdown, it supplies no usable server, and the saved list alone fills the picker. A server switch changes one value, and `AgentsProvider` rebuilds the five collections for the new URL. This is simpler than the desktop model, where each window can show a different server. Source: `packages/agents-mobile/src/lib/MobileAppState.tsx:22-23`, `packages/agents-mobile/src/lib/savedServers.ts:4-19`, `packages/agents-mobile/src/lib/availableServers.ts:36-86`, and `packages/agents-mobile/src/lib/useAvailableServers.ts:15-29`.
 
-The collections are keyed by the URL, so a switch creates new collection identities:
+The code keys the collections by the URL, so a switch creates new collection identities:
 
 ```ts
 // packages/agents-mobile/src/lib/agentsClient.ts:197

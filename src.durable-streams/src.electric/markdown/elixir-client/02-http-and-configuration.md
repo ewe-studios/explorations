@@ -4,9 +4,9 @@ title: HTTP and Configuration
 
 # HTTP and Configuration
 
-This document lists every configuration option of `electric_client`, the path a request takes through the HTTP layer, the retry policy, and the authentication hooks. It also lists the optional Ecto, embedded, and mock backends. Every claim cites a path relative to the package root.
+This document lists every configuration option of `electric_client`. It traces the path a request takes through the Hypertext Transfer Protocol (HTTP) layer. It also covers the retry policy and the authentication hooks. It also lists the optional Ecto, embedded, and mock backends. Every claim cites a path relative to the package root.
 
-The client has one required decision: give it a `:base_url` or a full `:endpoint`. Every other option has a default. The default configuration creates an unauthenticated Hypertext Transfer Protocol (HTTP) client that retries transient failures and maps integers and floats.
+The client has one required decision: give it a `:base_url` or a full `:endpoint`. Every other option has a default. The default configuration creates an unauthenticated HTTP client that retries transient failures and maps integers and floats.
 
 ## The client options
 
@@ -88,21 +88,21 @@ Within `:request`, two keys have special handling:
 | Req option | Value | Reason |
 |------------|-------|--------|
 | `method` | From the request struct | Usually `:get`. |
-| `url` | Sorted and encoded request URL | Stable cache keys. |
+| `url` | Sorted and encoded Uniform Resource Locator (URL) | Stable cache keys. |
 | `headers` | Request headers then option headers | Later headers win. |
 | `retry` | Custom callback | Age-based retry window. |
 | `retry_log_level` | `false` | The client logs retries itself. |
 | `max_retries` | `10_512_000` | A practical "forever". |
 | `receive_timeout` | `60_000` milliseconds | Longer than the server's 20-second long poll. |
 
-The comment at `lib/electric/client/fetch/http.ex:117-121` explains the two unusual values. The source comment describes `10_512_000` retries as "~10 years"; at a one-second delay the count spans about 122 days, so the retry counter is not the practical limit. The `:timeout` option is the real limit: the callback stops when the request age plus the next delay exceeds `300` seconds. The large `max_retries` value exists so that Req itself never stops a retry sequence before the age policy does. With `timeout: :infinity`, the ten-year figure becomes the effective ceiling. The receive timeout must exceed the server long-poll time, or Req would abort a valid long poll.
+The comment at `lib/electric/client/fetch/http.ex:117-121` explains the two unusual values. The source comment describes `10_512_000` retries as "~10 years". At a one-second delay the count spans about 122 days, so the retry counter is not the practical limit. The `:timeout` option is the real limit: the callback stops when the request age plus the next delay exceeds `300` seconds. The large `max_retries` value exists so that Req itself never stops a retry sequence before the age policy does. With `timeout: :infinity`, the ten-year figure becomes the effective ceiling. The receive timeout must exceed the server long-poll time, or Req would abort a valid long poll.
 
 ### The retry policy
 
 `retry/5` has two clauses (`lib/electric/client/fetch/http.ex:165-206`):
 
 - With `:infinity`, it retries every transient failure and never stops (`lib/electric/client/fetch/http.ex:165-178`).
-- With a number of seconds, it retries only while the request age plus the next delay stays within the limit (`lib/electric/client/fetch/http.ex:180-206`).
+- With a value in seconds, it retries only within the limit. The request age plus the next delay must stay within the limit (`lib/electric/client/fetch/http.ex:180-206`).
 
 The default delay is full-jitter exponential backoff (`lib/electric/client/fetch/http.ex:241-247`):
 
@@ -135,7 +135,7 @@ The retry predicate has four cases (`lib/electric/client/fetch/http.ex:251-287`)
 | HTTP version 2 error `:unprocessed` | Yes | `lib/electric/client/fetch/http.ex:281-283` |
 | Any other exception | No | `lib/electric/client/fetch/http.ex:285-287` |
 
-This client builds GET requests for shape reads and DELETE requests for shape deletion on the HTTP path (`lib/electric/client.ex:684-687`); the embedded backend also handles DELETE (`lib/electric/client/embedded.ex:20-38`). The retry predicate does not restrict the method, so it would also retry a POST if a custom backend supplied one. The comment at `lib/electric/client/fetch/http.ex:192-194` gives the reason: the server endpoints are idempotent by design. This document does not describe a POST path, because the package has none.
+This client builds GET requests for shape reads and DELETE requests for shape deletion on the HTTP path (`lib/electric/client.ex:684-687`). The embedded backend also handles DELETE (`lib/electric/client/embedded.ex:20-38`). The retry predicate does not restrict the method, so it would also retry a POST if a custom backend supplied one. The comment at `lib/electric/client/fetch/http.ex:192-194` gives the reason: the server endpoints are idempotent by design. This document does not describe a POST path, because the package has none.
 
 ## Response decoding
 
@@ -150,7 +150,7 @@ This client builds GET requests for shape reads and DELETE requests for shape de
 
 The raw header values are wrapped in lists first (`lib/electric/client/fetch/response.ex:52-54`). A header can arrive more than once, so the decoder keeps the first value (`lib/electric/client/fetch/response.ex:74-76`).
 
-`Fetch.Request.uri/2` sorts the query parameters before encoding (`lib/electric/client/fetch/request.ex:83-93`). This is what makes two callers with the same shape produce the same Uniform Resource Locator (URL), and therefore the same coalesced request.
+`Fetch.Request.uri/2` sorts the query parameters before encoding (`lib/electric/client/fetch/request.ex:83-93`). This is what makes two callers with the same shape produce the same URL, and therefore the same coalesced request.
 
 ## Request coalescing
 
@@ -186,7 +186,7 @@ sequenceDiagram
 
 The request process authenticates the request before it fetches (`lib/electric/client/fetch/request.ex:153-158`). It turns any non-2xx response into `{:error, response}` (`lib/electric/client/fetch/request.ex:159-168`). This gives the poll engine one error shape for HTTP errors.
 
-The 409 path survives this uniform error shape. `Poll.request/3` inspects the status inside the error tuple before it builds a generic error: `{:error, %Fetch.Response{status: 409}}` goes to `handle_must_refetch/4`, and every other error response goes to `%Client.Error{}` (`lib/electric/client/poll.ex:85-98`). The transport does not raise on 409; the poll engine classifies it.
+The 409 path survives this uniform error shape. `Poll.request/3` inspects the status inside the error tuple before it builds a generic error. A `{:error, %Fetch.Response{status: 409}}` tuple goes to `handle_must_refetch/4`. Every other error response goes to `%Client.Error{}` (`lib/electric/client/poll.ex:85-98`). The transport does not raise on 409. The poll engine classifies it.
 
 ## Authentication
 
@@ -206,11 +206,11 @@ The contract requires every implementation to set `authenticated: true` on the r
 | Custom | Implement the behaviour and set `authenticated: true`. | `lib/electric/client/authenticator.ex:14-23` |
 | Test pseudo-auth | `{MockAuthenticator, salt: ...}`. Hashes table, columns, and where. | `lib/electric/client/authenticator/mock_authenticator.ex:24-44` |
 
-The header name needs care. The `Electric.Client.new/1` documentation example uses `{"authorize", "Bearer ..."}` (`lib/electric/client.ex:207-215`). The standard HTTP header name is `authorization`. The client does not treat either name specially; it passes every header through unchanged. Use the name that your Electric deployment expects. This document uses `authorization` because it is the standard name.
+The header name needs care. The `Electric.Client.new/1` documentation example uses `{"authorize", "Bearer ..."}` (`lib/electric/client.ex:207-215`). The standard HTTP header name is `authorization`. The client does not treat either name specially. It passes every header through unchanged. Use the name that your Electric deployment expects. This document uses `authorization` because it is the standard name.
 
-The Bearer row uses the HTTP `:headers` option, not the `:authenticator` option. A static token therefore bypasses the authenticator behaviour. The `:authenticator` option is for credentials that change per shape or per request. Both mechanisms can be present; the authenticator runs before the static headers are applied (`lib/electric/client/fetch/request.ex:155-158`, `lib/electric/client/fetch/http.ex:113`).
+The Bearer row uses the HTTP `:headers` option, not the `:authenticator` option. A static token therefore bypasses the authenticator behaviour. The `:authenticator` option is for credentials that change per shape or per request. Both mechanisms can be present. The authenticator runs before the code applies the static headers (`lib/electric/client/fetch/request.ex:155-158`, `lib/electric/client/fetch/http.ex:113`).
 
-There is no built-in Basic authentication module. A caller can build the `authorization` header and pass it through the HTTP `:headers` option.
+The package has no built-in Basic authentication module. A caller can build the `authorization` header and pass it through the HTTP `:headers` option.
 
 ### Authentication happens per shape
 
@@ -234,19 +234,19 @@ The Ecto modules compile only when Ecto is loaded (`lib/electric/client/ecto_ada
 | Schema module | Treat the module as a queryable that selects all fields. | `lib/electric/client/ecto_adapter.ex:12` |
 | `%Ecto.Query{}` | Extract table, columns, and WHERE clause. | `lib/electric/client/ecto_adapter.ex:13` |
 | `%Ecto.Changeset{}` | Extract table, namespace, and a column subset. | `lib/electric/client/ecto_adapter.ex:14` |
-| One-argument function | Call it with `%{}` to obtain a changeset. | `lib/electric/client/ecto_adapter.ex:16-17`, `lib/electric/client/ecto_adapter.ex:60-70` |
+| One-argument function | Call it with `%{}` to get a changeset. | `lib/electric/client/ecto_adapter.ex:16-17`, `lib/electric/client/ecto_adapter.ex:60-70` |
 
-The query path validates the query, extracts the table and namespace, computes the column list, renders the WHERE clause, and sets the parser to the Ecto adapter (`lib/electric/client/ecto_adapter.ex:21-40`).
+The query path validates the query and extracts the table and namespace. It computes the column list, renders the WHERE clause, and sets the parser to the Ecto adapter (`lib/electric/client/ecto_adapter.ex:21-40`).
 
 The three constructors have different jobs:
 
-- `Electric.Client.shape!/1` and `shape!/2` are the public entry points. With an Ecto value they call the adapter; with a table name they call `ShapeDefinition.new!/2`; with a `%ShapeDefinition{}` they return it unchanged (`lib/electric/client.ex:430-450`).
+- `Electric.Client.shape!/1` and `shape!/2` are the public entry points. With an Ecto value, they call the adapter. With a table name, they call `ShapeDefinition.new!/2`. With a `%ShapeDefinition{}`, they return it unchanged (`lib/electric/client.ex:430-450`).
 - `Electric.Client.ShapeDefinition.new!/2` builds a shape without Ecto. Use it when the caller builds the table, filter, and columns directly (`lib/electric/client/shape_definition.ex:119-135`).
 - `Electric.Client.for_shape/2` is a hidden helper (`@doc false`). It copies the shape parameters and the shape parser onto the client and returns a new client (`lib/electric/client.ex:628-635`). It does not create a shape. `stream/3` and `poll/4` call it for the caller.
 
 A changeset is not a query. It carries no WHERE clause. The adapter therefore builds a shape over every row of the table. The column list is the primary keys, then the fields marked as required, then the fields named by validations. It removes duplicates and keeps this order (`lib/electric/client/ecto_adapter.ex:80-97`). This is why the documentation says that a changeset "filters the table columns": it selects a column subset, not a row subset (`lib/electric/client.ex:394-404`). A caller that needs a row filter must use a query or `ShapeDefinition.new!/2`.
 
-The one-argument form exists for the common Phoenix pattern `&MyApp.Todo.changeset/1`. The adapter calls the function with an empty map to obtain a changeset, then applies the same column rule. It raises `ArgumentError` if the function returns something else (`lib/electric/client/ecto_adapter.ex:60-70`). A schema-less changeset also raises, with a message that points to `ShapeDefinition.new/2` (`lib/electric/client/ecto_adapter.ex:73-78`).
+The one-argument form exists for the common Phoenix pattern `&MyApp.Todo.changeset/1`. The adapter calls the function with an empty map to get a changeset, then applies the same column rule. It raises `ArgumentError` if the function returns something else (`lib/electric/client/ecto_adapter.ex:60-70`). A schema-less changeset also raises, with a message that points to `ShapeDefinition.new/2` (`lib/electric/client/ecto_adapter.ex:73-78`).
 
 ### Supported queries
 
@@ -258,7 +258,7 @@ JOIN, UPDATE, ORDER BY, HAVING, GROUP BY, DISTINCT
 
 These clauses change the row shape or the row order in a way that a shape cannot represent. A caller must simplify the query.
 
-The WHERE renderer is a copy of part of `Ecto.Adapters.Postgres.Connection` (`lib/electric/client/ecto_adapter/postgres.ex:5-18`). The source comment calls it a "horrendously hacked-at version" and gives the reason: Ecto makes only the whole-query generator public, and the adapter needs only the WHERE fragment. The copy therefore keeps the operator table, the literal quoting, and the parameter placeholders, and drops the rest. It supports the common comparison, arithmetic, boolean, pattern, null, and membership expressions.
+The WHERE renderer is a copy of part of `Ecto.Adapters.Postgres.Connection` (`lib/electric/client/ecto_adapter/postgres.ex:5-18`). The source comment calls it a "horrendously hacked-at version" and gives the reason. Ecto makes only the whole-query generator public, and the adapter needs only the WHERE fragment. The copy therefore keeps the operator table, the literal quoting, and the parameter placeholders, and drops the rest. It supports the common comparison, arithmetic, boolean, pattern, null, and membership expressions.
 
 The copy has a consequence. It follows the Ecto version that it was copied from, and it does not receive later Ecto fixes. The source comment states this risk directly: "Assuming, that is, that the original doesn't change much" (`lib/electric/client/ecto_adapter/postgres.ex:14`). A caller with an unusual expression should test the generated WHERE string.
 
@@ -269,7 +269,7 @@ The adapter maps every Ecto type to a loader (`lib/electric/client/ecto_adapter.
 | Ecto type | Mapping | Citation |
 |-----------|---------|----------|
 | `:boolean` | `"t"` and `"f"` to `true` and `false`. | `lib/electric/client/ecto_adapter.ex:186-193` |
-| `{:parameterized, {module, params}}` | JSON decode, then `module.load/3`. UUID types are dumped first. | `lib/electric/client/ecto_adapter.ex:195-226` |
+| `{:parameterized, {module, params}}` | JSON decode, then `module.load/3`. Universally Unique Identifier (UUID) types are dumped first. | `lib/electric/client/ecto_adapter.ex:195-226` |
 | `{:array, type}` | Recursive array decoder. | `lib/electric/client/ecto_adapter.ex:228-233` |
 | `:map` | JSON decode. | `lib/electric/client/ecto_adapter.ex:250-252` |
 | `:bitstring` | Text of binary digits to bitstring. | `lib/electric/client/ecto_adapter.ex:254-256` |
@@ -288,7 +288,7 @@ The array decoder parses nested braces, quoted elements, escaped quotes, and `NU
 
 Embedded mode runs the Electric shape application programming interface in the same virtual machine. It compiles only when `Electric.Shapes.Api` is present (`lib/electric/client/embedded.ex:1-2`). A **virtual machine** here is the Erlang virtual machine that runs both the client and the server. No socket, no Hypertext Transfer Protocol request, and no network address take part.
 
-`Electric.Client.embedded/1` builds the API object and passes it to a normal client (`lib/electric/client.ex:323-336`). Two settings make this work:
+`Electric.Client.embedded/1` builds the application programming interface (API) object and passes it to a normal client (`lib/electric/client.ex:323-336`). Two settings make this work:
 
 - **The term encoder.** The API is asked for `Electric.Shapes.Api.Encoder.Term` (`lib/electric/client.ex:329-330`). The normal server encodes change messages as JSON text. The term encoder produces Elixir terms directly, so the client does not decode JSON in this mode.
 - **The `elixir://` scheme.** The client base URL is `elixir://Electric.Client.Embedded` (`lib/electric/client.ex:332-333`). The client always parses a URL and builds request keys from it. A scheme that no transport reads gives a stable, unique endpoint string without a host name. The fetch implementation receives the request object, so the string never becomes a real connection.
@@ -298,9 +298,9 @@ The fetch implementation calls the API directly:
 - A GET request calls `Api.validate/2`, then `Api.serve_shape_log/1` (`lib/electric/client/embedded.ex:31-44`).
 - A DELETE request calls `Api.validate_for_delete/2`, then `Api.delete_shape/1` (`lib/electric/client/embedded.ex:19-29`).
 
-The response sets a dummy cursor of `0`. Embedded mode has no content delivery network, so a cursor has no cache-busting job. Header validation still requires the field, so the adapter supplies a constant (`lib/electric/client/embedded.ex:52-54`). The body is materialised in the requesting process with `Enum.to_list/1` before the response returns (`lib/electric/client/embedded.ex:54-58`). The source comment gives the reason: the shape process must be enumerated in the same process that made the API request, so that its cleanup runs correctly (`lib/electric/client/embedded.ex:55-57`).
+The response sets a dummy cursor of `0`. Embedded mode has no content delivery network, so a cursor has no cache-busting job. Header validation still requires the field, so the adapter supplies a constant (`lib/electric/client/embedded.ex:52-54`). The body is materialised in the requesting process with `Enum.to_list/1` before the response returns (`lib/electric/client/embedded.ex:54-58`). The source comment gives the reason. The client must enumerate the shape process in the same process that made the API request. This makes its cleanup run correctly (`lib/electric/client/embedded.ex:55-57`).
 
-Embedded mode has one visible difference from the HTTP mode. A delete (`Api.delete_shape/1`) reaches the shape store directly, because there is no separate server to receive an HTTP DELETE. The caller already has in-process access to the database, so the network authentication layer of a separate server is absent by design. Use embedded mode only inside a trusted application process.
+Embedded mode has one visible difference from the HTTP mode. A delete (`Api.delete_shape/1`) reaches the shape store directly, because no separate server receives an HTTP DELETE. The caller already has in-process access to the database, so the network authentication layer of a separate server is absent by design. Use embedded mode only inside a trusted application process.
 
 ## Mock mode
 
@@ -334,13 +334,13 @@ The response is a keyword list of response options. The request goes to the task
 | `transaction/2` | Values and options. | Build one change message per value, then append an `up-to-date` message from the same options unless `up_to_date: false`. | `lib/electric/client/mock.ex:162-185` |
 | `change/1` | `:value` and `:operation`. | Build one change message map. | `lib/electric/client/mock.ex:187-194` |
 
-The function names need care. `change/1` and `transaction/2` build request **bodies**; they do not send anything. `response/2` is the only function that registers a body. `async_response/2` does not return the request; it returns a reference, and `async_await/2` turns that reference into the request.
+The function names need care. `change/1` and `transaction/2` build request **bodies**. They do not send anything. `response/2` is the only function that registers a body. `async_response/2` does not return the request. It returns a reference, and `async_await/2` turns that reference into the request.
 
-The helper types are wider than the helpers. The `change_opt` type lists `:offset`, and the `transaction_opt` type lists `:lsn`, but `change/1` reads only `:value` and `:operation` (`lib/electric/client/mock.ex:90-94`, `lib/electric/client/mock.ex:187-194`). `transaction/2` passes `:lsn` to `up_to_date/1` only (`lib/electric/client/mock.ex:171-184`). A test that needs an `lsn` or an `offset` in a change header must build the map directly and pass it as the `:body` option of `response/2`. This document states the observed behaviour, not the intent of the type specification.
+The helper types are wider than the helpers. The `change_opt` type lists `:offset`, and the `transaction_opt` type lists `:lsn`, but `change/1` reads only `:value` and `:operation` (`lib/electric/client/mock.ex:90-94`, `lib/electric/client/mock.ex:187-194`). `transaction/2` passes `:lsn` to `up_to_date/1` only (`lib/electric/client/mock.ex:171-184`). A test that needs an `lsn` or an `offset` in a change header must build the map directly. The test then passes the map as the `:body` option of `response/2`. This document states the observed behaviour, not the intent of the type specification.
 
 The mock builds the response headers that the real client validates (`lib/electric/client/mock.ex:214-226`). A mock response therefore follows the same validation path as a real response. The builder sets a header only when the option has a value (`lib/electric/client/mock.ex:228-236`). It sets `next_cursor` to a new positive integer unless the caller supplies `:next_cursor` (`lib/electric/client/mock.ex:200-201`).
 
-The response options control the headers. `:shape_handle` sets `electric-handle`, `:last_offset` sets `electric-offset`, `:schema` is encoded as JSON into `electric-schema`, and `:status` sets the status code (`lib/electric/client/mock.ex:203-210`). A test can therefore give a different handle or offset for each response. The `:headers` option is not read by the builder; use the named options instead.
+The response options control the headers. `:shape_handle` sets `electric-handle`, `:last_offset` sets `electric-offset`, `:schema` is encoded as JSON into `electric-schema`, and `:status` sets the status code (`lib/electric/client/mock.ex:203-210`). A test can therefore give a different handle or offset for each response. The builder does not read the `:headers` option. Use the named options instead.
 
 ## The application
 
@@ -361,11 +361,11 @@ flowchart TB
     POOL -->|start through| SUP
 ```
 
-An arrow means "the left box starts, owns, or calls the right box". The application starts the registry, the connection pool, the request supervisor, and the cache. The dynamic supervisor starts monitors, not requests. Each monitor starts one linked request and registers its request key in the registry. The pool reads the registry to find a monitor, and asks the supervisor to start a monitor when no key exists. The request process calls Finch. The registry holds names; it does not start or own the monitor. The supervisor owns the monitor.
+An arrow means "the left box starts, owns, or calls the right box". The application starts the registry, the connection pool, the request supervisor, and the cache. The dynamic supervisor starts monitors, not requests. Each monitor starts one linked request and registers its request key in the registry. The pool reads the registry to find a monitor, and asks the supervisor to start a monitor when no key exists. The request process calls Finch. The registry holds names. It does not start or own the monitor. The supervisor owns the monitor.
 
-The registry is `keys: :unique` (`lib/electric/client/application.ex:9`). One name therefore maps to at most one monitor, which is the unit of request coalescing. The request process is not a registry member; a pool lookup always returns a monitor.
+The registry is `keys: :unique` (`lib/electric/client/application.ex:9`). One name therefore maps to at most one monitor, which is the unit of request coalescing. The request process is not a registry member. A pool lookup always returns a monitor.
 
-The expired-shape cache is an ETS table with a limit of 250 entries (`lib/electric/client/expired_shapes_cache.ex:14-17`). A write that makes the size exceed 250 removes one entry. ETS is Erlang Term Storage, a table in the virtual machine. Reads are concurrent and do not take the GenServer. A read sends a cast that updates the `last_used` timestamp (`lib/electric/client/expired_shapes_cache.ex:26-37`, `lib/electric/client/expired_shapes_cache.ex:117-130`). A write takes the GenServer and, when the table is full, removes the entry with the smallest `last_used` value (`lib/electric/client/expired_shapes_cache.ex:96-105`, `lib/electric/client/expired_shapes_cache.ex:134-160`). The policy is least-recently-used. It is not first-in-first-out, because a read moves the entry to the end of the use order.
+The expired-shape cache is an Erlang Term Storage (ETS) table with a limit of 250 entries (`lib/electric/client/expired_shapes_cache.ex:14-17`). A write that makes the size exceed 250 removes one entry. ETS is a table in the virtual machine. Reads are concurrent and do not take the GenServer. A read sends a cast that updates the `last_used` timestamp (`lib/electric/client/expired_shapes_cache.ex:26-37`, `lib/electric/client/expired_shapes_cache.ex:117-130`). A write takes the GenServer and, when the table is full, removes the entry with the smallest `last_used` value (`lib/electric/client/expired_shapes_cache.ex:96-105`, `lib/electric/client/expired_shapes_cache.ex:134-160`). The policy is least-recently-used. It is not first-in-first-out, because a read moves the entry to the end of the use order.
 
 ## Configuration files
 
@@ -378,7 +378,7 @@ No module under `lib/` reads an application environment at run time, with one ex
 | `config/config.exs` | `:electric, :start_in_library_mode` | Start Electric in library mode by default. The test runtime overrides this to `false`. | `config/config.exs:15-16` |
 | `config/runtime.exs` | `:logger, :level` | Set the log level to `:warning`. | `config/runtime.exs:3` |
 | `config/runtime.exs` | environment variables | Read `ELECTRIC_PORT` (default `3333`), `DATABASE_URL` (a PostgreSQL Uniform Resource Identifier), and `ELECTRIC_URL` (default `http://localhost:<port>`). | `config/runtime.exs:5-17` |
-| `config/runtime.exs` | `:electric_client`, `:electric` | Set the test repository, the replication connection, the HTTP server port, a separate replication stream identifier, and a temporary storage directory. | `config/runtime.exs:19-32` |
+| `config/runtime.exs` | `:electric_client`, `:electric` | Set the test repository, the replication connection, the HTTP server port, a separate identifier for the replication stream, and a temporary storage directory. | `config/runtime.exs:19-32` |
 
 The test support code and the integration tests read the `:electric_client` environment. The support code reads `:database_config` to build the test repository (`test/support/db_setup.ex:22`), and the integration tests read `:electric_url` (`test/electric/client_test.exs:133`). A library user does not need any of these settings. The `mix test` command supplies them when the environment is `:test`.
 

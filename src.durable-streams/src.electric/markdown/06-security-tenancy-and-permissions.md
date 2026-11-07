@@ -28,7 +28,7 @@ export interface Principal {
 
 Source: `packages/agents-server/src/principal.ts:5-10`.
 
-The kind is one of `user`, `agent`, `service`, or `system`. The key has the form `kind:id`. The URL is `/principal/<encoded key>`. The URL names the principal entity; its main stream is `<url>/main`, so `/principal/<encoded key>/main`. The stream namespace in [02-system-architecture.md](02-system-architecture.md) lists this path.
+The kind is one of `user`, `agent`, `service`, or `system`. The key has the form `kind:id`. The Uniform Resource Locator (URL) is `/principal/<encoded key>`. The URL names the principal entity. Its main stream is `<url>/main`, so `/principal/<encoded key>/main`. The stream namespace in [02-system-architecture.md](02-system-architecture.md) lists this path.
 
 ```ts
 export function parsePrincipalKey(input: string): Principal {
@@ -91,7 +91,7 @@ return (
 
 Source: `packages/agents-server/src/server.ts:385-389`.
 
-**Warning:** an embedded stream server is enough to enable the fallback, because the three conditions combine with a logical OR. A production deployment that embeds the stream server accepts anonymous requests as `system:dev-local`, even when `NODE_ENV=production`, unless it sets `allowDevPrincipalFallback: false` or its authentication hook rejects every anonymous request. Document [07-critical-assessment.md](07-critical-assessment.md) treats this as a deployment risk.
+**Warning:** an embedded stream server is enough to enable the fallback, because the three conditions combine with a logical OR. A production deployment that embeds the stream server accepts anonymous requests as `system:dev-local`, even when `NODE_ENV=production`. The exception is a deployment that sets `allowDevPrincipalFallback: false` or whose authentication hook rejects every anonymous request. Document [07-critical-assessment.md](07-critical-assessment.md) treats this as a deployment risk.
 
 ### Built-in system principals
 
@@ -129,7 +129,7 @@ export const streamRootDurableStreamsRoutingAdapter: DurableStreamsRoutingAdapte
 
 Source: `packages/agents-server/src/routing/durable-streams-routing-adapter.ts:35-47`.
 
-The helper `prefixTenantStreamPath` in `tenant-stream-paths.ts:9-14` can add a prefix, but no code calls it. A search of the repository finds only its definition. The exported single-tenant and tenant-root adapters are aliases of the stream-root adapter. As a result, two tenants that use the same entity path share one stream unless the deployment gives each tenant a separate `durableStreamsUrl` or supplies a custom adapter:
+The helper `prefixTenantStreamPath` in `tenant-stream-paths.ts:9-14` can add a prefix, but no code calls it. A search of the repository finds only its definition. The exported single-tenant and tenant-root adapters are aliases of the stream-root adapter. As a result, two tenants that use the same entity path share one stream. The exception is a deployment that gives each tenant a separate `durableStreamsUrl` or supplies a custom adapter:
 
 | Tenant | Entity URL | Stream path with the default adapter |
 |--------|------------|--------------------------------------|
@@ -302,13 +302,13 @@ export function bytesWithTimestamp(
 
 Source: `packages/agents-server/src/webhook-signing.ts:100-110`.
 
-The signing key is Ed25519. The server generates one at start if no key is provided. The public key is published as a JSON Web Key Set at `/__ds/jwks.json`.
+The signing key is Ed25519. The server generates one at start if no key is provided. The public key is published as a JavaScript Object Notation (JSON) Web Key Set at `/__ds/jwks.json`.
 
 The runtime verifies the signature before it processes a wake. The verification also rejects an old timestamp outside the tolerance window. The default tolerance is 300 seconds (`packages/agents-runtime/src/webhook-signature.ts:33`).
 
 Source: `packages/agents-runtime/src/create-handler.ts` (`handleWebhookRequest`).
 
-Verification is on by default. The server context option `durableStreamsWebhookSignature` controls it. Setting the option to `false` disables the check (`packages/agents-server/src/routing/internal-router.ts:261-263`). The open-source entrypoint does not set it to `false`; only tests do. A deployment that sets it to `false` accepts any request that reaches the wake endpoint.
+Verification is on by default. The server context option `durableStreamsWebhookSignature` controls it. Setting the option to `false` disables the check (`packages/agents-server/src/routing/internal-router.ts:261-263`). The open-source entrypoint does not set it to `false`. Only tests do. A deployment that sets it to `false` accepts any request that reaches the wake endpoint.
 
 ### Why sign the body and the timestamp
 

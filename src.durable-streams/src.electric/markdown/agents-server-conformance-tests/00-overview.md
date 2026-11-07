@@ -94,7 +94,7 @@ The eighteen describe blocks below belong to `runElectricAgentsConformanceTests`
 | Concurrent operations | Sequential tag updates accumulate, concurrent spawns succeed |
 | Auth boundary | Write token, principal permission, no token leak |
 
-The tool behavior group checks tools that an entity handler can call during a model turn. The auth boundary group checks that a write requires the write token, that a principal permission is enforced, and that no token appears in a response.
+The tool behavior group checks tools that an entity handler can call during a model turn. The auth boundary group checks that a write requires the write token and that a principal permission is enforced. It also checks that no token appears in a response.
 
 ## The protocol route helper
 

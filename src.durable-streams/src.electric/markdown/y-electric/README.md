@@ -4,7 +4,7 @@ title: Y-Electric
 
 # Y-Electric
 
-`@electric-sql/y-electric` connects a Yjs document to Electric. Yjs is a Conflict-free Replicated Data Type (CRDT) library for shared editing. An Electric shape is a live query over one PostgreSQL table. A `ShapeStream` is the client stream that receives the shape's change messages. The package batches local Yjs updates into one binary request body. An application-owned endpoint writes that body as a row. Electric then serves the rows through a document shape, and the provider applies each row to every client's document.
+`@electric-sql/y-electric` connects a Yjs document to Electric. Yjs is a Conflict-free Replicated Data Type (CRDT) library for shared editing. An Electric shape is a live query over one PostgreSQL table. A `ShapeStream` is the client stream that receives the shape's change messages. The package batches local Yjs updates into one binary request body. An application-owned endpoint writes that body as a row. Electric then serves the rows through a document shape. The provider applies each row to every client's document.
 
 The package is published as `@electric-sql/y-electric` at version `0.1.54`. The license is Apache-2.0. It depends on `@electric-sql/client`, `lib0`, `y-protocols`, and `yjs`. The citation is `package.json:2-15` and `package.json:72`.
 
@@ -59,7 +59,7 @@ flowchart TB
 
 The local edit path and the remote edit path meet at the same Yjs document. The update handler ignores updates whose origin is `server`. The citation is `src/y-electric.ts:341-349`. This guard stops an infinite echo.
 
-**Aha:** the package does not synchronize a document as one blob. It synchronizes a stream of binary update batches. `batch` merges local updates with `Y.mergeUpdates`, so one row can hold one or several Yjs updates. The database is a durable log of update batches, and the Electric shape is the replay channel. Yjs can accept updates out of order because it buffers missing structs, but the log still gives every client the same delivery order. This is why two clients can edit the same document through different network paths and still converge.
+**Aha:** the package does not synchronize a document as one blob. It synchronizes a stream of binary update batches. `batch` merges local updates with `Y.mergeUpdates`. One row can therefore hold one or several Yjs updates. The database is a durable log of update batches, and the Electric shape is the replay channel. Yjs can accept updates out of order because it buffers missing structs, but the log still gives every client the same delivery order. This is why two clients can edit the same document through different network paths and still converge.
 
 ## What the provider needs
 

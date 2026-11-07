@@ -4,7 +4,7 @@ title: "Electric: How PostgreSQL Changes Become a Live Shape"
 
 # Electric: How PostgreSQL Changes Become a Live Shape
 
-Electric turns a PostgreSQL table into a live, partial copy on a client. The copy is a **shape**. A shape is a table name, a filter, and a column list. The server does not copy a table. It copies the rows that match the filter into a per-shape log, and then it appends every change to those rows. A client reads that log from an offset.
+Electric turns a PostgreSQL table into a live, partial copy on a client. The copy is a **shape**. A shape is a table name, a filter, and a column list. The server does not copy a table. It copies the rows that match the filter into a per-shape log. It then appends every change to those rows. A client reads that log from an offset.
 
 This document answers one question. How does the Electric sync engine turn PostgreSQL changes into a live, column-projected shape? Every claim comes from the source trees listed in [Scope and sources](#scope-and-sources). The document marks each inference with the word **inference**.
 
@@ -44,7 +44,7 @@ The repository also has a `LIMITATIONS.md` file at `/Users/darkvoid/GitSources/s
 | Offset | A position in one shape log. It has a transaction part and an operation part, written `<transaction>_<operation>`. |
 | Virtual offset | An offset in the snapshot part of the log. Its transaction part is `0`. The value `0_<n>` names snapshot chunk `n`. The value `0_infinity` is the last virtual offset, immediately before the first change. |
 | Comparable form | The tuple that the server compares to decide whether two shape definitions are the same. It contains the root table object identifier (OID) and name, the primary key, the filter, the selected columns, the explicit columns, the true flags, the replica mode, and the log mode (`packages/sync-service/lib/electric/shapes/shape.ex:107-120`). |
-| Log sequence number (LSN) | The PostgreSQL position of a write-ahead log (WAL) record. |
+| Log sequence number (LSN) | The PostgreSQL position of a write-ahead log record. |
 | Write-ahead log (WAL) | The PostgreSQL durable record of every change. |
 | Logical replication | The PostgreSQL stream of row changes in a logical format. |
 | Replication slot | A named PostgreSQL position. The server keeps WAL until the consumer confirms it. |
@@ -142,7 +142,7 @@ The server then builds a `Shape` struct. `Shape.new/1` validates the options wit
 
 The result is one struct. The struct holds the table and the table OID. It also holds the primary key, the filter expression, and the selected columns. It also holds the replica mode, the storage options, and the log mode (`shape.ex:32-49`). The important fields for this document are `selected_columns`, `explicitly_selected_columns`, `queryable_columns`, `where`, and `flags`.
 
-The server compiles a disjunctive normal form (DNF) plan for the filter (`params.ex:341-347`). The plan is a list of alternatives. Each alternative is a list of conditions. The plan is used for tags and for subquery membership. It is not a database query plan.
+The server compiles a disjunctive normal form (DNF) plan for the filter (`params.ex:341-347`). The plan is a list of alternatives. Each alternative is a list of conditions. The server uses the plan for tags and for subquery membership. It is not a database query plan.
 
 The shape handle comes from a hash of the comparable form and the current time in microseconds (`shape.ex:138-145`). The hash is `:erlang.phash2(comparable)` (`shape.ex:133-136`). The hash is stable for the same definition. The time part prevents a collision when two different shapes have the same hash. The time part also means that the handle string changes if the service creates the shape again.
 
@@ -195,7 +195,7 @@ This order matters for [Question 6](#question-6-how-do-the-snapshot-and-the-stre
 
 ## Question 2: How does the server learn the columns and avoid sending the others?
 
-The server learns the columns in two places. The first place is the shape request. The second place is the PostgreSQL system catalog. `Shape.new/1` calls `load_column_info/2`, which asks the inspector for the table columns (`packages/sync-service/lib/electric/shapes/shape.ex:233-235`). The inspector reads the PostgreSQL system catalog.
+The server learns the columns in two places. The first place is the shape request. The second place is the PostgreSQL system catalog. `Shape.new/1` calls `load_column_info/2`. That function asks the inspector for the table columns (`packages/sync-service/lib/electric/shapes/shape.ex:233-235`). The inspector reads the PostgreSQL system catalog.
 
 ### The selected set and the queryable set
 
@@ -214,7 +214,7 @@ The `flags` map records that the request placed no column restriction. The flag 
 
 ### The snapshot query sends only the selected columns
 
-For a `log=full` shape, the initial snapshot is one SQL `SELECT`. The select list is built by `json_like_select/5`. That function uses `shape.selected_columns` (`packages/sync-service/lib/electric/shapes/querying.ex:189-219`). The query text is a JavaScript Object Notation (JSON) object per row. The object has `key`, `value`, and `headers`. The `value` object has only the selected columns.
+For a `log=full` shape, the initial snapshot is one SQL `SELECT`. `json_like_select/5` builds the select list. That function uses `shape.selected_columns` (`packages/sync-service/lib/electric/shapes/querying.ex:189-219`). The query text is a JavaScript Object Notation (JSON) object per row. The object has `key`, `value`, and `headers`. The `value` object has only the selected columns.
 
 ```elixir
 # packages/sync-service/lib/electric/shapes/querying.ex:189-216
@@ -238,7 +238,7 @@ defp json_like_select(
 end
 ```
 
-The `WHERE` clause is appended in `stream_initial_data/5` (`querying.ex:134-141`). The query streams rows to the storage layer. It does not load the full result set into memory. The storage layer splits the stream into chunks (`querying.ex:145-158`).
+`stream_initial_data/5` appends the `WHERE` clause (`querying.ex:134-141`). The query streams rows to the storage layer. It does not load the full result set into memory. The storage layer splits the stream into chunks (`querying.ex:145-158`).
 
 ### Every change is projected to the selected set
 
@@ -253,7 +253,7 @@ The order is important. The filter may use a column that the client does not rec
 
 ### The log line holds the final projection
 
-The log line is the final projection. There is no second projection in the HTTP layer. The shape log stores the exact value that the client receives. In the default replica mode, an update line has only the primary key plus the changed columns. The code is `Map.take(record, Enum.concat(pk_cols, changed_columns))` (`packages/sync-service/lib/electric/log_items.ex:175-177`). In `replica=full`, the line has the whole row and an `old_value` object with the changed columns (`log_items.ex:179-185`).
+The log line is the final projection. The HTTP layer does not project again. The shape log stores the exact value that the client receives. In the default replica mode, an update line has only the primary key plus the changed columns. The code is `Map.take(record, Enum.concat(pk_cols, changed_columns))` (`packages/sync-service/lib/electric/log_items.ex:175-177`). In `replica=full`, the line has the whole row and an `old_value` object with the changed columns (`log_items.ex:179-185`).
 
 An insert line has the whole projected row. A delete line has only the primary key in the default mode. In `replica=full` a delete line has the whole old row. The helper is `take_pks_or_all/3` (`log_items.ex:171-173`). The delete branches are at `log_items.ex:61-84`.
 
@@ -276,7 +276,7 @@ defp put_update_values(
 end
 ```
 
-The trimming is a bandwidth optimisation inside the log writer. The stored line and the wire line are the same JSON object. **Inference:** a client merges an update into its local row, so the omitted columns keep their old values. The protocol does not state this merge rule; each client library implements it.
+The trimming is a bandwidth optimisation inside the log writer. The stored line and the wire line are the same JSON object. **Inference:** a client merges an update into its local row, so the omitted columns keep their old values. The protocol does not state this merge rule. Each client library implements it.
 
 ### Adding a column after the shape starts
 
@@ -359,7 +359,7 @@ Electric needs the old row values for two jobs:
 
 The requirement is about the decoded message, not only the table setting. Under `REPLICA IDENTITY DEFAULT`, PostgreSQL sends no old tuple for an ordinary update. It sends old data only when a replica-identity column changes. Under `REPLICA IDENTITY NOTHING`, it sends none. Under `REPLICA IDENTITY FULL`, it sends every old column. A key-change update can carry a separate key tuple (`K`) instead of an old tuple. The decoder stores that tuple as `changed_key_tuple_data` (`packages/sync-service/lib/electric/postgres/logical_replication/decoder.ex:140-174`).
 
-The message converter does not inspect the relation's identity code. It checks the decoded update. An update with `old_tuple_data: nil` is rejected with `{:replica_not_full, message}` and an `ALTER TABLE ... REPLICA IDENTITY FULL` instruction (`packages/sync-service/lib/electric/postgres/replication_client/message_converter.ex:136-148`). A key-only update that carries a key tuple (`K`) and no old tuple has `old_tuple_data: nil`, so the converter rejects it. This is the path that PostgreSQL takes under `REPLICA IDENTITY DEFAULT` or `REPLICA IDENTITY INDEX` when a primary-key column changes. Under `REPLICA IDENTITY FULL`, PostgreSQL sends the full old tuple (`O`) instead. The converter accepts that update. `Changes.fill_key/2` then produces a different `old_key` and `key` (`packages/sync-service/lib/electric/replication/changes.ex:381-394`). `LogItems` splits the update into a delete at the old key and an insert at the new key (`packages/sync-service/lib/electric/log_items.ex:113-163`). So the log layer does support a primary-key change when the old row is available. The `Changes` module documentation says "PK modification is not supported" (`changes.ex:5-10`). That statement is an assumption in the module comment, not a runtime rejection under `REPLICA IDENTITY FULL`. The source does not reconcile the two.
+The message converter does not inspect the relation's identity code. It checks the decoded update. The converter rejects an update with `old_tuple_data: nil`. It returns `{:replica_not_full, message}` with an `ALTER TABLE ... REPLICA IDENTITY FULL` instruction (`packages/sync-service/lib/electric/postgres/replication_client/message_converter.ex:136-148`). A key-only update that carries a key tuple (`K`) and no old tuple has `old_tuple_data: nil`, so the converter rejects it. This is the path that PostgreSQL takes under `REPLICA IDENTITY DEFAULT` or `REPLICA IDENTITY INDEX` when a primary-key column changes. Under `REPLICA IDENTITY FULL`, PostgreSQL sends the full old tuple (`O`) instead. The converter accepts that update. `Changes.fill_key/2` then produces a different `old_key` and `key` (`packages/sync-service/lib/electric/replication/changes.ex:381-394`). `LogItems` splits the update into a delete at the old key and an insert at the new key (`packages/sync-service/lib/electric/log_items.ex:113-163`). So the log layer does support a primary-key change when the old row is available. The `Changes` module documentation says "PK modification is not supported" (`changes.ex:5-10`). That statement is an assumption in the module comment, not a runtime rejection under `REPLICA IDENTITY FULL`. The source does not reconcile the two.
 
 Electric also sets the replica identity itself. The publication configurator calls `Configuration.set_table_replica_identity_full/3` for each published table (`packages/sync-service/lib/electric/replication/publication_manager/configurator.ex:288-299`; `packages/sync-service/lib/electric/postgres/configuration.ex:149-156`). The failure mode is a clear `:misconfigured_replica_identity` error (`configurator.ex:377-384`).
 
@@ -423,11 +423,11 @@ The intermediate records are `NewRecord`, `UpdatedRecord`, and `DeletedRecord` (
 
 `changed_columns` is a `MapSet`. The code compares every column in the new row with the same column in the old row (`changes.ex:243-266`). A column is changed when the value differs. This set drives the default update projection.
 
-The key is a string. It has the form `"schema"."table"/"pk1"/"pk2"` with escaping (`changes.ex:396-409`). The key is built after the transaction, when the collector has the primary-key columns from the inspector (`packages/sync-service/lib/electric/replication/shape_log_collector.ex:1102-1142`). The inspector has a fallback. If the table has no primary key, `Inspector.get_pk_cols/1` returns every column (`packages/sync-service/lib/electric/postgres/inspector.ex:126-137`). The collector then uses every column as the key (`shape_log_collector.ex:1126-1142`). So a client can create a shape on a table with no primary key. The key is the whole row, and a change to any column changes the key. The `Changes` module documentation says that a primary key is required (`changes.ex:5-10`). That statement is an assumption in the module comment, not an enforcement point in shape creation. The source does not reconcile the two.
+The key is a string. It has the form `"schema"."table"/"pk1"/"pk2"` with escaping (`changes.ex:396-409`). The collector builds the key after the transaction, when it has the primary-key columns from the inspector (`packages/sync-service/lib/electric/replication/shape_log_collector.ex:1102-1142`). The inspector has a fallback. If the table has no primary key, `Inspector.get_pk_cols/1` returns every column (`packages/sync-service/lib/electric/postgres/inspector.ex:126-137`). The collector then uses every column as the key (`shape_log_collector.ex:1126-1142`). So a client can create a shape on a table with no primary key. The key is the whole row, and a change to any column changes the key. The `Changes` module documentation says that a primary key is required (`changes.ex:5-10`). That statement is an assumption in the module comment, not an enforcement point in shape creation. The source does not reconcile the two.
 
 The log offset has two parts. The transaction part is the commit LSN as an integer. The operation part counts changes inside the transaction. The counter advances by 2 for each change. The code comment says the gap leaves room to split one change into two stored records (`message_converter.ex:267-279`). This is why offsets can have gaps such as `11_0`, `11_2`, `11_4`.
 
-The offset and the headers are two views of the same value. The `lsn` header is the transaction part as a decimal string. The `op_position` header is the operation part (`packages/sync-service/lib/electric/log_items.ex:30-111`). Every line from one transaction has the same `lsn`, because every fragment of that transaction carries the same commit LSN (`packages/sync-service/lib/electric/postgres/replication_client/message_converter.ex:93-178`). The `last` header is set only on the last relevant change in the commit fragment (`packages/sync-service/lib/electric/shapes/consumer.ex:863-872`). A client can therefore group lines by `lsn` and apply the group when it sees `last`. If a transaction has no relevant change for a shape, the shape writes no line, and no `last` arrives. The `up-to-date` control message covers that case.
+The offset and the headers are two views of the same value. The `lsn` header is the transaction part as a decimal string. The `op_position` header is the operation part (`packages/sync-service/lib/electric/log_items.ex:30-111`). Every line from one transaction has the same `lsn`, because every fragment of that transaction carries the same commit LSN (`packages/sync-service/lib/electric/postgres/replication_client/message_converter.ex:93-178`). The service sets the `last` header only on the last relevant change in the commit fragment (`packages/sync-service/lib/electric/shapes/consumer.ex:863-872`). A client can therefore group lines by `lsn` and apply the group when it sees `last`. If a transaction has no relevant change for a shape, the shape writes no line, and no `last` arrives. The `up-to-date` control message covers that case.
 
 A snapshot line is different. The snapshot rows carry no offset of their own. A snapshot response is one storage chunk, and the response header `electric-offset` names the chunk boundary, such as `0_1`. The transaction part `0` marks a virtual offset. A real offset has a transaction part of 1 or more.
 
@@ -446,7 +446,7 @@ Electric cannot see these things:
 
 1. A change to a table that is not in the publication.
 2. A change that happened before the replication slot existed.
-3. The old value of a column under a replica identity other than `FULL`. Electric stops with an error in that case. A key-only old tuple is not sufficient for the filter.
+3. The old value of a column under a replica identity other than `FULL`. Electric stops with an error in that case. A key-only old tuple is not enough for the filter.
 
 The filter also has a visibility limit. The filter evaluates a row that Electric can see. A row that does not match the filter is not sent to the client. If the filter later becomes true for that row, the update that makes it true must reach the shape. The filter handles this because it tests both the old and the new row. See [Question 4](#question-4-how-does-the-server-match-a-change-to-a-shape).
 
@@ -479,7 +479,7 @@ Here is how four filters are placed:
 
 Walk through the first filter, `owner_id = 1 AND done = false`. `WhereCondition.optimise_where/1` sees an `and`. The left side is an equality, so it returns an equality optimisation for `owner_id = 1` and puts `done = false` in `and_where` (`where_condition.ex:100-108`). `EqualityIndex.add_shape/5` looks up `{condition_id, "owner_id", 1}` (`equality_index.ex:30-48`). On the first shape it creates a child condition and stores the mapping. It then calls `WhereCondition.add_shape/5` on the child with `and_where = done = false`. That call optimises the remaining conjunct and chains a second equality condition for `done = false`. Both keys must match a change for the shape to be a candidate. If a change has `owner_id = 1` but `done = true`, the second lookup misses and the shape is not returned. The chain ends with no residual, so the exact evaluator has nothing to add.
 
-Any expression that is not optimisable becomes an `other_shapes` entry. That entry is evaluated exactly for each change (`where_condition.ex:43-55,341-370`).
+Any expression that is not optimisable becomes an `other_shapes` entry. The exact evaluator checks that entry for each change (`where_condition.ex:43-55,341-370`).
 
 `Filter.affected_shapes/2` is the entry point (`packages/sync-service/lib/electric/shapes/filter.ex:178-240`). The rules are:
 
@@ -495,7 +495,7 @@ The update rule is the key to moving rows. Suppose a row moves out of the shape.
 
 If the filter code raises an error, it returns every shape (`filter.ex:184-195`). This fail-safe avoids a missed change. The consumer then applies the exact filter, so a false positive costs work but not correctness.
 
-For a shape with no optimisable predicate, the `other_shapes` path runs the expression. `WhereClause.includes_record_result/3` converts the record to typed values and runs the expression with `Electric.Replication.Eval.Runner` (`packages/sync-service/lib/electric/shapes/where_clause.ex:6-23`). The runner is a small expression interpreter. It is not a database query. A subquery reference is answered by a membership function. The function queries the materialized `SubqueryIndex` (`where_clause.ex:47-59`; called from `where_condition.ex:362-366`).
+For a shape with no optimisable predicate, the `other_shapes` path runs the expression. `WhereClause.includes_record_result/3` converts the record to typed values and runs the expression with `Electric.Replication.Eval.Runner` (`packages/sync-service/lib/electric/shapes/where_clause.ex:6-23`). The runner is a small expression interpreter. It is not a database query. A membership function answers a subquery reference. The function queries the materialized `SubqueryIndex` (`where_clause.ex:47-59`; called from `where_condition.ex:362-366`).
 
 ### Layer two: the consumer applies the exact filter
 
@@ -571,7 +571,7 @@ The `json` field holds the JSON text of one log line. The other fields are the e
 
 The `op_type` byte is `i` for insert, `u` for update, or `d` for delete (`pure_file_storage.ex:1335-1337`). The source does not give the `flag` byte a name. This document does not interpret it.
 
-Writes are buffered at 64 KiB or 1 second (`pure_file_storage.ex:107-118`; `packages/sync-service/lib/electric/shape_cache/pure_file_storage/write_loop.ex:301-305`). Unflushed writes are also available in ETS. A reader can therefore read the live tail without waiting for the disk flush (`pure_file_storage.ex:23-27`). The "last persisted full transaction offset" is the durable read bound. It is the largest transaction offset whose log records reached disk. A disk read stops at that offset. The ETS tail covers offsets after it until they are flushed. Bytes after the bound are volatile.
+The storage buffers writes at 64 KiB or 1 second (`pure_file_storage.ex:107-118`; `packages/sync-service/lib/electric/shape_cache/pure_file_storage/write_loop.ex:301-305`). Unflushed writes are also available in ETS. A reader can therefore read the live tail without waiting for the disk flush (`pure_file_storage.ex:23-27`). The "last persisted full transaction offset" is the durable read bound. It is the largest transaction offset whose log records reached disk. A disk read stops at that offset. The ETS tail covers offsets after it until they are flushed. Bytes after the bound are volatile.
 
 ### What the consumer holds in memory
 
@@ -602,7 +602,7 @@ The compactor groups records by key. It writes an action file that marks each re
 
 > **Inference.** Compaction is a history rewrite, not a disk quota. A client that resumes below the boundary reads the rewritten history and can miss intermediate changes. The current source does not return `must-refetch` for that case. A client that needs every historical change must not use compaction.
 
-A shape does not expire on a timer. It is removed in four cases. First, an explicit `DELETE /v1/shape` request (`packages/sync-service/lib/electric/plug/router.ex:42`). Second, eviction when `max_shapes` is set and the count exceeds it (`packages/sync-service/lib/electric/shape_cache/expiry_manager.ex:56-77`). Third, termination after a `TRUNCATE`, an affected schema change, or a subquery buffer overflow. Fourth, stack deletion. The expiry manager starts its timer only when `max_shapes` is not nil (`expiry_manager.ex:33-48`). The default is nil (`config.ex:82`). The consumer hibernates after `shape_hibernate_after` (`config.ex:103`, 30 seconds of inactivity). If `shape_enable_suspend?` is true (`config.ex:106`, default false), it terminates after a further `shape_suspend_after` (`config.ex:109`, 10 minutes). Neither action deletes the log. With the default settings, disk use grows until a client or an operator deletes the shape.
+A shape does not expire on a timer. The service removes it in four cases. First, an explicit `DELETE /v1/shape` request (`packages/sync-service/lib/electric/plug/router.ex:42`). Second, eviction when `max_shapes` is set and the count exceeds it (`packages/sync-service/lib/electric/shape_cache/expiry_manager.ex:56-77`). Third, termination after a `TRUNCATE`, an affected schema change, or a subquery buffer overflow. Fourth, stack deletion. The expiry manager starts its timer only when `max_shapes` is not nil (`expiry_manager.ex:33-48`). The default is nil (`config.ex:82`). The consumer hibernates after `shape_hibernate_after` (`config.ex:103`, 30 seconds of inactivity). If `shape_enable_suspend?` is true (`config.ex:106`, default false), it terminates after a further `shape_suspend_after` (`config.ex:109`, 10 minutes). Neither action deletes the log. With the default settings, disk use grows until a client or an operator deletes the shape.
 
 ### The configured limits
 
@@ -678,14 +678,14 @@ Each arrow works as follows.
 
 1. The client sends a request for a shape at offset `-1` to the HTTP API. The shape cache creates the handle and starts the consumer (`packages/sync-service/lib/electric/shape_cache.ex:66-79`).
 2. The consumer subscribes to the shape log collector (`packages/sync-service/lib/electric/shapes/consumer/setup_effects.ex:32-44`). From this point, the collector sends it every change for the shape.
-3. The shape cache starts the snapshotter after the consumer is initialized (`packages/sync-service/lib/electric/shapes/consumer.ex:1270-1302`).
+3. The shape cache starts the snapshotter after the consumer initializes (`packages/sync-service/lib/electric/shapes/consumer.ex:1270-1302`).
 4. The snapshotter calls `PublicationManager.add_shape/3` (`packages/sync-service/lib/electric/shapes/consumer/snapshotter.ex:68-72`). The publication manager delegates to its `Configurator`, which adds the table and sets `REPLICA IDENTITY FULL` (`configurator.ex:125-203,288-299`). The publication manager is the only component that changes the publication. This call can block until PostgreSQL accepts the change.
 5. The snapshotter starts a read-only, repeatable-read transaction (`packages/sync-service/lib/electric/postgres/snapshot_query.ex:67-69`).
 6. The snapshotter reads `pg_current_snapshot()` and `pg_current_wal_lsn()` in the same transaction (`snapshot_query.ex:71-76`). The snapshot is a triple: xmin, xmax, and the list of in-progress xids. The current code does not use the LSN value. The snapshotter passes `_lsn` to the snapshot information function and ignores it (`snapshotter.ex:230-234`). The visibility test uses only the triple.
 7. The snapshotter sends the triple to the consumer as `{:pg_snapshot_known, ...}` (`snapshotter.ex:230-234`). The consumer stores it and sets `buffering?` to false (`consumer.ex:249-258`; `packages/sync-service/lib/electric/shapes/consumer/state.ex:243-260`). It schedules the drain as a continuation.
-8. The consumer drains the buffer in arrival order through the same `handle_txn_fragment` path (`consumer.ex:167-175,934-948`). The snapshot state is now set, so each buffered transaction goes through the visibility test. A visible transaction is marked flushed and skipped. A transaction that is not visible is written to the shape log (`consumer.ex:650-667`). Fragments that arrive after the drain take the non-buffering path and are tested in the same way.
+8. The consumer drains the buffer in arrival order through the same `handle_txn_fragment` path (`consumer.ex:167-175,934-948`). The snapshot state is now set, so each buffered transaction goes through the visibility test. The consumer marks a visible transaction as flushed and skips it. It writes a transaction that is not visible to the shape log (`consumer.ex:650-667`). Fragments that arrive after the drain take the non-buffering path and are tested in the same way.
 9. The snapshotter streams the shape rows to the storage layer. The rows do not go through the consumer (`snapshotter.ex:249-281`). On the first row, the snapshotter sends `snapshot_started` (`snapshotter.ex:249-268`). The consumer marks the snapshot started and replies to the API waiters (`consumer.ex:260-263`). Storage records `snapshot_started?`, so a read of a virtual offset no longer raises "Snapshot not started" (`packages/sync-service/lib/electric/shapes.ex:162-168`; `pure_file_storage.ex:1000-1005`).
-10. The snapshot rows are written as chunks. Each chunk ends with `0x04`, which marks that chunk as complete (`packages/sync-service/lib/electric/shape_cache/pure_file_storage/snapshot.ex:27-73`). The stream ends with a `snapshot-end` control line inside the last chunk (`snapshotter.ex:238-247`).
+10. The snapshotter writes the snapshot rows as chunks. Each chunk ends with `0x04`. That byte marks the chunk as complete (`packages/sync-service/lib/electric/shape_cache/pure_file_storage/snapshot.ex:27-73`). The stream ends with a `snapshot-end` control line inside the last chunk (`snapshotter.ex:238-247`).
 11. The collector continues to deliver live transactions. The consumer compares each xid with the stored snapshot (`packages/sync-service/lib/electric/shapes/consumer/initial_snapshot.ex:97-108`). The consumer appends the accepted changes to the log.
 12. The API reads the snapshot chunks from the requested offset. When the offset reaches the last chunk, the same read switches to the main log (`packages/sync-service/lib/electric/shape_cache/pure_file_storage.ex:987-1023`). Each response names one chunk boundary in the `electric-offset` header.
 
@@ -697,8 +697,8 @@ The sequence for a new shape is:
 
 1. The request has offset `-1`. `get_chunk_end_log_offset/2` maps that value to `0_0` (`packages/sync-service/lib/electric/shape_cache/pure_file_storage.ex:837-838`). The API serves snapshot chunk 0 and returns `electric-offset: 0_0`.
 2. The next request has offset `0_0`. The storage compares it with the last known snapshot chunk. If a later chunk exists, the storage serves chunk `0_0 + 1` and returns `0_1` (`pure_file_storage.ex:840-851`).
-3. If chunk 1 is not written yet, the storage waits for the chunk file or for the snapshot end, up to 60 seconds (`pure_file_storage.ex:1014-1021,1090-1121`). This is how a live request follows a snapshot that is still being written.
-4. When the requested offset is at or after the last snapshot chunk, the storage maps the virtual offset to `0_infinity` and reads the main log (`pure_file_storage.ex:842-850,987-995`). `0_infinity` sorts before every real offset, so the first change line is included and no change line is skipped.
+3. If the storage has not written chunk 1 yet, it waits for the chunk file or for the snapshot end, up to 60 seconds (`pure_file_storage.ex:1014-1021,1090-1121`). This is how a live request follows a snapshot that is still being written.
+4. When the requested offset reaches or passes the last snapshot chunk, the storage maps the virtual offset to `0_infinity`. It then reads the main log (`pure_file_storage.ex:842-850,987-995`). `0_infinity` sorts before every real offset, so the first change line is included and no change line is skipped.
 5. The main log read continues from the first real offset. A change line and a snapshot line can never describe the same row, because the visibility test excludes one side.
 
 A client can stop after any chunk and resume at the returned offset. It does not re-read the earlier chunks. A client that starts again at `-1` reads from chunk 0. The `snapshot-end` line is inside the last chunk, so a client that has read every chunk has also read the end marker. The API does not need a second file to signal the switch.
@@ -708,7 +708,7 @@ A client can stop after any chunk and resume at the returned offset. It does not
 `Changes.visible_in_snapshot?/2` implements the PostgreSQL visibility rule (`packages/sync-service/lib/electric/replication/changes.ex:169-184`). The rule is:
 
 1. `xid < xmin`: visible. The transaction committed before the snapshot.
-2. `xid >= xmax`: not visible. The transaction had not started when the snapshot was taken.
+2. `xid >= xmax`: not visible. The transaction had not started when the service took the snapshot.
 3. `xmin <= xid < xmax` and the in-progress list is empty: visible.
 4. `xmin <= xid < xmax` and the in-progress list is not empty: visible when the xid is not in the list.
 
@@ -719,15 +719,15 @@ The consumer uses the result as a complement:
 - If the transaction is visible, the snapshot already contains its rows. The consumer skips it.
 - If the transaction is not visible, the snapshot does not contain its rows. The consumer applies it to the shape log.
 
-For every transaction that the shape receives, this gives two properties. The no-duplicate property holds because a visible transaction is in the snapshot and is skipped. The no-gap property holds for a transaction that was in progress at snapshot time: the snapshot does not contain it, and the consumer applies it when it commits. A visible transaction may also arrive from the collector. The consumer skips it, so the row appears once.
+For every transaction that the shape receives, this gives two properties. The no-duplicate property holds because the snapshot contains a visible transaction, and the consumer skips it. The no-gap property holds for a transaction that was in progress at snapshot time. The snapshot does not contain that transaction. The consumer applies it when it commits. A visible transaction may also arrive from the collector. The consumer skips it, so the row appears once.
 
 The filtering flag is an optimisation. After the first transaction whose xid is after the snapshot, `maybe_stop_initial_filtering/3` sets `filtering?` to false (`packages/sync-service/lib/electric/shapes/consumer/initial_snapshot.ex:46-63`). Every later transaction is after the snapshot, so the test is no longer needed. The flag does not change the complement.
 
-The complement has one condition. The shape must receive every transaction that the snapshot does not contain. The subscription starts before the snapshot, so later transactions arrive. The remaining case is a transaction that was already open when the shape was added.
+The complement has one condition. The shape must receive every transaction that the snapshot does not contain. The subscription starts before the snapshot, so later transactions arrive. The remaining case is a transaction that was already open when the service added the shape.
 
-**Open question.** Suppose transaction T starts, the service adds the shape while T is open, and the snapshot transaction starts before T commits. The event router puts the shape in `shapes_added_mid_txn` and does not send T's changes to it (`packages/sync-service/lib/electric/shapes/event_router.ex:40-45,148-155`). The snapshot triple lists T as in progress, so the snapshot does not contain T's rows (`changes.ex:169-184`). T commits after the snapshot. The shape has T in neither the snapshot nor its log. The source contains no test or comment that closes this window. This document therefore does not claim a gap-free handoff for a shape created in the middle of a transaction. The guarantee is established only for a shape added at a transaction boundary. A test with a concurrent writer would settle the case.
+**Open question.** Suppose transaction T starts. The service adds the shape while T is open. The snapshot transaction starts before T commits. The event router puts the shape in `shapes_added_mid_txn` and does not send T's changes to it (`packages/sync-service/lib/electric/shapes/event_router.ex:40-45,148-155`). The snapshot triple lists T as in progress, so the snapshot does not contain T's rows (`changes.ex:169-184`). T commits after the snapshot. The shape has T in neither the snapshot nor its log. The source contains no test or comment that closes this window. This document therefore does not claim a gap-free handoff for a shape that the service creates in the middle of a transaction. The guarantee holds only for a shape added at a transaction boundary. A test with a concurrent writer would settle the case.
 
-> **Aha.** Electric does not use the replication slot's exported snapshot. The slot is created with `NOEXPORT_SNAPSHOT` (`connection_setup.ex:250-262`). Electric takes its own snapshot and uses xmin, xmax, and xip_list to decide which streamed transactions are already inside it. This decouples the snapshot from the slot and allows a shape to start at any time.
+> **Aha.** Electric does not use the replication slot's exported snapshot. Electric creates the slot with `NOEXPORT_SNAPSHOT` (`connection_setup.ex:250-262`). Electric takes its own snapshot and uses xmin, xmax, and xip_list to decide which streamed transactions are already inside it. This decouples the snapshot from the slot and allows a shape to start at any time.
 
 ### Ordering guarantees
 
@@ -737,7 +737,7 @@ The order has three levels:
 2. The shape log collector processes one event at a time with a synchronous call (`packages/sync-service/lib/electric/replication/shape_log_collector.ex:90-107`). It publishes per shape synchronously for each dependency layer (`shape_log_collector.ex:885-900`).
 3. Each consumer is a `GenServer`. It handles one message at a time (`packages/sync-service/lib/electric/shapes/consumer.ex:2`). The consumer writes the log line before it replies.
 
-There is one more rule. A shape that is created in the middle of a transaction does not receive that transaction. The event router keeps a set of shapes added mid-transaction and subtracts it from the affected set (`packages/sync-service/lib/electric/shapes/event_router.ex:148-155`). The effect is that the shape does not see half a transaction. The cost is the open question above: if the same transaction commits after the snapshot, the shape can miss it. A shape added at a transaction boundary does not have this problem.
+One more rule applies. A shape that the service creates in the middle of a transaction does not receive that transaction. The event router keeps a set of shapes added mid-transaction and subtracts it from the affected set (`packages/sync-service/lib/electric/shapes/event_router.ex:148-155`). The effect is that the shape does not see half a transaction. The cost is the open question above: if the same transaction commits after the snapshot, the shape can miss it. A shape added at a transaction boundary does not have this problem.
 
 The source admits one limitation in the log format. The shape log has no transaction boundaries (`electric/LIMITATIONS.md`). This is a format limitation, not a gap in the snapshot handoff. A client sees a `last` header on the last change of a transaction (`packages/sync-service/lib/electric/shapes/consumer.ex:863-872`; `packages/sync-service/lib/electric/log_items.ex:50`). The log itself does not store a commit record per shape. A reader cannot group lines into transactions from the log alone. The `last` header is the only boundary signal. A client groups lines with the same `lsn` and applies the group when it sees `"last": true`. The PGlite plugin uses this rule (`pglite/packages/pglite-sync/src/index.ts:347-376,413-425`).
 
@@ -749,7 +749,7 @@ The short answer is: in these sources, PGlite is a destination, not a source. El
 
 The `pglite-sync` plugin adds an `electricSync` extension to a PGlite instance. The plugin exposes `syncShapeToTable` and `syncShapesToTables` (`pglite/packages/pglite-sync/src/index.ts:61,460-487,496-500`). It uses `MultiShapeStream` from the `@electric-sql/experimental` package to read one or more shapes over HTTP (`index.ts:8,152-173`). `MultiShapeStream` is a client helper. It opens one shape stream per entry and merges their messages into one callback. It does not add a server-side transaction or a shared snapshot.
 
-The plugin groups changes by log sequence number (LSN). Each message has `headers.lsn`. The final change of a transaction has `headers.last: true` (`packages/sync-service/lib/electric/log_items.ex:50`). For each shape, the plugin keeps a map from LSN to change messages and a set of complete LSNs (`pglite/packages/pglite-sync/src/index.ts:117-134`). A message with `last: true` completes its LSN for that shape (`index.ts:347-376`). A shape that has no change for a transaction still needs to advance. It learns the end of the transaction from the `up-to-date` control message, which carries `global_last_seen_lsn` (`packages/sync-service/lib/electric/shapes/api.ex:1198-1200`). The plugin stores that value as complete (`index.ts:379-395`). The plugin commits up to the lowest complete LSN across all shapes (`index.ts:413-425`), so one slow shape holds back the group. The commit is one PGlite transaction (`index.ts:199-328`). The plugin applies messages for every shape in that transaction. It also writes the subscription offset, the shape handle, and the last LSN to metadata tables (`index.ts:307-323`). This is how the multi-table API keeps a PostgreSQL transaction consistent across several PGlite tables.
+The plugin groups changes by LSN. Each message has `headers.lsn`. The final change of a transaction has `headers.last: true` (`packages/sync-service/lib/electric/log_items.ex:50`). For each shape, the plugin keeps a map from LSN to change messages and a set of complete LSNs (`pglite/packages/pglite-sync/src/index.ts:117-134`). A message with `last: true` completes its LSN for that shape (`index.ts:347-376`). A shape that has no change for a transaction still needs to advance. It learns the end of the transaction from the `up-to-date` control message. That message carries `global_last_seen_lsn` (`packages/sync-service/lib/electric/shapes/api.ex:1198-1200`). The plugin stores that value as complete (`index.ts:379-395`). The plugin commits up to the lowest complete LSN across all shapes (`index.ts:413-425`), so one slow shape holds back the group. The commit is one PGlite transaction (`index.ts:199-328`). The plugin applies messages for every shape in that transaction. It also writes the subscription offset, the shape handle, and the last LSN to metadata tables (`index.ts:307-323`). This is how the multi-table API keeps a PostgreSQL transaction consistent across several PGlite tables.
 
 **Inference:** the grouping assumes that every shape comes from the same Electric stack and the same PostgreSQL database. The plugin does not check this. If the shapes come from different stacks, their LSN values are unrelated, and the lowest-complete-LSN rule does not describe a common transaction. The source documentation does not state the requirement.
 
@@ -774,7 +774,7 @@ The plugin has two documented limits. It cannot sync two shapes into the same ta
 
 ### Is there a PGlite source adapter?
 
-There is no PGlite source adapter in the sync service. A search of `packages/sync-service/lib`, `packages/sync-service/config`, and the TypeScript client source found no PGlite code. The only PGlite reference in the client is a comment about an array parser (`packages/typescript-client/src/parser.ts:43`).
+The sync service has no PGlite source adapter. A search of `packages/sync-service/lib`, `packages/sync-service/config`, and the TypeScript client source found no PGlite code. The only PGlite reference in the client is a comment about an array parser (`packages/typescript-client/src/parser.ts:43`).
 
 The sync-service README describes the direction. It says the service "consumes the logical replication stream" from a PostgreSQL database and "exposes an HTTP API" (`packages/sync-service/README.md:8,14`). It lists PGlite as a development environment that receives data (`README.md:8`).
 
@@ -788,7 +788,7 @@ So the PGlite answer is clear. In these sources, PGlite is a client-side destina
 
 ## Worked example: one table, one shape, five operations
 
-This example uses one table and one shape. It shows the exact log operation for each change. Each statement is its own transaction, so each log line has `"last": true`. The shape has an empty snapshot. The change lines start at offset `11_0`; the LSN values are illustrative and do not come from a real database. The `txids` header is omitted to keep the lines short.
+This example uses one table and one shape. It shows the exact log operation for each change. Each statement is its own transaction, so each log line has `"last": true`. The shape has an empty snapshot. The change lines start at offset `11_0`. The LSN values are illustrative and do not come from a real database. The `txids` header is omitted to keep the lines short.
 
 ### The table and the shape
 
@@ -871,7 +871,7 @@ The client receives an `update` operation. **Inference:** the client library mer
 UPDATE todos SET owner_id = 2 WHERE id = 1;
 ```
 
-The old row has `owner_id = 1`. The new row has `owner_id = 2`. The filter is true for the old row and false for the new row. The output is a `DeletedRecord`, built by `Changes.convert_update(change, to: :deleted_record)`.
+The old row has `owner_id = 1`. The new row has `owner_id = 2`. The filter is true for the old row and false for the new row. The output is a `DeletedRecord`. `Changes.convert_update(change, to: :deleted_record)` builds it.
 
 The projection uses the old record. The default mode keeps only the primary key for a delete. The log line is:
 
@@ -897,7 +897,7 @@ The client receives a `delete` operation. It removes the row. The row is now out
 UPDATE todos SET owner_id = 1 WHERE id = 1;
 ```
 
-The filter is false for the old row and true for the new row. The output is a `NewRecord`, built by `Changes.convert_update(change, to: :new_record)`.
+The filter is false for the old row and true for the new row. The output is a `NewRecord`. `Changes.convert_update(change, to: :new_record)` builds it.
 
 The projection uses the new record. The log line is an `insert` with the full selected row:
 
@@ -1006,9 +1006,9 @@ The source does not claim that the filter index is complete. Any expression that
 
 Electric's design has four strong points.
 
-1. **The log is the state.** There is no shadow table per shape. A shape is cheap to define. Its log is not cheap to store: the log grows without a per-shape quota. The same change stream feeds every shape.
+1. **The log is the state.** The engine keeps no shadow table per shape. A shape is cheap to define. Its log is not cheap to store: the log grows without a per-shape quota. The same change stream feeds every shape.
 2. **The filter is exact at the second layer.** The index narrows the candidate set. The evaluator makes the final decision on the real row. A false positive costs work. It does not corrupt the log.
-3. **The snapshot handoff is precise.** The xmin, xmax, and xip list give an exact complement for every transaction that reaches the shape. The source does not need the slot's exported snapshot. One mid-transaction window is unproven; see the open question in [Question 6](#question-6-how-do-the-snapshot-and-the-stream-combine-without-a-gap-or-a-duplicate).
+3. **The snapshot handoff is precise.** The xmin, xmax, and xip list give an exact complement for every transaction that reaches the shape. The source does not need the slot's exported snapshot. One mid-transaction window is unproven. See the open question in [Question 6](#question-6-how-do-the-snapshot-and-the-stream-combine-without-a-gap-or-a-duplicate).
 4. **The disk format is streaming.** A snapshot and a log can be larger than memory. The reader can follow a live writer through ETS.
 
 The design also has four weak points.

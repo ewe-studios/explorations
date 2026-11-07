@@ -4,7 +4,7 @@ title: Command-Line Commands
 
 # Command-line commands
 
-Every command starts with the `agents` subcommand of the electric-ax command-line interface (CLI). This document lists each command, its flags, its server call, and its output. A command can start with the binary name `electric-ax` or `electric`. The binary name and the subcommand are not interchangeable: `electric-ax kill` is not a command.
+Every command starts with the `agents` subcommand of the electric-ax command-line interface (CLI). This document lists each command, its flags, its server call, and its output. A command can start with the binary name `electric-ax` or `electric`. The binary name and the subcommand are not interchangeable. `electric-ax kill` is not a command.
 
 A stream is an append-only ordered log of events for one entity. An offset is a position in that stream. The main stream holds the conversation.
 
@@ -59,7 +59,7 @@ Source: `packages/electric-ax/src/index.ts:525-529`.
 
 ### `agents spawn <url-path>`
 
-Creates an entity from a typed Uniform Resource Locator (URL) path. The path must contain the type name and an instance identifier. The type name is the first segment, such as `horton`. `horton` is the entity type of the built-in agent. The instance identifier is the second segment and is chosen by the caller.
+Creates an entity from a typed Uniform Resource Locator (URL) path. The path must contain the type name and an instance identifier. The type name is the first segment, such as `horton`. `horton` is the entity type of the built-in agent. The instance identifier is the second segment. The caller chooses it.
 
 ```bash
 electric-ax agents spawn /horton/my-agent
@@ -137,7 +137,7 @@ try {
 
 Source: `packages/electric-ax/src/index.ts:619-635`.
 
-`formatEntityConversationViewFromDB` reads the stream database and uses the runtime timeline model. That model is the one that `buildEntityTimelineData` and `buildSections` provide, as described in [00-overview.md](00-overview.md).
+`formatEntityConversationViewFromDB` reads the stream database and uses the runtime timeline model. That model comes from `buildEntityTimelineData` and `buildSections`, as described in [00-overview.md](00-overview.md).
 
 ### `agents inspect <url>`
 
@@ -180,7 +180,7 @@ Sends a lifecycle signal.
 
 Source: `packages/electric-ax/src/index.ts:55-63`, `702-726`.
 
-The server defines this lifecycle signal vocabulary. The CLI sends a signal name in a Hypertext Transfer Protocol (HTTP) request, so these names are not operating-system signals that the CLI forwards to a child process. The server accepts `SIGUSR` as written. Operating systems usually use the names `SIGUSR1` and `SIGUSR2`.
+The server defines this lifecycle signal vocabulary. The CLI sends a signal name in a Hypertext Transfer Protocol (HTTP) request. These names are therefore not operating-system signals that the CLI forwards to a child process. The server accepts `SIGUSR` as written. Operating systems usually use the names `SIGUSR1` and `SIGUSR2`.
 
 An invalid signal name fails with the list of expected values.
 

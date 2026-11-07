@@ -23,7 +23,7 @@ if (!serviceId) {
 }
 ```
 
-For a self-hosted server the function registers the base URL and no headers. The server needs no cloud token.
+For a self-hosted server the function registers the base Uniform Resource Locator (URL) and no headers. The server needs no cloud token.
 
 A **session** is the user-facing name for an entity. An entity is one record on the agents server. A **fork** creates a new entity from a point in the existing entity stream.
 
@@ -51,7 +51,7 @@ flowchart LR
 
 A **shape** is a read-only, filtered subset of one server table, served over Hypertext Transfer Protocol (HTTP). A **shape stream** follows a shape and delivers change messages. The TanStack collection stays current from that stream.
 
-The most important design fact is that the mobile application is not a smaller copy of the desktop application. It is a native client for the same server application programming interface (API). Session state arrives through Electric shapes. User actions use plain Hypertext Transfer Protocol (HTTP) requests. The chat transcript is reused from the web package instead of being rewritten in React Native.
+The most important design fact is that the mobile application is not a smaller copy of the desktop application. It is a native client for the same server application programming interface (API). Session state arrives through Electric shapes. User actions use plain HTTP requests. The application reuses the chat transcript from the web package instead of rewriting it in React Native.
 
 ## Documents
 
@@ -75,7 +75,7 @@ The most important design fact is that the mobile application is not a smaller c
 | React | `19.1.0` | `packages/agents-mobile/package.json:40` |
 | Router | `expo-router` `~6.0.24` | `packages/agents-mobile/package.json:35` |
 | Web view | `react-native-webview` `13.15.0` | `packages/agents-mobile/package.json:49` |
-| Uniform Resource Locator (URL) scheme | `electric-agents` | `packages/agents-mobile/app.config.ts:22` |
+| URL scheme | `electric-agents` | `packages/agents-mobile/app.config.ts:22` |
 | Application identifier | `com.electricsql.agents.mobile` | `packages/agents-mobile/app.config.ts:8` |
 
 ## Commands
@@ -123,7 +123,7 @@ sequenceDiagram
     end
 ```
 
-The boot sequence reads two values from `AsyncStorage`: the active server URL and the onboarding flag. It reads the launch Uniform Resource Locator (URL) from `Linking.getInitialURL`. It registers request headers before it clears the loading flag. Source: `packages/agents-mobile/src/lib/MobileAppState.tsx:61-98`.
+The boot sequence reads two values from `AsyncStorage`: the active server URL and the onboarding flag. It reads the launch URL from `Linking.getInitialURL`. It registers request headers before it clears the loading flag. Source: `packages/agents-mobile/src/lib/MobileAppState.tsx:61-98`.
 
 The entry point has two imports before `expo-router/entry`:
 
@@ -136,13 +136,13 @@ import 'react-native-random-uuid'
 import 'expo-router/entry'
 ```
 
-The order is necessary. The gesture handler installs native functions before any screen uses a gesture component. The random UUID generator installs `crypto.randomUUID` before the application code runs. The sign-in flow uses that function for its state value. Source: `packages/agents-mobile/index.ts:1-11` and `packages/agents-mobile/src/lib/cloudAuth.ts:729-743`.
+The order is necessary. The gesture handler installs native functions before any screen uses a gesture component. The random universally unique identifier (UUID) generator installs `crypto.randomUUID` before the application code runs. The sign-in flow uses that function for its state value. Source: `packages/agents-mobile/index.ts:1-11` and `packages/agents-mobile/src/lib/cloudAuth.ts:729-743`.
 
 ## Aha: one server model, two rendering technologies
 
-**Aha:** The mobile application does not reimplement the transcript. It mounts the same `agents-server-ui` chat log that the web and desktop clients show. The boundary between the two is a fixed set of properties and three imperative methods. The chat embed receives `serverUrl`, `entityUrl`, `theme`, `bottomInset`, `serverHeaders`, `onRequestOpenEntity`, and `onRequestForkEntity`. The methods are `setBottomInset`, `scrollToBottom`, and `setInlineQueuedMessages`. Native code keeps the network, authentication, and fork behaviour. The web view keeps the message rendering, Markdown, code blocks, and timeline layout. This is why a fix to the transcript appears on all three clients, and why the mobile package depends on the web package as a workspace dependency. Source: `packages/agents-mobile/app/session.tsx:194-218`, `packages/agents-server-ui/src/embed/sessionChatLogDomRef.ts:11-16`, and `packages/agents-mobile/package.json:20-21`.
+**Aha:** The mobile application does not reimplement the transcript. It mounts the same `agents-server-ui` chat log that the web and desktop clients show. The boundary between the two is a fixed set of properties and three imperative methods. The chat embed receives `serverUrl`, `entityUrl`, `theme`, `bottomInset`, `serverHeaders`, `onRequestOpenEntity`, and `onRequestForkEntity`. The methods are `setBottomInset`, `scrollToBottom`, and `setInlineQueuedMessages`. Native code keeps the network, authentication, and fork behaviour. The web view keeps the message rendering, Markdown, code blocks, and timeline layout. This is why a fix to the transcript appears on all three clients. It is also why the mobile package depends on the web package as a workspace dependency. Source: `packages/agents-mobile/app/session.tsx:194-218`, `packages/agents-server-ui/src/embed/sessionChatLogDomRef.ts:11-16`, and `packages/agents-mobile/package.json:20-21`.
 
-The embed is wrapped in `memo`, so a parent re-render with equal properties does not send the properties across the bridge again. A changed property value still crosses. The imperative methods carry values that change often, such as the composer inset, without a property update. The wrapper is here:
+The route wraps the embed in `memo`, so a parent re-render with equal properties does not send the properties across the bridge again. A changed property value still crosses. The imperative methods carry values that change often, such as the composer inset, without a property update. The wrapper is here:
 
 ```ts
 // packages/agents-mobile/app/session.tsx:64-69

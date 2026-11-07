@@ -83,7 +83,7 @@ A control message has only a `headers` object.
 }
 ```
 
-There are three control values:
+The protocol has three control values:
 
 | Control | Meaning |
 |---------|---------|
@@ -430,7 +430,7 @@ The state package has these limits:
 1. The value must be an object. A scalar value cannot become a collection row.
 2. The primary key must be a field in the value. A key outside the value is possible in the protocol but not in this helper.
 3. The database is in memory. A browser refresh rebuilds it from the stream.
-4. The database needs the full history from its start offset. The protocol defines snapshot events that could let a consumer start later, but this package ignores them and does not store or create a snapshot. A caller that wants a later start must choose the offset itself.
+4. The database needs the full history from its start offset. The protocol defines snapshot events that could let a consumer start later. However, this package ignores them and does not store or create a snapshot. A caller that wants a later start must choose the offset itself.
 5. The `/db` entry needs `@tanstack/db` as a peer dependency.
 
 The package also depends on the stream for ordering. It applies events in the order that the stream returns them. The stream offset is the only clock.

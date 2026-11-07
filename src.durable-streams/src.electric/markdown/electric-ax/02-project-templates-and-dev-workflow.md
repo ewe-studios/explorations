@@ -4,11 +4,11 @@ title: Project Templates and Development Workflow
 
 # Project templates and development workflow
 
-This document describes the local development loop: scaffold a project, start the infrastructure, provide a model key, start the runtime, and open the user interface.
+This document describes the local development loop. The loop is: scaffold a project, start the infrastructure, provide a model key, start the runtime, and open the user interface.
 
 ## The development environment
 
-`agents start` runs Docker Compose with `docker-compose.full.yml`. The file defines three services. A shape is a filtered view of a PostgreSQL table that the Electric sync service sends to clients.
+`agents start` runs Docker Compose with `docker-compose.full.yml`. The file defines three services. A shape is a filtered view of a PostgreSQL table. The Electric sync service sends shapes to clients.
 
 ```mermaid
 flowchart TD
@@ -133,7 +133,7 @@ The printed next steps are:
 
 Source: `packages/electric-ax/src/init.ts:29-42`.
 
-The quickstart command provides the agents infrastructure and the built-in runtime. The `pnpm dev` command is defined by the starter template, not by this package. This exploration does not cover the template, so the exact process that `pnpm dev` starts is an open question here.
+The quickstart command provides the agents infrastructure and the built-in runtime. The starter template defines the `pnpm dev` command, not this package. This exploration does not cover the template. The exact process that `pnpm dev` starts is therefore an open question here.
 
 ## Providing the model key
 
@@ -143,7 +143,7 @@ The built-in runtime needs an Anthropic key. The command-line interface (CLI) re
 2. `ANTHROPIC_API_KEY` in the process environment.
 3. `ANTHROPIC_API_KEY` in `.env`.
 
-If no key is found and the terminal is interactive, the CLI prompts for one.
+If the CLI finds no key and the terminal is interactive, it prompts for one.
 
 ```ts
 export function parsePastedAnthropicApiKey(input: string): string {
@@ -182,7 +182,7 @@ response = await fetchImpl(`https://api.anthropic.com/v1/models?limit=1`, {
 
 Source: `packages/electric-ax/src/prompt-api-key.ts:69-75`.
 
-The prompt text states that the key stays on the local computer. It is used by the built-in agent entities and the example agents in the starter template.
+The prompt text states that the key stays on the local computer. The built-in agent entities and the example agents in the starter template use it.
 
 ## The `.env` parser
 

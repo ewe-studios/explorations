@@ -70,7 +70,7 @@ The exception is a launch at login. Such a launch carries the `--electric-backgr
 
 `window-all-closed` does nothing. The application stays alive in the tray until the user quits. `activate` reopens or focuses a window. Source: `packages/agents-desktop/src/main.ts:76-82`.
 
-`before-quit` is intercepted once. The first quit request runs the controlled shutdown. The controlled shutdown stops the discovery loop, stops every runtime, sets `isQuitting`, and calls `app.quit()` again. The second request passes through. Source: `packages/agents-desktop/src/main.ts:91-95` and `packages/agents-desktop/src/app/lifecycle.ts:23-35`.
+The application intercepts `before-quit` once. The first quit request runs the controlled shutdown. The controlled shutdown stops the discovery loop, stops every runtime, sets `isQuitting`, and calls `app.quit()` again. The second request passes through. Source: `packages/agents-desktop/src/main.ts:91-95` and `packages/agents-desktop/src/app/lifecycle.ts:23-35`.
 
 ### After ready
 
@@ -112,13 +112,13 @@ const desktopIpcDeps: DesktopIpc.RegisterDesktopIpcDeps = {
 }
 ```
 
-The object is one intersection type. Each IPC module declares the dependencies that its handlers need. `registerIpcHandlers` passes the same object to all eight modules. Source: `packages/agents-desktop/src/ipc/register.ts:18-36`.
+The object is one intersection type. Each inter-process communication (IPC) module declares the dependencies that its handlers need. `registerIpcHandlers` passes the same object to all eight modules. Source: `packages/agents-desktop/src/ipc/register.ts:18-36`.
 
 The controller returns fourteen methods. The important ones are `loadSettings`, `registerIpcHandlers`, `createTray`, `buildApplicationMenu`, `createWindow`, `connectConfiguredServers`, `startDiscoveryLoop`, `initializeUpdater`, and `quitApp`. Source: `packages/agents-desktop/src/app/controller.ts:569-610`.
 
 ## Settings
 
-`loadSettings` runs the disk load, seeds default MCP servers, applies an optional environment server, applies provider keys, and synchronises the environment for the Codex agent from OpenAI.
+`loadSettings` runs the disk load and seeds default Model Context Protocol (MCP) servers. It applies an optional environment server and the provider keys. It also synchronises the environment for the Codex agent from OpenAI.
 
 ```ts
 // packages/agents-desktop/src/settings/bootstrap.ts:75
@@ -143,7 +143,7 @@ export async function loadSettings(deps: SettingsBootstrapDeps): Promise<void> {
 
 The loader accepts legacy fields. It reads `activeServer` and `apiKeys` from older files. It writes the new form when it finds them. Source: `packages/agents-desktop/src/settings/store.ts:138-222`.
 
-The `ELECTRIC_DESKTOP_SERVER_URL` environment variable adds a server on first load. The server has `source: manual` and `desiredState: connected`. An invalid protocol or an invalid URL is ignored with a warning. Source: `packages/agents-desktop/src/settings/bootstrap.ts:26-52`.
+The `ELECTRIC_DESKTOP_SERVER_URL` environment variable adds a server on first load. The server has `source: manual` and `desiredState: connected`. The application ignores an invalid protocol or an invalid Uniform Resource Locator (URL) with a warning. Source: `packages/agents-desktop/src/settings/bootstrap.ts:26-52`.
 
 ## Windows
 

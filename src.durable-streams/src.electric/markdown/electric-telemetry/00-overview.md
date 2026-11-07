@@ -6,7 +6,7 @@ title: Overview
 
 `electric_telemetry` is the shared telemetry library for Electric. It collects measurements from the Bogdan/Björn's Erlang Abstract Machine (BEAM) virtual machine, from the operating system, and from an Electric stack. It turns each measurement into a Telemetry event. Reporter processes then export the events as metrics to OpenTelemetry, Prometheus, or StatsD.
 
-The library has one central rule: **collection is the same for every deployment, and export is optional.** A supervisor starts only when at least one exporter is enabled. When it starts, its collectors emit standard events. A deployment chooses zero or more reporters. If it chooses none, both `ApplicationTelemetry.start_link/1` and `StackTelemetry.start_link/1` return `:ignore`, and no poller, monitor, or reporter starts (`lib/electric/telemetry/application_telemetry.ex:17-27`, `lib/electric/telemetry/stack_telemetry.ex:17-27`).
+The library has one central rule. **Collection is the same for every deployment, and export is optional.** A supervisor starts only when at least one exporter is enabled. When it starts, its collectors emit standard events. A deployment chooses zero or more reporters. If it chooses none, both `ApplicationTelemetry.start_link/1` and `StackTelemetry.start_link/1` return `:ignore`, and no poller, monitor, or reporter starts (`lib/electric/telemetry/application_telemetry.ex:17-27`, `lib/electric/telemetry/stack_telemetry.ex:17-27`).
 
 The document uses four levels of data:
 
@@ -14,7 +14,7 @@ The document uses four levels of data:
 - A **periodic measurement** is a function that the poller calls on a schedule. The function emits zero or more events.
 - An **event** is one Telemetry dispatch. It has a name, a measurement map, and a metadata map. `:telemetry.execute([:vm, :memory], %{total: 1}, %{})` is one event.
 - A **metric** is a rule that turns matching events into one exported time series. It has a name, a type such as counter or last value, optional tags, and optional filters. A **tag** is a metadata key that becomes a label on the series.
-- A **reporter** or **exporter** is a process that subscribes to events through its metric list and sends the resulting series to an external system.
+- A **reporter** or **exporter** is a process that subscribes to events through its metric list. It sends the resulting series to an external system.
 
 A **threshold** is a limit that starts or stops a monitor. The system monitor thresholds are examples. A **poller** is the `telemetry_poller` process that calls the periodic measurement functions.
 
@@ -44,7 +44,7 @@ The library has two top-level supervisors. A caller starts one or both.
 2. `ElectricTelemetry.Poller` — the periodic measurement loop.
 3. The enabled reporter children (`lib/electric/telemetry/application_telemetry.ex:30-40`).
 
-The supervisor starts the children in this order. The system monitor is first; it registers with the Erlang system monitor in its `init/1`. The poller is second. The reporters are last, so their event subscriptions exist before the poller's first tick; the poller has an initial delay of 5 seconds by default (`lib/electric/telemetry/poller.ex:14-22`). The strategy is `:one_for_one` (`lib/electric/telemetry/application_telemetry.ex:39`).
+The supervisor starts the children in this order. The system monitor is first; it registers with the Erlang system monitor in its `init/1`. The poller is second. The reporters are last, so their event subscriptions exist before the poller's first tick. The poller has an initial delay of 5 seconds by default (`lib/electric/telemetry/poller.ex:14-22`). The strategy is `:one_for_one` (`lib/electric/telemetry/application_telemetry.ex:39`).
 
 ```mermaid
 flowchart TB
@@ -196,9 +196,9 @@ Several details are easy to miss:
 
 - **`periodic_measurements` has no schema default.** It is optional in the schema, but the poller code pattern-matches on it. A missing key raises `FunctionClauseError` (`lib/electric/telemetry/opts.ex:53-64`, `lib/electric/telemetry/poller.ex:28-31`). Always pass at least `[:builtin]` or an explicit list.
 - **`stack_id` is required for the stack supervisor.** The shared schema marks it optional, but `StackTelemetry.init/1` requires it (`lib/electric/telemetry/stack_telemetry.ex:30`).
-- **`instance_id` is used only by the StatsD reporter**, as a global tag and as a tag on every metric (`lib/electric/telemetry/reporters/statsd.ex:8-22`).
-- **`version` is required and validated, but no module in this library reads it.** The consuming application supplies it for its own configuration (`lib/electric/telemetry/opts.ex:7`).
-- **`additional_prometheus_metrics` must contain the stack metrics if you want them in Prometheus.** The stack supervisor does not add them to the shared Prometheus endpoint (`lib/electric/telemetry/application_telemetry.ex:45-47`). The example leaves the list empty, so its Prometheus endpoint shows only application metrics.
+- **Only the StatsD reporter uses `instance_id`**, as a global tag and as a tag on every metric (`lib/electric/telemetry/reporters/statsd.ex:8-22`).
+- **`version` is required and validated. No module in this library reads it.** The consuming application supplies it for its own configuration (`lib/electric/telemetry/opts.ex:7`).
+- **`additional_prometheus_metrics` must contain the stack metrics if you want them in Prometheus.** The stack supervisor does not add them to that endpoint (`lib/electric/telemetry/application_telemetry.ex:45-47`). The example leaves the list empty, so its Prometheus endpoint shows only application metrics.
 - **A call with every exporter disabled returns `:ignore`.** The pattern match on `{:ok, pid}` in this example would then fail. A caller that allows zero exporters must handle `:ignore`.
 
 ## The collection loop
@@ -219,7 +219,7 @@ sequenceDiagram
     W-->>P: :ok always
 ```
 
-The poller calls `safe_invoke/3` for every measurement (`lib/electric/telemetry/poller.ex:60-98`). `safe_invoke` absorbs errors. This is a critical design point. The `telemetry_poller` library removes a measurement from its list after the first failure. The wrapper prevents that removal. Without the wrapper, one transient error, such as an Erlang Term Storage (ETS) table not yet created during a restart, would disable a metric until the next node start.
+The poller calls `safe_invoke/3` for every measurement (`lib/electric/telemetry/poller.ex:60-98`). `safe_invoke` absorbs errors. This is a critical design point. The `telemetry_poller` library removes a measurement from its list after the first failure. The wrapper prevents that removal. Without the wrapper, one transient error would disable a metric until the next node start. One example is an Erlang Term Storage (ETS) table that does not yet exist during a restart.
 
 **Aha:** the error handling is deliberately at the poller boundary, not inside each measurement. Each measurement function can then use direct calls such as `:ets.info` or `:erlang.statistics` without defensive code. The wrapper converts every exception and exit into a log message and an `:ok` return (`lib/electric/telemetry/poller.ex:69-98`).
 
@@ -231,7 +231,7 @@ The library has five measurement families:
 2. **Scheduler use.** Normal scheduler use, dirty CPU scheduler use, weighted use, and total use.
 3. **Garbage collection and reductions.**
 4. **Operating system.** CPU use per core, load average, memory use, and swap use.
-5. **Process, ETS, and disk detail.** Top process groups by memory or binary memory, ETS table groups by type, and storage directory size.
+5. **Process, ETS, and disk detail.** It covers top process groups by memory or binary memory, ETS table groups by type, and storage directory size.
 
 Document [01-events-and-handlers.md](01-events-and-handlers.md) lists every event name and every measurement key.
 

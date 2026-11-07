@@ -13,7 +13,7 @@ This document describes both bridge managers, the tag outbox that publishes tag 
 
 The document uses two storage systems and two kinds of stream. Keep them apart:
 
-- **PostgreSQL (Postgres)** holds the control tables: entities, tags, permissions, bridge rows, and the tag outbox.
+- **Postgres** holds the control tables: entities, tags, permissions, bridge rows, and the tag outbox.
 - **Durable Streams** is an append-only event log served over Hypertext Transfer Protocol (HTTP). Each entity owns a main stream at `/<entity path>/main`. The tag outbox and the entity registry write control events there.
 - An **Electric shape** is a live query result over one Postgres table. The Electric sync service serves it at `/v1/shape`. A *shape stream* is the HTTP response that carries the initial rows and then the changes. It uses offsets: `-1` means the start of the shape log, and `now` means the current tail. A *shape handle* is an opaque server identifier for one shape log. A *shape page* is one batch of messages in a response.
 - A **membership stream** is a Durable Stream that an entity bridge owns at `/_entities/<sourceRef>`. It carries `members` events. It is not the same stream as an entity main stream.
@@ -24,7 +24,7 @@ Other terms:
 - A *principal* is the authenticated identity that reads a membership stream. It has a kind (`user`, `agent`, `service`, or `system`), an identifier, a key, and a Uniform Resource Locator (URL). The bridge filter uses all four.
 - A *wake* is a notification that a stream changed. A subscriber registers a wake against a source stream. After an append, the wake evaluator matches the event against the registrations and delivers a wake.
 - A *manifest* is a `manifest` event in an entity stream. It lists the sources, schedules, and shared-state links that the entity owns. The *manifest key* is the key of that event. A *source reference* (`sourceRef`) is the deterministic identifier of one bridge source.
-- A *producer* is a client identity for idempotent appends. An append is idempotent when the server can drop a repeat of the same `(producerId, epoch, seq)` triple. The *epoch* fences out an older writer: a producer that restarts and claims epoch plus one makes every append from the old epoch fail with a conflict. `autoClaim: true` makes the client read the current epoch and claim the next one when it starts.
+- A *producer* is a client identity for idempotent appends. An append is idempotent when the server can drop a repeat of the same `(producerId, epoch, seq)` triple. The *epoch* fences out an older writer. A producer that restarts and claims epoch plus one makes every append from the old epoch fail with a conflict. `autoClaim: true` makes the client read the current epoch and claim the next one when it starts.
 - The `int8` parser converts Postgres 8-byte integers to JavaScript numbers. Without the parser, they arrive as strings.
 - A *dead-letter* row is a failed outbox row that the drainer stops retrying and keeps for inspection.
 
@@ -84,7 +84,7 @@ The shape has `replica: full`, twelve columns, and the `int8` parser. The column
 
 A member event from this bridge therefore has no `created_by` and no sandbox field. Its value is `{ url, type, status, tags, spawn_args, parent, type_revision, inbox_schemas, state_schemas, created_at, updated_at }`. The `sandbox` column holds the sandbox descriptor that an entity runs in; the standalone membership view does not carry it. The multi-tenant projector selects `created_by` for its permission test and puts `sandbox` in its member row. See [07-entity-projector.md](07-entity-projector.md).
 
-`buildReadableEntitiesWhere` builds the permission predicate. It selects rows where the principal is the creator, or where `entity_effective_permissions` holds `read` or `manage` for that entity and the subject is the principal URL or the principal kind. A bypass principal skips the predicate and sees every row in the tenant. The statement does not filter on expiry; the effective table is expected to hold current rows. The bridge does not run that check in JavaScript; the shape sends only the rows that pass the `where` clause (`packages/agents-server/src/utils/server-utils.ts:328-356`).
+`buildReadableEntitiesWhere` builds the permission predicate. It selects rows where the principal is the creator. It also selects rows where `entity_effective_permissions` holds `read` or `manage` for that entity, and the subject is the principal URL or the principal kind. A bypass principal skips the predicate and sees every row in the tenant. The statement does not filter on expiry; the effective table is expected to hold current rows. The bridge does not run that check in JavaScript; the shape sends only the rows that pass the `where` clause (`packages/agents-server/src/utils/server-utils.ts:328-356`).
 
 The `where` clause includes the permission filter, so the database does the access check. A bridge with no principal URL uses `AND FALSE` and emits no members. That is a fail-closed default.
 
@@ -99,7 +99,7 @@ A bridge persists two cursor values: the shape handle and the shape offset. On r
 5. For each change, remove the URL from the stale set and append the new state. An insert or update appends `{ type: 'members', key: url, value: row, headers: { operation, timestamp } }`. A delete appends the same envelope with `old_value` instead of `value`.
 6. On `up-to-date`, append a `delete` for every remaining stale member.
 
-The read in step 3 is what makes the bootstrap correct after a crash. The stream already holds the old members, and the shape supplies the current truth. Any member that the shape does not send is stale. The stale set does not record *why* a member is absent. A row that a tag edit removed from the query and a row that a `DELETE` removed from the table look the same, and both produce one `delete` event. The result is the same membership view either way.
+The read in step 3 is what makes the bootstrap correct after a crash. The stream already holds the old members, and the shape supplies the current truth. Any member that the shape does not send is stale. The stale set does not record *why* a member is absent. A row removed from the query by a tag edit and a row removed from the table by a `DELETE` look the same. Both produce one `delete` event. The result is the same membership view either way.
 
 `autoClaim: true` matters on restart. The producer identifier is stable, so the stream server still remembers the old epoch. The client asks for the next epoch and writes with it. A producer that omitted `autoClaim` and kept epoch 0 would receive a conflict on its first append after a restart.
 
@@ -150,9 +150,9 @@ The producer identifier is `entity-bridge-<sourceRef>`. The event type is `membe
 
 ### Lifecycle
 
-`EntityBridgeManager.start()` loads every row of the `entity_bridges` table for its tenant and starts each bridge. The row stores the tag set, the principal URL and kind, the stream path, the shape handle, the shape offset, and the last observer activity time.
+`EntityBridgeManager.start()` loads every row of the `entity_bridges` table for its tenant and starts each bridge. The row stores the tag set, the principal URL and kind, and the stream path. It also stores the shape handle, the shape offset, and the last observer activity time.
 
-`register()` is the only entry point that creates a row. It takes a tag map, a principal URL, and a principal kind. It computes the tag hash with `sourceRefForTags`, scopes that hash with the principal, upserts `entity_bridges`, touches the row, and starts the bridge. The observations route `POST /_electric/observations/entities/ensure-stream` reaches it through `EntityManager.ensureEntitiesMembershipStream`. A registration with identical inputs is idempotent: the source reference is the same, so the upsert updates the same row and `ensureBridge` returns early when the bridge is already running. A different tag set produces a different source reference, so it creates a second bridge and leaves the first one to the idle sweep.
+`register()` is the only entry point that creates a row. It takes a tag map, a principal URL, and a principal kind. It computes the tag hash with `sourceRefForTags`, scopes that hash with the principal, upserts `entity_bridges`, touches the row, and starts the bridge. The observations route `POST /_electric/observations/entities/ensure-stream` reaches it through `EntityManager.ensureEntitiesMembershipStream`. A registration with identical inputs is idempotent. The source reference is the same, so the upsert updates the same row. `ensureBridge` returns early when the bridge is already running. A different tag set produces a different source reference, so it creates a second bridge and leaves the first one to the idle sweep.
 
 A sweep runs every 5 minutes. It touches every source reference that a manifest still lists. It then deletes a bridge row when all three conditions hold:
 
@@ -164,9 +164,9 @@ The read count is an in-memory map per source reference. For a `GET`, `beginClie
 
 The producer uses `autoClaim: true`, the same option that the projector uses. The producer identifier is stable across restarts, so a restart can find a higher epoch from an earlier process and claim the next one. See [07-entity-projector.md](07-entity-projector.md).
 
-`onEntityChanged` is a no-op with an explanatory comment: membership updates come only from the shape. A direct write through the entity registry does not push into the stream. The call sites still exist. They are the send that wakes a paused entity, tag set, tag delete, a signal that changes status, and the run-finished callback that returns an entity to `idle` or `stopped`.
+`onEntityChanged` is a no-op with an explanatory comment: membership updates come only from the shape. A direct write through the entity registry does not push into the stream. The call sites still exist. They are the send that wakes a paused entity, the tag set, and the tag delete. They also include a signal that changes status, and the run-finished callback that returns an entity to `idle` or `stopped`.
 
-The multi-tenant projector in [07-entity-projector.md](07-entity-projector.md) uses the same method name for a different job: its facade re-applies one entity to the shared projection, because that projection also writes permission-scoped streams. In the standalone runtime the bridge holds no second copy of the filter: every appended row has already passed the shape's `where` clause. The no-op therefore does not leave a stale in-memory permission decision.
+The multi-tenant projector in [07-entity-projector.md](07-entity-projector.md) uses the same method name for a different job. Its facade re-applies one entity to the shared projection, because that projection also writes permission-scoped streams. In the standalone runtime the bridge holds no second copy of the filter: every appended row has already passed the shape's `where` clause. The no-op therefore does not leave a stale in-memory permission decision.
 
 **Aha: a bridge is a materialized view in stream form.** The client never queries Postgres and never polls. It reads an append-only list of `members` events. The shape is the only writer *to the membership stream*; the tag outbox below writes a different stream, the entity main stream. The bootstrap exists because a shape can report a reset at any time.
 
@@ -283,7 +283,7 @@ A subscription error enters exponential backoff:
 - A change message resets the attempt count. A control message does not, and a `must-refetch` does not either.
 - A failure during a recovery does not start a second recovery.
 
-The retry resumes from the committed cursor. If there is no valid cursor, it clears the cursor and restarts at `now`.
+The retry resumes from the committed cursor. If no valid cursor exists, it clears the cursor and restarts at `now`.
 
 **Aha: the two bridges have opposite reset rules.** An entity bridge resets to `-1` and rebuilds the full set, because it owns a derived list. A Postgres bridge resets to `now` and skips the past, because it mirrors an external event feed. A reset must not turn a mirror into a bulk import.
 
@@ -321,7 +321,7 @@ private async publishRow(row: TagStreamOutboxRow): Promise<void> {
 
 The drainer claims rows with one statement. It selects up to 25 rows that are not dead-lettered and are either unclaimed or claimed more than 30 seconds ago. It orders them by creation time and takes them with `FOR UPDATE SKIP LOCKED`. It then sets `claimed_by` and `claimed_at` to the worker identifier and the current time (`packages/agents-server/src/entity-registry.ts:1823-1864`). The stale-claim window is what recovers a row from a worker that stopped after it claimed the row. A shutdown releases the claims that this worker still holds.
 
-The per-row producer is deliberate. The Durable Streams protocol requires contiguous sequence numbers within an epoch. One shared producer per entity would return HTTP status `409` (Conflict) when two rows interleave, because each row would race for the same next sequence number. Each row is its own producer with one append, so a retry replays the same triple, `(producerId, epoch, seq)`, and the server deduplicates it.
+The per-row producer is deliberate. The Durable Streams protocol requires contiguous sequence numbers within an epoch. One shared producer per entity would return HTTP status `409` (Conflict) when two rows interleave. Each row would race for the same next sequence number. Each row is its own producer with one append, so a retry replays the same triple, `(producerId, epoch, seq)`, and the server deduplicates it.
 
 A failure increments `attempt_count` and clears the claim. After 10 failures the row gets `dead_lettered_at` and stays in the table for inspection. The claim query excludes dead-lettered rows, and no route or method in `src/` clears `dead_lettered_at`; the only writer is the drainer's failure path. A dead-lettered tag change therefore needs a manual database fix.
 
@@ -336,7 +336,7 @@ Two index tables connect a manifest entry to a stream:
 | `entity_manifest_sources` | owner entity URL and manifest key | `sourceRef` |
 | `shared_state_links` | owner entity URL and manifest key | `shared_state_id` |
 
-*Shared state* is an entity-owned key-value stream at `/_electric/shared-state/<id>`. Two entities that list the same shared state read and write one stream. A *link* is a `shared_state_links` row that names the owner entity. The write path checks a link row before it allows a shared-state write, and the access check also accepts an entity permission on a linked entity.
+*Shared state* is an entity-owned key-value stream at `/_electric/shared-state/<id>`. Two entities that list the same shared state read and write one stream. A *link* is a `shared_state_links` row that names the owner entity. The write path checks a link row before it allows a shared-state write. The access check also accepts an entity permission on a linked entity.
 
 A manifest entry has a `kind`, and some kinds have a `sourceType`:
 
@@ -348,7 +348,7 @@ A manifest entry has a `kind`, and some kinds have a `sourceType`:
 
 `syncManifestEntitySources` reads a `manifest` event and calls `replaceEntityManifestSource` and `replaceSharedStateLink` (`packages/agents-server/src/runtime.ts:282-303` and `packages/agents-server/src/runtime.ts:511-532`). A `delete` event passes `undefined`, which removes the row. An `update` that no longer carries the matching entry also passes `undefined`, so a manifest edit can remove a link without a delete event. The source reference is read only from a manifest with `kind: 'source'` and `sourceType: 'entities'`. The shared-state identifier is read from `kind: 'shared-state'` with an `id`, or from `kind: 'source'` with `sourceType: 'db'` and a `sourceRef` or `config.id` (`packages/agents-server/src/runtime.ts:534-568`).
 
-The entity bridge sweep uses `listReferencedEntitySourceRefs()` to find the source references that a manifest still names. A reference protects its entity bridge from the idle sweep even when no client reads it. This is the link between the stream-side manifest and the control-side bridge row. The protection applies only to entity bridges. A Postgres sync bridge has no idle sweep and no manifest protection: `PgSyncBridgeManager.start()` reloads every `pg_sync_bridges` row, and the package has no route to delete one. A Postgres sync bridge therefore runs until an operator deletes its row.
+The entity bridge sweep uses `listReferencedEntitySourceRefs()` to find the source references that a manifest still names. A reference protects its entity bridge from the idle sweep even when no client reads it. This is the link between the stream-side manifest and the control-side bridge row. The protection applies only to entity bridges. A Postgres sync bridge has no idle sweep and no manifest protection. `PgSyncBridgeManager.start()` reloads every `pg_sync_bridges` row, and the package has no route to delete one. A Postgres sync bridge therefore runs until an operator deletes its row.
 
 ## Related documents
 

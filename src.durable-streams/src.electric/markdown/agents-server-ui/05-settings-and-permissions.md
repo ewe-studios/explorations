@@ -58,7 +58,7 @@ Each category carries a `visible` flag. The desktop check is `Boolean(window.ele
 },
 ```
 
-The four desktop-only categories are Account, Command Line, Local Runtime, and MCP Servers. General, Servers, Credentials, and Appearance are always visible.
+The four desktop-only categories are Account, Command Line, Local Runtime, and Model Context Protocol (MCP) Servers. General, Servers, Credentials, and Appearance are always visible.
 
 Credentials is visible in the browser, but its provider-key controls are desktop-only. The page shows an explanation instead of the form when no desktop bridge exists.
 
@@ -137,13 +137,13 @@ The supported provider keys are:
 
 Source: `packages/agents-server-ui/src/lib/server-connection.ts:82-119`.
 
-The page also supports Codex authentication from three sources: desktop OAuth, the Codex command-line interface, and OpenCode. Source: `packages/agents-server-ui/src/lib/server-connection.ts:121-159`.
+The page also supports Codex authentication from three sources: desktop Open Authorization (OAuth), the Codex command-line interface, and OpenCode. Source: `packages/agents-server-ui/src/lib/server-connection.ts:121-159`.
 
 A key change does not apply to a running runtime. The desktop state carries `credentialsRestartPending`, and the page shows a restart banner. Source: `packages/agents-server-ui/src/lib/server-connection.ts:43-49`.
 
 The model picker reads a list of choices and an enabled set. Source: `packages/agents-server-ui/src/lib/server-connection.ts:130-141`.
 
-Keys are stored by the main process, not in the browser. The renderer receives status values and never reads `process.env` directly. Source: `packages/agents-server-ui/src/lib/server-connection.ts:82-98`.
+The main process stores the keys; the browser does not. The renderer receives status values and never reads `process.env` directly. Source: `packages/agents-server-ui/src/lib/server-connection.ts:82-98`.
 
 ## Command Line
 
@@ -218,7 +218,7 @@ Source: `packages/agents-server-ui/src/lib/ElectricAgentsProvider.tsx:127-146`.
 
 The runtime reads skill directories from the host file system. The page can add a directory with a native picker or remove one. Source: `packages/agents-server-ui/src/components/settings/pages/LocalRuntimePage.tsx:282-304`.
 
-The list is saved through `saveSkillDirectories`. Source: `packages/agents-server-ui/src/lib/server-connection.ts:661-667`.
+`saveSkillDirectories` saves the list. Source: `packages/agents-server-ui/src/lib/server-connection.ts:661-667`.
 
 ### Start, restart, and stop
 
@@ -228,9 +228,9 @@ A restart applies pending credential changes and clears the banner.
 
 ## MCP Servers
 
-`McpServersPage` shows the Model Context Protocol (MCP) server registry of the in-process `BuiltinAgentsServer`. Source: `packages/agents-server-ui/src/components/settings/pages/McpServersPage.tsx`.
+`McpServersPage` shows the MCP server registry of the in-process `BuiltinAgentsServer`. Source: `packages/agents-server-ui/src/components/settings/pages/McpServersPage.tsx`.
 
-The page comment states the reason it is desktop-only: the web build cannot read the registry over IPC, and remote runtimes are no longer aggregated. Source: `packages/agents-server-ui/src/components/settings/SettingsSidebar.tsx:124-127`.
+The page comment states the reason it is desktop-only. The web build cannot read the registry over inter-process communication (IPC). Remote runtimes are no longer aggregated. Source: `packages/agents-server-ui/src/components/settings/SettingsSidebar.tsx:124-127`.
 
 The form supports adding and editing a server through `McpServerFormDialog`. Source: `packages/agents-server-ui/src/components/settings/pages/McpServerFormDialog.tsx`.
 
@@ -249,7 +249,7 @@ The user interface recognises eight entity permissions:
 
 Source: `packages/agents-server-ui/src/lib/sharePermissions.ts:1-9`.
 
-The source of truth is the `entity_effective_permissions` shape. Each row has an entity URL, a source entity URL, a source grant identifier, a permission, a subject kind, a subject value, and an optional expiry. Source: `packages/agents-server-ui/src/lib/ElectricAgentsProvider.tsx:188-198`.
+The source of truth is the `entity_effective_permissions` shape. Each row has a Uniform Resource Locator (URL) for the entity, a source entity URL, a source grant identifier, and a permission. It also has a subject kind, a subject value, and an optional expiry. Source: `packages/agents-server-ui/src/lib/ElectricAgentsProvider.tsx:188-198`.
 
 ### Evaluation
 
@@ -330,7 +330,7 @@ This is how a workspace-wide share is expressed: every principal of kind `user` 
 
 ## Aha: the interface shows intent, the server enforces truth
 
-**Aha:** The share dialog never sends a role name. It expands the role into individual permission rows. The server stores grants, not roles. As a result, a role can change over time without a data migration, and a client can show a role only when the grant set matches one exactly. `rolePermissionsMatchGrants` performs that exact comparison. Source: `packages/agents-server-ui/src/lib/sharePermissions.ts:43-54`. A custom grant set has no role, and the dialog shows it as custom rather than guessing.
+**Aha:** The share dialog never sends a role name. It expands the role into individual permission rows. The server stores grants, not roles. As a result, a role can change over time without a data migration. A client can show a role only when the grant set matches one exactly. `rolePermissionsMatchGrants` runs that exact comparison. Source: `packages/agents-server-ui/src/lib/sharePermissions.ts:43-54`. A custom grant set has no role, and the dialog shows it as custom rather than guessing.
 
 ## Related documents
 

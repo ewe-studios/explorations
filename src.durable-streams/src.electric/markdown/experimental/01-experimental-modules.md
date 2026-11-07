@@ -41,12 +41,12 @@ The package reads six header fields. Each line number points to a place in this 
 |--------|------|---------|---------|
 | `operation` | string | `insert`, `update`, or `delete` | `src/match.ts:26` |
 | `lsn` | string of digits | Log Sequence Number of the change | `src/multi-shape-stream.ts:197`, `440` |
-| `global_last_seen_lsn` | string of digits | Highest LSN that Electric had seen when it sent `up-to-date` | `src/multi-shape-stream.ts:182`, `462` |
+| `global_last_seen_lsn` | string of digits | Highest Log Sequence Number (LSN) that Electric had seen when it sent `up-to-date` | `src/multi-shape-stream.ts:182`, `462` |
 | `control` | string | Control value; the code acts on `up-to-date` | `src/multi-shape-stream.ts:456` |
 | `last` | boolean | True on the last change at one LSN | `src/multi-shape-stream.ts:447-448` |
 | `op_position` | number | Position of the change inside one transaction | `src/multi-shape-stream.ts:415-420` |
 
-A **Log Sequence Number (LSN)** is PostgreSQL's position in its write-ahead log. A higher LSN is a later database state. This package uses two LSNs, and they are not the same:
+An **LSN** is PostgreSQL's position in its write-ahead log. A higher LSN is a later database state. This package uses two LSNs, and they are not the same:
 
 - **The data LSN** is `headers.lsn` on a change message. It is local to one shape. It covers only the rows that the shape selected. Two shapes can report different data LSNs for the same PostgreSQL transaction.
 - **The global LSN** is `headers.global_last_seen_lsn` on an `up-to-date` control message. It is the same server-wide position for every shape at that moment. It does not depend on the shape filter.
@@ -120,7 +120,7 @@ This all-or-nothing rule is important. A group start is what makes the freshness
 
 **Job 2: record the newest data LSN.** The code filters change messages, reads `headers.lsn`, and keeps the maximum (`src/multi-shape-stream.ts:193-204`). A missing header becomes `0n`. If the batch contains data, the code also schedules a check of the other shapes (`src/multi-shape-stream.ts:205-208`).
 
-**Job 3: forward the messages.** The code maps every message to a new object with the same fields plus `shape: key`, then publishes the new array (`src/multi-shape-stream.ts:210-218`). It does not mutate the child message. A subscriber can keep the array without changing child state.
+**Job 3: forward the messages.** The code maps every message to a new object. The object has the same fields plus `shape: key`, and the code then publishes the new array (`src/multi-shape-stream.ts:210-218`). It does not mutate the child message. A subscriber can keep the array without changing child state.
 
 ### The freshness guarantee
 
@@ -243,7 +243,7 @@ flowchart TD
 
 A shape marks a transaction complete in two ways. The two paths use different LSNs, and the difference is deliberate.
 
-**Path 1: the last change message**. When the whole group is up to date at the start of the batch and a change message has `headers.last === true`, the shape records that message's own `headers.lsn` (`src/multi-shape-stream.ts:445-454`). The code sets the entry to `max(current, lsn)`.
+**Path 1: the last change message**. The whole group is up to date at the start of the batch. A change message with `headers.last === true` then makes the shape record that message's own `headers.lsn` (`src/multi-shape-stream.ts:445-454`). The code sets the entry to `max(current, lsn)`.
 
 The `isUpToDate` test is evaluated once at the start of `#accumulate`, before the method processes any message in the batch (`src/multi-shape-stream.ts:434`). This gives a strict rule: the batch that first makes the group up to date cannot also mark itself complete. That batch only proves that all shapes are now current. A later batch with `last === true` supplies the proof that the data was already current at the start. The cost is one extra batch of delay in some cases.
 
@@ -251,13 +251,13 @@ The `isUpToDate` test is evaluated once at the start of `#accumulate`, before th
 
 The minimum of all `#completeLsns` values is the **lowest complete LSN**. Every LSN at or below that value is safe to publish, because every shape has passed it.
 
-**Aha:** the two paths form a two-part proof, not one rule. Path 1 says "this shape has no more changes at this LSN, and every shape was already current when the batch began". Path 2 says "the server has seen every change up to this global position, for every shape". The first proof is local and exact; the second proof is global and conservative. Together they infer transaction boundaries without a transaction identifier in the protocol.
+**Aha:** the two paths form a two-part proof, not one rule. Path 1 says "this shape has no more changes at this LSN, and every shape was already current when the batch began". Path 2 says "the server has seen every change up to this global position, for every shape". The first proof is local and exact. The second proof is global and conservative. Together they infer transaction boundaries without a transaction identifier in the protocol.
 
 The global value also covers data that a child has not received yet. That is why one shape's `up-to-date` message can release another shape's changes. The server has seen the position, so the missing change either does not touch that other shape or will arrive before the position advances.
 
 ### A worked transaction
 
-Two shapes, `issues` and `comments`, start at `-1n`. Both children are up to date after their snapshot. The server then commits one transaction at LSN 10 with two changes, one per shape, and a second transaction at LSN 11 that touches only `comments`.
+Two shapes, `issues` and `comments`, start at `-1n`. Both children are up to date after their snapshot. The server then commits one transaction at LSN 10 with two changes, one per shape. It also commits a second transaction at LSN 11 that touches only `comments`.
 
 | Step | Incoming batch | `isUpToDate` at start | Change stored | Completion after batch | Lowest complete | Published |
 |------|----------------|-----------------------|---------------|------------------------|-----------------|-----------|
@@ -287,8 +287,8 @@ This differs from the base class, which forwards control messages. A transaction
 ### Other edge cases
 
 - **Snapshot messages.** A change message with no `lsn` is stored under `0n` (`src/multi-shape-stream.ts:438-440`). Snapshot rows are therefore released together at LSN 0, after every shape reports a completed position of 0 or higher.
-- **Unbounded buffer.** `#changeMessages` holds every LSN above the lowest complete value. There is no cap and no eviction policy.
-- **Errors do not clear the buffer.** A child error goes to `#onError` in the base class. The buffered messages stay in `#changeMessages`. A later successful batch can still release them. There is no rollback.
+- **Unbounded buffer.** `#changeMessages` holds every LSN above the lowest complete value. It has no cap and no eviction policy.
+- **Errors do not clear the buffer.** A child error goes to `#onError` in the base class. The buffered messages stay in `#changeMessages`. A later successful batch can still release them. The code does not roll back.
 - **Subscriber errors.** A subscriber callback error becomes an uncaught microtask error, as in the base class. The release has already removed the messages from the map, so the messages are lost to that subscriber.
 - **Empty shapes.** With zero shapes, `#completeLsns` is empty and `isUpToDate` is true (an "every" test on an empty list). No child can call `_publish`, so the empty list never reaches `bigIntMin`. `lastSyncedAt()` returns `undefined`.
 
@@ -305,11 +305,11 @@ export function matchStream<T extends Row<unknown>>(
 ): Promise<ChangeMessage<T>>
 ```
 
-The citation is `src/match.ts:12-17`. The function subscribes to the stream (`src/match.ts:19-35`). For each batch it filters for change messages, then searches for a message whose `headers.operation` is in the `operations` array and whose `matchFn` returns true (`src/match.ts:21-30`). On a match, `finish` clears the timer, unsubscribes, and resolves the Promise (`src/match.ts:45-52`).
+The citation is `src/match.ts:12-17`. The function subscribes to the stream (`src/match.ts:19-35`). For each batch it filters for change messages. It then searches for a message whose `headers.operation` is in the `operations` array and whose `matchFn` returns true (`src/match.ts:21-30`). On a match, `finish` clears the timer, unsubscribes, and resolves the Promise (`src/match.ts:45-52`).
 
-The `operations` array is an inclusive list. A message matches when its operation equals any entry. The list can hold `'insert'`, `'update'`, and `'delete'` in any combination. The predicate runs only after the operation test passes, so one call does not evaluate a predicate for an operation that the caller did not request.
+The `operations` array is an inclusive list. A message matches when its operation equals any entry. The list can hold `'insert'`, `'update'`, and `'delete'` in any combination. The predicate runs only after the operation test passes. One call therefore does not evaluate a predicate for an operation that the caller did not request.
 
-`matchStream` accepts change messages only. A snapshot message is a change message with operation `'insert'`, so a row that already exists in the snapshot can match before any live change arrives. The caller must decide whether that is the wanted behaviour.
+`matchStream` accepts change messages only. A snapshot message is a change message with operation `'insert'`. A row that already exists in the snapshot can therefore match before any live change arrives. The caller must decide whether that is the wanted behaviour.
 
 The default timeout is `60000` milliseconds. On timeout the function writes a message to `console.error` and rejects the Promise with a string, not an `Error` object (`src/match.ts:37-43`). The timeout path does not unsubscribe. The subscription stays active after the Promise settles, and a later match calls `finish` on an already settled Promise. The caller cannot see that later call, and the subscription remains until the stream ends.
 
@@ -357,9 +357,9 @@ The test at `test/match.test.ts:10-35` inserts a row after 10 milliseconds and w
 
 The reduce form is deliberate. The common alternative is `Math.max(...nums)`, which spreads the array into function arguments. A very large array can overflow the call stack with that form. The test creates an array of `150000` values (`test/bigint-utils.test.ts:4-5`, `test/bigint-utils.test.ts:24-33`). The comment on line 4 names the reason: destructuring that many arguments would cause a stack overflow.
 
-Both functions call `reduce` without an initial value, so an empty array throws a `TypeError`. The callers always pass a non-empty array. `#checkForUpdates` runs only after at least one data message; `#getLowestCompleteLsn` runs only from a child callback, which requires at least one shape.
+Both functions call `reduce` without an initial value, so an empty array throws a `TypeError`. The callers always pass a non-empty array. `#checkForUpdates` runs only after at least one data message. `#getLowestCompleteLsn` runs only from a child callback, which requires at least one shape.
 
-**Aha:** `bigIntMax` calls `BigInt` on the reduce result even when every input is already a `bigint`. This small extra call gives one return type for mixed `bigint` and `number` arrays. JavaScript compares `number` and `bigint` without error, so the reduce works across both types. The `BigInt` wrapper removes the ambiguity at the API boundary.
+**Aha:** `bigIntMax` calls `BigInt` on the reduce result even when every input is already a `bigint`. This small extra call gives one return type for mixed `bigint` and `number` arrays. JavaScript compares `number` and `bigint` without error, so the reduce works across both types. The `BigInt` wrapper removes the ambiguity at the application programming interface (API) boundary.
 
 ## Package metadata and build
 
@@ -376,8 +376,8 @@ The `main` field points to the CommonJS artifact and the `module` field points t
 |--------|--------|--------|---------|
 | `dist/index.mjs` | ECMAScript Module (ESM) | default | Main import for modern bundlers |
 | `dist/cjs/index.cjs` | CommonJS (CJS) | default | `require()` consumers |
-| `dist/index.legacy-esm.js` | ECMAScript Module (ESM) | ES2017 | Webpack 4 compatibility (`tsup.config.ts:39-47`) |
-| `dist/index.browser.mjs` | ECMAScript Module (ESM) | default, minified | Direct browser use (`tsup.config.ts:48-60`) |
+| `dist/index.legacy-esm.js` | ESM | ES2017 | Webpack 4 compatibility (`tsup.config.ts:39-47`) |
+| `dist/index.browser.mjs` | ESM | default, minified | Direct browser use (`tsup.config.ts:48-60`) |
 
 Only the first two outputs appear in the export map. The legacy and browser files are fallbacks for tools that read `module` or a browser field, not separate entry points that a caller selects. The build names `@electric-sql/client` as external (`tsup.config.ts:11`). This keeps the peer dependency out of the bundle.
 

@@ -46,7 +46,7 @@ flowchart TB
 
 The command entry calls `main` and reports an unexpected error with exit code 1. The citation is `src/bin.ts:1-6`.
 
-The command layer reads arguments, prompts, and decides the flow. The cloud layer creates and polls resources. The template layer writes the project files. The command layer uses `readline` for its prompts; the cloud layer uses `fetch`; the template layer uses `child_process` and `fs`. The citations are `src/cli.ts:3-7`, `src/electric-api.ts:49-57`, and `src/template-setup.ts:1-6`.
+The command layer reads arguments, prompts, and decides the flow. The cloud layer creates and polls resources. The template layer writes the project files. The command layer uses `readline` for its prompts. The cloud layer uses `fetch`. The template layer uses `child_process` and `fs`. The citations are `src/cli.ts:3-7`, `src/electric-api.ts:49-57`, and `src/template-setup.ts:1-6`.
 
 ## The command surface
 
@@ -59,7 +59,7 @@ The citation is `src/cli.ts:49-56`.
 
 | Argument | Required | Meaning |
 |----------|----------|---------|
-| `app-name` | yes | Directory to create, or `.` for the current directory; the command does not check whether the directory exists or is empty |
+| `app-name` | yes | Directory to create, or `.` for the current directory. The command does not check whether the directory exists or is empty |
 | `--source` | no | An existing Electric source identifier |
 | `--secret` | no | The secret for `--source` |
 | `--database-url` | no | The database uniform resource locator (URL) for `--source` |
@@ -99,9 +99,9 @@ The mode changes three parts of the run:
 2. **Migration.** The command runs `pnpm migrate` only when it provisioned the resources. A caller with an existing database controls its own schema. The citation is `src/cli.ts:250-266`.
 3. **Claim command.** The template adds a `claim` package script only when the cloud response contains a `claimId`. The citation is `src/template-setup.ts:88-91`.
 
-Claiming transfers a provisioned source to a user account. The CLI creates a claimable source that belongs to no account. The claim uniform resource locator (URL) opens the Electric dashboard, where the signed-in user takes ownership of the source. Without the claim, the source exists but is not attached to the user's account.
+Claiming transfers a provisioned source to a user account. The command-line interface (CLI) creates a claimable source that belongs to no account. The claim URL opens the Electric dashboard, where the signed-in user takes ownership of the source. Without the claim, the source exists but is not attached to the user's account.
 
-**Aha:** the package treats "provisioned by the tool" and "supplied by the caller" as two different ownership models, not as two input formats. The ownership model controls whether the tool may create database tables and whether it may offer a cloud claim. This is why the same command can serve a first-time user and a team with existing infrastructure without a separate mode flag.
+**Aha:** the package treats "provisioned by the tool" and "supplied by the caller" as two different ownership models, not as two input formats. The ownership model controls whether the tool may create database tables and whether it may offer a cloud claim. So the same command can serve a first-time user and a team with existing infrastructure without a separate mode flag.
 
 ## What the command produces
 
@@ -111,7 +111,7 @@ The generated project contains:
 |--------|------------|--------|
 | Application files | `gitpick` from the Electric repository | `src/template-setup.ts:32-37` |
 | `.env` | Direct file write | `src/template-setup.ts:44-60` |
-| `.gitignore` entries | Append three patterns when the file text does not contain `.env`; create the file if absent | `src/template-setup.ts:63-74` |
+| `.gitignore` entries | Append three patterns when the file text does not contain `.env`. Create the file if absent | `src/template-setup.ts:63-74` |
 | `deploy:netlify` script | Package file patch | `src/template-setup.ts:83-86` |
 | `claim` script | Package file patch when a `claimId` exists | `src/template-setup.ts:88-91` |
 | Installed dependencies | `pnpm install` | `src/cli.ts:234-239` |
@@ -145,21 +145,21 @@ The create call sends an empty JavaScript Object Notation (JSON) object and a us
 
 The poll loop waits one second between requests and stops after 60 attempts. The citation is `src/electric-api.ts:41-42` and `src/electric-api.ts:44-91`.
 
-A 404 response means the resource is still being created. The loop continues. The citation is `src/electric-api.ts:59-63`.
+A 404 response means the service is still creating the resource. The loop continues. The citation is `src/electric-api.ts:59-63`.
 
 A `ready` state returns the result. A `failed` state or an error field throws. Every other state, including `pending` and `creating`, continues the loop. The citation is `src/electric-api.ts:74-86`.
 
-The provisioned connection URI points at a Neon PostgreSQL database. The package does not create the database itself; the Electric Cloud service creates it as part of the claimable source.
+The provisioned connection uniform resource identifier (URI) points at a Neon PostgreSQL database. The package does not create the database itself. The Electric Cloud service creates it as part of the claimable source.
 
 ## What the package does not do
 
 The package does not run the application. It installs dependencies and prints `pnpm dev` as a next step. The citation is `src/cli.ts:157`.
 
-The package does not own the template. The template lives in the Electric repository and is copied with `gitpick`. The citation is `src/template-setup.ts:35`.
+The package does not own the template. The template lives in the Electric repository. The command copies it with `gitpick`. The citation is `src/template-setup.ts:35`.
 
 The package does not persist credentials outside the generated project. It writes them only to `.env` in that project.
 
-The package does not call `claimResources` from the command. The function is exported and tested, but `main` never imports it. The citation is `src/electric-api.ts:153-189` and `src/cli.ts:5-6`.
+The package does not call `claimResources` from the command. The codebase exports and tests the function, but `main` never imports it. The citation is `src/electric-api.ts:153-189` and `src/cli.ts:5-6`.
 
 The package does not remove or update a generated project.
 

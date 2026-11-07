@@ -55,7 +55,7 @@ const config = {
 }
 ```
 
-The configuration sets a 500-millisecond long-poll timeout and disables the subscription suite (`conformance/conformance.test.ts:20-31`). This server implements the core protocol and Server-Sent Events (SSE) reads. It does not implement the separate subscription and control-plane extension that the disabled suite tests; that extension is not SSE itself. The port comes from `RUST_SERVER_PORT` and defaults to 4562 (`conformance/conformance.test.ts:22-23`). The suite passed 326 tests at the time of the cardinality study, together with 95 crate tests (`CARDINALITY_1M.md:29`).
+The configuration sets a 500-millisecond long-poll timeout and disables the subscription suite (`conformance/conformance.test.ts:20-31`). This server implements the core protocol and Server-Sent Events (SSE) reads. It does not implement the separate subscription and control-plane extension that the disabled suite tests. That extension is not SSE itself. The port comes from `RUST_SERVER_PORT` and defaults to 4562 (`conformance/conformance.test.ts:22-23`). The suite passed 326 tests at the time of the cardinality study, together with 95 crate tests (`CARDINALITY_1M.md:29`).
 
 ### The run-configuration matrix
 
@@ -71,9 +71,9 @@ Tiering needs two things: a build with the `tier` Cargo feature, and the `--tier
 
 ## The crash simulation
 
-The simulation is a seeded randomized test of the real recovery path (`src/wal/sim_tests.rs:1-30`). Each seed runs three generations by default. Each generation applies a random workload, drops the runtime, stops the committers, injects disk faults, reboots through the real recovery sequence, and checks a no-loss and no-torn oracle (`CRASH_SIM_FINDINGS.md:3-9`).
+The simulation is a seeded randomized test of the real recovery path (`src/wal/sim_tests.rs:1-30`). Each seed runs three generations by default. Each generation applies a random workload. It drops the runtime, stops the committers, and injects disk faults. It reboots through the real recovery sequence and checks a no-loss and no-torn oracle (`CRASH_SIM_FINDINGS.md:3-9`).
 
-"Drop the runtime" means that the test drops the generation's Tokio runtime. This aborts in-flight requests at whatever await point they reached, which models a process death (`src/wal/sim_tests.rs:5-8`). The oracle has five parts (`src/wal/sim_tests.rs:18-25`):
+"Drop the runtime" means that the test drops the generation's Tokio runtime. This aborts in-flight requests at whatever await point they reached. That behavior models a process death (`src/wal/sim_tests.rs:5-8`). The oracle has five parts (`src/wal/sim_tests.rs:18-25`):
 
 1. Every acknowledged record is present, in order, and whole.
 2. A maybe-applied record is either present and whole or absent. A maybe-applied record is a cancelled append or an append in flight at the crash.
@@ -103,33 +103,33 @@ The campaigns used different hardware and different server builds. Do not compar
 | Campaign | Date | Server configuration | Load |
 |----------|------|----------------------|------|
 | Canonical ds-bench report | 2026-07-23 | One `c4d-standard-64-lssd` node, 8 pinned cores, distributed release 0.1.5, local raw-block Non-Volatile Memory Express (NVMe) | 256-byte binary appends, up to 100,000 streams, Kubernetes client fleet (`README.md:189-195`) |
-| WAL write-path tuning | 2026-07-13 | `c4d-standard-64-lssd` with 6 local NVMe devices, 8 virtual central processing unit (vCPU) server, one data lane, then three data lanes and three WAL shards on separate devices | 256-byte appends, up to 100,000 streams in the ladder and 1,000,000 in the lane test (`WAL_TUNING.md:1-27`) |
-| 1M-stream cardinality | 2026-07-02 | Remote 16 vCPU `c4d-standard-16-lssd` (local solid-state drive); the local comparison used a 6-server-core Linux harness, and the source does not state its storage | 256-byte appends, 20,000 to 1,000,000 streams (`CARDINALITY_1M.md:1-33`) |
-| WAL contention | Not stated in the document | Linux harness, 6 server cores and 4 client cores, tmpfs (a memory file system), 1 to 6 shards | Saturation sweep (a load sweep to the saturation point) at 256 connections; append size and stream count not stated (`CONTENTION_INVESTIGATION.md:68-83`) |
-| Mixed workload | 2026-07-02 | Local `kind` Kubernetes cluster, 2 central processing unit (CPU) cores and 2 GiB for the server, single-node MinIO object store | Writers, paced catch-up readers, and Server-Sent Events (SSE) subscribers (`MIXED_WORKLOAD_VALIDATION.md:1-18`) |
+| WAL write-path tuning | 2026-07-13 | `c4d-standard-64-lssd` with 6 local NVMe devices, 8 virtual central processing unit (vCPU) server. One data lane, then three data lanes and three WAL shards on separate devices | 256-byte appends, up to 100,000 streams in the ladder and 1,000,000 in the lane test (`WAL_TUNING.md:1-27`) |
+| 1M-stream cardinality | 2026-07-02 | Remote 16 vCPU `c4d-standard-16-lssd` (local solid-state drive). The local comparison used a 6-server-core Linux harness. The source does not state its storage | 256-byte appends, 20,000 to 1,000,000 streams (`CARDINALITY_1M.md:1-33`) |
+| WAL contention | Not stated in the document | Linux harness, 6 server cores and 4 client cores, tmpfs (a memory file system), 1 to 6 shards | Saturation sweep (a load sweep to the saturation point) at 256 connections. Append size and stream count are not stated (`CONTENTION_INVESTIGATION.md:68-83`) |
+| Mixed workload | 2026-07-02 | Local `kind` Kubernetes cluster, 2 central processing unit (CPU) cores and 2 GiB for the server, single-node MinIO object store | Writers, paced catch-up readers, and SSE subscribers (`MIXED_WORKLOAD_VALIDATION.md:1-18`) |
 
 The name `c4d-standard-64-lssd` is a machine type. The `64` is not a core count. The tuning campaign used an 8 vCPU server on that machine type (`WAL_TUNING.md:1-5`).
 
 ### The canonical campaign
 
-The maintained results are the ds-bench canonical report from 2026-07-23, measured on the 0.1.5 release (`README.md:189-195`). The 0.1.5 release label belongs to the distributed package: the npm wrapper is version 0.1.5 (`package.json:3`). It is not the Rust crate version, which is 0.1.0 (`Cargo.toml:3`). `ds-bench` is the external benchmark harness. The server runs on one `c4d-standard-64-lssd` node with raw-block local NVMe storage, pinned to 8 CPU cores. A Kubernetes client fleet sends 256-byte binary appends.
+The maintained results are the ds-bench canonical report from 2026-07-23, measured on the 0.1.5 release (`README.md:189-195`). The 0.1.5 release label belongs to the distributed package: the npm wrapper is version 0.1.5 (`package.json:3`). It is not the Rust crate version. The Rust crate version is 0.1.0 (`Cargo.toml:3`). `ds-bench` is the external benchmark harness. The server runs on one `c4d-standard-64-lssd` node with raw-block local NVMe storage, pinned to 8 CPU cores. A Kubernetes client fleet sends 256-byte binary appends.
 
 | Measurement | Result | Conditions |
 |-------------|--------|------------|
 | Append throughput at 10,000 streams | about 422,000 per second | `wal`, 8 pinned cores |
 | Append throughput at 100,000 streams | about 388,000 per second | `wal`, 8 pinned cores |
 | Cardinality change | −8% from 10,000 to 100,000 | no cliff |
-| Memory mode at 100,000 streams | at least 636,000 per second | no fsync; the report states a lower bound and gives no higher measured point |
-| Append throughput on 16 pinned cores | about 537,000 per second | separate 16-core run; the report calls this a true plateau |
-| Catch-up read throughput | about 2.8 GiB per second | 512 concurrent connections; flat from 10 to 100 streams |
+| Memory mode at 100,000 streams | at least 636,000 per second | no fsync. The report states a lower bound and gives no higher measured point |
+| Append throughput on 16 pinned cores | about 537,000 per second | separate 16-core run. The report calls this a true plateau |
+| Catch-up read throughput | about 2.8 GiB per second | 512 concurrent connections. The value is flat from 10 to 100 streams |
 | 100,000 paced readers against a pinned 50,000 per second write load | write throughput unchanged relative to that load | zero errors |
-| 1,000 SSE subscribers on one stream | about 27 MiB of process memory for fan-out | 2026-06-30 snapshot; one shared fan-out buffer per stream, not one per subscriber |
+| 1,000 SSE subscribers on one stream | about 27 MiB of process memory for fan-out | 2026-06-30 snapshot. There is one shared fan-out buffer per stream, not one per subscriber |
 
 The append 50th-percentile (p50) latency is about 2.5 milliseconds at or below 80% load (`README.md:193`). Load here means the fraction of the measured saturation ceiling. The working set tracks stream count, not byte count. Each stream is a small record plus an open file, and the bytes stay on disk rather than in process memory (`README.md:193`).
 
 ### The write-path tuning ladder
 
-An earlier campaign on a `c4d-standard-64-lssd` node with an 8 vCPU server measured 100,000 streams and 256-byte appends. The `64` in the machine type is not a core count. Each row adds one fix to the row above, so the numbers are cumulative (`WAL_TUNING.md:1-21`). The final `All of the above` row is the packaged stacked suite (`wal-stacked-1m`), not another single fix. The source does not attribute a further single change to that row; it is a separate suite that combines the fixes in one configuration.
+An earlier campaign on a `c4d-standard-64-lssd` node with an 8 vCPU server measured 100,000 streams and 256-byte appends. The `64` in the machine type is not a core count. Each row adds one fix to the row above, so the numbers are cumulative (`WAL_TUNING.md:1-21`). The final `All of the above` row is the packaged stacked suite (`wal-stacked-1m`), not another single fix. The source does not attribute a further single change to that row. That row is a separate suite that combines the fixes in one configuration.
 
 | Configuration | Appends per second |
 |---------------|--------------------|
@@ -159,18 +159,18 @@ At 1,000,000 streams, one data lane reached a second wall. A second wall is a se
 
 The cardinality study found one mechanism. A cost that a design pays once per stream in each checkpoint interval is divided by the number of operations on that stream. When that number falls below one, the cost is larger than the operation itself. At that point, a fixed per-stream cost becomes a per-operation cost (`CARDINALITY_1M.md:11-19`). It fixed four root causes:
 
-1. The checkpoint drain held the dirty lock while it captured each stream. The fix takes the list and bumps the epoch in one short critical section, then captures after the release (`src/wal/shard.rs:877-881`).
-2. Checkpoint phases ran on async runtime threads. The fix runs the whole checkpoint body in one blocking task, keeps the tails map in memory, and lets shards checkpoint concurrently (`src/wal/shard.rs:883-892`).
+1. The checkpoint drain held the dirty lock while it captured each stream. The fix takes the list and bumps the epoch in one short critical section. It then captures after the release (`src/wal/shard.rs:877-881`).
+2. Checkpoint phases ran on async runtime threads. The fix runs the whole checkpoint body in one blocking task. It keeps the tails map in memory and lets shards checkpoint concurrently (`src/wal/shard.rs:883-892`).
 3. Every append rewrote the metadata sidecar. The fix marks the sidecar dirty on an append and flushes it at checkpoint (`src/handlers.rs:1245-1255`, `src/wal/shard.rs:1005-1017`).
-4. Every append looked up the stream twice. The fix makes the inner handler return `is_json` with the response, so the outer handler does not look the stream up again (`src/handlers.rs:911-915`, `src/handlers.rs:919-928`).
+4. Every append looked up the stream twice. The fix makes the inner handler return `is_json` with the response. The outer handler then does not look the stream up again (`src/handlers.rs:911-915`, `src/handlers.rs:919-928`).
 
-The local before-and-after results were 43,000 to 46,000 before and 80,400 after at 20,000 streams. At 400,000 streams the result rose from 16,000 to 36,000 through 44,000 across the repeats, and the 99th-percentile latency fell from 144 milliseconds to about 28 milliseconds (`CARDINALITY_1M.md:23-27`).
+The local before-and-after results were 43,000 to 46,000 before and 80,400 after at 20,000 streams. At 400,000 streams the result rose from 16,000 to 36,000 through 44,000 across the repeats. The 99th-percentile latency fell from 144 milliseconds to about 28 milliseconds (`CARDINALITY_1M.md:23-27`).
 
-The remote validation reached 1,114,644 appends per second at 1,000,000 streams with 64 client pods, and the rate was still climbing (`CARDINALITY_1M.md:39-43`). The degradation from 500,000 to 1,000,000 streams at equal load was −17%, and the cardinality study marks the earlier cliff as gone: its wording is "was a cliff" (`CARDINALITY_1M.md:5-7`). The one-lane tuning campaign did hit a wall at 1,000,000 streams, as the section above shows (`WAL_TUNING.md:23-27`).
+The remote validation reached 1,114,644 appends per second at 1,000,000 streams with 64 client pods, and the rate was still climbing (`CARDINALITY_1M.md:39-43`). The degradation from 500,000 to 1,000,000 streams at equal load was −17%. The cardinality study marks the earlier cliff as gone. Its wording is "was a cliff" (`CARDINALITY_1M.md:5-7`). The one-lane tuning campaign did hit a wall at 1,000,000 streams, as the section above shows (`WAL_TUNING.md:23-27`).
 
 ### The contention study
 
-The contention study tested the hypothesis that a WAL shard is a lock, not a CPU core (`CONTENTION_INVESTIGATION.md:9-13`). At six server cores on tmpfs, the baseline was flat across 1, 2, and 6 shards at 45,543, 46,905, and 48,825 appends per second, with about 80% CPU use (`CONTENTION_INVESTIGATION.md:68-83`). The commit and wakeup machinery, not the fsync, set that ceiling.
+The contention study tested the hypothesis that a WAL shard is a lock, not a CPU core (`CONTENTION_INVESTIGATION.md:9-13`). At six server cores on tmpfs, the baseline was flat across 1, 2, and 6 shards. The rates were 45,543, 46,905, and 48,825 appends per second, with about 80% CPU use (`CONTENTION_INVESTIGATION.md:68-83`). The commit and wakeup machinery, not the fsync, set that ceiling.
 
 The fixes were:
 
@@ -183,24 +183,24 @@ The fixes were:
 | T2b | io_uring WAL writes |
 | T3 | Shared-nothing thread-per-core design |
 
-Three of the first four changes are in the current code: T1a, T1c, and T2a. T1b is not; it remains a candidate and is not scheduled. `reserve_and_stage` still takes `Shard.inner` to reserve the LSN and the write position (`src/wal/shard.rs:650-658`). T2b and T3 are future work. The `--wal-stats` line reports the effect of the three changes that landed: the `waiters_woken_avg` value collapses toward 1, and the dirty-lock load falls (`CONTENTION_INVESTIGATION.md:87-105`, `src/wal/shard.rs:795-824`, `src/wal/shard.rs:1415-1440`).
+Three of the first four changes are in the current code: T1a, T1c, and T2a. T1b is not. It remains a candidate and is not scheduled. `reserve_and_stage` still takes `Shard.inner` to reserve the LSN and the write position (`src/wal/shard.rs:650-658`). T2b and T3 are future work. The `--wal-stats` line reports the effect of the three changes that landed. The `waiters_woken_avg` value collapses toward 1, and the dirty-lock load falls (`CONTENTION_INVESTIGATION.md:87-105`, `src/wal/shard.rs:795-824`, `src/wal/shard.rs:1415-1440`).
 
 ### The mixed-workload study
 
-The mixed-workload study measured interference between writers, paced catch-up readers, and SSE subscribers on a 2-CPU server (`MIXED_WORKLOAD_VALIDATION.md:1-18`). A bounded catch-up reader replays at a fixed rate of one replay per second. An unbounded reader loops without pacing; the study uses that mode only to test overload.
+The mixed-workload study measured interference between writers, paced catch-up readers, and SSE subscribers on a 2-CPU server (`MIXED_WORKLOAD_VALIDATION.md:1-18`). A bounded catch-up reader replays at a fixed rate of one replay per second. An unbounded reader loops without pacing. The study uses that mode only to test overload.
 
 | Finding | Evidence |
 |---------|----------|
-| Bounded catch-up reads do not cost write throughput | writers pinned at about 17,750 appends per second, which is 60% of the 29,700 unthrottled ceiling; 256-byte appends; the write rate held within noise at 0, 4, 16, 64, and 128 readers (`MIXED_WORKLOAD_VALIDATION.md:20-38`) |
-| Interference appears only above about 60 MiB per second of read bandwidth | write 99th percentile (p99) latency rose from 6.5 milliseconds at 64 readers to 53 milliseconds at 128 readers; the study locates the turn at about 60 MiB of replay bandwidth per second on 2 CPUs (`MIXED_WORKLOAD_VALIDATION.md:34`) |
+| Bounded catch-up reads do not cost write throughput | Writers were pinned at about 17,750 appends per second. That rate is 60% of the 29,700 unthrottled ceiling. The appends were 256 bytes. The write rate held within noise at 0, 4, 16, 64, and 128 readers (`MIXED_WORKLOAD_VALIDATION.md:20-38`) |
+| Interference appears only above about 60 MiB per second of read bandwidth | Write 99th percentile (p99) latency rose from 6.5 milliseconds at 64 readers to 53 milliseconds at 128 readers. The study locates the turn at about 60 MiB of replay bandwidth per second on 2 CPUs (`MIXED_WORKLOAD_VALIDATION.md:34`) |
 | SSE delivery p99 is the write p99 plus 1 to 3 milliseconds | both durability modes, all write rates (`MIXED_WORKLOAD_VALIDATION.md:40-61`) |
 | 100 subscribers cost about 42% of the write ceiling on 2 CPUs | at write saturation, throughput fell from 29,700 to between 17,100 and 17,400 appends per second in `wal` mode |
 
-The study also observed that, for catch-up reads, the server does not shed load at the request level. With unpaced readers, writes fair-share down, but the server returns no 429 or 503 status; the overload is silent (`MIXED_WORKLOAD_VALIDATION.md:35-38`). This statement does not cover the Server-Sent Events (SSE) reactor: a subscriber that lets 8 MiB of framed data queue unsent has its connection closed (`src/sse_reactor.rs:33-37`, `src/sse_reactor.rs:413-416`). That is a connection-level limit, not a 429 or 503 response.
+The study also observed that, for catch-up reads, the server does not shed load at the request level. With unpaced readers, writes fair-share down, but the server returns no 429 or 503 status. The overload is silent (`MIXED_WORKLOAD_VALIDATION.md:35-38`). This statement does not cover the SSE reactor. A subscriber that lets 8 MiB of framed data queue unsent has its connection closed (`src/sse_reactor.rs:33-37`, `src/sse_reactor.rs:413-416`). That is a connection-level limit, not a 429 or 503 response.
 
 ## Observability
 
-A blocking-pool wait is a wait for the Tokio blocking thread pool. The server uses that pool for file I/O that would otherwise block an asynchronous worker.
+A blocking-pool wait is a wait for the Tokio blocking thread pool. The server uses that pool for file input/output (I/O) that would otherwise block an asynchronous worker.
 
 ### WAL contention line
 
@@ -242,7 +242,7 @@ The `ds.request` span records only bounded attributes. It does not record the st
 | `--port` | `4437` | listen port (`src/main.rs:116`) |
 | `--data-dir` | system temporary directory | storage root (`src/main.rs:118`) |
 | `--long-poll-timeout-ms` | `30000` | long-poll block time (`src/handlers.rs:32`) |
-| `--wal-shards` | the `--worker-threads` value on the first boot, which defaults to available parallelism (normally the number of central processing unit (CPU) cores) | fixed after the first boot; a different value stops the server with exit code 2 (`src/wal/walset.rs:91-115`, `src/main.rs:398-405`) |
+| `--wal-shards` | the `--worker-threads` value on the first boot. That value defaults to available parallelism (normally the number of CPU cores) | fixed after the first boot. A different value stops the server with exit code 2 (`src/wal/walset.rs:91-115`, `src/main.rs:398-405`) |
 | `--wal-segment-bytes` | 128 MiB | WAL segment size, not the cold-tier segment size (`src/wal/segment.rs:20-22`) |
 | `--stream-lanes` | 1 | data-file lane count (`src/store.rs:197`) |
 | `--worker-threads` | available parallelism | worker threads in Tokio, the asynchronous runtime, and the default WAL shard count on a fresh data directory (`src/main.rs:124-130`) |
@@ -255,13 +255,13 @@ The `ds.request` span records only bounded attributes. It does not record the st
 | `--wal-checkpoint-interval-ms` | 3,000 | time trigger (`src/wal/shard.rs:383`) |
 | `--wal-checkpoint-wal-bytes` | 0 | size trigger, 0 disables it (`src/wal/shard.rs:390`) |
 
-Memory mode cannot start over a WAL from an earlier `wal` run (`src/main.rs:298-322`). Memory mode also cannot be combined with tiering (`src/main.rs:298-305`). Tiering seals only bytes below the durable tail and treats a sealed object as permanent history. In memory mode the durable tail advances on the page-cache write. So a sealed segment could contain bytes that a crash erases, and no recovery pass trims a sealed segment (`src/tier.rs:522-533`).
+Memory mode cannot start over a WAL from an earlier `wal` run (`src/main.rs:298-322`). Memory mode also cannot be combined with tiering (`src/main.rs:298-305`). Tiering seals only bytes below the durable tail and treats a sealed object as permanent history. In memory mode the durable tail advances on the page-cache write. A sealed segment could therefore contain bytes that a crash erases. No recovery pass trims a sealed segment (`src/tier.rs:522-533`).
 
 ### Read flags
 
 | Flag | Default | Effect |
 |------|---------|--------|
-| `--tail-cache-bytes` | 0 on Linux, 65,536 on macOS | resident tail cache; 0 disables it, so every read comes from the file (`src/store.rs:376-397`) |
+| `--tail-cache-bytes` | 0 on Linux, 65,536 on macOS | resident tail cache. A value of 0 disables it, so every read comes from the file (`src/store.rs:376-397`) |
 | `--read-offload` | `tail` | where file reads run (`src/engine_raw.rs:38-59`) |
 
 The tail cache is off on Linux because `sendfile` is already fast. It is on by default on macOS because the server's macOS read path uses positioned reads rather than the Linux `sendfile` path (`src/store.rs:376-384`).
@@ -285,16 +285,16 @@ The S3 credentials come from the environment, never from a flag. The server read
 | `DS_S3_SECRET_ACCESS_KEY` | S3 credential | `src/main.rs:330-332` |
 | `OTEL_*` | OpenTelemetry configuration | `src/telemetry.rs:186` |
 | `DS_UNSAFE_FAST_FSYNC` | benchmark-only plain fsync on macOS | `src/store.rs:109-117` |
-| `DS_BENCH_FAST_FSYNC` | benchmark-only plain fsync instead of `F_FULLFSYNC` in the WAL; macOS only | `src/wal/segment.rs:136-143` |
+| `DS_BENCH_FAST_FSYNC` | benchmark-only plain fsync instead of `F_FULLFSYNC` in the WAL. macOS only | `src/wal/segment.rs:136-143` |
 | `DS_SIM_SEEDS`, `DS_SIM_SEED0`, `DS_SIM_GENS`, `DS_SIM_STEPS` | crash simulation controls | `src/wal/sim_tests.rs:1069-1082` |
 | `DS_DUMP_DIR` | forensic disk dump directory | `src/wal/sim_tests.rs:991-997` |
 | `RUST_SERVER_ARGS` | extra conformance server flags | `conformance/conformance.test.ts:44-60` |
 
-The two fast-fsync variables are benchmark aids. `DS_UNSAFE_FAST_FSYNC` affects the store's `barrier_fsync`, which covers data and sidecar writes. `DS_BENCH_FAST_FSYNC` affects the WAL segment barrier. Both replace the macOS `F_FULLFSYNC` drive-cache barrier with a plain `fsync`. Here "plain fsync" means the standard `fsync` call instead of `F_FULLFSYNC`. They weaken the durability barrier on macOS. Never set them in production (`README.md:128-133`, `src/store.rs:109-117`, `src/wal/segment.rs:136-143`).
+The two fast-fsync variables are benchmark aids. `DS_UNSAFE_FAST_FSYNC` affects the store's `barrier_fsync`. That function covers data and sidecar writes. `DS_BENCH_FAST_FSYNC` affects the WAL segment barrier. Both replace the macOS `F_FULLFSYNC` drive-cache barrier with a plain `fsync`. Here "plain fsync" means the standard `fsync` call instead of `F_FULLFSYNC`. They weaken the durability barrier on macOS. Never set them in production (`README.md:128-133`, `src/store.rs:109-117`, `src/wal/segment.rs:136-143`).
 
 ### File descriptors and shutdown
 
-The server raises the soft open-file limit to the hard limit at startup (`src/main.rs:84-111`). In the measured 1,000,000-stream run, each live stream held one file descriptor; a fork can also need its parent file, and a cold read opens a chunk file. At 1,000,000 streams the server held about 1,005,724 descriptors, which is 96% of the default 1,048,576 limit (`WAL_TUNING.md:113-116`). Raise `LimitNOFILE` for a deployment near that scale.
+The server raises the soft open-file limit to the hard limit at startup (`src/main.rs:84-111`). In the measured 1,000,000-stream run, each live stream held one file descriptor. A fork can also need its parent file. A cold read opens a chunk file. At 1,000,000 streams the server held about 1,005,724 descriptors. That count is 96% of the default 1,048,576 limit (`WAL_TUNING.md:113-116`). Raise `LimitNOFILE` for a deployment near that scale.
 
 A shutdown on `SIGINT` or `SIGTERM` stops accepting connections and stops the Server-Sent Events reactor on Linux. It waits up to 25 seconds for in-flight requests, joins the WAL committers, and flushes telemetry (`src/main.rs:445-464`, `src/main.rs:575-591`). It does not force a checkpoint, so the next boot may replay the WAL.
 
@@ -304,7 +304,7 @@ The server has no authentication and no Transport Layer Security (TLS). The flag
 
 The default listen address is the loopback address `127.0.0.1`, so only the local host can connect (`src/main.rs:116-117`). The engine adds two constant response headers to every response: `x-content-type-options: nosniff` and `cross-origin-resource-policy: cross-origin` (`src/api.rs:214-217`, `src/http1.rs:125-132`). The first header stops a browser from guessing a media type. The second header is permissive: it permits a page on another origin to load the response. Neither header is access control.
 
-A deployment on an untrusted network must put the server behind a reverse proxy that provides authentication and TLS. Do not expose the server port directly. The server has no backup, restore, or on-disk format migration command; the flag parser lists every operation it supports (`src/main.rs:145-292`). Stop the server and copy the whole data directory. The cold tier is not a backup: it holds only sealed history, and the live tail plus the sidecar metadata stay on local disk. A cold-tier copy alone cannot restore a stream.
+A deployment on an untrusted network must put the server behind a reverse proxy that provides authentication and TLS. Do not expose the server port directly. The server has no backup, restore, or on-disk format migration command. The flag parser lists every operation it supports (`src/main.rs:145-292`). Stop the server and copy the whole data directory. The cold tier is not a backup: it holds only sealed history, and the live tail plus the sidecar metadata stay on local disk. A cold-tier copy alone cannot restore a stream.
 
 ```mermaid
 flowchart TD
@@ -324,7 +324,7 @@ flowchart TD
 
 ## Key insight
 
-**Aha:** the write throughput is almost independent of the stream count because one shard committer folds many streams' appends into one `fdatasync`. A design with one fsync per append pays the disk barrier once per message. This server pays it once per group commit. The measured flat curve from 10,000 to 100,000 streams is therefore not a caching effect. It is the direct result of the commit granularity (`ARCHITECTURE.md:104`, `WAL_TUNING.md:7-21`). In the one-lane tuning campaign, the wall that remained at 1,000,000 streams was checkpoint writeback on one device, not the commit path, and `--stream-lanes` broke it (`WAL_TUNING.md:23-27`). The remote cardinality study found no such cliff on its configuration, as the section above shows.
+**Aha:** the write throughput is almost independent of the stream count because one shard committer folds many streams' appends into one `fdatasync`. A design with one fsync per append pays the disk barrier once per message. This server pays it once per group commit. The measured flat curve from 10,000 to 100,000 streams is therefore not a caching effect. It is the direct result of the commit granularity (`ARCHITECTURE.md:104`, `WAL_TUNING.md:7-21`). In the one-lane tuning campaign, the wall that remained at 1,000,000 streams was checkpoint writeback on one device, not the commit path. `--stream-lanes` broke it (`WAL_TUNING.md:23-27`). The remote cardinality study found no such cliff on its configuration, as the section above shows.
 
 ## Cross-references
 

@@ -10,14 +10,14 @@ This document gives the problem, the core design, the repository layout, and the
 
 ## The problem
 
-A normal Hypertext Transfer Protocol (HTTP) response is transient. If the connection breaks, the bytes in flight are lost. A WebSocket connection is also transient. If a phone changes network, the socket closes. A Server-Sent Events (SSE) connection is transient too. A server restart ends the connection.
+A normal HTTP response is transient. If the connection breaks, the bytes in flight are lost. A WebSocket connection is also transient. If a phone changes network, the socket closes. A Server-Sent Events (SSE) connection is transient too. A server restart ends the connection.
 
 Application teams solve this problem in the same way each time. They add a database table for the messages. They add a resumable read endpoint. They add a notification path. They add a cleanup job. Each part works, but the parts do not share one model.
 
 Durable Streams makes the log the first-class object. The protocol defines one stream model for all of these needs:
 
 - Replay from any position.
-- Live tail, the current end of the stream, with long-poll (a request that the server holds open until data arrives) or SSE.
+- Live tail, the current end of the stream, with long-poll or SSE. A long-poll request is one that the server holds open until data arrives.
 - Deduplicated writes with an idempotent producer, a writer that can retry without a duplicate append.
 - Time To Live (TTL) and expiry.
 - Stream closure.
@@ -81,7 +81,7 @@ flowchart TD
     C --> AI
 ```
 
-1. The protocol surface is `PROTOCOL.md`. It defines the resource model, the headers, the status codes, the live modes, the subscription control plane, and the caching rules.
+1. The protocol surface is `PROTOCOL.md`. It defines the resource model, the headers, the status codes, and the live modes. It also defines the subscription control plane and the caching rules.
 2. The server surface is a set of implementations. `packages/server` is the reference Node.js server. `packages/server-cloudflare` runs on Cloudflare Workers and Durable Objects. `packages/caddy-plugin` runs inside Caddy v2.
 3. The client surface is a set of language libraries. The TypeScript client in `packages/client` is the reference implementation.
 
@@ -100,7 +100,7 @@ The repository README labels the project status as beta. The client maturity doc
 
 ## Repository size and shape
 
-The repository is a pnpm workspace; pnpm is the package manager that links the workspace packages. The root `package.json` sets the package manager to `pnpm@10.25.0` and the Node.js engine to `>=22`. The workspace contains ten language clients, three server implementations, five integration packages, two conformance suites, and a benchmark package.
+The repository is a pnpm workspace. pnpm is the package manager that links the workspace packages. The root `package.json` sets the package manager to `pnpm@10.25.0` and the Node.js engine to `>=22`. The workspace contains ten language clients, three server implementations, five integration packages, two conformance suites, and a benchmark package.
 
 The reference server is substantial:
 
@@ -122,7 +122,7 @@ packages/client/src/idempotent-producer.ts    25,237 bytes
 
 ## The default server
 
-The reference server starts at port `4437` and binds to `127.0.0.1` by default. The protocol selects the port from the Internet Assigned Numbers Authority (IANA) unassigned range 4434-4440; the port is not registered (`PROTOCOL.md:1493`).
+The reference server starts at port `4437` and binds to `127.0.0.1` by default. The protocol selects the port from the Internet Assigned Numbers Authority (IANA) unassigned range 4434-4440. The port is not registered (`PROTOCOL.md:1493`).
 
 ```ts
 this.options = {
@@ -178,7 +178,7 @@ Five constraints appear in every part of the code.
 1. The offset is opaque. The server can choose any format. The reference server uses `<readSeq>_<byteOffset>` with 16 digits in each part.
 2. The server must not split an append. A reader sees the whole append or no part of it.
 3. The server must not reorder an append. The offset order is the append order.
-4. The server must not delete a byte that a reader can still request, unless the stream has a retention or TTL rule.
+4. The server must not delete a byte that a reader can still request. A stream with a retention or TTL rule is the exception.
 5. The server must not return a success code before the data is durable. The file-backed store calls `fdatasync` (a file synchronisation call that flushes data without all file metadata) before it commits metadata.
 
 ## What the reader can rely on
@@ -217,7 +217,7 @@ const read = await fetch(`${base}/orders?offset=${next}`)
 const items = await read.json()
 ```
 
-The create call uses `PUT`, not `POST`. The append call uses `POST`. The read call uses `GET` with the offset that the append returned; the read is at the tail, so it returns an empty array. The value `-1` is the sentinel for the beginning of the stream. The value `now` is the sentinel for the tail.
+The create call uses `PUT`, not `POST`. The append call uses `POST`. The read call uses `GET` with the offset that the append returned. The read is at the tail, so it returns an empty array. The value `-1` is the sentinel for the beginning of the stream. The value `now` is the sentinel for the tail.
 
 The same round trip with the TypeScript client uses one function call:
 
@@ -232,7 +232,7 @@ for await (const item of res.jsonStream()) {
 }
 ```
 
-The signature is at `packages/client/src/stream-api.ts:60`. The `jsonStream()` iterator is at `packages/client/src/response.ts:1052`. The client adds no protocol rule; it sends the same `GET` request.
+The signature is at `packages/client/src/stream-api.ts:60`. The `jsonStream()` iterator is at `packages/client/src/response.ts:1052`. The client adds no protocol rule. It sends the same `GET` request.
 
 ## What this package does not define
 

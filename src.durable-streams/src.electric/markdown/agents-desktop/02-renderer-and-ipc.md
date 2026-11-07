@@ -74,7 +74,7 @@ The fullscreen attribute changes when the main process sends `desktop:fullscreen
 
 The script also installs a selection context menu. A right-click on non-editable text inside `[data-desktop-selection-context]` sends `{ kind: 'selection', selectionText }` to the main process over `desktop:show-context-menu`. The main process shows a native Copy item. Source: `packages/agents-desktop/src/preload.ts:92-118` and `packages/agents-desktop/src/ipc/chrome.ts:34-43`.
 
-The API is attached once:
+The preload script attaches the application programming interface (API) once:
 
 ```ts
 // packages/agents-desktop/src/preload.ts:344
@@ -102,7 +102,7 @@ The bridge uses three directions. **Invoke** sends a request and waits for one r
 | Windows | `desktop:set-native-appearance`, `desktop:get-navigation-state`, `desktop:navigate-history`, `desktop:show-menu-section`, `desktop:show-app-menu` | Invoke |
 | Window events | `desktop:show-context-menu` | Send |
 | Window pushes | `desktop:navigation-state-changed`, `desktop:fullscreen-state-changed`, `desktop:command` | Push |
-| MCP | `desktop:mcp-snapshot`, `desktop:mcp-authorize`, `desktop:mcp-reconnect`, `desktop:mcp-disable`, `desktop:mcp-enable`, `desktop:mcp-upsert`, `desktop:mcp-remove` | Invoke |
+| Model Context Protocol (MCP) | `desktop:mcp-snapshot`, `desktop:mcp-authorize`, `desktop:mcp-reconnect`, `desktop:mcp-disable`, `desktop:mcp-enable`, `desktop:mcp-upsert`, `desktop:mcp-remove` | Invoke |
 | MCP push | `desktop:mcp-state` | Push |
 | Cloud authentication | `desktop:cloud-auth-state`, `desktop:cloud-auth-sign-in`, `desktop:cloud-auth-sign-out`, `desktop:cloud-auth-open-dashboard`, `desktop:cloud-auth-open-create-agents-server` | Invoke |
 | Cloud authentication push | `desktop:cloud-auth-state-changed` | Push |
@@ -158,7 +158,7 @@ The renderer also reports its own capability flags. It passes them as the third 
 
 ## The request bridge
 
-The renderer normally uses the browser `fetch`. For a mutating request to a saved local server, it uses the main process instead. A saved local server is a server in `settings.json` whose URL is a loopback address. A loopback address is `localhost`, `127.0.0.1`, `0.0.0.0`, `[::1]`, or `::1`.
+The renderer normally uses the browser `fetch`. For a mutating request to a saved local server, it uses the main process instead. A saved local server is a server in `settings.json` whose Uniform Resource Locator (URL) is a loopback address. A loopback address is `localhost`, `127.0.0.1`, `0.0.0.0`, `[::1]`, or `::1`.
 
 ```mermaid
 sequenceDiagram
@@ -178,7 +178,7 @@ sequenceDiagram
     P-->>R: new Response()
 ```
 
-The main process reads the response body as text, so the body is fully buffered before the response returns to the renderer. Source: `packages/agents-desktop/src/cloud/server-fetch.ts:90-97`.
+The main process reads the response body as text, so it buffers the body fully before the response returns to the renderer. Source: `packages/agents-desktop/src/cloud/server-fetch.ts:90-97`.
 
 The renderer decides to use the bridge in `shouldUseDesktopServerFetch`:
 
@@ -259,7 +259,7 @@ The fullscreen bridge is a push, not an invoke. The preload stores the result in
 
 ## Model Context Protocol and cloud surfaces
 
-The Model Context Protocol (MCP) surface is a push-based view of the embedded runtime's registry. The registry is the runtime's list of MCP servers and their tools. `mcp.getSnapshot` returns the last value. `mcp.onState` receives each new value. Source: `packages/agents-desktop/src/preload.ts:246-288`.
+The MCP surface is a push-based view of the embedded runtime's registry. The registry is the runtime's list of MCP servers and their tools. `mcp.getSnapshot` returns the last value. `mcp.onState` receives each new value. Source: `packages/agents-desktop/src/preload.ts:246-288`.
 
 The main process adds provenance to each registry row:
 
@@ -283,7 +283,7 @@ Three properties keep the boundary narrow:
 2. `nodeIntegration: false` removes Node.js from the page.
 3. The request bridge limits methods, protocols, hosts, and saved servers.
 
-**Important:** The IPC handlers do not compare `event.senderFrame.url` with the application URL. Such a check is not needed here, because the window loads only the packaged renderer or the development server, and external links open in the system browser. The trust boundary is the preload allowlist and the loaded page. A compromised renderer can call every exposed method. Each handler still applies its own checks. For example, the request bridge checks the method, the saved server, the protocol, and the host. Source: `packages/agents-desktop/src/cloud/server-fetch.ts:20-71` and `packages/agents-desktop/src/windows/context-menu.ts:12-28`.
+**Important:** The IPC handlers do not compare `event.senderFrame.url` with the application URL. The application does not need such a check here. The window loads only the packaged renderer or the development server. External links open in the system browser. The trust boundary is the preload allowlist and the loaded page. A compromised renderer can call every exposed method. Each handler still applies its own checks. For example, the request bridge checks the method, the saved server, the protocol, and the host. Source: `packages/agents-desktop/src/cloud/server-fetch.ts:20-71` and `packages/agents-desktop/src/windows/context-menu.ts:12-28`.
 
 ## Aha: the bridge is a small typed operating-system API
 

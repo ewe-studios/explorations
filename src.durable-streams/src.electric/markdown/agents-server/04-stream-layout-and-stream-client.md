@@ -4,7 +4,7 @@ title: Stream layout and stream client
 
 # Stream layout and stream client
 
-Electric Agents is the runtime and server pair that runs one agent as one entity. The system has two stores. PostgreSQL (Postgres) holds the control tables, and Durable Streams holds the event log for each entity. Every agent-visible fact lives in a stream; Postgres indexes those streams and also holds control state that no stream contains, such as permission grants, dispatch state, and schedule rows. This document lists the stream paths the server uses. It then describes `src/stream-client.ts`, the single HTTP (Hypertext Transfer Protocol) client that the server uses to reach Durable Streams.
+Electric Agents is the runtime and server pair that runs one agent as one entity. The system has two stores. PostgreSQL (Postgres) holds the control tables, and Durable Streams holds the event log for each entity. Every agent-visible fact lives in a stream. Postgres indexes those streams and also holds control state that no stream contains, such as permission grants, dispatch state, and schedule rows. This document lists the stream paths the server uses. It then describes `src/stream-client.ts`, the single HTTP (Hypertext Transfer Protocol) client that the server uses to reach Durable Streams.
 
 ## The path namespace
 
@@ -18,7 +18,7 @@ A stream path is an absolute path on the Durable Streams server. It is not a Uni
 | `/_entities/<sourceRef>` | Entity projector (`AgentsHost`) or entity bridge manager (standalone) | Membership stream for a tag set |
 | `/_cron/<encodedSpec>` | Scheduler | Cron tick log |
 | `/_electric/shared-state/<id>` | Agent runtime | Shared database stream |
-| `/_electric/pg-sync/<namespace>/<sourceRef>` | Pg sync bridge | Mirrored PostgreSQL (Postgres) rows |
+| `/_electric/pg-sync/<namespace>/<sourceRef>` | Pg sync bridge | Mirrored Postgres rows |
 | `/_webhooks/<endpointKey>[/<bucket>]` | An injected webhook source, not this package | Inbound webhook events |
 | `/runners/<id>/wake` | Runner router, dispatch link | Wake notification stream |
 
@@ -43,7 +43,7 @@ export function getEntitiesStreamPath(sourceRef: string): string {
 }
 ```
 
-The cron path encodes a JSON (JavaScript Object Notation) object as base64url. That makes the path a pure function of the schedule:
+The cron path encodes a JSON object as base64url. That makes the path a pure function of the schedule:
 
 ```ts
 // packages/agents-runtime/src/cron-utils.ts:65-67
@@ -54,7 +54,7 @@ export function getCronStreamPathFromSpec(spec: CronScheduleSpec): string {
 
 `CRON_STREAM_PREFIX` is `/_cron/`. The spec has an `expression` and a `timezone`. The same expression in a different timezone produces a different stream.
 
-**Aha: a stream path is an identifier, not a location.** The server computes a stream URL instead of storing it. Three columns are exceptions: `runners.wake_stream`, `entity_bridges.stream_url`, and `pg_sync_bridges.stream_url` are stored and unique. `runnerWakeStream(id)` and `getEntitiesStreamPath(sourceRef)` are pure functions. This keeps most control rows small and prevents a stale URL after a base URL change.
+**Aha: a stream path is an identifier, not a location.** The server computes a stream URL instead of storing it. Three exceptions exist: the code stores `runners.wake_stream`, `entity_bridges.stream_url`, and `pg_sync_bridges.stream_url`, and each is unique. `runnerWakeStream(id)` and `getEntitiesStreamPath(sourceRef)` are pure functions. This keeps most control rows small and prevents a stale URL after a base URL change.
 
 ## The stream client
 
@@ -97,7 +97,7 @@ The same `/__ds` prefix appears on two different addresses, and they are not the
 - The `StreamClient` calls the Durable Streams backend at `<backendPrefix>/__ds/...`. This is the internal call.
 - A runner or an agent runtime calls the `agents-server` at `http://<server>/__ds/...`. The `durableStreamsRouter` matches `/__ds` and `/__ds/*` and forwards the request to the backend. The default routing adapter appends the incoming path to the backend prefix, so `/__ds/x` becomes `<backendPrefix>/__ds/x`.
 
-A client should use the server address when it must pass through the server's routing and bearer injection, and the backend address only when it already holds a direct connection.
+A client should use the server address when it must pass through the server's routing and bearer injection. It should use the backend address only when it already holds a direct connection.
 
 ## Every method
 
@@ -159,7 +159,7 @@ A close append uses `handle.close({ body })`. The return value is the final offs
 
 ### Idempotent append
 
-`appendIdempotent` creates a producer, appends, flushes, and detaches. The deduplication key is the triple of producer identifier, epoch, and sequence number. If the same triple arrives twice, the server accepts the first and reports success for the second. An epoch is a producer generation: it starts at 0, and a new epoch tells the server to forget the sequence history of the old one. A new producer identifier also starts a new history.
+`appendIdempotent` creates a producer, appends, flushes, and detaches. The deduplication key is the triple of producer identifier, epoch, and sequence number. If the same triple arrives twice, the server accepts the first and reports success for the second. An epoch is a producer generation: it starts at 0. A new epoch tells the server to forget the sequence history of the old one. A new producer identifier also starts a new history.
 
 The scheduler uses this path, through `manager.send(..., { producerId })` for a delayed send and through `executeCronTick` for a cron tick. That is why a retried task does not write a second message. The tag outbox does not use it. `TagStreamOutboxDrainer` calls `appendWithProducerHeaders`, because the outbox row already stores the producer identifier, epoch, and sequence number that the drainer must reuse. See [10-pg-sync-and-bridges.md](10-pg-sync-and-bridges.md).
 
@@ -191,7 +191,7 @@ A subscription has a type, a stream list or pattern, and a delivery target. The 
 - `webhook`: the Durable Streams server sends an HTTP POST to a URL.
 - `pull-wake`: a worker claims pending work and reads the stream itself.
 
-The client normalizes paths before it sends them. A leading slash is removed when the backend expects a relative path. The routing adapter can also add a tenant prefix. See [06-http-routing.md](06-http-routing.md).
+The client normalizes paths before it sends them. The client removes a leading slash when the backend expects a relative path. The routing adapter can also add a tenant prefix. See [06-http-routing.md](06-http-routing.md).
 
 The claim, ack, and release calls form the pull-wake handshake. The claim gives the runner an exclusive lease on the stream and one epoch. The server writes the claim to Postgres. The runner then owns the stream read; it does not wait for the server to send the bytes. The `wake-callbacks` route is the return path. A claim callback carries the `wakeId`. It is local: the server mints the claim write token and returns it without forwarding anything upstream. A done callback sets `done: true`. The server forwards it to the upstream subscription and acks or releases the claim.
 
@@ -220,7 +220,7 @@ The write token is not in the claim response. It arrives only on the claim callb
 
 `claimSubscription` returns `null` for 204 and 404. Both mean "no work". The runner router turns that into a 204 response.
 
-`ackSubscription` and `releaseSubscription` send the claim token in the `authorization` header with a `Bearer` prefix. The token authorizes the operation on the claim; it is not the runner's Application Programming Interface (API) token.
+`ackSubscription` and `releaseSubscription` send the claim token in the `authorization` header with a `Bearer` prefix. The token authorizes the operation on the claim. It is not the runner's Application Programming Interface (API) token.
 
 ## Error handling
 
@@ -265,7 +265,7 @@ flowchart LR
 
 ## Related documents
 
-- [01-boot-and-configuration.md](01-boot-and-configuration.md) explains how the base URL is chosen.
-- [02-entity-manager.md](02-entity-manager.md) explains how the create body is built.
+- [01-boot-and-configuration.md](01-boot-and-configuration.md) explains how the code chooses the base URL.
+- [02-entity-manager.md](02-entity-manager.md) explains how the code builds the create body.
 - [05-wake-registry-and-scheduler.md](05-wake-registry-and-scheduler.md) explains how wake events reach this client.
 - [09-runners-and-sandboxes.md](09-runners-and-sandboxes.md) explains the claim handshake in full.

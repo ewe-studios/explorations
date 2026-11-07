@@ -4,9 +4,9 @@ title: Shape Stream Consumer
 
 # Shape Stream Consumer
 
-This document follows one shape from a table name to a list of Elixir messages. It explains the state that survives between requests, the exact request that the client sends, the order in which it processes a response, and every recovery path. Every claim cites a path relative to the package root.
+This document follows one shape from a table name to a list of Elixir messages. It explains the state that survives between requests and the exact request that the client sends. It also explains the order in which the client processes a response and every recovery path. Every claim cites a path relative to the package root.
 
-The central sequence is short. The caller defines a shape, creates a client, and iterates the stream. Under the surface, each iteration runs one poll. A poll builds a request from `ShapeState`, sends it through the fetch layer, validates the response headers, parses the body into messages, and folds the messages into a new state.
+The central sequence is short. The caller defines a shape, creates a client, and iterates the stream. Under the surface, each iteration runs one poll. A poll builds a request from `ShapeState` and sends it through the fetch layer. It validates the response headers, parses the body into messages, and folds the messages into a new state.
 
 ## Step 1: define the shape
 
@@ -43,11 +43,11 @@ The table name is quoted when it is not a simple identifier (`lib/electric/clien
 
 The `replica` parameter is omitted when the value is `:default` (`lib/electric/client/shape_definition.ex:243-245`). This is deliberate. An omitted parameter lets a shape-level `:full` win over a stream-level `:default` during the map merge.
 
-**Aha:** the shape's parameters enter the client as ordinary client parameters. **Client parameters** are the `:params` map that the client adds to every request. `Electric.Client.for_shape/2` merges the shape parameters into `client.params` and replaces the client parser (`lib/electric/client.ex:627-634`). There is no separate "shape request" object. This is why `Electric.Client.stream/3` and `Electric.Client.poll/4` share one request builder, and why a hand-written `:params` client option and a shape parameter merge cleanly.
+**Aha:** the shape's parameters enter the client as ordinary client parameters. **Client parameters** are the `:params` map that the client adds to every request. `Electric.Client.for_shape/2` merges the shape parameters into `client.params` and replaces the client parser (`lib/electric/client.ex:627-634`). The client has no separate "shape request" object. This is why `Electric.Client.stream/3` and `Electric.Client.poll/4` share one request builder, and why a hand-written `:params` client option and a shape parameter merge cleanly.
 
 ## Step 2: construct the stream
 
-`Electric.Client.stream/2` and `stream/3` have several clauses. The arity depends on whether the caller passes stream options. A client plus a keyword list calls `Stream.new/2` (`lib/electric/client.ex:492-494`). A client plus a `%ShapeDefinition{}` calls `for_shape/2` and then `stream/2` (`lib/electric/client.ex:547-551`). A client, a table name, and an options list call `stream/3` (`lib/electric/client.ex:543-545`). A table name is converted to a shape first. A URL string becomes a client with that endpoint (`lib/electric/client.ex:511-520`).
+`Electric.Client.stream/2` and `stream/3` have several clauses. The arity depends on whether the caller passes stream options. A client plus a keyword list calls `Stream.new/2` (`lib/electric/client.ex:492-494`). A client plus a `%ShapeDefinition{}` calls `for_shape/2` and then `stream/2` (`lib/electric/client.ex:547-551`). A client, a table name, and an options list call `stream/3` (`lib/electric/client.ex:543-545`). A table name is converted to a shape first. A Uniform Resource Locator (URL) string becomes a client with that endpoint (`lib/electric/client.ex:511-520`).
 
 `Stream.new/1` and `Stream.new/2` are both public. `new/2` takes a client and a keyword list, adds the client to the list, and calls `new/1` (`lib/electric/client/stream.ex:99-103`). `new/1` then does five things (`lib/electric/client/stream.ex:109-121`):
 
@@ -141,7 +141,7 @@ The result identifies the underlying shape. It does not identify one request. Th
 | `live` | The value is true | `lib/electric/client/fetch/request.ex:115` |
 | `cursor` | The cursor is not `nil` | `lib/electric/client/fetch/request.ex:116` |
 
-The parameters are sorted before encoding (`lib/electric/client/fetch/request.ex:83-93`). Sorting makes the Uniform Resource Locator (URL) stable, which makes cache coalescing and proxy caches predictable.
+The parameters are sorted before encoding (`lib/electric/client/fetch/request.ex:83-93`). Sorting makes the URL stable, which makes cache coalescing and proxy caches predictable.
 
 A complete request looks like this. The values are illustrative, and the client percent-encodes them.
 
@@ -152,7 +152,7 @@ Host: localhost:3000
 
 The endpoint comes from `base_url` plus `/v1/shape`, or from the full `:endpoint` option. The `table`, `where`, and `params[1]` entries come from the shape definition. The `offset` and `handle` entries come from `ShapeState`. The `live` entry is true only after the first `up-to-date` message. The client adds `replica=full` only when the effective replica mode is `:full`.
 
-The canonical key removes the protocol parameters in this list (`lib/electric/client/shape_key.ex:14-29`): `cursor`, `handle`, `live`, `offset`, `cache-buster`, `expired_handle`, `log`, and the `subset__*` family. The `subset__*` names are legacy server parameters for a subquery shape. This client does not send them; they are removed so that an older client and a newer client compute the same key for the same shape.
+The canonical key removes the protocol parameters in this list (`lib/electric/client/shape_key.ex:14-29`): `cursor`, `handle`, `live`, `offset`, `cache-buster`, `expired_handle`, `log`, and the `subset__*` family. The `subset__*` names are legacy server parameters for a subquery shape. This client does not send them. They are removed so that an older client and a newer client compute the same key for the same shape.
 
 **Aha:** the word `live` names two different controls, and they are not the same. The **stream option** `live: true | false` says whether the caller wants an infinite stream or a finite stream (`lib/electric/client/stream.ex:30-34`). The **wire parameter** `live=true` says whether the server should hold the request open for new changes. The stream engine derives the wire parameter from `state.up_to_date?`, not from the stream option (`lib/electric/client/poll.ex:122-124`).
 
@@ -197,7 +197,7 @@ The check runs before the success handler (`lib/electric/client/poll.ex:86-88`).
 `process_success_response/4` does five things (`lib/electric/client/poll.ex:155-172`):
 
 1. Sets the offset to the response offset, or keeps the old offset when the response has none (`lib/electric/client/poll.ex:156`, `lib/electric/client/poll.ex:382-383`).
-2. Stores the shape handle and cursor in the state. The **cursor** is a cache-busting interval token. The server computes it from the current time and the previous cursor, and sends it on a live response. The client sends it back so that a cache cannot serve an old response. It is not the offset; the offset selects stored changes, and the cursor selects a cache interval.
+2. Stores the shape handle and cursor in the state. The **cursor** is a cache-busting interval token. The server computes it from the current time and the previous cursor, and sends it on a live response. The client sends it back so that a cache cannot serve an old response. It is not the offset. The offset selects stored changes, and the cursor selects a cache interval.
 3. Builds a value mapper when the response carries a schema and the state has no mapper (`lib/electric/client/poll.ex:316-326`).
 4. Clears the stale-retry counters (`lib/electric/client/poll.ex:161`).
 5. Parses every body element with `Message.parse/4` (`lib/electric/client/poll.ex:165-169`).
@@ -206,7 +206,7 @@ The body can be a list or any other enumerable. `ensure_enum/1` wraps a map or a
 
 ### The offset chain
 
-Offsets are strings. The sentinel `"-1"` means "before all" (`lib/electric/client/offset.ex:8-9`). The first real offset is `"0_0"` (`lib/electric/client/offset.ex:9`). `Offset.new/2` builds a `"transaction_offset_operation_offset"` string (`lib/electric/client/offset.ex:24-36`). The first number is the PostgreSQL transaction offset, which is an LSN-like position. The second number is the operation offset inside that transaction. For example, `"2349_3"` means the fourth operation at transaction offset 2349. The initial state uses `Offset.before_all()` (`lib/electric/client/shape_state.ex:44`).
+Offsets are strings. The sentinel `"-1"` means "before all" (`lib/electric/client/offset.ex:8-9`). The first real offset is `"0_0"` (`lib/electric/client/offset.ex:9`). `Offset.new/2` builds a `"transaction_offset_operation_offset"` string (`lib/electric/client/offset.ex:24-36`). The first number is the PostgreSQL transaction offset. It is a position like a Log Sequence Number (LSN). The second number is the operation offset inside that transaction. For example, `"2349_3"` means the fourth operation at transaction offset 2349. The initial state uses `Offset.before_all()` (`lib/electric/client/shape_state.ex:44`).
 
 The chain is simple:
 
@@ -253,7 +253,7 @@ The value mapper is called inside a `try` that logs and re-raises (`lib/electric
 
 The server sends the schema in the `electric-schema` header (`lib/electric/client/fetch/response.ex:68-72`). The response decoder turns the JSON text into a map with atom keys (`lib/electric/client/fetch/response.ex:68-72`). The poll engine stores the schema and builds the mapper once (`lib/electric/client/poll.ex:316-322`).
 
-The default mapper converts only `int2`, `int4`, `int8`, `float4`, and `float8` (`lib/electric/client/value_mapper.ex:88-124`). These are PostgreSQL internal type names for 16-bit, 32-bit, and 64-bit integers and 32-bit and 64-bit floating-point numbers. Every other column stays an Elixir string. The comment in the source states the reason: full type support is available through the Ecto adapter, which is a different parser that the caller selects at configuration time (`lib/electric/client/value_mapper.ex:92-100`). The default mapper does not call Ecto at run time.
+The default mapper converts only `int2`, `int4`, `int8`, `float4`, and `float8` (`lib/electric/client/value_mapper.ex:88-124`). These are PostgreSQL internal type names for 16-bit, 32-bit, and 64-bit integers and 32-bit and 64-bit floating-point numbers. Every other column stays an Elixir string. The comment in the source states the reason. Full type support is available through the Ecto adapter. That adapter is a different parser, and the caller selects it at configuration time (`lib/electric/client/value_mapper.ex:92-100`). The default mapper does not call Ecto at run time.
 
 ## Step 7: fold the messages into the state
 
@@ -269,9 +269,9 @@ The default mapper converts only `int2`, `int4`, `int8`, `float4`, and `float8` 
 
 ## Move-out and synthetic deletes
 
-A move-out event means that rows left the shape's filter. A row leaves when its data changes so that it no longer matches the filter, when the filter's parameters change, or when a new shape handle changes the visible set. The server does not send a delete for each row. It sends tag patterns, because the server does not know which rows the client has already received. The client must find the affected rows and synthesise deletes.
+A move-out event means that rows left the shape's filter. A row leaves when its data changes so that it no longer matches the filter. It also leaves when the filter's parameters change or when a new shape handle changes the visible set. The server does not send a delete for each row. It sends tag patterns, because the server does not know which rows the client has already received. The client must find the affected rows and synthesise deletes.
 
-A filter is converted to **disjunctive normal form**: an OR of AND groups. For example, `(priority = 'high' AND status = 'open') OR (assignee = 'me')` has two disjuncts. The first disjunct has two conditions at positions 0 and 1; the second has one condition at position 2. A tag string has one segment per position, in order. A row is visible when every position in at least one disjunct is active. This is why the tracker stores `disjunct_positions` and why one move-out can remove a row from one disjunct but leave it visible in another.
+A filter is converted to **disjunctive normal form**: an OR of AND groups. For example, `(priority = 'high' AND status = 'open') OR (assignee = 'me')` has two disjuncts. The first disjunct has two conditions at positions 0 and 1. The second has one condition at position 2. A tag string has one segment per position, in order. A row is visible when every position in at least one disjunct is active. This is why the tracker stores `disjunct_positions` and why one move-out can remove a row from one disjunct but leave it visible in another.
 
 `TagTracker` keeps three structures (`lib/electric/client/tag_tracker.ex:9-21`):
 

@@ -14,15 +14,15 @@ These terms have one exact meaning here.
 |------|---------|
 | Entity | One agent instance. It has a type, an address, and one append-only event stream. |
 | Spawn | The act of creating an entity. The agents-server writes the entity row and creates the stream. |
-| Wake | One unit of work. A wake happens when a subscription reports new bytes, a runner claims a pull-wake record, a timer fires (a delayed send or a cron tick), or a condition registration matches an event. |
+| Wake | One unit of work. A wake happens when one of four things occurs. A subscription reports new bytes. A runner claims a pull-wake record. A timer fires (a delayed send or a cron tick). A condition registration matches an event. |
 | Stream | One persistent, append-only sequence of bytes at one path. The stream is the event log of the entity. |
 | Tail | The current end of the stream. A reader at the tail has read every message that exists now. |
 | Runtime | The agents-runtime package. It reads the stream, runs the handler, and writes events back. |
-| Server | The agents-server package. It owns the control records and the HTTP interface. |
+| Server | The agents-server package. It owns the control records and the Hypertext Transfer Protocol (HTTP) interface. |
 | Subscription | A Durable Streams object that tells the stream server which streams to watch and where to send a notification. |
 | Principal | The authenticated identity that makes a request. |
 | Runner | A remote process that executes agent work and receives pull wakes. |
-| SSE | Server-Sent Events. A one-way Hypertext Transfer Protocol stream from the server to the client. |
+| SSE | Server-Sent Events. A one-way HTTP stream from the server to the client. |
 | LMDB | Lightning Memory-Mapped Database. An embedded key-value store. |
 | TTL | Time To Live. The period after which a stream may expire. |
 | MIME | Multipurpose Internet Mail Extensions. The media type, such as `application/json`. |
@@ -35,7 +35,7 @@ These terms have one exact meaning here.
 1. **Creation.** `EntityManager.spawnInner` builds the path `/{entityType}/{instanceId}/main`. It inserts the entity row into PostgreSQL first. It then calls `streamClient.create(mainPath, { contentType: 'application/json', body: initialBody })`. The initial body is a JSON array that holds the `entity_created` event, any static slash commands, and an optional first inbox message. The HTTP route passes no first message, so its body holds only the first two kinds.
 2. **Subscription.** After spawn, `linkEntityDispatchSubscription` adds the new stream to a Durable Streams subscription. The subscription is either a webhook target or a pull-wake target.
 3. **Opening.** On each wake, `processWake` constructs a `DurableStream` for the same path. It constructs an `IdempotentProducer` with the identifier `entity-${entityUrl}`. It calls `createEntityStreamDB` and then `db.preload()`. Preload opens one SSE connection, reads to the tail, and keeps the connection open.
-4. **Storage.** By default, the stream lives in a `DurableStreamTestServer` embedded in the server process. The name says "test", but the agents-server uses this class as its default embedded server for single-process deployments. The class is the only embedded server in the Durable Streams package. When an external server URL is set, the agents-server does not start the embedded server. The file-backed store writes metadata to `metadata.lmdb` and event bytes to `<dataDir>/streams/<directoryName>.log`. The default data directory is `${cwd}/.streams-data`. Docker uses `/var/lib/electric-agents/streams`.
+4. **Storage.** By default, the stream lives in a `DurableStreamTestServer` embedded in the server process. The name says "test", but the agents-server uses this class as its default embedded server for single-process deployments. The class is the only embedded server in the Durable Streams package. When an external server Uniform Resource Locator (URL) is set, the agents-server does not start the embedded server. The file-backed store writes metadata to `metadata.lmdb` and event bytes to `<dataDir>/streams/<directoryName>.log`. The default data directory is `${cwd}/.streams-data`. Docker uses `/var/lib/electric-agents/streams`.
 
 The rest of this document shows the code behind each statement.
 
@@ -86,7 +86,7 @@ Three names come out of this block:
 | `mainPath` | `/assistant/7f3a.../main` | Stream path for the entity event log |
 | `subscriptionId` | `assistant-handler` | Base subscription identifier |
 
-The `writeToken` is a second identifier. It is stored on the entity row as `write_token` and returned in the `x-write-token` response header. `EntityManager` accepts this per-entity token only when no custom validator is installed. The standalone runtime installs a validator that accepts only a per-wake token, minted at the wake claim callback. [06-security-tenancy-and-permissions.md](06-security-tenancy-and-permissions.md) explains the three token kinds.
+The `writeToken` is a second identifier. The server stores it on the entity row as `write_token` and returns it in the `x-write-token` response header. `EntityManager` accepts this per-entity token only when no custom validator is installed. The standalone runtime installs a validator that accepts only a per-wake token, which the wake claim callback mints. [06-security-tenancy-and-permissions.md](06-security-tenancy-and-permissions.md) explains the three token kinds.
 
 **Why the slash check matters:** the stream path is built by string concatenation. A slash inside `instanceId` would create a deeper path. The path could collide with another entity or with an internal namespace such as `/_electric`. The check prevents that.
 
@@ -104,7 +104,7 @@ The policy has one target. The target is either a webhook URL or a runner identi
 
 ### Step 4: build the entity row
 
-The entity record holds the stream path, the subscription identifier, the policy, the write token, the tags, the spawn arguments, the sandbox choice, the schemas, and the timestamps.
+The entity record holds the stream path, the subscription identifier, the policy, and the write token. It also holds the tags, the spawn arguments, the sandbox choice, the schemas, and the timestamps.
 
 ```ts
 const entityData: ElectricAgentsEntity = {
@@ -189,7 +189,7 @@ const [mainStreamResult] = await Promise.allSettled([
 ])
 ```
 
-The source comment explains the order: a webhook can observe the new stream and look up the entity. The dispatch subscription for this entity is linked later, by the route. The comment therefore covers a subscription that already lists the path. The cases are a subscription with a glob `pattern` (`*` matches one path segment, `**` matches zero or more, `PROTOCOL.md:875`), a reused path, or a runner wake source.
+The source comment explains the order: a webhook can observe the new stream and look up the entity. The route links the dispatch subscription for this entity later. The comment therefore covers a subscription that already lists the path. The cases are a subscription with a glob `pattern`, a reused path, or a runner wake source. A `*` matches one path segment, and `**` matches zero or more (`PROTOCOL.md:875`).
 
 Source: `packages/agents-server/src/entity-manager.ts:836-864`.
 
@@ -228,11 +228,11 @@ Source: `packages/agents-server/src/entity-manager.ts:867-940`.
 
 `CONFLICT_SEQ` is the Durable Streams error code for a sequence conflict. An append carries an optional `Stream-Seq` header. The server stores the last value in `lastSeq`. An append with a value that is not newer than `lastSeq` is rejected with this code. A client can use the rejection as proof that the earlier append already reached the server.
 
-The rollback order protects the invariant "a live entity row always has a live main stream" on the handled error path. If the stream failed, the row is deleted. If the row failed, no stream was created. A process crash between the two writes can break the invariant; [07-critical-assessment.md](07-critical-assessment.md) explains that case.
+The rollback order protects the invariant "a live entity row always has a live main stream" on the handled error path. If the stream failed, the row is deleted. If the row failed, no stream was created. A process crash between the two writes can break the invariant. Document [07-critical-assessment.md](07-critical-assessment.md) explains that case.
 
 ### Step 9: link the dispatch subscription
 
-The spawn route calls `linkEntityDispatchSubscription` after `spawnInner` returns. There is a subtle ordering rule:
+The spawn route calls `linkEntityDispatchSubscription` after `spawnInner` returns. A subtle ordering rule applies:
 
 ```ts
 const linkBeforeInitialMessage =
@@ -261,7 +261,7 @@ The condition `parsed.initialMessage !== undefined` is true for the route above,
 
 **Aha: the subscription is linked before the first message when a wake target exists.** Suppose the order were reversed. The message append would happen first. The subscription would be created second. The Durable Streams protocol links an existing stream at its current tail offset, so a late subscription does not replay the earlier bytes. The agent would sit idle with an unread inbox message. Linking first removes that race.
 
-**Why the subscription identifier has a suffix.** `subscriptionIdForEntityDispatchTarget` adds a suffix for every runner target, and for a webhook target only when it carries a `subscription_id`. The suffix is the first 16 hexadecimal characters of the SHA-256 digest of the entity address. SHA-256 means Secure Hash Algorithm with a 256-bit output. One webhook therefore gets one subscription per entity, not one shared subscription for all entities. The base identifier is the one held on the entity row, such as `assistant-handler`.
+**Why the subscription identifier has a suffix.** `subscriptionIdForEntityDispatchTarget` adds a suffix for every runner target. It adds the suffix for a webhook target only when the target carries a `subscription_id`. The suffix is the first 16 hexadecimal characters of the SHA-256 digest of the entity address. SHA-256 means Secure Hash Algorithm with a 256-bit output. One webhook therefore gets one subscription per entity, not one shared subscription for all entities. The base identifier is the one held on the entity row, such as `assistant-handler`.
 
 ### Step 10: how the subscription is built
 
@@ -394,7 +394,7 @@ Source: `packages/agents-runtime/src/process-wake.ts:1206-1211`.
 
 The claim callback and the preload run in parallel. The claim takes milliseconds when the entity row and the wake record exist. The preload takes longer when the stream is large. Running them together hides the claim latency.
 
-**Aha: one connection, three consumers.** The `DurableStream` is shared by the materialized database, the producer, and the live tail. The comment at `process-wake.ts:513-516` states that `StreamDB` opens one SSE connection on `preload()` and all readers share it. A naive design would open a separate catch-up connection and live connection. Producer writes are separate HTTP `POST` requests on the same `DurableStream` object; the single connection serves reads only.
+**Aha: one connection, three consumers.** The materialized database, the producer, and the live tail share the `DurableStream`. The comment at `process-wake.ts:513-516` states that `StreamDB` opens one SSE connection on `preload()` and all readers share it. A naive design would open a separate catch-up connection and live connection. Producer writes are separate HTTP `POST` requests on the same `DurableStream` object. The single connection serves reads only.
 
 ### The handler
 
@@ -539,7 +539,7 @@ function segmentFile(dataDir: string, dirName: string): string {
 
 Source: `durable-streams/packages/server/src/file-store.ts:266-268`.
 
-The unique suffix lets the store delete a stream and immediately reuse its path. A new stream at the same path gets a new file name, so a slow reader on the old file cannot see the new stream's bytes.
+The unique suffix lets the store delete a stream and immediately reuse its path. A new stream at the same path gets a new file name. A slow reader on the old file therefore cannot see the new stream's bytes.
 
 **Note on an unused class.** The file `file-manager.ts` defines `StreamFileManager`, which uses a different layout: `streams/<encoded>/segment_00000.log`. No file imports that class. The active layout is the one in `FileBackedStreamStore`. This exploration states the discrepancy so that a future reader does not follow the unused class.
 
@@ -600,7 +600,7 @@ Assume a spawn request with this body:
 1. `instanceId` is a random UUID, for example `4f2c1e9a`.
 2. `entityURL` is `/assistant/4f2c1e9a`.
 3. `mainPath` is `/assistant/4f2c1e9a/main`.
-4. The initial body holds the `entity_created` event. It holds no inbox event, because the route passes `initialMessage: undefined` to `spawn`. Assume this type declares no static slash commands; if it did, the body would hold one `slash_command` event for each.
+4. The initial body holds the `entity_created` event. It holds no inbox event, because the route passes `initialMessage: undefined` to `spawn`. Assume this type declares no static slash commands. If it did, the body would hold one `slash_command` event for each.
 5. `initialBody` is the JSON array `[{...entity_created...}]`.
 6. The server sends `PUT <base-url>/assistant/4f2c1e9a/main` with that body and `Content-Type: application/json`. The path has no `/v1/stream` prefix. `appendPathToBaseUrl` joins the base URL and the path directly.
 7. The stream server flattens the array. It stores one message with its own offset. `StreamClient.create` returns `Promise<void>`. This wrapper does not read the tail offset from the response, and it discards the `DurableStream` handle that `DurableStream.create` returns. Later reads learn the tail from the stream itself.

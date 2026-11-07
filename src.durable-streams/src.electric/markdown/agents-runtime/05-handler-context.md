@@ -49,7 +49,7 @@ The citation is `packages/agents-runtime/src/types.ts:1057-1234`.
 | `slashCommands` | `SlashCommandHelpers` | Helpers for slash command input |
 | `tags` | `Readonly<EntityTags>` | Current entity tags |
 | `principal` | `RuntimePrincipal` or undefined | The principal that caused the wake |
-| `entityUrl` | `string` | The entity URL, for example `/agent/id` |
+| `entityUrl` | `string` | The entity Uniform Resource Locator (URL), for example `/agent/id` |
 | `entityType` | `string` | The entity type name |
 | `args` | object | The validated creation arguments |
 | `signal` | `AbortSignal` | Aborted when the invocation must stop |
@@ -65,7 +65,7 @@ Document [03-wake-processing.md](03-wake-processing.md) calls the stream event k
 
 The `principal` field is the principal that caused this handler call. In a notification, the same principal is also the identity that the runtime uses for control-plane writes. It is not always the writer of every row in the stream. The field is declared at `packages/agents-runtime/src/types.ts:1072`.
 
-The `signal` field is not decoration. A handler that performs non-model work, such as an HTTP request or a subprocess, must pass this signal to that work. A `SIGINT` aborts the signal.
+The `signal` field is not decoration. A handler that performs non-model work, such as a Hypertext Transfer Protocol (HTTP) request or a subprocess, must pass this signal to that work. A `SIGINT` aborts the signal.
 
 ### Data fields
 
@@ -168,7 +168,7 @@ Document [07-context-timeline-and-compaction.md](07-context-timeline-and-compact
 | `markGoalComplete(summary?)` | Mark the goal complete |
 | `updateGoalUsage(tokensUsed, opts?)` | Add token usage to the goal |
 
-Goals are durable. The goal API stores a goal entry in the manifest and writes `manifest` events. The manifest is the keyed live view of durable handler state. It is not agent content. The citation is `packages/agents-runtime/src/goal-api.ts`.
+Goals are durable. The application programming interface (API) for goals stores a goal entry in the manifest and writes `manifest` events. The manifest is the keyed live view of durable handler state. It is not agent content. The citation is `packages/agents-runtime/src/goal-api.ts`.
 
 ### Collaboration fields
 
@@ -183,7 +183,7 @@ Goals are durable. The goal API stores a goal entry in the manifest and writes `
 | `send(entityUrl, payload, opts?)` | Send a message to another entity |
 | `attachments` | Read and create attachments |
 
-`send` takes a target entity URL and a payload. Its options are `type` and `afterMs`. During the setup phase, `send` is restricted to child entities. The setup phase is the part of context construction before the handler's main work starts. The restriction stops an entity from sending work before its parent links exist. The citation is `packages/agents-runtime/src/setup-context.ts:326-355`.
+`send` takes a target entity URL and a payload. Its options are `type` and `afterMs`. During the setup phase, the runtime restricts `send` to child entities. The setup phase is the part of context construction before the handler's main work starts. The restriction stops an entity from sending work before its parent links exist. The citation is `packages/agents-runtime/src/setup-context.ts:326-355`.
 
 `mkdb` creates a shared-state handle. If the handle already exists and the caller asks to create it again, the runtime throws. A caller that wants the existing handle uses `observe` with a `db` source.
 
@@ -244,7 +244,7 @@ Not every field is available at the same time:
 - `db`, `state`, `actions`, `events`, `sandbox`, `entityUrl`, `entityType`, `args`, `wake`, `tags`, `principal`, `electricTools`, and `signal` exist when the handler starts. Any field not listed here has its own timing.
 - `agent.run()` requires a prior `useAgent()`.
 - `send` has a setup-phase restriction: it can target only a child entity. The `send` method on a handle that `spawn` or `fork` returned always throws during the setup phase.
-- `sandbox` is disposed during wake cleanup, after the last handler iteration. A detached task must not keep using it. The sandbox is the same object across iterations of one wake.
+- The wake cleanup disposes `sandbox` after the last handler iteration. A detached task must not keep using it. The sandbox is the same object across iterations of one wake.
 
 ```mermaid
 stateDiagram-v2
@@ -260,7 +260,7 @@ stateDiagram-v2
 
 **Key insight:** `ctx.state` and `ctx.db` are two views of one store. `ctx.state` is the safe, small interface for custom data. `ctx.db` is the complete interface for everything, including the 20 built-in collections. A handler that mixes them does not create two databases. It creates two access paths to the same rows.
 
-This matters for correctness. A write through `ctx.state` becomes a stream event, and the local collection applies it. A read through `ctx.db` reads that same local collection. The read does not wait for a remote round trip. The two views converge because both use the one projection that the stream updates. After an awaited write resolves, the row is visible; if the transaction identifier times out, the outcome is unknown.
+This matters for correctness. A write through `ctx.state` becomes a stream event, and the local collection applies it. A read through `ctx.db` reads that same local collection. The read does not wait for a remote round trip. The two views converge because both use the one projection that the stream updates. After an awaited write resolves, the row is visible. If the transaction identifier times out, the outcome is unknown.
 
 ## Next
 

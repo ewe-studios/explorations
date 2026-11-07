@@ -24,7 +24,7 @@ flowchart TD
     Stable --> Build
 ```
 
-The stable node names the inputs to the reusable workflow; it does not start a second build. The reusable workflow runs `ci:check` again, so a pull request with the preview label runs the checks twice: once in the pull request job and once inside the build job. Source: `.github/workflows/agents_mobile_pr.yml:1-133`, `.github/workflows/agents_mobile_build.yml:24-267`, `.github/workflows/agents_mobile_canary.yml:1-44`, `.github/workflows/agents_mobile_ios_simulator.yml:1-33`, and `.github/workflows/changesets_release.yml:169-191`.
+The stable node names the inputs to the reusable workflow; it does not start a second build. The reusable workflow runs `ci:check` again. A pull request with the preview label therefore runs the checks twice. It runs them once in the pull request job and once inside the build job. Source: `.github/workflows/agents_mobile_pr.yml:1-133`, `.github/workflows/agents_mobile_build.yml:24-267`, `.github/workflows/agents_mobile_canary.yml:1-44`, `.github/workflows/agents_mobile_ios_simulator.yml:1-33`, and `.github/workflows/changesets_release.yml:169-191`.
 
 ## Scripts
 
@@ -46,7 +46,7 @@ Source: `packages/agents-mobile/package.json:6-18`.
 
 `export:android` is the strongest check that does not need a native toolchain. It runs Metro, the JavaScript bundler, over the full application. Metro follows every import from the entry point, so a broken import fails the check. A missing module alias also fails, because Metro cannot resolve the imported name. Source: `packages/agents-mobile/package.json:15-17`.
 
-The package has version `0.6.5` and `private: true`. It does not publish to the npm registry. Source: `packages/agents-mobile/package.json:2-4`.
+The package has version `0.6.5` and `private: true`. It does not publish to the Node Package Manager (npm) registry. Source: `packages/agents-mobile/package.json:2-4`.
 
 ## Application identity
 
@@ -93,7 +93,7 @@ The privacy manifest declares three facts:
 
 1. The application does not track users.
 2. It collects crash data and performance data for application functionality, without linking the data to the user and without tracking.
-3. It uses four required-reason application programming interfaces (APIs), for user defaults, file timestamps, system boot time, and disk space. A required-reason API is an Apple API that an application must declare in its privacy manifest before Apple accepts the upload. The manifest entries are `NSPrivacyAccessedAPICategoryUserDefaults`, `NSPrivacyAccessedAPICategoryFileTimestamp`, `NSPrivacyAccessedAPICategorySystemBootTime`, and `NSPrivacyAccessedAPICategoryDiskSpace`.
+3. It uses four required-reason application programming interfaces (APIs). They cover user defaults, file timestamps, system boot time, and disk space. A required-reason API is an Apple API. An application must declare it in its privacy manifest before Apple accepts the upload. The manifest entries are `NSPrivacyAccessedAPICategoryUserDefaults`, `NSPrivacyAccessedAPICategoryFileTimestamp`, `NSPrivacyAccessedAPICategorySystemBootTime`, and `NSPrivacyAccessedAPICategoryDiskSpace`.
 
 Source: `packages/agents-mobile/app.config.ts:82-126`.
 
@@ -118,7 +118,7 @@ The application also wraps the root layout with `Sentry.wrap` and puts a `Sentry
 
 ## The version code
 
-The version code must increase with every store upload. Canary and production builds come from different workflows, so a simple counter in one workflow is not sufficient.
+The version code must increase with every store upload. Canary and production builds come from different workflows, so a simple counter in one workflow is not enough.
 
 The application computes the value in a fixed order:
 
@@ -176,7 +176,7 @@ flowchart LR
 
 ## EAS profiles
 
-`eas.json` sets `appVersionSource` to `local`, so the repository owns the version and build numbers. The other setting is `remote`, where Expo Application Services (EAS) stores and increments the values on its own servers. Every profile uses Node.js 24.11.1. Source: `packages/agents-mobile/eas.json:1-5`.
+`eas.json` sets `appVersionSource` to `local`, so the repository owns the version and build numbers. The other setting is `remote`, where EAS stores and increments the values on its own servers. Every profile uses Node.js 24.11.1. Source: `packages/agents-mobile/eas.json:1-5`.
 
 | Profile | Distribution | Platform change | Environment |
 |---------|--------------|-----------------|-------------|

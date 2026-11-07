@@ -22,7 +22,7 @@ export function runnerWakeStream(runnerId: string): string {
 }
 ```
 
-That helper shows the general rule for stream paths: the code usually derives them from a registry identifier. Three paths are stored instead: `runners.wake_stream`, `entity_bridges.stream_url`, and `pg_sync_bridges.stream_url`. Each table has a unique constraint on `(tenant_id, wake_stream)` or `(tenant_id, stream_url)`. See [09-runners-and-sandboxes.md](09-runners-and-sandboxes.md).
+That helper shows the general rule for stream paths: the code usually derives them from a registry identifier. The code stores three paths instead: `runners.wake_stream`, `entity_bridges.stream_url`, and `pg_sync_bridges.stream_url`. Each table has a unique constraint on `(tenant_id, wake_stream)` or `(tenant_id, stream_url)`. See [09-runners-and-sandboxes.md](09-runners-and-sandboxes.md).
 
 ## Tenancy
 
@@ -79,10 +79,10 @@ The check constraints for `delivery_status`, `claim_status`, and the other statu
 
 Several objects exist in the schema but have no production writer in version 0.6.4. They are part of the intended design, not of the current control path:
 
-- `wake_notifications` has no `INSERT` and no `UPDATE` anywhere in `src`. The table is read only by the Electric proxy allowlist in `src/utils/server-utils.ts`. The wake registry writes `wake_registrations` instead, and the Durable Streams subscription carries the wake. The `delivery_status` and `claim_status` values are never set by this package.
-- `entity_dispatch_state.outstanding_wake_id` is never written. `entity_dispatch_state.pending_source_streams` is written once, as an empty array, by `createEntity`. The health route counts both columns, so the counts are always zero unless another process fills them.
-- `users` is written by `ensureUserForPrincipal`, and only for a principal of kind `user`. A principal of another kind gets no `users` row.
-- `consumer_claims` allows the status values `expired` and `failed`, but the package writes only `active` and `released`. Expiry is computed from `lease_expires_at`.
+- `wake_notifications` has no `INSERT` and no `UPDATE` anywhere in `src`. Only the Electric proxy allowlist in `src/utils/server-utils.ts` reads the table. The wake registry writes `wake_registrations` instead, and the Durable Streams subscription carries the wake. This package never sets the `delivery_status` and `claim_status` values.
+- No code writes `entity_dispatch_state.outstanding_wake_id`. `createEntity` writes `entity_dispatch_state.pending_source_streams` once, as an empty array. The health route counts both columns, so the counts are always zero unless another process fills them.
+- `ensureUserForPrincipal` writes `users`, and only for a principal of kind `user`. A principal of another kind gets no `users` row.
+- `consumer_claims` allows the status values `expired` and `failed`, but the package writes only `active` and `released`. The code computes expiry from `lease_expires_at`.
 
 These gaps matter for operations. A recovery pass that reads `outstanding_wake_id` has no data to read. See [09-runners-and-sandboxes.md](09-runners-and-sandboxes.md) and [11-operations-testing-and-conformance.md](11-operations-testing-and-conformance.md).
 
@@ -232,7 +232,7 @@ flowchart TB
 
 Layer 1 is the built-in principal bypass. The principals `system:framework`, `system:auth-sync`, and `system:dev-local` bypass entity checks.
 
-Layer 2 is creator access. The `created_by` column is compared with the principal URL.
+Layer 2 is creator access. The code compares the `created_by` column with the principal URL.
 
 Layer 3 is the materialized grant table. `hasEntityPermission()` asks for the requested permission *or* `manage`:
 
@@ -261,7 +261,7 @@ const rows = await this.db
 return rows.length > 0
 ```
 
-The query is one point lookup. It does not walk the lineage at request time. That work happens when a grant or an entity is created.
+The query is one point lookup. It does not walk the lineage at request time. That work happens when the code creates a grant or spawns an entity.
 
 Layer 4 is the authorization hook. It runs on every permission-aware request when it is configured, including a request that the first three layers allow. The hook receives `builtInAllowed` and its decision wins. A hook error denies access. The hook returns an optional `expires_at` in its own decision object. The module caches the decision until that time, but only when the hook supplied the value. The cache lives in a `WeakMap` keyed by the hook function, and the entry key is `service|principalUrl|verb|resourceKey`. See [08-tenancy-permissions-and-principals.md](08-tenancy-permissions-and-principals.md).
 
@@ -331,15 +331,15 @@ A grant with `propagation = 'descendants'` but `copy_to_children = false` gives 
 
 ## Entity listing with a reader filter
 
-`listEntities()` accepts a `readableBy` filter. When the filter is present, the query keeps an entity when `created_by` equals the principal, or when an `entity_effective_permissions` row gives the principal or its principal kind `read` or `manage`. The registry builds this condition inline with Drizzle. The management list route (`GET /_electric/entities/`) uses this filter.
+`listEntities()` accepts a `readableBy` filter. When the filter is present, the query keeps an entity in two cases. The first case is `created_by` equals the principal. The second case is an `entity_effective_permissions` row that gives the principal, or its principal kind, `read` or `manage`. The registry builds this condition inline with Drizzle. The management list route (`GET /_electric/entities/`) uses this filter.
 
 The Electric proxy uses a separate builder, `buildReadableEntitiesWhere` in `src/utils/server-utils.ts:328`. The same builder serves the entity bridge shape query in `src/entity-bridge-manager.ts`. It returns the same shape of condition as text: tenant, then `created_by`, then a subquery on `entity_effective_permissions` for `read` or `manage`. A *shape-stream filter* is that query parameter.
 
-The two implementations are not identical. The registry query checks `expires_at IS NULL OR expires_at > now()`. `buildReadableEntitiesWhere` does not check `expires_at`. A principal can therefore see an entity in the shape stream after the grant has expired, while the same principal cannot see it in the management list. The cause is duplicated logic, not a deliberate rule.
+The two implementations are not identical. The registry query checks `expires_at IS NULL OR expires_at > now()`. `buildReadableEntitiesWhere` does not check `expires_at`. A principal can therefore see an entity in the shape stream after the grant expires. The same principal cannot see it in the management list. The cause is duplicated logic, not a deliberate rule.
 
 ## Status updates and terminal states
 
-`updateStatus()` has a guard. A normal update refuses to change an entity that is already `stopped` or `killed`. A terminal status can always be written.
+`updateStatus()` has a guard. A normal update refuses to change an entity that is already `stopped` or `killed`. The code can always write a terminal status.
 
 ```ts
 // packages/agents-server/src/entity-registry.ts:1391-1403
@@ -369,11 +369,11 @@ The class has dozens of public methods. They group into these areas:
 |------|------------------------|
 | Entity types | `createEntityType`, `ensureEntityType`, `getEntityType`, `listEntityTypes`, `deleteEntityType`, `updateEntityTypeInPlace` |
 | Entities | `createEntity`, `getEntity`, `getEntityByStream`, `listEntities`, `updateStatus`, `deleteEntity` |
-| Lineage | `listEntitySubtree`, written during spawn |
+| Lineage | `listEntitySubtree`, which the code writes during spawn |
 | Permissions | `hasEntityPermission`, `hasEntityTypePermission`, grant create, list, delete, `pruneExpiredPermissionGrants` |
 | Runners | `createRunner`, `listRunners`, `heartbeatRunner`, `setRunnerAdminStatus`, `listSandboxProfiles` |
 | Claims | `materializeActiveClaim`, `materializeHeartbeatClaim`, `materializeReleasedClaim`, `getActiveClaimsForRunner` |
-| Wakes | Registration rows are managed by `WakeRegistry` through the same Drizzle object |
+| Wakes | `WakeRegistry` manages registration rows through the same Drizzle object |
 | Bridges | `upsertEntityBridge`, `touchEntityBridge`, `listStaleEntityBridges`, `updateEntityBridgeCursor` |
 | Manifests | `replaceEntityManifestSource`, `clearEntityManifestSources` |
 | Outbox | `claimTagOutboxRows`, `failTagOutboxRow`, `releaseTagOutboxClaims` |

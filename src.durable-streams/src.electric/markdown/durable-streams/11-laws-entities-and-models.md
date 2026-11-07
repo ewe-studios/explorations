@@ -17,7 +17,7 @@ Four steps turn a protocol into a testable model.
 3. **Law.** Write one sentence that must stay true.
 4. **Scenario.** Write the law as a Behavior-Driven Development (BDD) case.
 
-The operations are create, append, close, read, head, delete, fork, subscription create, and four subscription actions. Create is a `PUT` request and append is a `POST` request. Close is a `POST` request with `Stream-Closed: true`. Read is a `GET` request, head is a `HEAD` request, and delete is a `DELETE` request. Fork is a `PUT` request with the headers `Stream-Forked-From`, `Stream-Fork-Offset`, and `Stream-Fork-Sub-Offset`. Subscription create is a `PUT` request under the `__ds` prefix. The four subscription actions are callback, claim, acknowledgement, and release. For each operation, five questions apply: what changes, what must not change, what is the inverse, what happens twice, and what happens when the order changes. Append is the worked example.
+The operations are create, append, close, read, head, delete, fork, subscription create, and four subscription actions. Create is a `PUT` request and append is a `POST` request. Close is a `POST` request with `Stream-Closed: true`. Read is a `GET` request, head is a `HEAD` request, and delete is a `DELETE` request. Fork is a `PUT` request with the headers `Stream-Forked-From`, `Stream-Fork-Offset`, and `Stream-Fork-Sub-Offset`. Subscription create is a `PUT` request under the `__ds` prefix. The four subscription actions are callback, claim, acknowledgement, and release. For each operation, five questions apply. They are: what changes, what must not change, what is the inverse, what happens twice, and what happens when the order changes. Append is the worked example.
 
 | Question | Example for append |
 |----------|--------------------|
@@ -174,7 +174,7 @@ A filled diamond is composition: the messages and the producer records belong to
 
 This table names the protocol errors. The model in Section 10 implements the errors for the operations that it covers. It does not implement the delivery operations, because it does not implement subscriptions.
 
-The text `INVALID_OFFSET` names two results with different statuses. A malformed read offset reports status 400. An acknowledgement that is `-1`, that moves the cursor back, that exceeds the tail, or that names an unlinked stream reports status 409. A reader must use the status and the operation, not the code text alone.
+The text `INVALID_OFFSET` names two results with different statuses. A malformed read offset reports status 400. An acknowledgement reports status 409 in four cases. The cases are offset `-1`, a move back of the cursor, an offset past the tail, and an unlinked stream. A reader must use the status and the operation, not the code text alone.
 
 The abbreviations are: BDD (Behavior-Driven Development), DS (Durable Stream), GC (Garbage Collection), HTTP (Hypertext Transfer Protocol), and JSON (JavaScript Object Notation). The other abbreviations are LMDB (Lightning Memory-Mapped Database), SHA-256 (Secure Hash Algorithm 256-bit), TTL (Time To Live), and URL (Uniform Resource Locator).
 
@@ -184,8 +184,8 @@ These terms are used before their full explanation in the laws. A reader can ret
 
 - **Offset.** A token for one position in one stream. In the reference implementation it has two parts, `readSeq_byteOffset`. Each part is a zero-padded 16-digit decimal number, joined by one underscore. The first part is the **read sequence**, a reserved counter for an implementation with several logical readers. The reference server never increments it, so it is zero in every token that the server makes. The second part is the byte position of the end of the message, and it includes the frame bytes. A reader must not parse the token. For a single stream, the byte order of the token matches the message order. Two different streams may use the same token text; the token is unique inside one stream, not across streams. Section 10 uses the same shape, but its byte part is a message index, not a byte count.
 - **Zero offset.** The token `0000000000000000_0000000000000000`. It is the tail of an empty stream and the position before the first message.
-- **Tail.** Also called the **current offset**. The end position of the last message in the stream, which is the position after the last stored byte. It is the zero offset for an empty stream. A read from the tail returns no stored message. An accepted append writes a message whose offset is greater than the tail at the time of the append, and the tail then becomes that new offset.
-- **Final offset.** The tail that a response reports. Closure adds no bytes, so the final offset of a closed stream is its tail. The reference server returns `currentOffset`, which is this value.
+- **Tail.** Also called the **current offset**. The end position of the last message in the stream. It is the position after the last stored byte. It is the zero offset for an empty stream. A read from the tail returns no stored message. An accepted append writes a message with an offset greater than the tail at the time of the append. The tail then becomes that new offset.
+- **Final offset.** The tail that a response reports. Closure adds no bytes, so the final offset of a closed stream is its tail. The reference server returns `currentOffset`. That value is the final offset.
 - **Producer.** A writer that sends the three headers `Producer-Id`, `Producer-Epoch`, and `Producer-Seq`. The three values together are the **producer triple**.
 - **Epoch.** A counter that a producer chooses. A producer raises its epoch when it restarts. A lower epoch is stale. A higher epoch starts a new producer generation.
 - **Sequence.** A counter for one producer in one epoch. It starts at zero and increases by one for each accepted batch.
@@ -193,18 +193,18 @@ These terms are used before their full explanation in the laws. A reader can ret
 - **JSON mode.** The mode that a stream uses when its content type is `application/json`.
 - **Catch-up read.** A read that returns stored messages at once, without waiting for new messages. A live read waits for new messages.
 - **Close.** The permanent end of appends. A close is a `POST` request with `Stream-Closed: true`. The request may carry a body. A close with no body carries no messages.
-- **Fork offset.** The position in the source where the fork diverges. The fork inherits every source byte before this offset. Because a message's offset is its end position, the fork inherits every message whose end is at or before the fork offset. The default is the source tail. The value must be a concrete token that the server returned. The request sentinels `-1` and `now` are not valid fork offsets.
+- **Fork offset.** The position in the source where the fork diverges. The fork inherits every source byte before this offset. A message's offset is its end position. The fork therefore inherits every message whose end is at or before the fork offset. The default is the source tail. The value must be a concrete token that the server returned. The request sentinels `-1` and `now` are not valid fork offsets.
 - **Fork sub-offset.** A non-negative integer that moves the divergence point past the fork offset, into the first message after it. For a JSON source it counts flattened messages, so the new point is between values. For any other source it counts decoded body bytes, so the new point can be inside the first message. It applies to that first message only, and a value past its end is status 400. It is not part of the offset token. Zero is the same as omitting it.
 - **Live fork.** A fork whose record still exists. A live fork holds one reference on its source.
 - **Collected.** Removed from the registry. Collection is a hard delete after the last reference is released.
 - **Time to live (TTL).** A sliding inactivity window in seconds from `Stream-TTL`. A read or a write starts a new window. `HEAD` does not.
 - **Absolute expiry.** A fixed instant from `Stream-Expires-At`. It does not move on access. A stream expires when the server clock reaches that instant.
 - **Expiry.** The effect of either control. An expired stream is treated as absent. A delete or another access that finds a live fork marks the stream soft deleted instead. A create removes or replaces the stream and does not apply that mark (DS-8). Expiry is evaluated on access, not stored as a state.
-- **Subscription.** A stored rule with an identifier, a path pattern or a stream list, a delivery type, and a lease time in milliseconds.
+- **Subscription.** A stored rule. It has an identifier, a path pattern or a stream list, a delivery type, and a lease time in milliseconds.
 - **Wake.** One notification that a subscription sends to its worker after its linked streams grow. A wake is either a webhook call or a message on a wake stream.
-- **Wake payload.** The webhook body or the pull-wake event. It holds the subscription identifier, the wake identifier, and the generation. It also holds one record per linked stream, with the path, the link type, the acknowledged offset, the tail offset, and the pending flag.
+- **Wake payload.** The webhook body or the pull-wake event. It holds the subscription identifier, the wake identifier, and the generation. It also holds one record per linked stream. That record has the path, the link type, the acknowledged offset, the tail offset, and the pending flag.
 - **Callback.** The webhook worker's report. It carries the wake identifier, the generation, an optional list of acknowledgements, and a `done` flag.
-- **Claim.** The pull-wake worker's request for the lease. It names the worker, and the reply carries the wake identifier, the generation, a token, the linked streams, and the lease time.
+- **Claim.** The pull-wake worker's request for the lease. It names the worker. The reply carries the wake identifier, the generation, a token, the linked streams, and the lease time.
 - **Acknowledgement (ack).** A request that records a processed offset for one stream. An ack without `done` extends the lease.
 - **Release.** A request that gives up the lease without an acknowledgement.
 - **Generation.** A counter that increases on every wake of one subscription. A request with a generation that is not the current generation is fenced.
@@ -214,7 +214,7 @@ These terms are used before their full explanation in the laws. A reader can ret
 Two facts drive every later rule.
 
 - **An offset is a name for a position, not an array index.** The client must not parse it. The server may change its form.
-- **The offset is the record key.** In the file store, the offset is computed from the log bytes, so the log is the index. In the Cloudflare store, the `messages` table is keyed by the offset. Neither form keeps a second message identifier.
+- **The offset is the record key.** In the file store, the server computes the offset from the log bytes. The log is therefore the index. In the Cloudflare store, the `messages` table is keyed by the offset. Neither form keeps a second message identifier.
 
 ## 4. The laws
 
@@ -222,11 +222,11 @@ Two facts drive every later rule.
 
 **DS-1.** A stream has one path and one content type. The content type is part of the identity and does not change.
 
-**DS-2.** Create is idempotent. The configuration is: content type, closure state, time to live, absolute expiry time, fork source, fork offset, and fork sub-offset. The server resolves an omitted field to its default before it compares. An omitted content type resolves to `application/octet-stream`, or to the source type for a fork. An omitted expiry control on a fork resolves to the inherited control. The server compares the fork offset only when the request gives one, because it resolves a default from the source at creation, and the source may have grown. It treats an omitted sub-offset as zero. A create with the same resolved configuration returns the existing stream with status 200. A create with a different resolved configuration reports status 409. The initial body is not part of the configuration: a create retry returns the existing stream, keeps its bytes, and ignores the new body.
+**DS-2.** Create is idempotent. The configuration is: content type, closure state, time to live, absolute expiry time, fork source, fork offset, and fork sub-offset. The server resolves an omitted field to its default before it compares. An omitted content type resolves to `application/octet-stream`, or to the source type for a fork. An omitted expiry control on a fork resolves to the inherited control. The server compares the fork offset only when the request gives one. It resolves a default from the source at creation. The source may have grown since then. It treats an omitted sub-offset as zero. A create with the same resolved configuration returns the existing stream with status 200. A create with a different resolved configuration reports status 409. The initial body is not part of the configuration: a create retry returns the existing stream, keeps its bytes, and ignores the new body.
 
 **DS-3.** Closure is part of the configuration. A create that asks for a closed stream and finds an open stream is a conflict. The same rule applies in the other direction.
 
-**DS-4.** Create may carry initial bytes. The server commits the stream record, opens the log file, writes the initial bytes, and then applies the closure state. A fork that takes a sub-offset writes and flushes its prefix frame before the record commit, so the record never names bytes that are not on disk. Two crash windows are central. A crash after the record commit and before the file open leaves a record with no file, and recovery removes the record. A crash after the file open and before the initial write leaves an empty file, and recovery keeps an empty stream. A later create then returns that empty stream. A failed initial write, as opposed to a crash, rolls the record back. A sub-offset fork has a different result for the two crash windows, because its file already holds the prefix frame. A crash after the record commit keeps a file that is not empty. A crash after the file open does not leave an empty stream. Section 13.1 lists all five crash points and the sub-offset variant.
+**DS-4.** Create may carry initial bytes. The server commits the stream record, opens the log file, writes the initial bytes, and then applies the closure state. A fork that takes a sub-offset writes and flushes its prefix frame before the record commit. The record therefore never names bytes that are not on disk. Two crash windows are central. A crash after the record commit and before the file open leaves a record with no file, and recovery removes the record. A crash after the file open and before the initial write leaves an empty file, and recovery keeps an empty stream. A later create then returns that empty stream. A failed initial write, as opposed to a crash, rolls the record back. A sub-offset fork has a different result for the two crash windows, because its file already holds the prefix frame. A crash after the record commit keeps a file that is not empty. A crash after the file open does not leave an empty stream. Section 13.1 lists all five crash points and the sub-offset variant.
 
 **DS-5.** A new stream starts open unless the create request closes it.
 
@@ -234,7 +234,7 @@ Two facts drive every later rule.
 
 **DS-7.** A create on a soft-deleted path reports status 409. The path is not free until the last fork is removed.
 
-**DS-8.** A create on an expired path replaces the expired stream. Expiry is checked before the soft-deleted check, so this rule also applies to an expired soft-deleted stream. The store applies its delete rule first: with no live fork it removes the stream; with a live fork it marks the record soft deleted. It then writes the new stream record over that path. The response is status 201, because `has` reports an expired path as absent (`packages/server/src/server.ts:701`, `packages/server/src/file-store.ts:806-810`, `:1122-1126`). The soft-deleted mark does not survive the replacement. The in-memory store does hold a reference count, but its expired-create path ignores the count: it removes the entry in both cases and then creates the new one. In the file store the new record gets a new log directory, so the old segment file is left behind. The live fork keeps its record, but its inherited range resolves the source path to the new record and returns no messages. The replacement silently removes the prefix that the fork inherited.
+**DS-8.** A create on an expired path replaces the expired stream. Expiry is checked before the soft-deleted check, so this rule also applies to an expired soft-deleted stream. The store applies its delete rule first: with no live fork it removes the stream; with a live fork it marks the record soft deleted. It then writes the new stream record over that path. The response is status 201, because `has` reports an expired path as absent (`packages/server/src/server.ts:701`, `packages/server/src/file-store.ts:806-810`, `:1122-1126`). The soft-deleted mark does not survive the replacement. The in-memory store does hold a reference count. Its expired-create path ignores the count. It removes the entry in both cases and then creates the new one. In the file store the new record gets a new log directory, so the old segment file is left behind. The live fork keeps its record, but its inherited range resolves the source path to the new record and returns no messages. The replacement silently removes the prefix that the fork inherited.
 
 ### 4.2 Offset and read
 
@@ -280,7 +280,7 @@ Two facts drive every later rule.
 
 **DS-27.** A first append from an unknown producer is accepted when its sequence is zero, whatever its epoch. A nonzero sequence is rejected with status 409 and expected sequence zero.
 
-**DS-28.** A sequence at or below the last accepted sequence is a duplicate. The server returns status 204 and writes nothing. The duplicate rule does not override the closed check: if another request closed the stream, the server applies DS-35 before it reaches the producer rule. A duplicate batch has no other effect: it does not apply a close flag or a `Stream-Seq` value that the first accepted batch did not apply.
+**DS-28.** A sequence at or below the last accepted sequence is a duplicate. The server returns status 204 and writes nothing. The duplicate rule does not override the closed check: if another request closed the stream, the server applies DS-35 before it reaches the producer rule. A duplicate batch has no other effect. It does not apply a close flag or a `Stream-Seq` value that the first accepted batch did not apply.
 
 **DS-29.** A sequence equal to the last accepted sequence plus one is the next message. The server accepts it.
 
@@ -296,7 +296,7 @@ Two facts drive every later rule.
 
 **DS-34.** An append with a close is atomic. A reader sees the appended messages and the closed state together.
 
-**DS-35.** An append to a closed stream is rejected with status 409, `Stream-Closed: true`, and the final offset. The one exception is a retry of the request that closed the stream: if the `(producer identifier, epoch, sequence)` triple equals the stored `closedBy` triple, the server returns status 204. The server checks the closed state before it applies the producer duplicate rule. This means an old sequence from a producer that did not close the stream reports status 409, not status 204 under DS-28.
+**DS-35.** An append to a closed stream is rejected with status 409, `Stream-Closed: true`, and the final offset. The one exception is a retry of the request that closed the stream. If the `(producer identifier, epoch, sequence)` triple equals the stored `closedBy` triple, the server returns status 204. The server checks the closed state before it applies the producer duplicate rule. This means an old sequence from a producer that did not close the stream reports status 409, not status 204 under DS-28.
 
 **DS-36.** Delete of a stream with no live fork removes it at once. A second delete then reports status 404.
 
@@ -304,7 +304,7 @@ Two facts drive every later rule.
 
 **DS-38.** Delete of the last live fork removes that fork and then its soft-deleted source. The cascade repeats while the reference count is zero.
 
-**DS-39.** A time to live counts from the last access. The value is a sliding window in seconds. A read extends the deadline, including a long-poll wait and each pass of a Server-Sent Events stream. A close-only request extends it, except a producer close that the server refuses or answers as a duplicate: every one of those paths returns before the touch. An append that also closes the stream follows the append rule below. The server touches the stream after the store call returns, before it handles any duplicate or refusal result (`packages/server/src/server.ts:1539`). A `HEAD` request does not extend it. An append extends it when the store call returns a verdict. That covers an accepted append, a duplicate, a stale epoch, a sequence gap, and a refusal because another request closed the stream. It does not cover a refusal that the store raises as an error: a soft-deleted stream, a content-type mismatch, a `Stream-Seq` conflict, or invalid JSON. A create that finds an existing stream does not extend it.
+**DS-39.** A time to live counts from the last access. The value is a sliding window in seconds. A read extends the deadline, including a long-poll wait and each pass of a Server-Sent Events stream. A close-only request extends it, except a producer close that the server refuses or answers as a duplicate. Every one of those paths returns before the touch. An append that also closes the stream follows the append rule below. The server touches the stream after the store call returns, before it handles any duplicate or refusal result (`packages/server/src/server.ts:1539`). A `HEAD` request does not extend it. An append extends it when the store call returns a verdict. That covers an accepted append, a duplicate, a stale epoch, a sequence gap, and a refusal because another request closed the stream. It does not cover a refusal that the store raises as an error: a soft-deleted stream, a content-type mismatch, a `Stream-Seq` conflict, or invalid JSON. A create that finds an existing stream does not extend it.
 
 **DS-39a.** An absolute expiry time is a fixed instant. The stream expires when the server clock reaches that instant, and no access moves it. A request that supplies both forms is rejected under DS-40. The two controls therefore do not interact: a stream uses one or the other.
 
@@ -329,13 +329,13 @@ Two facts drive every later rule.
 5. The fork offset must be within the range from the zero offset to the source tail, inclusive (400). This bounds check is not optional. It also rejects `-1` and `now`, because neither text sorts inside the range.
 6. The sub-offset must resolve inside the first message after the fork offset (400). A value past the end of that message is an error.
 
-The protocol does not define which condition the server checks first. The reference server checks the offset form and the sub-offset form in the Hypertext Transfer Protocol (HTTP) layer before it calls the store. It checks the source conditions and the bounds inside the store.
+The protocol does not define which condition the server checks first. The reference server checks the offset form and the sub-offset form in the HTTP layer before it calls the store. It checks the source conditions and the bounds inside the store.
 
 **DS-46.** A closed source is forkable. The source closure state does not carry over. The fork starts in the state that its own create request gives; with no close header, it starts open.
 
-**DS-47.** An offset at or below the fork offset names the same message in the fork as in the source, or no message in either. A token above the fork offset can name different messages in the two streams, because each stream appends on its own. The fork's first own message has an offset above the fork offset, not the fork offset itself. A sub-offset does not move the fork offset token: it fills the fork's first own message with a prefix of the source message that ends after the fork offset. Offset identity is scoped to one stream.
+**DS-47.** An offset at or below the fork offset names the same message in the fork as in the source, or no message in either. A token above the fork offset can name different messages in the two streams, because each stream appends on its own. The fork's first own message has an offset above the fork offset, not the fork offset itself. A sub-offset does not move the fork offset token. It fills the fork's first own message with a prefix of the source message that ends after the fork offset. Offset identity is scoped to one stream.
 
-**DS-48.** A live fork holds one reference on its source. The reference is acquired before the fork becomes visible, and it is idempotent by a stable edge identity, so a create retry acquires one reference, not two. Removing a fork releases the reference, and the release is durable and retried until it completes.
+**DS-48.** A live fork holds one reference on its source. The reference is acquired before the fork becomes visible. It is idempotent by a stable edge identity, so a create retry acquires one reference, not two. Removing a fork releases the reference, and the release is durable and retried until it completes.
 
 **DS-49.** A soft-deleted source is collected when its reference count reaches zero. A source with a live fork is never collected.
 
@@ -351,7 +351,7 @@ The protocol does not define which condition the server checks first. The refere
 
 **DS-54.** A lease bounds delivery. An expired lease clears the holder, and the server wakes the subscription again if pending work remains. Pending work means that the tail offset of a linked stream is greater than its acknowledgement cursor.
 
-**DS-55.** The acknowledgement cursor is the last processed offset for one stream, and it is inclusive: an acknowledgement of offset `N` means that the next read starts after `N`. It is not the read cursor. Acknowledging does not move the reader position. Because the tail is the next offset, an acknowledgement of the last message sets the cursor to the tail, and the pending test becomes false. A subscription is idle when it holds no lease and no linked stream has pending work. The server keeps no separate idle flag.
+**DS-55.** The acknowledgement cursor is the last processed offset for one stream. It is inclusive: an acknowledgement of offset `N` means that the next read starts after `N`. It is not the read cursor. Acknowledging does not move the reader position. Because the tail is the next offset, an acknowledgement of the last message sets the cursor to the tail, and the pending test becomes false. A subscription is idle when it holds no lease and no linked stream has pending work. The server keeps no separate idle flag.
 
 **DS-56.** A subscription is a durable cursor. Its configuration, generation, lease state, and acknowledgement cursors survive a restart of the storage that holds them. The protocol requires this durability.
 
@@ -383,7 +383,7 @@ stateDiagram-v2
     SoftDeleted --> SoftDeleted: expiry with a live fork
 ```
 
-Expiry is evaluated on access. It is not a stored state. The expiry edges are shown as solid edges for readability; a dotted edge would mark a lazy transition that happens only when a request touches the stream. A soft-deleted stream with a live fork can outlive its own expiry, and an access applies the expiry rule again without changing its state.
+Expiry is evaluated on access. It is not a stored state. The expiry edges are shown as solid edges for readability. A dotted edge would mark a lazy transition. Such a transition happens only when a request touches the stream. A soft-deleted stream with a live fork can outlive its own expiry, and an access applies the expiry rule again without changing its state.
 
 | From | Trigger | To | Result |
 |------|---------|----|--------|
@@ -458,7 +458,7 @@ A delete never removes a source that a live fork still needs. The reference coun
 
 In the file store, the reference count is rebuilt at recovery from the surviving `forkedFrom` edges. A stored count that disagrees with the edges is replaced by the edge count.
 
-The offset space needs one careful sentence. A fork inherits the source prefix as a fixed range. The source can keep appending beyond the fork point, but the fork does not see those messages. Every token up to and including the fork point names the same message in both streams; the fork's first own message receives a greater token. After that point, the same token text can name one message in the source and a different message in the fork, because the two streams append independently. Offset identity is scoped to one stream.
+The offset space needs one careful sentence. A fork inherits the source prefix as a fixed range. The source can keep appending beyond the fork point, but the fork does not see those messages. Every token up to and including the fork point names the same message in both streams. The fork's first own message receives a greater token. After that point, the same token text can name one message in the source and a different message in the fork. The two streams append independently. Offset identity is scoped to one stream.
 
 Source: `packages/server/src/file-store.ts:424-445`, `PROTOCOL.md:159-165`.
 
@@ -485,21 +485,21 @@ sequenceDiagram
 
 The diagram shows the success path. Each check has a failure outcome:
 
-- Step 1 returns 404 when no stream record remains: after a removal, or after an expiry with no live fork. It returns 410 when the stream is soft-deleted. An expiry with a live fork soft-deletes instead of removing, so a later request gets 410 until the last fork is removed. A delete request while a fork still exists returns 409 and keeps the path.
+- Step 1 returns 404 when no stream record remains: after a removal, or after an expiry with no live fork. It returns 410 when the stream is soft-deleted. An expiry with a live fork soft-deletes instead of removing. A later request therefore gets 410 until the last fork is removed. A delete request while a fork still exists returns 409 and keeps the path.
 - Step 2 returns 400 when one or two producer headers are present without the third. The reference server makes this check before the closure check.
 - Step 3 returns 409 with `Stream-Closed: true` and the final offset, unless the retry matches `closedBy`. A close-only request without producer headers is idempotent and returns 204.
 - Step 4 returns 409 for a content type mismatch, and 400 when a body append gives no content type. A bodyless close skips the check.
-- Step 5 returns 400 for an invalid epoch and sequence pair, 403 for a stale epoch, 409 for a gap, and 204 for a duplicate.
+- Step 5 returns 400 for an invalid epoch and sequence pair. It returns 403 for a stale epoch, 409 for a gap, and 204 for a duplicate.
 - Step 6 returns 409 for a sequence regression.
 - Step 7 returns 400 for invalid JSON or an empty array.
 
-The protocol recommends the order in steps 3, 4, and 6; it is not mandatory. The recommendation puts the closed check before the content type check so that the client receives `Stream-Closed: true` when both conditions hold. The producer check comes before `Stream-Seq` so that a retry with both header sets is deduplicated. The header completeness check in step 2 is not in the protocol precedence list. The reference server applies it first because it cannot build a producer triple from a partial set.
+The protocol recommends the order in steps 3, 4, and 6. It is not mandatory. The recommendation puts the closed check before the content type check so that the client receives `Stream-Closed: true` when both conditions hold. The producer check comes before `Stream-Seq` so that a retry with both header sets is deduplicated. The header completeness check in step 2 is not in the protocol precedence list. The reference server applies it first because it cannot build a producer triple from a partial set.
 
 A close-only request with producer headers uses the producer rules. It can be a duplicate, a stale epoch, or a gap. A close-only request without producer headers is a simple idempotent close.
 
 A rejected append writes nothing. A duplicate append writes nothing and still reports success. The response alone does not tell a first write from a duplicate write. The client uses the producer triple as its transaction identifier. A duplicate body append still extends the time to live, because the request reaches the origin server. A duplicate close-only request with producer headers returns before the reference server updates the access time, so that one case does not extend it.
 
-The commit in step 9 is one LMDB transaction. The bytes in step 8 are written and flushed before that commit, so the metadata never acknowledges bytes that are not on disk. The commit advances the recorded tail with the producer state, the `Stream-Seq`, and the closure flag. If the process stops between steps 8 and 9, recovery reads the file and raises the recorded offset to the bytes on disk. The producer state and `Stream-Seq` are not advanced, so a retry is accepted and writes the bytes a second time. If the crash is after every frame of the batch, the log holds the batch twice. If the crash is inside the batch, the log holds the complete frames before the crash and the retry adds the whole batch. This means the early messages appear twice and the later messages appear once. This is the cost of not writing the producer state first; the protocol does not define a repair for it.
+The commit in step 9 is one LMDB transaction. The server writes and flushes the bytes in step 8 before that commit, so the metadata never acknowledges bytes that are not on disk. The commit advances the recorded tail with the producer state, the `Stream-Seq`, and the closure flag. If the process stops between steps 8 and 9, recovery reads the file and raises the recorded offset to the bytes on disk. The server does not advance the producer state and `Stream-Seq`, so it accepts a retry and writes the bytes a second time. If the crash is after every frame of the batch, the log holds the batch twice. If the crash is inside the batch, the log holds the complete frames before the crash and the retry adds the whole batch. This means the early messages appear twice and the later messages appear once. This is the cost of not writing the producer state first. The protocol does not define a repair for it.
 
 Source: `packages/server/src/file-store.ts:1221-1400`, `packages/server/src/server.ts:1355-1545`, `PROTOCOL.md:355-362`.
 
@@ -537,7 +537,7 @@ The failures are:
 - A malformed offset returns 400. The accepted forms are `-1`, `now`, and the server token shape.
 - An empty offset value, or more than one `offset` parameter, returns 400.
 
-A read does not change the log. It advances `lastAccessedAt` when a TTL is set, except for `HEAD`. A read from `now` returns no data and the concrete tail, so the client learns the position without reading history.
+A read does not change the log. It advances `lastAccessedAt` when the stream has a TTL, except for `HEAD`. A read from `now` returns no data and the concrete tail, so the client learns the position without reading history.
 
 Source: `PROTOCOL.md:575-625`, `packages/server/src/file-store.ts:660-700`, `packages/server/src/server.ts:850-900`, `:1036-1065`.
 
@@ -547,9 +547,9 @@ The model below runs with Python 3 and no third-party package. It implements the
 
 The model uses the same offset shape as the reference server: two zero-padded 16-digit decimal parts joined by one underscore. The byte part counts message ends, not bytes, because every model message has size one. An offset names the position at which a message ends, so a read starts after that position. This matches the reference server, where the read cursor is the end of the last message that the client saw.
 
-A message holds the decoded value. In JSON mode that value is a dictionary, a list, or a scalar; in every other mode it is the raw bytes. The model never mutates a stored value, and a caller must not. The real server stores the original bytes.
+A message holds the decoded value. In JSON mode that value is a dictionary, a list, or a scalar. In every other mode it is the raw bytes. The model never mutates a stored value, and a caller must not. The real server stores the original bytes.
 
-The model has no HTTP layer, no byte framing, no recovery, no sub-offset, and no subscriptions. It commits the messages and the metadata together, because both live in memory. The real server writes the bytes first and commits the metadata after, which is the window that Section 8 describes. The model is also permissive in one place. It treats an omitted `Content-Type` on an append as the stream type, while the reference server requires the header on a body append.
+The model has no HTTP layer, no byte framing, no recovery, no sub-offset, and no subscriptions. It commits the messages and the metadata together, because both live in memory. The real server writes the bytes first and commits the metadata after. Section 8 describes that window. The model is also permissive in one place. It treats an omitted `Content-Type` on an append as the stream type, while the reference server requires the header on a body append.
 
 ```python
 """A small executable model of the Durable Streams laws.
@@ -1203,7 +1203,7 @@ class StreamStore:
         return len(stream.messages)
 ```
 
-The model simplifies the storage. It copies the inherited messages into the fork. The file store shares the bytes and keeps one reference on the source. The observable result is the same; the storage cost is not.
+The model simplifies the storage. It copies the inherited messages into the fork. The file store shares the bytes and keeps one reference on the source. The observable result is the same. The storage cost is not.
 
 ## 11. The BDD specification
 
@@ -1921,7 +1921,7 @@ PASS  A fork of an expired source reports not found
 | DS-43 to DS-49 | Covered, except sub-offset | Fork prefix, default offset, closed source, TTL inheritance, an expired source, fresh producer state, and reference collection. The sub-offset is not modelled. |
 | DS-50 to DS-56 | Not covered | The model has no subscriptions or delivery. |
 
-The claim is therefore exact: the model executes the laws for identity, append, producer, lifecycle, expiry, fork, and read, with the exceptions named in the table. It does not execute the delivery laws.
+The claim is therefore exact. The model executes the laws for identity, append, producer, lifecycle, expiry, fork, and read, with the exceptions that the table names. It does not execute the delivery laws.
 
 ## 12. Edge cases and the answer
 
@@ -1977,11 +1977,11 @@ The claim is therefore exact: the model executes the laws for identity, append, 
 | A producer close retries after a lost response | DS-39 | The server reports status 204 and does not extend the time to live. |
 | A duplicate append arrives after another writer closed the stream | DS-28, DS-35 | The closed check runs first. The server reports status 409 unless the triple equals `closedBy`. |
 | A source appends after a fork is created | DS-43 | The fork does not see the new messages. Its prefix is fixed. |
-| A create asks for a closed stream and gives a body | DS-5, DS-34 | The body is written and then the stream closes. The two results are visible together. |
+| A create asks for a closed stream and gives a body | DS-5, DS-34 | The server writes the body and then closes the stream. The two results are visible together. |
 | A create gives invalid JSON | DS-20 | The server reports status 400 and leaves no stream at the path. |
 | A subscription is created twice with the same rule | DS-51 | The second create returns status 200 and the same subscription. |
 | A subscription names a stream that does not exist yet | DS-52 | The link records the zero offset. The first message makes the link pending. |
-| A subscription is created after streams exist | DS-52 | The server links the existing streams at their current tails. No history is replayed. |
+| A subscription is created after streams exist | DS-52 | The server links the existing streams at their current tails. The server does not replay history. |
 | A stream matches a pattern for the first time at an append | DS-52 | The server links it before the wake, with an acknowledgement cursor of `-1`. The whole history of that stream is pending. A stream that matched at subscription creation starts at the then-current tail instead. |
 | A callback arrives with a generation that is not current | DS-53 | The server reports status 409 with the body `FENCED`. |
 | A lease expires with work pending | DS-54 | The server clears the holder and wakes the subscription again. |
@@ -2004,7 +2004,7 @@ The model is a teaching tool. The real server must survive a crash, and it must 
 | Recovery | `recover()` at `file-store.ts:333-442` |
 | Frame scan | `scanFileForTrueOffset()` at `file-store.ts:449-474` |
 
-The metadata record holds the identity and the counters. It holds the path, the content type, the current offset, the last `Stream-Seq`, the time to live, the expiry time, the creation time, and the access time. It holds the storage counters: the segment count, the total bytes, and the directory name. It holds the producer map, the closure flag, and the closing producer triple. It holds the fork fields: the source, the fork offset, the sub-offset, and the reference count. It holds the soft-deleted flag. The producer map holds one epoch and one last sequence per producer. It is a map, not one record.
+The metadata record holds the identity and the counters. It holds the path, the content type, the current offset, the last `Stream-Seq`, and the time to live. It also holds the expiry time, the creation time, and the access time. It holds the storage counters: the segment count, the total bytes, and the directory name. It holds the producer map, the closure flag, and the closing producer triple. It holds the fork fields: the source, the fork offset, the sub-offset, and the reference count. It holds the soft-deleted flag. The producer map holds one epoch and one last sequence per producer. It is a map, not one record.
 
 The reference store never increments the read sequence. The first part of every token stays zero. The second part carries all of the progress. Both parts have a fixed width, so a byte-wise comparison of two valid tokens gives the same order as a numeric comparison. The server accepts the form `digits_digits` without a width check (`packages/server/src/server.ts:886`). A client must not make a token with a shorter field, because such a token breaks byte-wise ordering even when the server accepts it. A client should treat the token as opaque and send back only a server-issued value.
 
@@ -2027,7 +2027,7 @@ The record is durable before the file is open. The order is deliberate. The reco
 | During step 5 | A record, a file, and part of a frame | The scan stops before the partial frame. The retry writes the batch again. |
 | After step 5, before step 6 | A record, all bytes, and an open flag | The stream stays open. A later close request sets the flag. |
 
-Two rows differ for a sub-offset fork, because step 2 already wrote a file that holds the prefix frame. After step 3 and before step 4, the record has a file, so stage 1 keeps the record and reconciles the offset from the prefix frame. The stream is readable, and the prefix is its first message. After step 4, the file is not empty, so the stream is not an empty stream. A failed prefix write, as opposed to a crash, removes the file in the error path.
+Two rows differ for a sub-offset fork, because step 2 already wrote a file that holds the prefix frame. After step 3 and before step 4, the record has a file. Stage 1 therefore keeps the record and reconciles the offset from the prefix frame. The stream is readable, and the prefix is its first message. After step 4, the file is not empty, so the stream is not an empty stream. A failed prefix write, as opposed to a crash, removes the file in the error path.
 
 A failure without a crash has a different path. If step 4 or step 5 throws an error, the server calls `rollbackCreatedStream`. That call removes the record and decreases the parent reference count in one transaction. The server then deletes the file. No recovery step is necessary.
 
@@ -2044,29 +2044,29 @@ The stage table lists the conditions that a stage handles.
 | The log file is missing | 1 | Remove the metadata record. |
 | The file's computed offset differs from `currentOffset` | 1 | Set `currentOffset` from the file. |
 | The last frame is incomplete | 1 | The scan stops at the last complete frame. The partial frame is not adopted. |
-| The stream is a fork child | 1 | The logical byte position is the fork base byte count plus the frame bytes in the child file. The read sequence is written as zero. |
+| The stream is a fork child | 1 | The logical byte position is the fork base byte count plus the frame bytes in the child file. The server writes the read sequence as zero. |
 | `refCount` disagrees with the surviving fork edges | 2 | Rebuild the count from the `forkedFrom` edges. |
 | A child names a source that has no record | 2 | No action. The child stays, and its inherited range reads as empty. |
 | A file has no record | none | No action. Recovery reads the records, not the directory. |
 | A soft-deleted record has no live child | 3 | Delete it and continue the cascade. |
 
-The scan validates each frame: it reads the 4-byte length, checks that the frame end is inside the file, and moves to the next frame. A crash during an append can therefore leave a partial frame at the end. Recovery drops it and takes the offset of the last complete frame. The producer map and the last `Stream-Seq` are not changed, so the retry writes the batch again. The scan does not test the newline byte at the end of a frame. A frame with the correct length and a damaged last byte still counts as complete.
+The scan validates each frame: it reads the 4-byte length, checks that the frame end is inside the file, and moves to the next frame. A crash during an append can therefore leave a partial frame at the end. Recovery drops it and takes the offset of the last complete frame. Recovery does not change the producer map or the last `Stream-Seq`, so the retry writes the batch again. The scan does not test the newline byte at the end of a frame. A frame with the correct length and a damaged last byte still counts as complete.
 
 The child file holds only the bytes that the child wrote. It holds the prefix frame of a sub-offset fork and the later appends. The inherited range stays in the source file, and a read of that range reads the source record named by `forkedFrom`. When the source record is absent, the read function returns an empty list. The child therefore loses its inherited messages without an error. A server operator must treat a missing source as data loss, not as a condition that repair can resolve.
 
-A create retry compares seven fields: the content type, the time to live, the expiry time, the closed flag, the fork source, the fork offset, and the fork sub-offset. Three rules hold.
+A create retry compares seven fields. They are the content type, the time to live, the expiry time, and the closed flag. It also compares the fork source, the fork offset, and the fork sub-offset. Three rules hold.
 
-- A field that the request leaves out compares as its default value. For a fork, the stored record holds the inherited content type and the inherited expiry values. A retry that leaves those fields out therefore differs from the record, and the retry gets status 409. DS-2 says that the same request is idempotent, so this result is a deviation from the law. A client that retries a fork create must send the inherited values explicitly to get status 200. The Cloudflare store removes the mismatch for the content type of a fork, and it keeps the mismatch for an inherited time to live and an inherited expiry time.
+- A field that the request leaves out compares as its default value. For a fork, the stored record holds the inherited content type and the inherited expiry values. A retry that leaves those fields out therefore differs from the record, and the retry gets status 409. DS-2 says that the same request is idempotent, so this result is a deviation from the law. A client that retries a fork create must send the inherited values explicitly to get status 200. The Cloudflare store removes the mismatch for the content type of a fork. It keeps the mismatch for an inherited time to live and an inherited expiry time.
 - The fork offset compares only when the request gives one. A retry that leaves it out matches, because the server resolves the same default from the unchanged source.
 - An omitted fork sub-offset equals a sub-offset of zero.
 
-One field is a leftover. `segmentCount` is set to `1` at `file-store.ts:958` and never changes. The active layout is one log file per stream. A reader must not infer a multi-segment layout from that field.
+One field is a leftover. The code sets `segmentCount` to `1` at `file-store.ts:958`, and the value never changes. The active layout is one log file per stream. A reader must not infer a multi-segment layout from that field.
 
 Source: `packages/server/src/file-store.ts:333-474`, `:798-860`, `:916-1060`, `:1660-1740`, `:1805-1845`.
 
 ### 13.2 The Cloudflare store
 
-The Cloudflare Durable Object store uses six tables. A Durable Object is a Cloudflare unit of state: it has one identity, its own storage, and one-thread execution. It has no file system, so the log becomes rows. One Durable Object holds one stream. The offset is the primary key, so there is still no second message identifier.
+The Cloudflare Durable Object store uses six tables. A Durable Object is a Cloudflare unit of state: it has one identity, its own storage, and one-thread execution. It has no file system, so the log becomes rows. One Durable Object holds one stream. The offset is the primary key, so a second message identifier still does not exist.
 
 | Table | Purpose | Key |
 |-------|---------|-----|
@@ -2083,12 +2083,12 @@ The tables express the same laws with rows instead of one log file. `fork_edges`
 
 The reference rule in DS-48 spans more than one local commit, because the source and the child are different Durable Objects. It is a protocol with three records and two kinds of remote call, acquire and release:
 
-1. The child writes a `fork_intents` row. The row key is the edge identity. It is written before the remote call, so a crash leaves the identity where a retry can find it. The child also arms an alarm for five seconds later. If the child still has no record at that time, the alarm repeats the acquire and queues a release, so a lost create does not pin the source.
-2. The child calls the source object to acquire the reference. The source inserts a `fork_edges` row with insert-if-absent. The insert returns the stored fork offset when the row already exists, so a second acquire cannot resolve a different offset.
+1. The child writes a `fork_intents` row. The row key is the edge identity. The child writes it before the remote call, so a crash leaves the identity where a retry can find it. The child also arms an alarm for five seconds later. If the child still has no record at that time, the alarm repeats the acquire and queues a release. A lost create therefore does not pin the source.
+2. The child calls the source object to acquire the reference. The source inserts a `fork_edges` row with insert-if-absent. The insert returns the stored fork offset when the row already exists. A second acquire therefore cannot resolve a different offset.
 3. The child commits its own record with that edge identity. Then it deletes the intent.
-4. On failure or removal, the child writes a `gc_releases` row before the release call, and deletes the intent in the same step. The Durable Object alarm retries the queued release later. An alarm is a scheduled callback that the platform runs after a delay.
+4. On failure or removal, the child writes a `gc_releases` row before the release call. It deletes the intent in the same step. The Durable Object alarm retries the queued release later. An alarm is a scheduled callback that the platform runs after a delay.
 
-The source object is the only writer of its own `fork_edges` table. That single-writer rule is what makes the reference count correct without a distributed transaction. A purge of a stream keeps `fork_intents` and `gc_releases` on purpose: a queued release still must reach the source, and a create retry still must reuse its acquired edge identity.
+The source object is the only writer of its own `fork_edges` table. That single-writer rule is what makes the reference count correct without a distributed transaction. A purge of a stream keeps `fork_intents` and `gc_releases` on purpose. A queued release still must reach the source. A create retry still must reuse its acquired edge identity.
 
 The Node.js file store does not need this protocol, because one process holds both records and one LMDB transaction covers both. The invariant is the same in both stores: one visible fork has one reference, and no crash leaves zero or two.
 
@@ -2096,18 +2096,18 @@ Source: `packages/server-cloudflare/src/store.ts:155-200`, `:310-325`, `:390-500
 
 ### 13.3 Delivery in the Node.js server
 
-The Node.js server keeps subscriptions in memory, in a map in `SubscriptionManager`. A subscription record holds the configuration, the generation, the lease timer, and one acknowledgement cursor per linked stream. The record also holds the current wake identifier, a snapshot of the linked tails, the holder name, and the callback token when a wake is active.
+The Node.js server keeps subscriptions in memory, in a map in `SubscriptionManager`. A subscription record holds the configuration, the generation, the lease timer, and one acknowledgement cursor per linked stream. The record also holds the current wake identifier and a snapshot of the linked tails. It holds the holder name and the callback token when a wake is active.
 
 Six terms describe delivery. Each term names one operation or one record.
 
 - A **wake** is one delivery attempt. The server creates a wake when a linked stream has pending work and no other wake is active. Each wake gets a new generation number and a new wake identifier.
-- The **wake payload** is the JavaScript Object Notation (JSON) body that the server sends in the webhook POST to the subscriber URL. It holds `subscription_id`, `wake_id`, `generation`, `callback_url`, `callback_token`, and `streams`. Each entry in `streams` holds `path`, `link_type`, `acked_offset`, `tail_offset`, and `has_pending`. The payload does not hold messages. The subscriber reads the streams with its own cursors.
+- The **wake payload** is the JSON body that the server sends in the webhook POST to the subscriber URL. It holds `subscription_id`, `wake_id`, `generation`, `callback_url`, `callback_token`, and `streams`. Each entry in `streams` holds `path`, `link_type`, `acked_offset`, `tail_offset`, and `has_pending`. The payload does not hold messages. The subscriber reads the streams with its own cursors.
 - A **callback** is the Hypertext Transfer Protocol (HTTP) POST to the `callback_url` that the payload names. Its body can hold an `acks` list and a `done` flag. An `acks` entry moves one cursor. A `done` flag ends the wake and starts a new wake when work remains. The subscriber can also answer the webhook POST with the body `{"done": true}`. The server then ends the wake and sets every acknowledgement cursor to the tail snapshot.
 - A **claim** is the request from a worker of a pull-wake subscription. The response holds `wake_id`, `generation`, `token`, `streams`, and `lease_ttl_ms`. The server answers 409 `ALREADY_CLAIMED` when another holder is active, and 409 `NO_PENDING_WORK` when every cursor is at its tail.
-- An **acknowledgement** is one cursor update in an `acks` list. Each entry names a stream and an offset. The list can arrive in a callback request or in a pull-wake acknowledgement request. The server rejects offset `-1`, a lower offset than the stored cursor, an offset past the tail, or a stream that is not linked, with status 409 `INVALID_OFFSET`.
+- An **acknowledgement** is one cursor update in an `acks` list. Each entry names a stream and an offset. The list can arrive in a callback request or in a pull-wake acknowledgement request. The server rejects four cases with status 409 `INVALID_OFFSET`. The cases are offset `-1`, a lower offset than the stored cursor, and an offset past the tail. The fourth case is an unlinked stream.
 - A **pull-wake release** ends the lease without an acknowledgement, and the server wakes the subscription again if work remains.
 
-The server links a stream in two ways. An explicit stream list is linked at subscription creation at the current tail, even when the named stream does not exist yet. For a stream that does not exist, the tail is the zero offset, so the link has no pending work until the first message. A path pattern is matched against the existing streams at creation, and again when a stream is created or appended later. The server links a newly matched stream before it delivers the wake. A client can also add one stream to an existing subscription with `POST /v1/stream/__ds/subscriptions/{id}/streams`. The added stream starts at the current tail only when the subscription does not already link it. The add path calls `linkStream`, which keeps the existing cursor when the stream is already linked (`packages/server/src/subscription-manager.ts:786-804`). A stream that was already pattern-linked at `-1` therefore keeps `-1`.
+The server links a stream in two ways. At subscription creation, the server links an explicit stream list at the current tail, even when the named stream does not exist yet. For a stream that does not exist, the tail is the zero offset, so the link has no pending work until the first message. The server matches a path pattern against the existing streams at creation, and again when a stream is created or appended later. It links a newly matched stream before it delivers the wake. A client can also add one stream to an existing subscription with `POST /v1/stream/__ds/subscriptions/{id}/streams`. The added stream starts at the current tail only when the subscription does not already link it. The add path calls `linkStream`. That function keeps the existing cursor when the stream is already linked (`packages/server/src/subscription-manager.ts:786-804`). A stream that was already pattern-linked at `-1` therefore keeps `-1`.
 
 | Link event | Initial acknowledgement cursor |
 |------------|-------------------------------|
@@ -2126,11 +2126,11 @@ Source: `packages/server/src/subscription-manager.ts:161-330`, `:331-500`, `:534
 
 ### 13.4 The embedded durable stream in Electric
 
-The Electric agent runtime uses the reference server as an embedded server. The class is `DurableStreamTestServer`, and it is the production embedded server, despite the name. The runtime disables it when an external stream URL is configured.
+The Electric agent runtime uses the reference server as an embedded server. The class is `DurableStreamTestServer`, and it is the production embedded server, despite the name. The runtime disables it when the configuration gives an external stream URL.
 
-The runtime creates one stream per tag-and-principal pair. The path is `/_entities/{sourceRef}`. The runtime first computes a preliminary source reference: a 16-character hexadecimal hash of the normalized tags (`electric/packages/agents-runtime/src/tags.ts:64-73`). It then asks the server to ensure the membership stream. The server scopes that reference to the caller's principal: the final reference is the tag hash, a hyphen, and a 16-character hash of the principal kind and principal URL (`electric/packages/agents-server/src/entity-bridge-manager.ts:146-154`). The server returns the final reference, and the runtime replaces its preliminary value with it (`electric/packages/agents-runtime/src/agents-client.ts:66-74`). Two principals with the same tags therefore get two streams. One stream carries the membership events of every entity that has the same tags and the same principal. An *entity* is a named record in the runtime, and a *typed collection* is the runtime's in-memory table for one entity type. The runtime reads the stream from the beginning, because the client default offset is `-1`. It materializes every stored change event into its typed collections and then follows the stream live. The delivery subscription is separate: it links the stream at its current tail, so the wake signal covers new messages only. The runtime's own read covers the history.
+The runtime creates one stream per tag-and-principal pair. The path is `/_entities/{sourceRef}`. The runtime first computes a preliminary source reference. That reference is a 16-character hexadecimal hash of the normalized tags (`electric/packages/agents-runtime/src/tags.ts:64-73`). It then asks the server to ensure the membership stream. The server scopes that reference to the caller's principal. The final reference is the tag hash, a hyphen, and a 16-character hash of the principal kind and principal URL (`electric/packages/agents-server/src/entity-bridge-manager.ts:146-154`). The server returns the final reference, and the runtime replaces its preliminary value with it (`electric/packages/agents-runtime/src/agents-client.ts:66-74`). Two principals with the same tags therefore get two streams. One stream carries the membership events of every entity that has the same tags and the same principal. An *entity* is a named record in the runtime, and a *typed collection* is the runtime's in-memory table for one entity type. The runtime reads the stream from the beginning, because the client default offset is `-1`. It materializes every stored change event into its typed collections and then follows the stream live. The delivery subscription is separate. It links the stream at its current tail, so the wake signal covers new messages only. The runtime's own read covers the history.
 
-A message can be both history and new. If an append lands after the subscription link but before the historical read reaches that position, the runtime sees it in both paths. The runtime applies change events by entity key, which is the record identifier inside the collection, so a second application of the same event does not change the result.
+A message can be both history and new. If an append lands after the subscription link but before the historical read reaches that position, the runtime sees it in both paths. The runtime applies change events by entity key. The entity key is the record identifier inside the collection, so a second application of the same event does not change the result.
 
 Source: `electric/packages/agents-runtime/src/tags.ts:64-73`, `electric/packages/agents-runtime/src/agents-client.ts:66-74`, `electric/packages/agents-server/src/entity-bridge-manager.ts:146-154`, `electric/packages/agents-server/src/entity-bridge-manager.ts:620-628`, `electric/packages/agents-server/src/entity-projector.ts:427-435`, `electric/packages/agents-server/src/entrypoint-lib.ts:181-211`, `PROTOCOL.md:895`, `:965`.
 
@@ -2138,7 +2138,7 @@ Source: `electric/packages/agents-runtime/src/tags.ts:64-73`, `electric/packages
 
 **Aha:** a durable stream has no separate message identifiers. The offset is the message identifier and the read cursor. That one decision removes a class of protocol: no message lookup by identifier, no server-side cursor record for a plain reader, and no per-message bookkeeping. A reader stores one offset string for each stream that it follows.
 
-The second insight is about retries. The producer does not ask "did my last write succeed?" It sends the same epoch and sequence again. The server answers 204 when it already has the batch, and it answers 204 for a retried closing append because the stream stores the closing triple. A client without producer headers has no transaction identifier; it must read the log to learn the outcome. The producer triple supplies the identifier for a producer that uses one.
+The second insight is about retries. The producer does not ask "did my last write succeed?" It sends the same epoch and sequence again. The server answers 204 when it already has the batch. It also answers 204 for a retried closing append, because the stream stores the closing triple. A client without producer headers has no transaction identifier; it must read the log to learn the outcome. The producer triple supplies the identifier for a producer that uses one.
 
 The third insight is about what the offset does not solve. A fork shares a prefix, not an identity. The same token text can name one message in the source and another message in the fork. The client keeps its cursor per stream.
 

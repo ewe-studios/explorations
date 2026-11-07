@@ -70,10 +70,10 @@ The column list is 14 columns: `tenant_id`, `url`, `type`, `status`, `tags`, `cr
 Three choices matter:
 
 - `replica: full` asks for the whole row plus `old_value` on an update, and the whole old row on a delete. The default mode sends only the changed columns in an update, which is not enough to compare a member row.
-- The `int8` parser converts PostgreSQL (Postgres) `bigint` text to a JavaScript number. The timestamp columns then arrive as numbers, not strings.
+- The `int8` parser converts Postgres `bigint` text to a JavaScript number. The timestamp columns then arrive as numbers, not strings.
 - The shape has no `where` clause. One network subscription serves every tenant.
 
-**Aha: the fan-out is in memory, not in Postgres.** One shape stream carries all tenants, so the projector holds one copy of the selected entity columns for the whole process. The map is keyed by `tenantId:url`. An insert or update message replaces that key; a delete removes it. Each membership stream filters the same map by its own tenant, tags, and principal. Adding a tenant adds no database listener and no shape subscription.
+**Aha: the fan-out is in memory, not in Postgres.** One shape stream carries all tenants. The projector therefore holds one copy of the selected entity columns for the whole process. The map uses `tenantId:url` as the key. An insert or update message replaces that key; a delete removes it. Each membership stream filters the same map by its own tenant, tags, and principal. Adding a tenant adds no database listener and no shape subscription.
 
 ## Readiness and refetch
 
@@ -95,7 +95,7 @@ stateDiagram-v2
     UpToDate --> [*]: stop
 ```
 
-`start()` waits for the first `up-to-date` before it loads the stored bridge rows. That order prevents a projection from starting with a partial map. A reconcile against a partial map treats every current member that the partial map lacks as stale, so it would append a `delete` for a member that still exists. The member would not come back until its row changed again.
+`start()` waits for the first `up-to-date` before it loads the stored bridge rows. That order prevents a projection from starting with a partial map. A reconcile against a partial map treats every current member that the partial map lacks as stale. It would therefore append a `delete` for a member that still exists. The member would not come back until its row changed again.
 
 A change message that arrives before `up-to-date` updates the map only. It does not touch a projection. The `up-to-date` reconcile then writes the full result once.
 
@@ -118,7 +118,7 @@ function principalScopedSourceRef(
 }
 ```
 
-`sourceRefForTags` hashes the normalized tag map with a 64-bit Fowler–Noll–Vo (FNV-1a) hash and prints 16 hexadecimal characters. `hashString` is the same function: it XORs each character code into the state and multiplies by the FNV prime. The principal scope adds a second hash of `{principalKind, principalUrl}` with the same function. The two hashes are joined with a hyphen.
+`sourceRefForTags` hashes the normalized tag map with a 64-bit Fowler–Noll–Vo (FNV-1a) hash and prints 16 hexadecimal characters. `hashString` is the same function: it XORs each character code into the state and multiplies by the FNV prime. The principal scope adds a second hash of `{principalKind, principalUrl}` with the same function. The code joins the two hashes with a hyphen.
 
 A 64-bit hash can collide in principle; the code has no collision check. Two different tag sets with the same principal would then share one membership stream. Two different principals with the same tag set would also share one stream. The second case defeats the isolation rule. The probability is small, but the code does not detect it.
 
@@ -129,13 +129,13 @@ The full `register()` path is:
 1. Normalize and assert the tags.
 2. Compute the principal-scoped source reference.
 3. Compute the stream path `/_entities/<sourceRef>`.
-4. Upsert the `entity_bridges` row with the tags, path, principal Uniform Resource Locator (URL), and principal kind.
+4. Upsert the `entity_bridges` row with the tags, path, principal URL, and principal kind.
 5. Touch the row's activity time.
 6. Start the projection.
 
-A second `register()` with the same tags and principal computes the same source reference, so the upsert updates the same row and `ensureProjection` returns the running projection. A different tag set computes a different source reference, so it creates a second row and a second stream. The first row stays until the idle sweep removes it; a new registration never rewrites the old stream in place.
+A second `register()` with the same tags and principal computes the same source reference. The upsert then updates the same row, and `ensureProjection` returns the running projection. A different tag set computes a different source reference, so it creates a second row and a second stream. The first row stays until the idle sweep removes it; a new registration never rewrites the old stream in place.
 
-The stream path is stored in `entity_bridges.stream_url`. The value is a relative path such as `/_entities/1a2b3c4d5e6f7788-0123456789abcdef`, not an absolute URL. The projector joins it to the base URL of the tenant's stream client. That column is one of three stored exceptions to the computed-path rule; the others are `runners.wake_stream` and `pg_sync_bridges.stream_url`. See [04-stream-layout-and-stream-client.md](04-stream-layout-and-stream-client.md).
+The projector stores the stream path in `entity_bridges.stream_url`. The value is a relative path such as `/_entities/1a2b3c4d5e6f7788-0123456789abcdef`, not an absolute URL. The projector joins it to the base URL of the tenant's stream client. That column is one of three stored exceptions to the computed-path rule; the others are `runners.wake_stream` and `pg_sync_bridges.stream_url`. See [04-stream-layout-and-stream-client.md](04-stream-layout-and-stream-client.md).
 
 ```ts
 // packages/agents-server/src/entity-projector.ts:427-440
@@ -163,14 +163,14 @@ The principal scope is necessary. Membership includes a permission test. Two pri
 
 1. Create the stream if it does not exist.
 2. Create an `IdempotentProducer` with producer identifier `entity-bridge-<sourceRef>` and `autoClaim: true`.
-3. Read the whole stream from its first offset and rebuild the current member map. The map is keyed by entity URL and stores the last member row for that URL. An event with operation `delete` removes the key.
+3. Read the whole stream from its first offset and rebuild the current member map. The map uses the entity URL as the key and stores the last member row for that URL. An event with operation `delete` removes the key.
 4. Reconcile against the shared entity map.
 
 `autoClaim` is an `IdempotentProducer` option from the Durable Streams client. This package sets it and does not implement it. The producer starts at epoch 0. The Durable Streams server remembers the highest epoch for a producer identifier. When the client presents an older epoch, the server rejects the append. With `autoClaim`, the client reads the current epoch and retries the same append with epoch plus one. That covers a restart that reuses the producer identifier after an earlier process advanced the epoch. See [04-stream-layout-and-stream-client.md](04-stream-layout-and-stream-client.md).
 
-Inside one run, a retry is safe because the producer keeps the same `(producerId, epoch, seq)` triple and the server drops the duplicate. Across a restart, the rebuild is what makes the stream correct. The projection reads its own history, so a write that the old process lost is recomputed from the shared map. The code does not persist a sequence number; it relies on the producer object and on the rebuild.
+Inside one run, a retry is safe because the producer keeps the same `(producerId, epoch, seq)` triple and the server drops the duplicate. Across a restart, the rebuild is what makes the stream correct. The projection reads its own history, so it recomputes any write that the old process lost from the shared map. The code does not persist a sequence number; it relies on the producer object and on the rebuild.
 
-After step 3 the projection has a stored set. After step 4 it has a computed set: every entity in the shared map with the same tenant, matching tags, and a passing read check. The reconcile walks the stored set, removes each entity that is also in the computed set, and appends a `delete` for every URL that remains. It then appends `insert` or `update` for each computed entity. A member that disappears from the shared map entirely is handled by this same rule: it stays in the stored set, so it gets one `delete`.
+After step 3 the projection has a stored set. After step 4 it has a computed set: every entity in the shared map with the same tenant, matching tags, and a passing read check. The reconcile walks the stored set, removes each entity that is also in the computed set, and appends a `delete` for every URL that remains. It then appends `insert` or `update` for each computed entity. This same rule handles a member that disappears from the shared map entirely: it stays in the stored set, so it gets one `delete`.
 
 Each event has one of three operations:
 
@@ -250,9 +250,9 @@ private async canReadEntity(entity: EntityShapeRow): Promise<boolean> {
 3. The entity creator may always read its own entity. Here the bypass covers read only, because this function asks for read.
 4. The materialized effective-permission table decides the rest.
 
-Two permission tables matter. `entity_permission_grants` stores the grant as written: entity URL, permission, subject kind, subject value, propagation, and expiry. `entity_effective_permissions` stores the resolved result: one row for each entity and subject that may act, after propagation and expiry are applied. `hasEntityPermission` reads the effective table. A grant with `propagation = 'descendants'` produces effective rows for the entity and every entity below it in `entity_lineage`. `copy_to_children` writes grant rows on the children as well. A type grant uses the same model and applies to entities of that type.
+Two permission tables matter. `entity_permission_grants` stores the grant as written: entity URL, permission, subject kind, subject value, propagation, and expiry. `entity_effective_permissions` stores the resolved result: one row for each entity and subject that may act, after the code applies propagation and expiry. `hasEntityPermission` reads the effective table. A grant with `propagation = 'descendants'` produces effective rows for the entity and every entity below it in `entity_lineage`. `copy_to_children` writes grant rows on the children as well. A type grant uses the same model and applies to entities of that type.
 
-`permissionBypass` is set in the constructor from `isBuiltInSystemPrincipalUrl(row.principal_url)`. It is true only for `system:framework`, `system:auth-sync`, and `system:dev-local`. A bridge row with a null `principal_url`, or with a malformed one, gets no bypass and no creator match.
+The constructor sets `permissionBypass` from `isBuiltInSystemPrincipalUrl(row.principal_url)`. It is true only for `system:framework`, `system:auth-sync`, and `system:dev-local`. A bridge row with a null `principal_url`, or with a malformed one, gets no bypass and no creator match.
 
 A projection with no principal identity returns false for every entity except through the bypass. That is a fail-closed default.
 
@@ -284,9 +284,9 @@ The registry lookup is per entity per evaluation. Reconciling a large tag set do
 
 `reconcile()` walks the entities in sequence and awaits each permission check. It does not run the checks in parallel. It filters by tenant first, then by tags, and only then asks for permission, so a non-matching entity costs no database round trip. A tenant with many matching entities therefore takes one round trip after another during a full reconcile. An incremental change message runs the same check for one entity only.
 
-`reconcile()` has no `try`/`catch` around `hasEntityPermission`. A database error rejects that reconcile pass, and the remaining entities in it are not evaluated. The next start or refetch repairs the projection. An error on one live change message also rejects the callback for that message batch.
+`reconcile()` has no `try`/`catch` around `hasEntityPermission`. A database error rejects that reconcile pass, and the code does not evaluate the remaining entities in it. The next start or refetch repairs the projection. An error on one live change message also rejects the callback for that message batch.
 
-**Aha: the fan-out is cheap but the filter is not free.** The entity map is in memory and shared by all tenants and projections. Each projection still asks Postgres once per candidate entity, because the grant table is the authority. A cache of permission decisions could remove those lookups, and the code has no such cache here.
+**Aha: the fan-out is cheap but the filter is not free.** The entity map is in memory, and all tenants and projections share it. Each projection still asks Postgres once per candidate entity, because the grant table is the authority. A cache of permission decisions could remove those lookups, and the code has no such cache here.
 
 ## Keeping a projection alive
 
@@ -306,7 +306,7 @@ The idle sweep runs every 5 minutes, and only for tenants that the projector has
    - The row is stale.
 5. Stop the projection before it deletes the row.
 
-The row is not recreated by a later `HEAD` or `GET`. `touchEntityBridge` is an `UPDATE`, so it does nothing when the row is gone, and `ensureProjectionForSourceRef()` returns when `getEntityBridge()` finds no row. A `register()` call is what creates the row again. A client that holds the stream path after a sweep must register the tag set again. The stream itself, with its event history, remains.
+A later `HEAD` or `GET` does not recreate the row. `touchEntityBridge` is an `UPDATE`, so it does nothing when the row is gone, and `ensureProjectionForSourceRef()` returns when `getEntityBridge()` finds no row. A `register()` call is what creates the row again. A client that holds the stream path after a sweep must register the tag set again. The stream itself, with its event history, remains.
 
 A new `register()` for the same tags and principal computes the same source reference and therefore the same path. The new producer reads the remembered epoch and claims the next one, so its first append does not collide with the old history. The start sequence reads that history into the member map before it reconciles, so the projection appends only the differences. It does not replay every member as a new `insert`.
 
@@ -336,7 +336,7 @@ async register(
 
 The facade implements `EntityBridgeCoordinator`. The entity manager and the runtime see the same interface in both deployment modes. See [08-tenancy-permissions-and-principals.md](08-tenancy-permissions-and-principals.md).
 
-A tenant enters the projector through `forTenant(tenantId, registry)`, which stores the registry in a map and returns a facade. The optional `tenantIds` provider is a function that returns the set of tenant identifiers that the host wants to serve. It filters the persisted bridge rows at start and the idle sweep, so a row from a tenant that the host does not serve is ignored. Without a provider, the projector loads every tenant row. `loadTenantBridges()` waits for readiness and then loads one tenant's rows. That is the hook that `AgentsHost` calls after it registers a tenant. The verb "register" here means "add a tenant to the host", not "register a tag set on the projector".
+A tenant enters the projector through `forTenant(tenantId, registry)`, which stores the registry in a map and returns a facade. The optional `tenantIds` provider is a function that returns the set of tenant identifiers that the host wants to serve. It filters the persisted bridge rows at start and during the idle sweep. The projector therefore ignores a row from a tenant that the host does not serve. Without a provider, the projector loads every tenant row. `loadTenantBridges()` waits for readiness and then loads one tenant's rows. That is the hook that `AgentsHost` calls after it registers a tenant. The verb "register" here means "add a tenant to the host", not "register a tag set on the projector".
 
 The read side uses one shared Electric URL, because the shape has no tenant filter. The write side is per tenant. `streamClientForTenant(tenantId)` returns a `StreamClient` for that tenant's Durable Streams origin. If the host has no client for the tenant, the call throws an error that `isUnregisteredTenantError` recognizes. The projector logs a warning and skips that row. It does not fail the whole shape stream because one tenant row cannot resolve a stream client.
 
@@ -345,7 +345,7 @@ The read side uses one shared Electric URL, because the shape has no tenant filt
 - The shared shape stream needs the Electric URL. Without it, `start()` returns at once and does nothing, and `register()` throws `Electric URL is required for entities()`.
 - The projector keeps the whole `entities` table in memory for the selected columns. For a very large table, that is the main cost.
 - The source code does not state a maximum number of projections. The idle sweep bounds the number of unused ones.
-- A swept bridge row is not restored by a read. It needs a new `register()` call.
+- A read does not restore a swept bridge row. It needs a new `register()` call.
 - A grant that propagates to descendants does not refresh those descendants in the membership streams.
 - The permission test does not call the external authorization hook. The hook is the optional `authorizeRequest` function that the server calls during permission checks; a host uses it to add or deny access. The membership test uses the materialized table only. A custom hook that grants read access does not affect membership. This is observed behaviour, not a documented rule.
 

@@ -10,8 +10,8 @@ The server has one Hypertext Transfer Protocol (HTTP) listener. A single dispatc
 
 - A **stream** is an append-only event log with a path, an offset, and JSON (JavaScript Object Notation) events. A **stream path** names data, for example `/<entity path>/main`. A **control path** names a management resource, for example `/_electric/health`.
 - The **Durable Streams backend** is the external service that stores streams. The package reaches it through `StreamClient`. The server may also start an in-process `DurableStreamTestServer` for development.
-- The **Electric sync service** is a different HTTP service. It serves a live query, called a **shape**, over one Postgres table at `/v1/shape`. The server uses shapes to learn about table changes.
-- **PostgreSQL (Postgres)** holds control state: entities, permissions, wake registrations, runners, and claims.
+- The **Electric sync service** is a different HTTP service. It serves a live query, called a **shape**, over one PostgreSQL (Postgres) table at `/v1/shape`. The server uses shapes to learn about table changes.
+- **Postgres** holds control state: entities, permissions, wake registrations, runners, and claims.
 - An **entity** is one agent or agent-owned object with a Uniform Resource Locator (URL), a type, and a status. An **entity type** is the registered schema and permission record for a class of entity. A **principal** is an identity: kind (`user`, `agent`, `service`, or `system`), identifier, key, and URL. A **tenant** is an isolation key for Postgres rows and stream origins.
 - A **runner** is a process that executes agent work. It claims a work stream, receives a wake, and writes events.
 - A **wake** is a notification that a stream changed. A **subscription** is a stored instruction to deliver changes of selected streams to a callback. A **pull-wake** subscription makes the consumer claim work instead of receiving a push.
@@ -44,13 +44,13 @@ globalRouter.all(`/_electric/*`, internalRouter.fetch)
 globalRouter.all(`*`, durableStreamsRouter.fetch)
 ```
 
-The order is significant. `itty-router` stops at the first match. A shared-state path is a stream path, so it goes directly to the stream router. A PostgreSQL (Postgres) sync `register` call is control traffic, so it goes to the internal router. A `GET` or `HEAD` on `/_electric/pg-sync/*` is a stream read. Every other `/_electric/*` path is control traffic. Every path that is not control traffic is a stream path.
+The order is significant. `itty-router` stops at the first match. A shared-state path is a stream path, so it goes directly to the stream router. A Postgres sync `register` call is control traffic, so it goes to the internal router. A `GET` or `HEAD` on `/_electric/pg-sync/*` is a stream read. Every other `/_electric/*` path is control traffic. Every path that is not control traffic is a stream path.
 
 A third traffic class sits under the control prefix. `GET /_electric/electric/*` is a proxy to the Electric sync service, not a Postgres control resource. The internal router mounts it with `internalRouter.get(...)`, so only `GET` reaches it. The other methods on that path return 404 from the internal router.
 
-Each sub-router is mounted by path. The `runners` sub-router has two mount entries: `/runners` matches the collection route with no trailing segment, and `/runners/*` matches every route with an identifier. A single wildcard mount would not match the bare `/runners` path. The `entities`, `entity-types`, `pg-sync`, `observations`, and `electric` mounts use the wildcard form only, because none of them has a bare collection route at the mount point.
+The server mounts each sub-router by path. The `runners` sub-router has two mount entries: `/runners` matches the collection route with no trailing segment, and `/runners/*` matches every route with an identifier. A single wildcard mount would not match the bare `/runners` path. The `entities`, `entity-types`, `pg-sync`, `observations`, and `electric` mounts use the wildcard form only. None of them has a bare collection route at the mount point.
 
-Each sub-router also declares its own `base` path, for example `base: '/_electric/entities'`. The base is stripped before the sub-router matches. A request to `/_electric/entities/agent/abc/send` arrives at `entitiesRouter` as `/agent/abc/send`, and its route `POST /:type/:instanceId/send` matches that remainder.
+Each sub-router also declares its own `base` path, for example `base: '/_electric/entities'`. The router strips the base before the sub-router matches. A request to `/_electric/entities/agent/abc/send` arrives at `entitiesRouter` as `/agent/abc/send`, and its route `POST /:type/:instanceId/send` matches that remainder.
 
 ```mermaid
 flowchart TB
@@ -133,7 +133,7 @@ The final route returns 404. No control path falls through to a stream.
 
 The next sections describe `durableStreamsRouter`, not the internal router. Its `controlPassThrough` route is the exception to the control/stream split. It forwards an unrecognised `/__ds` call to the Durable Streams backend.
 
-It still needs a principal. The request context resolves a principal for every request. The resolution order is the `authenticateRequest` option, then the `electric-principal` header, then the development fallback. The fallback is enabled when `allowDevPrincipalFallback` is unset and any of these is true: `ELECTRIC_INSECURE` is `true`, `NODE_ENV` is not `production`, or the process owns the embedded streams server. With no principal and no fallback, the context returns `401`. `controlPassThrough` does no resource check of its own. A caller that holds a principal can therefore call any Durable Streams control endpoint that the backend accepts, including subscription creation for any stream path.
+It still needs a principal. The request context resolves a principal for every request. The resolution order is the `authenticateRequest` option, then the `electric-principal` header, then the development fallback. The server enables the fallback when `allowDevPrincipalFallback` is unset. One of three cases must also be true: `ELECTRIC_INSECURE` is `true`; `NODE_ENV` is not `production`; the process owns the embedded streams server. With no principal and no fallback, the context returns `401`. `controlPassThrough` does no resource check of its own. A caller that holds a principal can therefore call any Durable Streams control endpoint that the backend accepts, including subscription creation for any stream path.
 
 The backend bearer is a separate credential: a bearer token for the Durable Streams backend, from `durableStreamsBearer` or the server environment. The server adds it to the upstream request. See [04-stream-layout-and-stream-client.md](04-stream-layout-and-stream-client.md).
 
@@ -148,7 +148,7 @@ The flow is:
 5. The runner appends its events, then sends `done: true`.
 6. A `done` body forwards to the subscription's acknowledgement path and releases the claim row.
 
-Any body that is not a claim and not `done` is forwarded. When the stored callback URL starts with `ds-subscription:`, the handler calls `ackSubscription` on the Durable Streams subscription with the claim token from the request. Otherwise it posts to the stored URL.
+The handler forwards any body that is not a claim and not `done`. When the stored callback URL starts with `ds-subscription:`, the handler calls `ackSubscription` on the Durable Streams subscription with the claim token from the request. Otherwise it posts to the stored URL.
 
 Two side writes happen around the forward, both in Postgres. A forwarded request that is not done and that carries `generation` or `epoch` updates `consumer_claims.last_heartbeat_at` through `materializeHeartbeatClaim`, without a new lease time. A done request releases the claim and sets the entity status to `stopped` when the status is `stopping`, and to `idle` otherwise. The status change happens only when this consumer still owns the claim or its release cleared the entity. See [09-runners-and-sandboxes.md](09-runners-and-sandboxes.md).
 
@@ -208,11 +208,11 @@ The *subtree* of an entity is that entity plus every entity below it in `entity_
 
 An entity type is a registered record with a name, event schemas, collection schemas, and type-level grants. It is not an entity and has no stream.
 
-A type has only two grant permissions: `spawn` and `manage`. The smaller set follows from what a type can do. A type cannot be read, written, deleted, signalled, or forked; it can only be used to create an entity or changed. The route file is at `src/routing/entity-types-router.ts:149-192`.
+A type has only two grant permissions: `spawn` and `manage`. The smaller set follows from what a type can do. The code cannot read, write, delete, signal, or fork a type. It can only use a type to create an entity, or change the type. The route file is at `src/routing/entity-types-router.ts:149-192`.
 
 The *registration* guard on `POST /` has two branches. For an existing type name, it requires `manage` on that type. For a new name, it calls `canRegisterEntityType()`, which runs the authorization hook with `builtInAllowed: true`. The *authorization hook* is the optional `authorizeRequest` function that the host supplies. It receives the principal, the verb, the resource key, and a `builtInAllowed` advice, and it returns an allow or deny decision. The advice says that the built-in rule would allow the request; the hook may still deny it. Without a hook, the built-in decision stands, so a new type registration is allowed. That is an open-registration default, and a host that wants a closed registry must install a hook. The guard is a custom function, not the generic type permission wrapper.
 
-`GET /:name` requires `spawn` on the type. That is why an agent can read the type it is allowed to spawn, and cannot read other types.
+`GET /:name` requires `spawn` on the type. That is why an agent can read the type it may spawn, and cannot read other types.
 
 ## The runners router
 
@@ -250,12 +250,12 @@ An *observation* is an entity's declared interest in a source of change. The ent
 
 The proxy is not a transparent pass-through. For the `/v1/shape` path, `buildElectricProxyTarget()` enforces four rules:
 
-1. The request must name exactly one `table`. The table must be one of nine in the *proxy chain*, the fixed list of tables that the route is allowed to expose. The nine tables are: `entities`, `entity_types`, `runners`, `users`, `entity_effective_permissions`, `runner_runtime_diagnostics`, `entity_dispatch_state`, `wake_notifications`, or `consumer_claims`. Any other name falls to the default-deny branch and returns `403 TABLE_NOT_ALLOWED`.
+1. The request must name exactly one `table`. The table must be one of nine in the *proxy chain*, the fixed list of tables that the route may expose. The nine tables are: `entities`, `entity_types`, `runners`, `users`, `entity_effective_permissions`, `runner_runtime_diagnostics`, `entity_dispatch_state`, `wake_notifications`, or `consumer_claims`. Any other name falls to the default-deny branch and returns `403 TABLE_NOT_ALLOWED`.
 2. The client `where` parameter must be a balanced, self-contained clause. The server wraps that clause in its own parentheses and appends its own conditions. A clause that could close the server's parenthesis and add its own `OR` returns `400 INVALID_WHERE`. For example, the server builds `where = (<client clause>) AND tenant_id = '...'`. A client clause that contains an unmatched `)` would close the group early, so the balance check rejects it before the string is used.
 3. The server adds its own `where`: the tenant, and for the entity tables a readable-entity filter for the caller. The server sets a fixed `columns` list for each table, so a client cannot ask for a column outside that list.
-4. The Electric secret is added from the server option.
+4. The server adds the Electric secret from the server option.
 
-Paths other than `/v1/shape` are forwarded without these rules, so a deployment should expose this route only to trusted callers. The code is `packages/agents-server/src/utils/server-utils.ts:115-277`.
+The server forwards paths other than `/v1/shape` without these rules, so a deployment should expose this route only to trusted callers. The code is in `packages/agents-server/src/utils/server-utils.ts:115-277`.
 
 ## The durable streams router
 
@@ -301,7 +301,7 @@ flowchart LR
 | `POST *` | `streamAppend` | Guarded stream append |
 | `ALL *` | `proxyPassThrough` | Guarded read or proxy |
 
-The routes are registered at `src/routing/durable-streams-router.ts:74-104`.
+The server registers the routes at `src/routing/durable-streams-router.ts:74-104`.
 
 ### Subscription rewriting
 
@@ -312,9 +312,9 @@ The claim, acknowledge, and release routes are the work-queue protocol. A consum
 A client sends a subscription with runtime paths such as `/worker/abc/main`. The default adapter adds no tenant prefix, so a subscription path is the path that the stream server serves. A custom routing adapter can add a prefix. The backend may also namespace streams itself. The router converts each path in both directions with the configured adapter:
 
 - `toBackendStreamPath` runs on `pattern`, each string in `streams`, `wake_stream`, and the `stream` and `path` fields of each `acks` entry.
-- `toRuntimeStreamPath` runs on the response fields `pattern`, `streams`, `wake_stream`, `stream`, and the `stream` and `path` fields of `acks`. A `streams` entry that is an object is rewritten in its `path` field and left otherwise intact.
+- `toRuntimeStreamPath` runs on the response fields `pattern`, `streams`, `wake_stream`, `stream`, and the `stream` and `path` fields of `acks`. The router rewrites the `path` field of a `streams` entry that is an object and leaves the rest intact.
 
-The default adapter is `streamRootDurableStreamsRoutingAdapter`. It only removes a leading slash from each path. It adds no tenant prefix. A custom adapter can add one. The adapter is chosen by `resolveDurableStreamsRoutingAdapter()`, which returns the adapter that the host injects through the `durableStreamsRouting` server option, or the default when the option is absent.
+The default adapter is `streamRootDurableStreamsRoutingAdapter`. It only removes a leading slash from each path. It adds no tenant prefix. A custom adapter can add one. `resolveDurableStreamsRoutingAdapter()` chooses the adapter. It returns the adapter that the host injects through the `durableStreamsRouting` server option, or the default when the option is absent.
 
 If the body has a `webhook.url`, the router replaces it with its own callback URL:
 
@@ -329,7 +329,7 @@ if (payload.webhook?.url !== undefined) {
 }
 ```
 
-The target URL goes into `subscription_webhooks` after the loopback rewrite. The write is an upsert on `(tenant_id, subscription_id)`. The delete route removes the row after it forwards. The response also gains a `webhook.signing` block with the JavaScript Object Notation (JSON) Web Key Set (JWKS) address. A receiver fetches that address to get the public key that verifies the webhook signature. This is how a local `localhost` webhook works inside Docker.
+The target URL goes into `subscription_webhooks` after the loopback rewrite. The write is an upsert on `(tenant_id, subscription_id)`. The delete route removes the row after it forwards. The response also gains a `webhook.signing` block with the JSON Web Key Set (JWKS) address. A receiver fetches that address to get the public key that verifies the webhook signature. This is how a local `localhost` webhook works inside Docker.
 
 Two routes have "callback" in the path and do different jobs. `POST /_electric/subscription-webhooks/:subscriptionId` is the inbound webhook receiver. It verifies the signature, reads `subscription_webhooks`, and forwards the event to the client URL. `POST /__ds/subscriptions/:id/callback` is a control call that the server forwards to the Durable Streams backend, which resolves a stored callback. The first is the delivery path; the second is the control path.
 
@@ -347,14 +347,14 @@ Two routes have "callback" in the path and do different jobs. `POST /_electric/s
 A path that matches no resource class passes through. The source comment states that Durable Streams also hosts utility streams that the Agents layer does not own. These path classes have no per-entity read check in this function:
 
 - `/_entities/<sourceRef>` membership streams. The entity bridge writes them; the projector filters them by principal before it writes.
-- `/principal/<encodedKey>/main` principal streams. A principal identity owns them, and there is no entity row to check.
-- `/_cron/<encodedSpec>` cron streams. The scheduler writes them; they are shared by every entity that uses the expression.
+- `/principal/<encodedKey>/main` principal streams. A principal identity owns them, and no entity row exists to check.
+- `/_cron/<encodedSpec>` cron streams. The scheduler writes them; every entity that uses the expression shares them.
 - `/_webhooks/<endpointKey>[/<bucket>]` webhook streams. An inbound webhook endpoint owns them.
 - `/runners/<id>/wake` runner wake streams. The runner claims them through the runner route, not through an entity permission.
 
 The handler cannot apply an entity permission to these paths, because no entity owns them. A read on one of these classes reaches the Durable Streams backend without an entity permission check. The deployment must protect them by other means, for example a network boundary or the Durable Streams bearer token.
 
-The guard also depends on the method. `authorizeDurableStreamAccess` checks only `GET` and `HEAD`, plus `PUT` and `POST` on shared state. A `PUT` or `DELETE` to an entity stream path is not a `POST`. Therefore `streamAppend` does not handle it and `proxyPassThrough` forwards it after a check that does nothing for that method. Such a request reaches the backend without an entity permission check and without the write-token check (the write token is defined in the append path below). The backend still enforces its own rules, but this package adds no entity guard for it. A client that needs to delete or replace a stream directly must be trusted by the deployment.
+The guard also depends on the method. `authorizeDurableStreamAccess` checks only `GET` and `HEAD`, plus `PUT` and `POST` on shared state. A `PUT` or `DELETE` to an entity stream path is not a `POST`. Therefore `streamAppend` does not handle it and `proxyPassThrough` forwards it after a check that does nothing for that method. Such a request reaches the backend without an entity permission check. It also skips the write-token check (the append path below defines the write token). The backend still enforces its own rules, but this package adds no entity guard for it. The deployment must trust a client that needs to delete or replace a stream directly.
 
 An attachment read is different. A `GET` or `HEAD` attachment path uses the owning entity for its `read` check. When that entity row does not exist, the request returns 404. The append path answers the same missing entity with 401 instead, as described below.
 
@@ -409,14 +409,14 @@ sequenceDiagram
 
 The handler resolves the entity from the stream path. A path with no entity and no shared-state prefix returns `undefined`. That makes the router fall through to `proxyPassThrough` for a normal read or a non-Agents stream. The exception is an attachment path: a `POST` to an attachment whose entity row is missing returns `401 Invalid write token`. That is the same status as a bad token, so the client cannot tell the two causes apart. A `GET` on the same path returns 404 from the read guard.
 
-The token comes from the `electric-claim-token` header first, then from the `Authorization` header with an optional `Bearer` prefix. The value is checked by `isValidWriteToken`.
+The token comes from the `electric-claim-token` header first, then from the `Authorization` header with an optional `Bearer` prefix. `isValidWriteToken` checks the value.
 
 Two token types can satisfy the check:
 
 - A **static write token** is the value stored on the entity row.
 - A **claim write token** is the value that the wake callback mints for one claim. `ClaimWriteTokenStore` keeps it in memory, keyed by `service` and stream path.
 
-`ElectricAgentsServer` and `AgentsHost` always install a claim-token validator, so the static row token is not accepted through those entry points. The minting flow is as follows. The runner claims upstream and gets a `claimToken`. The runner calls the wake callback with the `wakeId`. The callback mints a claim write token, and the runner uses it for appends. The token ends when the runner sends `done` or `stop`, or when a new claim replaces it. A bad token returns 401 before any work. The token is checked only for an entity stream. A shared-state append has no entity, so it has no write-token check; the earlier `authorizeDurableStreamAccess` call is its only guard.
+`ElectricAgentsServer` and `AgentsHost` always install a claim-token validator, so the static row token is not accepted through those entry points. The minting flow is as follows. The runner claims upstream and gets a `claimToken`. The runner calls the wake callback with the `wakeId`. The callback mints a claim write token, and the runner uses it for appends. The token ends when the runner sends `done` or `stop`, or when a new claim replaces it. A bad token returns 401 before any work. The handler checks the token only for an entity stream. A shared-state append has no entity, so it has no write-token check; the earlier `authorizeDurableStreamAccess` call is its only guard.
 
 The handler reads the whole body into a byte array before the forward. It parses the same bytes as JSON. The package sets no body size limit of its own, so the listener and any upstream limit decide the maximum. When the body is not valid JSON, `decodeStreamAppendEvent` returns `null`. The handler then skips schema validation and the wake and manifest side effects, and forwards the buffered bytes unchanged. A non-JSON append is therefore a plain proxy write: the stream receives it, but no wake fires and no manifest index updates. A caller that needs those effects must send valid JSON.
 
@@ -444,7 +444,7 @@ The side effects have these jobs:
 
 Only after a successful upstream response does the runtime run the side effects. `evaluateWakePayload`, `syncManifestWakes`, `syncManifestEntitySources`, and `syncManifestSchedules` are fire-and-forget, and each failure is logged. `checkRunFinished` runs directly; it schedules work and does not block on a stream read.
 
-Fire-and-forget has a crash window. The stream append is already committed when the side effects start. If the process stops before one of them completes, nothing retries it: there is no outbox and no replay marker for this step. The event is in the stream, but the wake does not fire and the manifest index or schedule does not change. A restart does not repair that state from the stream, because the side effects are not recorded as work to do. This is the cost of treating the append as the commit point for the write, and not for the derived state.
+Fire-and-forget has a crash window. The stream append has already committed when the side effects start. If the process stops before one of them completes, nothing retries it: no outbox or replay marker exists for this step. The event is in the stream, but the wake does not fire and the manifest index or schedule does not change. A restart does not repair that state from the stream, because the side effects are not recorded as work to do. This is the cost of treating the append as the commit point for the write, and not for the derived state.
 
 For a shared-state append, the handler calls `evaluateWakePayload(path, event)` with the stream path as the source. The other four side effects run only for an entity stream.
 
@@ -452,13 +452,13 @@ For a shared-state append, the handler calls `evaluateWakePayload(path, event)` 
 
 ## Request context and principal
 
-`ElectricAgentsServer.handleRequest` builds one `TenantContext` per request. The context binds the tenant and the principal, which is the caller identity. It then calls `ossServerRouter.fetch(request, ctx)`, so the same context object reaches every router. A host that embeds this package calls `handleRequest` directly; the package's own listener wraps it in a WHATWG (Web Hypertext Application Technology Working Group) fetch adapter.
+`ElectricAgentsServer.handleRequest` builds one `TenantContext` per request. The context binds the tenant and the principal, which is the caller identity. It then calls `ossServerRouter.fetch(request, ctx)`, so the same context object reaches every router. A host that embeds this package calls `handleRequest` directly. The package's own listener wraps it in a WHATWG (Web Hypertext Application Technology Working Group) fetch adapter.
 
-The principal is resolved in this order:
+The server resolves the principal in this order:
 
 1. `authenticateRequest(request)`. The option is a function that receives the `Request` and returns a `Principal` or `null`. The first non-null result wins.
 2. `getPrincipalFromRequest(request)`, which reads the `electric-principal` header as a principal key.
-3. `getDevPrincipal()`, when the fallback is allowed.
+3. `getDevPrincipal()`, when the server allows the fallback.
 
 An exception anywhere in steps 1 and 2 becomes `400 INVALID_REQUEST`; it does not fall through to the next step. A request with no principal after all three steps returns `401 UNAUTHORIZED`.
 
@@ -472,7 +472,7 @@ The context carries:
 - `authorizeRequest`, the optional authorization hook.
 - `pgSyncBridgeManager`, the separate and optional Postgres sync coordinator.
 
-The development fallback is enabled when `ELECTRIC_INSECURE=true`, when `NODE_ENV` is not `production`, or when the process owns the embedded streams server. The third condition is the one to watch. A process that starts the in-process `DurableStreamTestServer` allows an unauthenticated caller to act as the development principal without any other flag. That is safe only for a local or test process. See [08-tenancy-permissions-and-principals.md](08-tenancy-permissions-and-principals.md).
+The server enables the development fallback when `ELECTRIC_INSECURE=true`, when `NODE_ENV` is not `production`, or when the process owns the embedded streams server. The third condition is the one to watch. A process that starts the in-process `DurableStreamTestServer` allows an unauthenticated caller to act as the development principal without any other flag. That is safe only for a local or test process. See [08-tenancy-permissions-and-principals.md](08-tenancy-permissions-and-principals.md).
 
 ## Middleware
 
@@ -490,7 +490,7 @@ The order matters. `preflightCors` must answer before any handler needs a princi
 
 `rejectIfShuttingDown` applies only to `/_electric/subscription-webhooks/`. Every other route keeps serving until the listener closes. The scope is deliberate: a webhook sender retries on `503`, while a control client that receives a refusal has no retry contract. Returning `503` only where retry is expected avoids losing a delivery without breaking normal requests during the short shutdown window.
 
-`ElectricAgentsError` is this package's error class with a status and an error code. `ElectricProxyError` is the shape proxy's error class for a rejected table or `where` clause. `ngrok-skip-browser-warning` is a header that the ngrok tunnel reads to suppress its browser warning page; the server allows it so a tunnelled browser call is not blocked.
+`ElectricAgentsError` is this package's error class with a status and an error code. `ElectricProxyError` is the shape proxy's error class for a rejected table or `where` clause. `ngrok-skip-browser-warning` is a header that the ngrok tunnel reads to suppress its browser warning page. The server allows it so a tunnelled browser call is not blocked.
 
 The allowed header list includes `content-type`, `authorization`, `electric-claim-token`, `electric-owner-entity`, `electric-principal`, and `ngrok-skip-browser-warning`.
 

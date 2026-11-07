@@ -43,7 +43,7 @@ fs.mkdirSync(path.join(this.dataDir, `streams`), { recursive: true })
 
 This block is from `packages/server/src/file-store.ts:310`.
 
-The `lmdb` package reads four options here. `compression` turns on the library's value compression. `noMemInit` tells the library not to zero a newly allocated memory page, which makes the first write faster. `cache` turns on the library's read cache. `sharedStructuresKey` names the record that holds the shared structures that the lmdb-js library keeps for the database. The process-wide `Symbol.for` value makes every open of this database use the same key, so two opens in one process share those structures instead of creating them twice. The store does not document a size limit for the cache or the database map.
+The `lmdb` package reads four options here. `compression` turns on the library's value compression. `noMemInit` tells the library not to zero a newly allocated memory page, which makes the first write faster. `cache` turns on the library's read cache. `sharedStructuresKey` names the record that holds the shared structures that the lmdb-js library keeps for the database. The process-wide `Symbol.for` value makes every open of this database use the same key. Then two opens in one process share those structures and do not create them twice. The store does not document a size limit for the cache or the database map.
 
 ```mermaid
 flowchart TD
@@ -83,7 +83,7 @@ The encoding is base64url (Request for Comments 4648 section 5): `+` becomes `-`
 
 The timestamp is base-36 text with no fixed width. Lexical sort agrees with age only while every name has the same number of characters. The store uses the metadata record to find the file; it does not scan the directory in name order.
 
-The `~` character is the separator. It is not in the base64url alphabet, so it cannot occur in the base64url part. The output of `encodeStreamPath` has at most one `~`; the decoder takes the last one and keeps the suffix only if it is a 16-character hexadecimal hash (`packages/server/src/path-encoding.ts:41`). The full directory name adds more `~` separators after the encoded path (`file-store.ts:259-264`).
+The `~` character is the separator. It is not in the base64url alphabet, so it cannot occur in the base64url part. The output of `encodeStreamPath` has at most one `~`. The decoder takes the last one. It keeps the suffix only if it is a 16-character hexadecimal hash (`packages/server/src/path-encoding.ts:41`). The full directory name adds more `~` separators after the encoded path (`file-store.ts:259-264`).
 
 The metadata record stores this name. The LMDB key is `stream:{path}`, not the bare path.
 
@@ -129,7 +129,7 @@ The `StreamMetadata` interface is the durable form of the in-memory `Stream`. It
 
 The interface is at `packages/server/src/file-store.ts:40`.
 
-Several of these fields need a definition. A producer tuple is the producer identifier and the producer epoch, plus the last accepted producer sequence. The epoch is a generation number; a new epoch fences an older writer. A fork offset is the two-part offset in the source where the fork starts. A fork sub-offset is a position inside the fork offset: a message count in JavaScript Object Notation (JSON) mode and a byte count in other modes. The reference count includes every fork record that still names the stream, including a fork that is soft-deleted but not yet removed.
+Several of these fields need a definition. A producer tuple is the producer identifier and the producer epoch, plus the last accepted producer sequence. The epoch is a generation number; a new epoch fences an older writer. A fork offset is the two-part offset in the source where the fork starts. A fork sub-offset is a position inside the fork offset. It is a message count in JavaScript Object Notation (JSON) mode and a byte count in other modes. The reference count includes every fork record that still names the stream, including a fork that is soft-deleted but not yet removed.
 
 `currentOffset` has the reference format `<readSeq>_<byteOffset>`. Both parts are 16 digits with leading zeros. The first part is a reserved read sequence. The reference server starts it at zero, preserves it on every append, and never increments it. The Caddy plugin documents it as reserved for future log rotation (`packages/caddy-plugin/store/offset.go:13`). The second part is the byte position.
 
@@ -195,7 +195,7 @@ The append path has a strict order:
 
 1. Check the stream state.
 2. Validate the producer tuple, without mutation.
-3. Process JSON mode. JSON mode is the protocol rule for `application/json`: the server flattens exactly one array level, so one append can store several messages, and a read returns an array of messages. The processing here turns the append body into message text.
+3. Process JSON mode. JSON mode is the protocol rule for `application/json`. The server flattens exactly one array level. One append can therefore store several messages, and a read returns an array of messages. The processing here turns the append body into message text.
 4. Compute the new offset.
 5. Write the frame to the file.
 6. Flush the file with `fdatasync`.
@@ -216,7 +216,7 @@ This block is from `packages/server/src/file-store.ts:1367`.
 
 The method is named `fsyncFile`, but the system call is `fs.fdatasync` (`file-store.ts:199`). `fdatasync` flushes the file data and the metadata that is necessary to read that data. It does not flush unrelated metadata, such as the last modification time. This document uses "flush" for that call, and "`fsync`" only when it speaks about a directory.
 
-The source comments state the rule directly: "Update LMDB metadata atomically (only after flush, so metadata reflects durability)" and "Producer state is committed HERE (not in validateProducer) for atomicity" (`file-store.ts:1367-1369`). Metadata must never acknowledge bytes that are not durable.
+The source comments state the rule directly. One says: "Update LMDB metadata atomically (only after flush, so metadata reflects durability)". The other says: "Producer state is committed HERE (not in validateProducer) for atomicity" (`file-store.ts:1367-1369`). Metadata must never acknowledge bytes that are not durable.
 
 The code comments number their own steps 1 to 6. The eight-step list above gives the same order in more detail. The two numbering schemes do not match; this document uses the list numbers when it refers to a stage.
 
@@ -250,9 +250,9 @@ The order gives these crash windows. The first two are failures during the write
 | After the flush, before LMDB | Complete frame | Old offset | File wins; offset repaired |
 | After LMDB | Complete frame | New offset | Normal state |
 
-The store chooses the file as the source of truth. A frame that survives in the file counts, even if the metadata did not record it. After a process crash, a complete frame survives in the kernel page cache. After a power loss, only a frame that reached stable storage survives. The client may have received no response. The next read sees the data. The result is at-least-once behaviour at the storage layer. The idempotent producer can suppress a retry within one epoch, but a crash that loses the producer state can defeat that suppression; document [02-protocol-operations.md](02-protocol-operations.md) gives the trade-off.
+The store chooses the file as the source of truth. A frame that survives in the file counts, even if the metadata did not record it. After a process crash, a complete frame survives in the kernel page cache. After a power loss, only a frame that reached stable storage survives. The client may have received no response. The next read sees the data. The result is at-least-once behaviour at the storage layer. The idempotent producer can suppress a retry within one epoch. However, a crash that loses the producer state can defeat that suppression. Document [02-protocol-operations.md](02-protocol-operations.md) gives the trade-off.
 
-Recovery repairs the offset and the reference count. It does not rebuild `producers`, `totalBytes`, or `lastAccessedAt`. A producer retry after lost producer metadata can therefore look new to the server. The producer sequence prevents a duplicate only while the server keeps its record of the earlier sequence. When the record is lost, the server cannot compare, so a retry can append again. The client cannot detect this loss. A stream that was idle before the restart keeps its old `lastAccessedAt`, so a sliding Time To Live (TTL) can expire sooner than a read would suggest. The server-side producer state is only as durable as the last LMDB commit.
+Recovery repairs the offset and the reference count. It does not rebuild `producers`, `totalBytes`, or `lastAccessedAt`. A producer retry after lost producer metadata can therefore look new to the server. The producer sequence prevents a duplicate only while the server keeps its record of the earlier sequence. When the record is lost, the server cannot compare, so a retry can append again. The client cannot detect this loss. A stream that was idle before the restart keeps its old `lastAccessedAt`. A sliding Time To Live (TTL) can therefore expire sooner than a read would suggest. The server-side producer state is only as durable as the last LMDB commit.
 
 This choice is correct for a log. A lost acknowledged byte is a correctness failure. A byte that appears after a failed request is not.
 
@@ -377,7 +377,7 @@ In both stores, the recovered offset points at the first byte of the partial fra
 
 ## The read path
 
-The store does not keep messages in memory. A read opens the file and parses frames. The `subarray` call below makes a temporary view into the file buffer, but the returned message copies the payload into a new byte array, `new Uint8Array(messageData)` (`file-store.ts:1662`). The caller can therefore keep a message after the read returns.
+The store does not keep messages in memory. A read opens the file and parses frames. The `subarray` call below makes a temporary view into the file buffer. However, the returned message copies the payload into a new byte array, `new Uint8Array(messageData)` (`file-store.ts:1662`). The caller can therefore keep a message after the read returns.
 
 ```ts
 const messageData = fileContent.subarray(
@@ -414,7 +414,7 @@ This block is from `packages/server/src/file-store.ts:322`.
 
 The policy is SIEVE, not plain least-recently-used. SIEVE is the name of an eviction policy; it is not an acronym. The policy keeps a moving hand over the cache entries and a visited bit on each entry. During eviction, a visited entry loses the bit and stays; an unvisited entry is removed. This gives a recently visited entry a second chance. The store uses the `@neophi/sieve-cache` library with the eviction hook at `file-store.ts:129`. An eviction closes the handle; the next write opens the file again in append mode (`file-store.ts:142`).
 
-The `fsyncFile` method coalesces callers. The first caller becomes the leader. A caller that arrives while the leader has `scheduled: true` joins the leader and waits for the same result. The leader sets `scheduled: false` immediately before it calls `fdatasync` (`file-store.ts:197-199`). A caller that arrives after that point does not join: it makes a new leader and starts a second `fdatasync` call on the same file descriptor (`:183-195`).
+The `fsyncFile` method coalesces callers. The first caller becomes the leader. A caller that arrives while the leader has `scheduled: true` joins the leader and waits for the same result. The leader sets `scheduled: false` immediately before it calls `fdatasync` (`file-store.ts:197-199`). A caller that arrives after that point does not join. It makes a new leader and starts a second `fdatasync` call on the same file descriptor (`:183-195`).
 
 The source comment says the later caller waits for the first call to finish. The code does not await the first promise; it starts the second call at once. This is a discrepancy between the comment and the code. Both calls flush the same file, so the second call does not weaken durability, but it can do redundant work.
 
@@ -472,7 +472,7 @@ sequenceDiagram
     end
 ```
 
-Key insight: the waiter list is keyed by stream path, not by offset. One append wakes every waiter on that stream. Each waiter then reads from its own offset. This is why one append is one wake signal. A slow network client does not hold up the others, because each waiter has its own promise. The wake loop is synchronous and reads the file once per waiter. The append call does not return until the loop ends, so many waiters on one stream add read work to the append that wakes them.
+Key insight: the waiter list uses the stream path as its key, not the offset. One append wakes every waiter on that stream. Each waiter then reads from its own offset. This is why one append is one wake signal. A slow network client does not hold up the others, because each waiter has its own promise. The wake loop is synchronous and reads the file once per waiter. The append call does not return until the loop ends, so many waiters on one stream add read work to the append that wakes them.
 
 ## Concurrency control
 
@@ -534,7 +534,7 @@ A second delete of a soft-deleted stream returns success. The operation is idemp
 
 `deleteWithCascade`, described next, removes the metadata key and decrements the parent count in one transaction. The transaction contains only those two metadata writes. It then closes the file handle and deletes the file, outside the transaction. The file delete is asynchronous. A crash between the metadata delete and the file delete leaves a file with no metadata record. Recovery does not remove it, because recovery scans metadata, not the directory. The file stays on disk and uses space until an operator removes it. This document uses "orphan file" for that case, and "orphan metadata" for the first recovery case, where a metadata record has no file.
 
-The cascade is recursive. If the parent count reaches zero and the parent is soft-deleted, the method calls itself on the parent (`file-store.ts:1197`). The chain can be several forks deep, and the loop stops at the first parent that still has a count above zero or is not soft-deleted.
+The cascade is recursive. If the parent count reaches zero and the parent is soft-deleted, the method calls itself on the parent (`file-store.ts:1197`). The chain can be several forks deep. The loop stops at the first parent that still has a count above zero or is not soft-deleted.
 
 The delete can also start from a read. `getMetaIfNotExpired` calls `delete`, so a read request can remove a stream or start a cascade. The call is direct; it does not re-enter the append or producer lock. The in-memory store makes the same call from `get` (`store.ts:491`). Section "Expiry" below gives the full rule.
 
@@ -627,7 +627,7 @@ export const FRAME_OVERHEAD = 5
 
 This line is from `packages/server-cloudflare/src/constants.ts:43`. The comment states that the value keeps offsets identical to the reference server. The overhead is arithmetic only; no byte framing exists in SQLite.
 
-The atomic unit is the Durable Object transaction. There is no separate data flush and metadata commit, because the storage application programming interface (API) commits both in one call.
+The atomic unit is the Durable Object transaction. The store does not flush data and commit metadata separately. The storage application programming interface (API) commits both in one call.
 
 ### Caddy bbolt and segment files
 
@@ -647,7 +647,7 @@ The store gives a strong local guarantee for a normal append. A response is sent
 
 The guarantee has limits. The source shows no directory `fsync` when it creates a file, so a power loss can lose the directory entry. The partial-tail case in "Recovery" can hide later frames from the scan and the read path.
 
-It does not give a distributed guarantee. There is no replication. A disk failure loses the data. The Cloudflare server uses a different model. The Caddy plugin uses a Bolt database. Document [08-server-implementations.md](08-server-implementations.md) compares the three.
+It does not give a distributed guarantee. The store does not replicate data. A disk failure loses the data. The Cloudflare server uses a different model. The Caddy plugin uses a Bolt database. Document [08-server-implementations.md](08-server-implementations.md) compares the three.
 
 ## Related documents
 

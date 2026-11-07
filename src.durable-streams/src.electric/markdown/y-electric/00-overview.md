@@ -4,7 +4,7 @@ title: Overview
 
 # Overview
 
-`@electric-sql/y-electric` is the Yjs network provider for Electric. Yjs is a Conflict-free Replicated Data Type (CRDT) library for shared editing. The provider sends local document edits to an application-owned Hypertext Transfer Protocol (HTTP) endpoint. That endpoint writes the rows. The provider receives remote edits through one or two Electric shape streams. An Electric shape is a live query over one PostgreSQL table; a `ShapeStream` is the client stream that receives its messages.
+`@electric-sql/y-electric` is the Yjs network provider for Electric. Yjs is a Conflict-free Replicated Data Type (CRDT) library for shared editing. The provider sends local document edits to an application-owned Hypertext Transfer Protocol (HTTP) endpoint. That endpoint writes the rows. The provider receives remote edits through one or two Electric shape streams. An Electric shape is a live query over one PostgreSQL table. A `ShapeStream` is the client stream that receives its messages.
 
 The package is small. It has one provider class, one reference persistence class, one row parser, and the types that connect them. The citation is `src/index.ts:1-4`.
 
@@ -67,11 +67,11 @@ The citation is `src/y-electric.ts:51-60` and `src/y-electric.ts:263-308`.
 
 ## The two shapes
 
-The provider opens the document shape at the stored offset and handle. If no resume state exists, it uses the options in `documentUpdates.shape`. If those options have no offset, the `ShapeStream` default is `-1`, which replays the full log. The citation is `src/y-electric.ts:269-283`.
+The provider opens the document shape at the stored offset and handle. If no resume state exists, it uses the options in `documentUpdates.shape`. If those options have no offset, the default of `ShapeStream` is `-1`. That default replays the full log. The citation is `src/y-electric.ts:269-283`.
 
 The provider opens the awareness shape at the literal offset `now`. The citation is `src/y-electric.ts:287-297`. In the Electric protocol, `-1` means "start at the beginning" and `now` means "start at the current end". Awareness data is ephemeral. A new client does not need the old awareness history. A start at `now` gives the client only new awareness changes.
 
-**Aha:** the two shapes use different starting offsets on purpose. A Yjs update is an incremental delta, not a document snapshot. Skipping document rows loses content, so the document shape starts at the beginning unless a matching local document and stored offset exist. Awareness updates must not replay from the beginning because old presence records would reappear as ghost users. One piece of code uses two consistency rules: durable history for the document, current state only for presence.
+**Aha:** the two shapes use different starting offsets on purpose. A Yjs update is an incremental delta, not a document snapshot. Skipping document rows loses content. For this reason, the document shape starts at the beginning unless a matching local document and a stored offset exist. Awareness updates must not replay from the beginning because old presence records would reappear as ghost users. One piece of code uses two consistency rules. It uses durable history for the document and current state only for presence.
 
 ## One start sequence
 
@@ -103,7 +103,7 @@ sequenceDiagram
     P-->>App: resumeState event
 ```
 
-The constructor registers the local update handler before it connects. The citation is `src/y-electric.ts:125-145`. The provider emits `sync` and `synced` together when the boolean changes, so both events appear at the boundary in the diagram.
+The constructor registers the local update handler before it connects. The citation is `src/y-electric.ts:125-145`. The provider emits `sync` and `synced` together when the boolean changes. Both events therefore appear at the boundary in the diagram.
 
 The "record" step writes the in-memory `resumeState` field and emits the `resumeState` event. It does not write storage. The application must attach a persistence provider, as described in [01-yjs-provider-bridge.md](01-yjs-provider-bridge.md).
 
@@ -120,17 +120,17 @@ type ResumeState = {
 
 The state vector is a Yjs summary of the document at the last sync boundary. When the provider starts, it calls `Y.encodeStateAsUpdate(this.doc, this.resumeState.stableStateVector)`. That call encodes the difference between the current document and the vector. The provider stores the difference in `pendingChanges`. The citation is `src/y-electric.ts:136-141`.
 
-This behavior preserves edits made while the application was offline. The edits are in the local document. They are not in the server history. The diff sends them at the first connection. The application must persist the Y.Doc itself between sessions. A stored offset or vector without the matching document can skip content, because the diff assumes the document already contains everything before the vector.
+This behavior preserves edits that the application made while it was offline. The edits are in the local document. They are not in the server history. The diff sends them at the first connection. The application must persist the Y.Doc itself between sessions. A stored offset or vector without the matching document can skip content. The diff assumes the document already contains everything before the vector.
 
 ## The send endpoint contract
 
 The provider sends one binary body per request. The method is `PUT`. The content type is `application/octet-stream`. The citation is `src/y-electric.ts:459-475`.
 
-The body is one `lib0` variable-length byte array: a variable-length unsigned integer (varUint) length prefix followed by the merged Yjs update bytes. One request carries one batch, and that batch can contain several merged updates. The citation is `src/y-electric.ts:368-369` and `src/y-electric.ts:174-180`.
+The body is one `lib0` variable-length byte array: a variable-length unsigned integer (varUint) length prefix followed by the merged Yjs update bytes. One request carries one batch. That batch can contain several merged updates. The citation is `src/y-electric.ts:368-369` and `src/y-electric.ts:174-180`.
 
 The endpoint must return a 2xx status. Any other status is an error. The citation is `src/y-electric.ts:477-479`.
 
-A send error calls the optional retry handler with `{ response, error }`. The `response` value is undefined when the fetch call itself failed. The handler returns a promise of a boolean. The type comment says true means "retry". The implementation treats true as "the send succeeded": `send` returns true, and `sendOperations` continues without re-batching the failed buffer. A handler that returns true must perform its own retry if the data must not be lost. The citation is `src/types.ts:19-25` and `src/y-electric.ts:482-488`.
+A send error calls the optional retry handler with `{ response, error }`. The `response` value is undefined when the fetch call itself failed. The handler returns a promise of a boolean. The type comment says true means "retry". The implementation treats true as "the send succeeded". `send` returns true, and `sendOperations` continues without re-batching the failed buffer. A handler that returns true must perform its own retry if the data must not be lost. The citation is `src/types.ts:19-25` and `src/y-electric.ts:482-488`.
 
 ## What the package does not do
 

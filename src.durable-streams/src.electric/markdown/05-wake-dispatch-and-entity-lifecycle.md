@@ -10,13 +10,13 @@ A wake is a request to run an entity handler. Five sources can produce a wake: a
 
 | Source | Produced by | Target | Transport |
 |--------|-------------|--------|-----------|
-| Stream subscription | Durable Streams | Runtime webhook | Signed HTTP `POST` |
+| Stream subscription | Durable Streams | Runtime webhook | Signed Hypertext Transfer Protocol (HTTP) `POST` |
 | Pull wake | Durable Streams subscription of type `pull-wake` | Runner poll loop | Claim, ack, release |
 | Delayed send | PostgreSQL `scheduled_tasks` | Entity stream | Internal append |
 | Cron tick | PostgreSQL `scheduled_tasks` | Cron stream | Internal append |
 | Condition wake | `WakeRegistry` condition match | Subscriber entity stream | Internal append of a `wake` event |
 
-The first two sources start at the stream transport. A delayed send starts at the scheduler, which appends to the entity stream, so it becomes a stream subscription wake. A cron tick starts at the scheduler, which appends to the cron stream; a cron wake registration is a condition on that stream, so the tick becomes a condition wake. The fifth source starts at a rule: a condition registration matches an event and writes a `wake` event into another entity's stream. That append then uses the first source. The sections below explain both layers.
+The first two sources start at the stream transport. A delayed send starts at the scheduler, which appends to the entity stream, so it becomes a stream subscription wake. A cron tick starts at the scheduler, which appends to the cron stream. A cron wake registration is a condition on that stream, so the tick becomes a condition wake. The fifth source starts at a rule: a condition registration matches an event and writes a `wake` event into another entity's stream. That append then uses the first source. The sections below explain both layers.
 
 ```mermaid
 flowchart TD
@@ -41,7 +41,7 @@ A webhook wake has five steps.
 
 ### Step 1: the stream server detects an append
 
-The subscription holds a list of stream paths. When any of them grows, the server builds a notification. The notification names the stream, the new offset, the entity, and a callback URL.
+The subscription holds a list of stream paths. When any of them grows, the server builds a notification. The notification names the stream, the new offset, the entity, and a callback Uniform Resource Locator (URL).
 
 ### Step 2: the server forwards to itself
 
@@ -57,7 +57,7 @@ The real target URL is in the `subscription_webhooks` table. The forward route r
 
 ### Step 3: the forward route signs the request
 
-The server adds a `webhook-signature` header. The signature is an Ed25519 signature over the timestamp, a dot, and the request body, in that order. The runtime verifies it against the JSON Web Key Set (JWKS) at `/__ds/jwks.json`.
+The server adds a `webhook-signature` header. The signature is an Ed25519 signature over the timestamp, a dot, and the request body, in that order. The runtime verifies it against the JavaScript Object Notation (JSON) Web Key Set (JWKS) at `/__ds/jwks.json`.
 
 Source: `packages/agents-server/src/webhook-signing.ts:88-106`; the signed bytes are built by `bytesWithTimestamp`. The runtime rebuilds the same bytes at `packages/agents-runtime/src/webhook-signature.ts:81`.
 
@@ -141,7 +141,7 @@ The registry receives its registrations from a Shape stream, but it receives the
 
 `WakeRegistry.evaluate` returns one result for each matching registration. `deliverWakeResult` then appends one `wake` event to the subscriber entity's main stream. The producer identifier is `wake-reg-<registration database id>-<source event key>`, so a repeated match is not a second wake. The append uses `appendIdempotent`, which starts every call at epoch 0 and sequence 0, so the same producer identifier presents the same tuple (`packages/agents-server/src/stream-client.ts:313-336`). That append is an ordinary stream append, so the subscriber's own subscription delivers the wake by webhook or by runner pull. Source: `packages/agents-server/src/entity-manager.ts:3289-3363`.
 
-This is why the registry is a wake source, not a wake transport. It turns a condition into a wake event; the stream subscription does the delivery.
+This is why the registry is a wake source, not a wake transport. It turns a condition into a wake event. The stream subscription does the delivery.
 
 A registration also carries:
 
@@ -224,7 +224,7 @@ A cron schedule is encoded in a stream path:
 /_cron/<base64url of {expression, timezone}>
 ```
 
-`getCronStreamPath` in `packages/agents-runtime/src/cron-utils.ts` builds the path. `parseCronStreamPath` reverses it. The `cron_tick` event is not one of the twenty entity event types; it belongs to the cron stream only.
+`getCronStreamPath` in `packages/agents-runtime/src/cron-utils.ts` builds the path. `parseCronStreamPath` reverses it. The `cron_tick` event is not one of the twenty entity event types. It belongs to the cron stream only.
 
 On each tick the agents-server scheduler calls `executeCronTick`, which appends a `cron_tick` event with an idempotent producer:
 
@@ -254,7 +254,7 @@ The producer identifier includes the tick number. A retry of the same tick dedup
 
 ### How a cron tick becomes a wake
 
-A cron schedule is a wake registration with three fields: `sourceUrl` is the cron stream path, `subscriberUrl` is the entity URL, and `condition` is `{ on: 'change' }` (`packages/agents-server/src/entity-manager.ts:2984-2997`). The registration also carries `manifestKey: schedule:<id>`, and the entity stream holds a matching `manifest` event. The registration row is the source of truth on startup: `rehydrateCronSchedules` reads it, and the manifest replay does not recreate cron registrations.
+A cron schedule is a wake registration with three fields. `sourceUrl` is the cron stream path, `subscriberUrl` is the entity URL, and `condition` is `{ on: 'change' }` (`packages/agents-server/src/entity-manager.ts:2984-2997`). The registration also carries `manifestKey: schedule:<id>`, and the entity stream holds a matching `manifest` event. The registration row is the source of truth on startup: `rehydrateCronSchedules` reads it, and the manifest replay does not recreate cron registrations.
 
 `executeCronTick` appends the tick event and then calls `evaluateWakes(streamPath, tickEvent)`. The registry matches the registration's `change` condition against the `cron_tick` event. `deliverWakeResult` appends a `wake` event to the subscriber entity's main stream, and that stream's own subscription delivers the wake. No subscription watches the cron stream, and the cron stream has no handler of its own.
 

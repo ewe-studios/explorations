@@ -4,13 +4,13 @@ title: Server Client, Signals, and Testing
 
 # Server Client, Signals, and Testing
 
-The runtime does not only read streams. It also calls the agents-server control plane. It spawns children, sends messages, creates schedules, reads webhook sources, and sets tags. `createRuntimeServerClient` wraps that HTTP interface.
+The runtime does not only read streams. It also calls the agents-server control plane. It spawns children, sends messages, creates schedules, reads webhook sources, and sets tags. `createRuntimeServerClient` wraps that Hypertext Transfer Protocol (HTTP) interface.
 
 This document covers the client, the signal model, attachments, shared state, cron schedules, tags, the pull-wake runner, and the test utilities.
 
 Five terms are needed here:
 
-- An **entity** is an identified worker. It owns one append-only durable stream. Its address is the entity URL.
+- An **entity** is an identified worker. It owns one append-only durable stream. Its address is the entity Uniform Resource Locator (URL).
 - A **wake** is one unit of work for an entity. A wake notification tells the runtime that new work exists.
 - **Durable Streams** is the stream protocol and server. A **write token** is the token that permits an append to a stream or a control-plane request. The wake claim can return this token together with a claim token.
 - **TanStack DB** is an in-memory reactive table store. The runtime projects stream events into it.
@@ -20,7 +20,7 @@ Document [03-wake-processing.md](03-wake-processing.md) explains the wake path. 
 
 ## The server client
 
-The client is created with a base URL, optional headers, an optional fetch function, a write-token header mode, and an optional principal key.
+A caller creates the client with a base URL, optional headers, an optional fetch function, a write-token header mode, and an optional principal key.
 
 ```ts
 export interface RuntimeServerClientConfig {
@@ -58,7 +58,7 @@ const track = <T>(promise: Promise<T>): Promise<T> => {
 
 The citation is `packages/agents-runtime/src/runtime-server-client.ts:294-296`.
 
-Every request goes through one helper. The helper resolves the base headers, adds the principal header when configured, appends the path to the base URL, and passes the request to the tracked fetch.
+Every request goes through one helper. The helper resolves the base headers. It adds the principal header when configured. It appends the path to the base URL. It passes the request to the tracked fetch.
 
 The principal header is `electric-principal`. The citation is `packages/agents-runtime/src/runtime-server-client.ts:22`.
 
@@ -209,7 +209,7 @@ The citation is `packages/agents-runtime/src/process-wake.ts:859-966`.
 
 `ctx.onSignal` receives only `SIGHUP`, `SIGTERM`, and `SIGUSR`. The other signals are runtime-controlled. Document [05-handler-context.md](05-handler-context.md) states the same rule from the handler side.
 
-The runtime writes a `signals` row with the outcome. The outcomes that the runtime writes are `transitioned`, `ignored`, `delivered`, `aborted`, `shutdown_requested`, and `failed`. The schema also allows `invalid_for_state`, but no runtime code path writes it. Each row also records the previous state, the new state when there is one, the handling time, and the handling entity URL.
+The runtime writes a `signals` row with the outcome. The outcomes that the runtime writes are `transitioned`, `ignored`, `delivered`, `aborted`, `shutdown_requested`, and `failed`. The schema also allows `invalid_for_state`, but no runtime code path writes it. Each row also records the previous state, the new state when one exists, the handling time, and the handling entity URL.
 
 An `ignored` outcome means the signal was a valid signal that had no effect in the current state. The schema defines an `invalid_for_state` outcome for a signal that is not allowed in the current state, but the runtime does not emit it. A `transitioned` outcome means the entity state changed. A `delivered` outcome means the handler hook ran without an error.
 
@@ -312,7 +312,7 @@ The backoff is a delay that grows after each failed reconnect attempt. The citat
 - `file`: the bytes.
 - `mimeType`: optional media type.
 - `filename`: optional name. The client sends it both as the multipart file name and as a separate `filename` field.
-- `subject`: the object that the attachment belongs to, as JavaScript Object Notation (JSON). The subject tells a reader which message, run, or other record the bytes are for. It is stored on the attachment manifest entry.
+- `subject`: the object that the attachment belongs to, as JavaScript Object Notation (JSON). The subject tells a reader which message, run, or other record the bytes are for. The server stores it on the attachment manifest entry.
 - `role`: the part that the attachment plays. The default is `input`, which marks bytes that the user or a tool supplied to the agent. The server stores it on the manifest entry.
 - `meta`: optional JSON metadata. The client sends it only when it is present.
 
@@ -333,18 +333,18 @@ The handler gets the same operations through `ctx.attachments`. The `read` and `
 
 A shared-state stream path is `/_electric/shared-state/<id>`. The helper `getSharedStateStreamPath` builds it. `ensureSharedStateStream` creates it with an optional owner entity.
 
-Shared state is a stream that several entities read and write. The owner entity is optional. When the caller names one, the client sends an `electric-owner-entity` header at creation. Ownership records which entity created the stream; it does not stop other entities from writing.
+Shared state is a stream that several entities read and write. The owner entity is optional. When the caller names one, the client sends an `electric-owner-entity` header at creation. Ownership records which entity created the stream. It does not stop other entities from writing.
 
 A handler uses `ctx.mkdb(id, schema)` to create a handle, or `ctx.observe(db(id, schema))` to connect to an existing one. A **deferred backing database** is a database handle whose stream connection is not open yet.
 
 The two modes differ before the connection exists:
 
-- **Create mode.** `mkdb` stages the writes in local TanStack DB collections. The insert, update, and delete calls resolve at once, with no server round trip. When the stream connects, `wireDb` replays the queued mutations through the real generated actions and then swaps in the backing database.
-- **Connect mode.** `observe(db(...))` cannot stage writes. A read or a write before the wiring finishes throws. The runtime wires registered handles asynchronously, so a handler that needs the data must retry or defer the work to a later wake.
+- **Create mode.** `mkdb` stages the writes in local TanStack DB collections. The insert, update, and delete calls resolve at once, with no server round trip. When the stream connects, `wireDb` replays the queued mutations through the real generated actions. It then swaps in the backing database.
+- **Connect mode.** `observe(db(...))` cannot stage writes. A read or a write before the wiring finishes throws. The runtime wires registered handles asynchronously. A handler that needs the data must retry or defer the work to a later wake.
 
 A create-mode write therefore returns before the server sees it. The replay happens later, in order.
 
-A handler that joins shared state from another entity gets the schema from the caller. The runtime does not discover the schema from the stream. `observe` with a `db` source therefore requires the schema argument. The handle is cached per shared-state identifier. The citation is `packages/agents-runtime/src/setup-context.ts:838-871`.
+A handler that joins shared state from another entity gets the schema from the caller. The runtime does not discover the schema from the stream. `observe` with a `db` source therefore requires the schema argument. The runtime caches the handle per shared-state identifier. The citation is `packages/agents-runtime/src/setup-context.ts:838-871`.
 
 ## Cron schedules
 
@@ -383,7 +383,7 @@ The citation is `packages/agents-runtime/src/cron-utils.ts:3-6`.
 
 The encoding is base64url because the result becomes part of a stream path. Base64url uses `-` and `_` in place of `+` and `/`, and it omits the `=` padding. The encoded text is therefore safe in a URL path segment, and two runners that receive the same schedule compute the same path.
 
-The timezone defaults to UTC when the caller does not give one. The helper canonicalizes the timezone through `Intl.DateTimeFormat`. An invalid timezone throws `Invalid cron timezone`. An invalid expression throws `Invalid cron expression`.
+The timezone defaults to Coordinated Universal Time (UTC) when the caller does not give one. The helper canonicalizes the timezone through `Intl.DateTimeFormat`. An invalid timezone throws `Invalid cron timezone`. An invalid expression throws `Invalid cron expression`.
 
 `ensureCronStream` creates the stream on the server. `ctx` and the schedule tools create or update a schedule at `/_electric/entities/<url>/schedules/<id>`. The schedule type is `cron`. A future send uses the same path with type `future_send` and a `fireAt` timestamp.
 
@@ -424,11 +424,11 @@ export function hashString(value: string): string {
 
 The citation is `packages/agents-runtime/src/tags.ts:53-62`.
 
-The result is a 16-character hexadecimal string. The runtime helper `getEntitiesStreamPathForTags` builds `/_entities/<hash>`. The agents-server does not stop there: before it creates the membership stream, it scopes the reference to the requesting principal. The final source reference is `<hash>-<principal-hash>`, where the second hash is the FNV-1a hash of the principal kind and URL. The runtime takes the final `sourceRef` and `streamUrl` from the ensure-stream response and writes them into the manifest entry. The comment states that the hash is part of the stream path and the entity bridge primary key, so a change needs a migration.
+The result is a 16-character hexadecimal string. The runtime helper `getEntitiesStreamPathForTags` builds `/_entities/<hash>`. The agents-server does not stop there: before it creates the membership stream, it scopes the reference to the requesting principal. The final source reference is `<hash>-<principal-hash>`, where the second hash is the FNV-1a hash of the principal kind and URL. The runtime takes the final `sourceRef` and `streamUrl` from the ensure-stream response and writes them into the manifest entry. The comment states that the hash is part of the stream path and the primary key of the entity bridge. A change therefore needs a migration.
 
-The loop reads `value.charCodeAt(index)`, which returns a UTF-16 code unit. The hash is therefore defined over UTF-16 code units, not over Unicode code points or bytes. Two strings that look the same but use different code-unit sequences, such as a precomposed accent and a combining accent, hash differently. A change to the loop would change every membership path.
+The loop reads `value.charCodeAt(index)`, which returns a Unicode Transformation Format 16 (UTF-16) code unit. The hash is therefore defined over UTF-16 code units, not over Unicode code points or bytes. Two strings that look the same but use different code-unit sequences, such as a precomposed accent and a combining accent, hash differently. A change to the loop would change every membership path.
 
-The membership stream is the observation source for a tag set. An entity that observes the membership stream for tags `{role: "worker"}` wakes when a matching entity joins, changes status, or leaves. One membership stream exists per tag set and per principal. The path is the hash of the normalized tag JSON plus the principal scope, so two observers with the same tag set and the same principal share one stream.
+The membership stream is the observation source for a tag set. An entity that observes the membership stream for tags `{role: "worker"}` wakes when a matching entity joins, changes status, or leaves. One membership stream exists per tag set and per principal. The path is the hash of the normalized tag JSON plus the principal scope. Two observers with the same tag set and the same principal share one stream.
 
 `setTag` and `deleteTag` require a write token. Their signatures are:
 
@@ -439,7 +439,7 @@ deleteTag: (entityUrl: string, key: string, writeToken: string) =>
   Promise<{ txid?: string }>
 ```
 
-The citation is `packages/agents-runtime/src/runtime-server-client.ts:224-234`. Both return an optional transaction identifier. Tag values must be strings; `assertTags` rejects other types.
+The citation is `packages/agents-runtime/src/runtime-server-client.ts:224-234`. Both return an optional transaction identifier. Tag values must be strings. `assertTags` rejects other types.
 
 ## Testing utilities
 
@@ -470,12 +470,12 @@ export interface RuntimeTestBuilder {
 }
 ```
 
-The citation is `packages/agents-runtime/test/runtime-dsl.ts:190-222`. `define` takes the same definition object as `defineEntity`; it registers the type with the test server instead of the process registry.
+The citation is `packages/agents-runtime/test/runtime-dsl.ts:190-222`. `define` takes the same definition object as `defineEntity`. It registers the type with the test server instead of the process registry.
 
 The entity reference adds two readers and six wait helpers:
 
 - `history()` reads the whole stream as a `StreamHistory`. A `StreamHistory` holds the events and helper methods such as `count`, `indexOf`, and `completedRunCount`.
-- `snapshot()` returns one summary entry per event. A summary entry is a small projection of an event for assertions. The snapshot is not a separate server read; it maps the history that `history()` returned.
+- `snapshot()` returns one summary entry per event. A summary entry is a small projection of an event for assertions. The snapshot is not a separate server read. It maps the history that `history()` returned.
 - `waitFor(predicate, timeoutMs)`.
 - `waitForTypeCount(type, count, opts)`.
 - `waitForOperation(type, operation, opts)`.
@@ -489,7 +489,7 @@ The builder also has `waitForRun(entityUrl, timeoutMs)` and `waitForSettled(time
 
 `waitForRun` waits for one more completed run than the test has already seen. Its count is per entity reference, not global.
 
-`expectWakeError` records an expected background error. A background error is an error that the handler does not throw to the wake loop, such as a failure in a detached task or a stream write. The runtime reports it with `failBackgroundWake`. The test declares the expectation before the action that can cause the error, because `cleanup` checks the recorded list at the end. `cleanup` drains the runtime and checks that the expected errors occurred. An unexpected error fails the test. A missing expected error also fails the test.
+`expectWakeError` records an expected background error. A background error is an error that the handler does not throw to the wake loop. An example is a failure in a detached task or a stream write. The runtime reports it with `failBackgroundWake`. The test declares the expectation before the action that can cause the error, because `cleanup` checks the recorded list at the end. `cleanup` drains the runtime and checks that the expected errors occurred. An unexpected error fails the test. A missing expected error also fails the test.
 
 The test server uses these fixed principals:
 
@@ -527,7 +527,7 @@ flowchart TB
 
 ## Key insight
 
-**Key insight:** the default test harness uses the real server and the real stream. It does not replace the transport with a stub. A test can still inject `fetch` for a targeted fault, and the helper utilities can build a fixture without a server, but the integration path is real. This is why the integration tests can prove the wake protocol, the claim callback, and the done callback together.
+**Key insight:** the default test harness uses the real server and the real stream. It does not replace the transport with a stub. A test can still inject `fetch` for a targeted fault. The helper utilities can build a fixture without a server. The integration path is real. This is why the integration tests can prove the wake protocol, the claim callback, and the done callback together.
 
 The done callback is the request that the runtime sends to the server when a wake finishes. The body carries the producer epoch, an acknowledgement entry with a stream path and an offset, and `done: true`. The acknowledgement tells the server which offset the runner consumed. When the wake consumed no offset, the acknowledgement list is empty. A test that uses the real server therefore exercises the same acknowledgement path that production uses. Document [03-wake-processing.md](03-wake-processing.md) explains the callback in the wake loop.
 

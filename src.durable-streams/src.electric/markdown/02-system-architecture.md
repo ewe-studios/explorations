@@ -4,13 +4,13 @@ title: System Architecture
 
 # System architecture: control plane, data plane, execution plane
 
-Electric Agents has three planes. The **control plane** is a PostgreSQL-backed HTTP server. The **data plane** is a Durable Streams service. The **execution plane** is one or more agent runtimes. The planes communicate through HTTP and through signed webhooks. The default deployment co-locates the control plane and the stream server in one process, but no plane shares application state with another.
+Electric Agents has three planes. The **control plane** is a PostgreSQL-backed Hypertext Transfer Protocol (HTTP) server. The **data plane** is a Durable Streams service. The **execution plane** is one or more agent runtimes. The planes communicate through HTTP and through signed webhooks. The default deployment co-locates the control plane and the stream server in one process, but no plane shares application state with another.
 
 This document shows the full process topology, the boot order, the request path, the stream namespace, and the configuration surface.
 
 ## Process topology
 
-A deployment needs at least two processes: PostgreSQL and the `electric-agents` server, which can embed the stream server. The Docker Compose file `docker-compose.full.yml` defines three services: `postgres`, `electric`, and `electric-agents`. The `electric` service is optional; it supplies the Electric Sync service that the wake registry uses to follow its registrations. A deployment that sets `ELECTRIC_AGENTS_DURABLE_STREAMS_URL` adds the external stream server as another process. The embedded stream server shares the `electric-agents` process.
+A deployment needs at least two processes: PostgreSQL and the `electric-agents` server, which can embed the stream server. The Docker Compose file `docker-compose.full.yml` defines three services: `postgres`, `electric`, and `electric-agents`. The `electric` service is optional. It supplies the Electric Sync service that the wake registry uses to follow its registrations. A deployment that sets `ELECTRIC_AGENTS_DURABLE_STREAMS_URL` adds the external stream server as another process. The embedded stream server shares the `electric-agents` process.
 
 ```mermaid
 flowchart TB
@@ -44,13 +44,13 @@ flowchart TB
     EMB -.-> DS
 ```
 
-The entrypoint starts no handler. The agents-server forwards each subscription webhook to the runtime's registered URL, and the agents-runtime package processes it. The one handler that can share the server process is the mock handler: `createMockAgentBootstrap` registers a `chat` type and serves it at `/_electric/mock-agent-handler` when `mockStreamFn` is supplied programmatically (`packages/agents-server/src/server.ts:107-136, 262-270`).
+The entrypoint starts no handler. The agents-server forwards each subscription webhook to the runtime's registered Uniform Resource Locator (URL), and the agents-runtime package processes it. The one handler that can share the server process is the mock handler. `createMockAgentBootstrap` registers a `chat` type and serves it at `/_electric/mock-agent-handler` when a caller supplies `mockStreamFn` programmatically (`packages/agents-server/src/server.ts:107-136, 262-270`).
 
 The embedded stream server is optional. When `ELECTRIC_AGENTS_DURABLE_STREAMS_URL` is set, the server does not start an embedded one. When the variable is absent, the server starts `DurableStreamTestServer` inside the same Node.js process and uses it as the backend.
 
 ## Boot sequence
 
-The entrypoint does six things in order. The order matters because the runtime needs the database before it can rebuild the wake registry, and it needs the stream server before it can serve any stream request.
+The entrypoint does six things in order. The order matters. The runtime needs the database before it can rebuild the wake registry. It also needs the stream server before it can serve any stream request.
 
 ```mermaid
 sequenceDiagram
@@ -109,7 +109,7 @@ Source: `packages/agents-server/src/entrypoint-lib.ts:115-179`.
 
 The effective tenant identifier is `service ?? tenantId ?? 'default'` (`packages/agents-server/src/standalone-runtime.ts:64`, `packages/agents-server/src/tenant.ts:1`). The service identifier therefore wins over the tenant identifier.
 
-Electric Sync is optional. When `ELECTRIC_AGENTS_ELECTRIC_URL` is set, `rebuildWakeRegistry` calls `WakeRegistry.startSync`, which follows the `wake_registrations` table through a Shape stream. When it is absent, `rebuildWakeRegistry` calls `loadRegistrations` once (`packages/agents-server/src/entity-manager.ts:428-438`). A single server still receives registrations through in-process `register()` calls; the Shape stream keeps several server instances consistent. The Docker Compose file runs an `electric` service and sets the URL.
+Electric Sync is optional. When `ELECTRIC_AGENTS_ELECTRIC_URL` is set, `rebuildWakeRegistry` calls `WakeRegistry.startSync`, which follows the `wake_registrations` table through a Shape stream. When it is absent, `rebuildWakeRegistry` calls `loadRegistrations` once (`packages/agents-server/src/entity-manager.ts:428-438`). A single server still receives registrations through in-process `register()` calls. The Shape stream keeps several server instances consistent. The Docker Compose file runs an `electric` service and sets the URL.
 
 ### Step 3: embedded stream server
 
@@ -128,7 +128,7 @@ Source: `packages/agents-server/src/entrypoint-lib.ts:181-211`.
 
 The `webhooks: true` flag is important. Without it, the stream server would not deliver subscription webhooks. The wake model depends on that delivery.
 
-The function `durableStreamTestServerBackendUrl` appends `/v1/stream` to the origin that the embedded server returns (`packages/agents-server/src/server.ts:141-149`). A user-supplied `durableStreamsUrl` is already a backend prefix, so it is used unchanged. Stream paths do not include the prefix. `StreamClient` joins the base URL and the stream path.
+The function `durableStreamTestServerBackendUrl` appends `/v1/stream` to the origin that the embedded server returns (`packages/agents-server/src/server.ts:141-149`). A user-supplied `durableStreamsUrl` is already a backend prefix, so the server uses it unchanged. Stream paths do not include the prefix. `StreamClient` joins the base URL and the stream path.
 
 ### Step 4: migrations and database handle
 
@@ -155,7 +155,7 @@ The `runtime` field of this result is an `ElectricAgentsTenantRuntime`, not the 
 
 ### Step 6: HTTP listen
 
-The server builds a WHATWG `Request`/`Response` adapter with `createServerAdapter`. The Node.js `http.Server` wraps the adapter. The server listens on the configured host and port. Source: `packages/agents-server/src/server.ts:253-260`.
+The server builds a Web Hypertext Application Technology Working Group (WHATWG) `Request`/`Response` adapter with `createServerAdapter`. The Node.js `http.Server` wraps the adapter. The server listens on the configured host and port. Source: `packages/agents-server/src/server.ts:253-260`.
 
 ## Request path
 
@@ -279,7 +279,7 @@ Source: `packages/agents-runtime/src/runtime-server-client.ts`, `packages/agents
 
 The data plane stores three kinds of bytes:
 
-1. **Stream metadata.** Content type, current offset, producer state, reference count, fork parent, closure state. Stored in LMDB at `metadata.lmdb`.
+1. **Stream metadata.** Content type, current offset, producer state, reference count, fork parent, closure state. Stored in Lightning Memory-Mapped Database (LMDB) at `metadata.lmdb`.
 2. **Stream event bytes.** Append-only segments. Stored as `.log` files under the data directory.
 3. **Control-plane records.** Entities, types, permissions, wakes, schedules. Stored in PostgreSQL.
 
@@ -312,7 +312,7 @@ This design lets a browser read an entity stream without knowing the stream serv
 
 ## Aha: the embedded server makes development instant
 
-The default configuration needs one command and one PostgreSQL database. The server starts its own stream server on an operating-system-chosen port. It stores data in `.streams-data` relative to the working directory. Electric Sync is optional, and the entrypoint needs no model provider. No container, no external stream service, and no network configuration are necessary. An agent still needs a separate runtime process; the saving is that the control plane and the stream server need no external service.
+The default configuration needs one command and one PostgreSQL database. The server starts its own stream server on an operating-system-chosen port. It stores data in `.streams-data` relative to the working directory. Electric Sync is optional, and the entrypoint needs no model provider. No container, no external stream service, and no network configuration are necessary. An agent still needs a separate runtime process. The saving is that the control plane and the stream server need no external service.
 
 The tradeoff is that the embedded server is called a *test server*. It is not designed for multi-node production. Production deployments set `ELECTRIC_AGENTS_DURABLE_STREAMS_URL` and use a dedicated stream service.
 

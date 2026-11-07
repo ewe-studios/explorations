@@ -4,7 +4,7 @@ title: Repository Map
 
 # Repository map: every package and what it does
 
-The Electric repository is a pnpm workspace monorepo. It holds eighteen packages. The Durable Streams repository is a second pnpm workspace. Its `packages/` directory has twenty-two subdirectories. Fifteen hold a `package.json` and are workspace packages; the other seven are language-client projects without one. This document maps every package in both repositories.
+The Electric repository is a pnpm workspace monorepo. It holds eighteen packages. The Durable Streams repository is a second pnpm workspace. Its `packages/` directory has twenty-two subdirectories. Fifteen hold a `package.json` and are workspace packages. The other seven are language-client projects without one. This document maps every package in both repositories.
 
 ## Top-level layout of the Electric repository
 
@@ -34,7 +34,7 @@ The table orders packages by role, not alphabetically. The source-file count sho
 | `@electric-ax/agents-runtime` | 0.6.3 | public | 178 | Behavioral stack for agent entities over durable streams |
 | `@electric-ax/agents-server` | 0.6.4 | public | 120 | Entity runtime server; registry, routes, wakes, scheduler |
 | `@electric-ax/agents` | 0.6.3 | public | 40 | Built-in runtimes such as Horton and worker |
-| `@electric-ax/agents-mcp` | 0.6.0 | public | 44 | Model Context Protocol registry, transports, OAuth bridges |
+| `@electric-ax/agents-mcp` | 0.6.0 | public | 44 | Model Context Protocol registry, transports, Open Authorization (OAuth) bridges |
 | `@electric-ax/agents-server-ui` | 0.6.4 | private | 200 | Browser single-page application for the server |
 | `@electric-ax/agents-desktop` | 0.6.1 | private | 54 | Electron desktop application |
 | `@electric-ax/agents-mobile` | 0.6.5 | private | 80 | Mobile application |
@@ -75,7 +75,7 @@ durable-streams/
 | `server` | Node.js Durable Streams server with in-memory and file-backed stores | 20 |
 | `client` | TypeScript client for the protocol | 35 |
 | `state` | State protocol over streams; collections and transactions | 11 |
-| `proxy` | HTTP proxy for stream backends | 38 |
+| `proxy` | Hypertext Transfer Protocol (HTTP) proxy for stream backends | 38 |
 | `server-cloudflare` | Cloudflare Workers server implementation | 18 |
 | `server-conformance-tests` | Server conformance suite | 4 |
 | `client-conformance-tests` | Client conformance suite | 9 |
@@ -95,7 +95,7 @@ durable-streams/
 | `benchmarks` | Performance benchmarks | 2 |
 | `caddy-plugin` | Caddy web server plugin | 26 (25 Go, 1 TypeScript) |
 
-The two repositories divide by change rate. The Electric repository changes when the agent product changes. The Durable Streams repository changes when the storage protocol changes. Most Electric packages depend on Durable Streams; no Durable Streams package depends on Electric.
+The two repositories divide by change rate. The Electric repository changes when the agent product changes. The Durable Streams repository changes when the storage protocol changes. Most Electric packages depend on Durable Streams. No Durable Streams package depends on Electric.
 
 ```mermaid
 flowchart LR

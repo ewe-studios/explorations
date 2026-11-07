@@ -59,7 +59,7 @@ stateDiagram-v2
 
 Each transition returns a new state object. No state mutates another state. The diagram shows the principal transitions. A change message in the `live` state does not leave it: the state changes at the next up-to-date boundary, not at each row change. The base class describes the common getters and the universal transitions. The citation is `src/shape-stream-state.ts:127-224`.
 
-The `InitialState`, `SyncingState`, and `StaleRetryState` share a `FetchingState` base. A response moves the stream to `SyncingState`. A 204 no-content response moves it directly to `LiveState`. A 204 is a deprecated server response that means "you are caught up"; it has no body, so the state advances without a message batch. The citation is `src/shape-stream-state.ts:370-404`.
+The `InitialState`, `SyncingState`, and `StaleRetryState` share a `FetchingState` base. A response moves the stream to `SyncingState`. A 204 no-content response moves it directly to `LiveState`. A 204 is a deprecated server response that means "you are caught up". It has no body, so the state advances without a message batch. The citation is `src/shape-stream-state.ts:370-404`.
 
 `LiveState` applies the live query parameters. It adds the `electric-cursor` value as the `cursor` query parameter and adds `live=true`. It does not add them to a snapshot request. The `canLongPoll` context flag suppresses `live=true` when the stream is refreshing or resuming from a pause. Those catch-up requests must not wait for new data. The flag is computed in `#requestShape` from the refresh counter and the pause state. The citations are `src/shape-stream-state.ts:512-521` and `src/client.ts:1340-1347`.
 
@@ -117,7 +117,7 @@ The SSE parser calls its message handler synchronously. The promise chain is nec
 
 ## Snapshots
 
-`requestSnapshot` requests a subset of the shape and injects the result into the normal subscriber stream. It works only when the log mode is `changes_only`. The log mode is the `log` option: `full` loads an initial snapshot and then sends changes; `changes_only` skips the snapshot and sends changes only. The separate `replica` option selects row content: the default sends only changed columns, and `full` sends complete rows. The citation is `src/client.ts:2152-2235` and `src/client.ts:784`.
+`requestSnapshot` requests a subset of the shape and injects the result into the normal subscriber stream. It works only when the log mode is `changes_only`. The log mode is the `log` option. `full` loads an initial snapshot and then sends changes. `changes_only` skips the snapshot and sends changes only. The separate `replica` option selects row content: the default sends only changed columns, and `full` sends complete rows. The citation is `src/client.ts:2152-2235` and `src/client.ts:784`.
 
 The method does these steps:
 
@@ -133,13 +133,13 @@ The method does these steps:
 
 The citation is `src/client.ts:2152-2235`.
 
-The two synthetic messages mark different boundaries. `snapshot-end` carries the PostgreSQL snapshot metadata (`xmin`, `xmax`, `xip_list`, `snapshot_mark`, `database_lsn`). `subset-end` carries the subset parameters that produced the rows. Neither changes the row map; they tell a subscriber where the injected batch starts and ends. The citations are `src/client.ts:2187-2192` and `src/types.ts:120-128`.
+The two synthetic messages mark different boundaries. `snapshot-end` carries the PostgreSQL snapshot metadata (`xmin`, `xmax`, `xip_list`, `snapshot_mark`, `database_lsn`). `subset-end` carries the subset parameters that produced the rows. Neither changes the row map. They tell a subscriber where the injected batch starts and ends. The citations are `src/client.ts:2187-2192` and `src/types.ts:120-128`.
 
 Advancing the stream offset is safe because of the snapshot tracker. The tracker holds the snapshot metadata and the set of keys in the snapshot. It drops a live change when the change's transaction is visible in the snapshot and the key is already present. The offset then continues after the snapshot boundary without a gap. The citation is `src/snapshot-tracker.ts:94-141`.
 
 `fetchSnapshot` performs the same HTTP request but does not inject the data. It returns the metadata and the rows. It uses `GET` by default. It can use `POST` when the caller sets `method: 'POST'` or the stream sets `subsetMethod: 'POST'`. The citation is `src/client.ts:2248-2372`.
 
-The snapshot tracker removes duplicate changes. A live change that is already part of the snapshot is rejected. The tracker compares the transaction identifiers against the PostgreSQL snapshot coordinates `xmin` (oldest active transaction), `xmax` (first unassigned transaction), and `xip_list` (transactions in progress when the snapshot was taken). A transaction is visible when its identifier is below `xmin`, or below `xmax` and absent from `xip_list`. The citation is `src/snapshot-tracker.ts:123-141` and `src/helpers.ts:116-132`.
+The snapshot tracker removes duplicate changes. A live change that is already part of the snapshot is rejected. The tracker compares the transaction identifiers against the PostgreSQL snapshot coordinates `xmin`, `xmax`, and `xip_list`. `xmin` is the oldest active transaction. `xmax` is the first unassigned transaction. `xip_list` is the set of transactions in progress when the snapshot was taken. A transaction is visible when its identifier is below `xmin`, or below `xmax` and absent from `xip_list`. The citation is `src/snapshot-tracker.ts:123-141` and `src/helpers.ts:116-132`.
 
 ## Pause, visibility, and wake recovery
 

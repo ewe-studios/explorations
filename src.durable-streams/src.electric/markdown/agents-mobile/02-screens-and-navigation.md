@@ -126,7 +126,7 @@ The list has six features:
 | Filters | Hide entity types, statuses, or creators. A hidden parent does not hide a visible child; the child becomes a root row. |
 | Grouping | Group by date, type, or status. Date grouping uses Today, Yesterday, Previous 7 days, Previous 30 days, month buckets, and Older. |
 | Tree | Each root row expands to show child sessions. |
-| Pins | Pinned sessions appear in a Pinned section and are removed from the groups. |
+| Pins | The list removes pinned sessions from the groups and shows them in a Pinned section. |
 | Search | A non-empty query replaces the tree with a flat result list. |
 | Health dot | A probe runs every 10,000 milliseconds. A pull-to-refresh also runs it. |
 
@@ -156,11 +156,11 @@ The screen header has Search and More buttons. A floating action button opens th
 
 A **runner** is a process or host that claims a wake and runs the entity handler. The new-session screen builds a spawn request. It reads three collections:
 
-- Entity types, ordered by name. The `worker` type is filtered out. The source gives no reason in a comment.
+- Entity types, ordered by name. The screen filters out the `worker` type. The source gives no reason in a comment.
 - Runners, filtered to `admin_status: enabled` and ordered by label.
 - Entities, used to derive recent working directories for the selected runner.
 
-The recent list is derived, not stored. For the selected runner, the code collects `spawn_args.workingDirectory` from every entity that the runner handled. It keeps the newest value for each path, sorts by `updated_at`, and keeps ten entries. Source: `packages/agents-mobile/src/screens/NewSessionScreen.tsx:97-112`, `packages/agents-mobile/src/screens/NewSessionScreen.tsx:182-192`, and `packages/agents-server-ui/src/lib/recentWorkingDirectories.ts:5-52`.
+The code derives the recent list; it does not store it. For the selected runner, the code collects `spawn_args.workingDirectory` from every entity that the runner handled. It keeps the newest value for each path, sorts by `updated_at`, and keeps ten entries. Source: `packages/agents-mobile/src/screens/NewSessionScreen.tsx:97-112`, `packages/agents-mobile/src/screens/NewSessionScreen.tsx:182-192`, and `packages/agents-server-ui/src/lib/recentWorkingDirectories.ts:5-52`.
 
 The default type is `horton` when the server offers it. `horton` is the default agent type name, and only its creation schema is known to accept `workingDirectory`. When the server offers one runner, the screen selects it automatically. Source: `packages/agents-mobile/src/screens/NewSessionScreen.tsx:60-64` and `packages/agents-mobile/src/screens/NewSessionScreen.tsx:114-130`.
 
@@ -234,8 +234,8 @@ const start = async () => {
 A **wake** is a request to run an entity handler. Three rules are visible in this function:
 
 - The runner is mandatory. Without a runner, the function shows an error and starts nothing. The source comment explains why. The server would fall back to the entity type's default dispatch policy. That policy is typically a webhook to a local endpoint that a cloud server cannot reach.
-- The sandbox profile is optional. A **sandbox profile** selects the execution environment, such as a local process or a container. When the profile uses the default entity scope, the runtime uses the entity URL as the sandbox key, so the workspace persists across wakes. Source: `packages/agents-runtime/src/sandbox/identity.ts:64-72`.
-- With image attachments, the first message is sent after spawn, because the upload needs the new entity URL.
+- The sandbox profile is optional. A **sandbox profile** selects the execution environment, such as a local process or a container. When the profile uses the default entity scope, the runtime uses the entity URL as the sandbox key. The workspace then persists across wakes. Source: `packages/agents-runtime/src/sandbox/identity.ts:64-72`.
+- With image attachments, the screen sends the first message after spawn, because the upload needs the new entity URL.
 
 `finalizeSpawnArgs` validates the edited arguments against the type's creation schema and fills the defaults. `showAttach` says whether the selected type offers image input. `slashCommands` is the command list that the composer parses. `profileIsRemote` says whether the selected sandbox profile runs on another machine. Source: `packages/agents-mobile/src/screens/NewSessionScreen.tsx:243-303` and `packages/agents-mobile/src/lib/agentsClient.ts:313-393`.
 
@@ -306,7 +306,7 @@ const stopImmediately = useCallback(async (): Promise<void> => {
 
 An immediate stop sends `SIGSTOP` first, then `SIGINT`. The pause stops the process from starting new work, and the interrupt ends the current run. Source: `packages/agents-mobile/src/screens/SessionScreen.tsx:366-384`.
 
-The signal menu also offers `SIGHUP`, `SIGCONT`, `SIGUSR`, `SIGTERM`, and `SIGKILL`. `SIGUSR` is one project signal name, not the two standard POSIX names `SIGUSR1` and `SIGUSR2`. The runtime delivers `SIGHUP`, `SIGTERM`, and `SIGUSR` to the handler while a wake is active. Source: `packages/agents-mobile/src/components/SessionMenu.tsx:36-110` and `packages/agents-runtime/README.md:277`.
+The signal menu also offers `SIGHUP`, `SIGCONT`, `SIGUSR`, `SIGTERM`, and `SIGKILL`. `SIGUSR` is one project signal name, not the two standard Portable Operating System Interface (POSIX) names `SIGUSR1` and `SIGUSR2`. The runtime delivers `SIGHUP`, `SIGTERM`, and `SIGUSR` to the handler while a wake is active. Source: `packages/agents-mobile/src/components/SessionMenu.tsx:36-110` and `packages/agents-runtime/README.md:277`.
 
 The fork control is root-only. A child entity has a `parent` value, and the fork operation clones the whole subtree under one root. A child therefore has no subtree of its own to clone. A stopped or killed entity also cannot fork. A synchronous reference latch prevents a double tap from sending two fork requests. The latch is a React `useRef` value (`const forkInFlightRef = useRef(false)`, `packages/agents-mobile/src/screens/SessionScreen.tsx:193`). The function checks it and sets it before its first `await`. A second call sees the set value and returns at once. Source: `packages/agents-mobile/src/screens/SessionScreen.tsx:396-416`.
 
@@ -351,7 +351,7 @@ A status 401 or 403 is not an error message. It is the expected state after the 
 
 A role change is a grant diff. The screen deletes grants that the new role does not need and creates the missing grants. It then reloads the list, because the server is the source of truth for grant identifiers. Source: `packages/agents-mobile/src/lib/entityGrants.ts:156-198` and `packages/agents-mobile/src/screens/ShareSessionScreen.tsx:253-280`.
 
-The share link points at the server's bundled web user interface. It targets `/__agent_ui/` directly, so a cloud tenant prefix survives. The server root returns a 302 redirect with an absolute path. That absolute path drops the prefix `/t/<service-id>/v1`. The direct path keeps the prefix that the code copied from the server URL. Source: `packages/agents-mobile/src/lib/sessionLinks.ts:10-25`.
+The share link points at the web user interface that the server bundles. It targets `/__agent_ui/` directly, so a cloud tenant prefix survives. The server root returns a 302 redirect with an absolute path. That absolute path drops the prefix `/t/<service-id>/v1`. The direct path keeps the prefix that the code copied from the server URL. Source: `packages/agents-mobile/src/lib/sessionLinks.ts:10-25`.
 
 ## Account and diagnostics
 

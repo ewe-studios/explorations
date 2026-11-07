@@ -4,7 +4,7 @@ title: Build and Publish
 
 # Build and publish
 
-This document describes how `electric-ax` becomes a runnable package: the build entries, the version injection, the two build targets, and the files that a published package contains.
+This document describes how `electric-ax` becomes a runnable package. It covers the build entries, the version injection, the two build targets, and the files that a published package contains.
 
 The package builds two module formats: ECMAScript Module (ESM) and CommonJS (CJS).
 
@@ -37,7 +37,7 @@ Three binaries are declared.
 
 Source: `packages/electric-ax/package.json:11-15`.
 
-The first two names point to the same file. The CLI process reads the invoked file name to choose the command name in help text. The third name is the development wrapper that runs the TypeScript source.
+The first two names point to the same file. The command-line interface (CLI) process reads the invoked file name to choose the command name in help text. The third name is the development wrapper that runs the TypeScript source.
 
 In the build scripts, `tsdown` is the bundler, `vitest` runs the tests, `tsc` is the TypeScript compiler, and `eslint` is the linter. The `dts: true` setting emits type declarations.
 
@@ -92,7 +92,7 @@ const config: Options = {
 
 Source: `packages/electric-ax/tsdown.config.ts:13-29`.
 
-The build produces both ECMAScript Module (ESM) and CommonJS (CJS) output. It generates type declarations. It cleans the output directory before each build.
+The build produces both ESM and CJS output. It generates type declarations. It cleans the output directory before each build.
 
 The `external` list keeps three dependency families out of the bundle. `@electric-ax/` is the scope that contains `agents-runtime`. A package that depends on `electric-ax` therefore loads the same `agents-runtime` instance, not a private copy.
 
@@ -146,7 +146,7 @@ const agentsServerPackageVersion = readPackageVersion(
 
 Source: `packages/electric-ax/tsdown.config.ts:4-7`.
 
-The agents server image tag is the version of the `agents-server` workspace package. The command-line interface (CLI) and the server image therefore stay in step in a release build.
+The agents server image tag is the version of the `agents-server` workspace package. The CLI and the server image therefore stay in step in a release build.
 
 The source comment in `version.ts` states that the canary continuous integration process overwrites the tags to `canary` before the build. The comment does not state whether it overwrites the CLI version, the server image tag, or both. This is an open question.
 

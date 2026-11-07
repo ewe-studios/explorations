@@ -4,7 +4,7 @@ title: Live Reads and Subscriptions
 
 # Live Reads and Subscriptions
 
-This document explains the live part of the protocol. It covers long-poll, Server-Sent Events (SSE), caching, and the subscription control plane under the `__ds` prefix. It also covers webhook delivery; the pull-wake claim, acknowledgement (ack), and release cycle; and generation fencing, which rejects a stale worker by comparing counters.
+This document explains the live part of the protocol. It covers long-poll, Server-Sent Events (SSE), caching, and the subscription control plane under the `__ds` prefix. It also covers webhook delivery and the pull-wake claim, acknowledgement (ack), and release cycle. It also covers generation fencing. Generation fencing rejects a stale worker by comparing counters.
 
 The live modes do not change the stream. A reader still sends an offset and still receives bytes. The difference is time. A catch-up read returns immediately. A live read waits for new data, or keeps a connection open.
 
@@ -164,7 +164,7 @@ flowchart LR
     H --> I[Old cache entry expires]
 ```
 
-The client should echo the cursor on every long-poll request. The server sends a new cursor on every long-poll response, including a timeout. The one exception is a request at the tail of a stream that is already closed: the server answers at once with status 204 and no cursor (`packages/server/src/server.ts:969-978`). The cursor value is not an offset. A client must not mix the two.
+The client should echo the cursor on every long-poll request. The server sends a new cursor on every long-poll response, including a timeout. The one exception is a request at the tail of a stream that is already closed. The server answers at once with status 204 and no cursor (`packages/server/src/server.ts:969-978`). The cursor value is not an offset. A client must not mix the two.
 
 ## The subscription control plane
 
@@ -244,7 +244,7 @@ The server sends a webhook when three conditions hold:
 
 1. A linked stream has new data.
 2. The subscription is idle: no wake is waiting for a callback.
-3. No wake is in flight: the server has not already sent a wake and is still waiting for `done` or a failed delivery.
+3. No wake is in flight. The server has not already sent a wake and is still waiting for `done` or a failed delivery.
 
 The request body contains the subscription identifier, the wake identifier, the generation, the stream snapshots, and a callback URL with a token. A stream snapshot is the current tail offset of one linked stream at the time of the wake.
 
@@ -323,7 +323,7 @@ A webhook URL is an outbound request from the server. That makes it a Server-Sid
 
 - A production URL must use `https://`.
 - A development URL may use `localhost` or `127.0.0.x`.
-- The server must reject private network ranges and link-local addresses. A link-local address is in the `169.254.0.0/16` range in Internet Protocol version 4 (IPv4), or the `fe80::/10` range in Internet Protocol version 6 (IPv6).
+- The server must reject private network ranges and link-local addresses. A link-local address is in the `169.254.0.0/16` range in Internet Protocol version 4 (IPv4). In Internet Protocol version 6 (IPv6), it is in the `fe80::/10` range.
 
 The reference server enforces the rule in `validateWebhookUrl` during `createOrConfirm`. A rejection returns `400 Bad Request` with the code `WEBHOOK_URL_REJECTED`.
 
@@ -412,7 +412,7 @@ The server rejects a callback, an ack, or a release unless four checks pass:
 3. The request generation is current.
 4. The request `wake_id` is the current wake.
 
-The token stores the generation in a field named `epoch`; `epoch` and `generation` are the same counter in this code.
+The token stores the generation in a field named `epoch`. `epoch` and `generation` are the same counter in this code.
 
 ```ts
 if (

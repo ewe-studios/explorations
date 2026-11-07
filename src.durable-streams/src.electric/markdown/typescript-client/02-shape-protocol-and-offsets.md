@@ -10,14 +10,14 @@ All protocol names are in `src/constants.ts:1-54`. All message shapes are in `sr
 
 ## One concrete request and response
 
-A shape request is an HTTP `GET` to the URL that the caller supplies. The client adds the protocol parameters to that URL. This example asks for the `todos` table from the start of the log:
+A shape request is an HTTP `GET` to the uniform resource locator (URL) that the caller supplies. The client adds the protocol parameters to that URL. This example asks for the `todos` table from the start of the log:
 
 ```http
 GET /v1/shape?table=todos&offset=-1 HTTP/1.1
 Host: localhost:3000
 ```
 
-The response uses `electric-*` HTTP headers and a JavaScript Object Notation (JSON) array body:
+The response uses `electric-*` HTTP headers and a JSON array body:
 
 ```http
 HTTP/1.1 200 OK
@@ -63,7 +63,7 @@ The citation is `src/types.ts:26-30`.
 | `<number>_<number>` | A concrete log position with a 64-bit transaction offset | `src/types.ts:29-30` |
 | `<bigint>_<number>` | The same form when the transaction offset exceeds the safe integer range | `src/types.ts:30` |
 
-The first number is the transaction offset. The second number is the operation offset inside that transaction. The client does not parse the parts. It stores the offset as a string and passes it back unchanged. It uses string equality to decide whether two offsets are the same. It does not sort offsets, so the lack of numeric parsing is safe. The citation is `src/types.ts:26-30`.
+The first number is the transaction offset. The second number is the operation offset inside that transaction. The client does not parse the parts. It stores the offset as a string and passes it back unchanged. It uses string equality to decide whether two offsets are the same. It does not sort offsets. For this reason, the lack of numeric parsing is safe. The citation is `src/types.ts:26-30`.
 
 The offset travels in the `offset` query parameter. The required header for the next offset is `electric-offset`. The citations are `src/constants.ts:3` and `src/constants.ts:12`.
 
@@ -112,9 +112,9 @@ A change message has a `key`, a `value`, an optional `old_value`, and message he
 
 The three operations are `insert`, `update`, and `delete`. The citation is `src/types.ts:49`.
 
-A move tag is a string that names one reason why a row belongs to a shape. A tag can be composite; the parts are separated by `|`. A tag is present only when the shape has a subquery in its `WHERE` clause. An event message reports that a row left or entered the shape because a tag changed. `move-out` reports a departure and `move-in` reports an arrival. A move pattern is the column position and value that matched. The client delivers event messages to subscribers. `Shape` does not act on them: its processing loop handles change messages and control messages only. A subscriber that needs move provenance must read the event messages from `ShapeStream`. The citation is `src/types.ts:50-69` and `src/shape.ts:198-269`.
+A move tag is a string that names one reason why a row belongs to a shape. A tag can be composite. The parts are separated by `|`. A tag is present only when the shape has a subquery in its `WHERE` clause. An event message reports that a row left or entered the shape because a tag changed. `move-out` reports a departure and `move-in` reports an arrival. A move pattern is the column position and value that matched. The client delivers event messages to subscribers. `Shape` does not act on them: its processing loop handles change messages and control messages only. A subscriber that needs move provenance must read the event messages from `ShapeStream`. The citation is `src/types.ts:50-69` and `src/shape.ts:198-269`.
 
-A control message has a `control` message header. The values are `up-to-date`, `must-refetch`, `snapshot-end`, and `subset-end`. The `up-to-date` message can also carry `global_last_seen_lsn`. The `snapshot-end` message carries the PostgreSQL snapshot coordinates. The `subset-end` message carries the subset parameters. The client consumes `snapshot-end` and `subset-end` as batch boundaries around an injected snapshot; they do not change rows. The citation is `src/types.ts:120-128`.
+A control message has a `control` message header. The values are `up-to-date`, `must-refetch`, `snapshot-end`, and `subset-end`. The `up-to-date` message can also carry `global_last_seen_lsn`. The `snapshot-end` message carries the PostgreSQL snapshot coordinates. The `subset-end` message carries the subset parameters. The client consumes `snapshot-end` and `subset-end` as batch boundaries around an injected snapshot. These messages do not change rows. The citation is `src/types.ts:120-128`.
 
 An event message has an `event` message header and a `patterns` array. The event values are `move-out` and `move-in`. The citation is `src/types.ts:130-132` and `src/types.ts:62-69`.
 
@@ -133,7 +133,7 @@ The citation is `src/shape.ts:18-40`.
 
 A `must-refetch` message clears the row map and returns the status to `syncing`. The client also publishes a synthetic `must-refetch` message after a 409 response. The citation is `src/shape.ts:251-267` and `src/client.ts:1105-1110`.
 
-The `getOffset` helper reads the offset from an up-to-date message. The offset comes only from the `global_last_seen_lsn` header. The helper returns `undefined` when the header is absent. The helper is used in Server-Sent Events (SSE) mode, where the message itself carries the new transaction position. The citation is `src/helpers.ts:63-72`.
+The `getOffset` helper reads the offset from an up-to-date message. The offset comes only from the `global_last_seen_lsn` header. The helper returns `undefined` when the header is absent. The client uses the helper in Server-Sent Events (SSE) mode. In that mode, the message itself carries the new transaction position. The citation is `src/helpers.ts:63-72`.
 
 **Aha:** the long-poll response carries the new offset in a header. The SSE response carries the new position inside the up-to-date message as a log sequence number. The client resolves both into the same offset string. The SSE value becomes `${lsn}_0`, because an up-to-date message marks a transaction boundary with operation offset zero. The citation is `src/helpers.ts:68-71`.
 
@@ -153,7 +153,7 @@ The rules are:
 
 The "not expired" test uses the `expiredHandle` input to `handleResponseMetadata`. The client looks up the shape key in its expired-handle cache and passes that value. The state machine itself does not read the cache. The citation is `src/client.ts:1349-1354`.
 
-The schema is kept from the first response. A later response does not replace it. A `must-refetch` reset clears the schema, so the first response after the reset supplies a new one. The citation is `src/shape-stream-state.ts:285` and `src/shape-stream-state.ts:215-223`.
+The client keeps the schema from the first response. A later response does not replace it. A `must-refetch` reset clears the schema. The first response after the reset then supplies a new one. The citation is `src/shape-stream-state.ts:285` and `src/shape-stream-state.ts:215-223`.
 
 ## Live cursor and replay
 
@@ -195,11 +195,11 @@ A `NULL` value in a column with `not_null` set throws `ParserNullValueError`. Th
 
 ## Log modes
 
-The `log` query parameter selects whether the shape sends an initial snapshot. The default is `full`, which sends the snapshot and then changes. The other value is `changes_only`, which skips the snapshot. The citation is `src/client.ts:784` and `src/constants.ts:26`.
+The `log` query parameter selects whether the shape sends an initial snapshot. The default is `full`. That mode sends the snapshot and then changes. The other value is `changes_only`. That mode skips the snapshot. The citation is `src/client.ts:784` and `src/constants.ts:26`.
 
 In `full` mode, the client materializes every row and applies every insert, update, and delete. In `changes_only` mode, the client applies an update or a delete only for a key that it observed as an insert. This rule prevents a client from applying a partial row to a key it does not have. The citation is `src/shape.ts:205-248`.
 
-The `log` option is not the `replica` parameter. `log` controls whether the shape sends an initial snapshot and its change history: `full` or `changes_only`. `replica` controls the content of one update message: `default` sends only changed columns, and `full` sends the whole row and an `old_value`. A shape can use `log=full` with `replica=default`. The `ShapeStream.Replica` constants name the `replica` values; they do not name the `log` values. The citations are `src/client.ts:113-151` and `src/client.ts:652-655`.
+The `log` option is not the `replica` parameter. `log` controls whether the shape sends an initial snapshot and its change history: `full` or `changes_only`. `replica` controls the content of one update message: `default` sends only changed columns, and `full` sends the whole row and an `old_value`. A shape can use `log=full` with `replica=default`. The `ShapeStream.Replica` constants name the `replica` values. They do not name the `log` values. The citations are `src/client.ts:113-151` and `src/client.ts:652-655`.
 
 `requestSnapshot` is available only in `changes_only` mode. The citation is `src/client.ts:2156-2160`.
 
@@ -211,7 +211,7 @@ These values follow PostgreSQL visibility rules. A transaction is visible in the
 
 The snapshot tracker uses these rules to drop a live change that the snapshot already contains. A change message carries 32-bit transaction identifiers. A snapshot carries 64-bit `xid8` values. The tracker maps each 32-bit identifier to the 64-bit value in the same epoch. It uses `xmax` as the reference and signed modulo-2^32 arithmetic. The calculation mirrors the server implementation. The citation is `src/snapshot-tracker.ts:94-117`.
 
-The tracker retires a snapshot when the stream passes the snapshot `database_lsn`. This bound is necessary for the modulo-2^32 comparison: it keeps every compared transaction within 2^31 of the reference. The citation is `src/snapshot-tracker.ts:143-151`.
+The tracker retires a snapshot when the stream passes the snapshot `database_lsn`. This bound is necessary for the modulo-2^32 comparison. It keeps every compared transaction within 2^31 of the reference. The citation is `src/snapshot-tracker.ts:143-151`.
 
 ## Offset edge cases
 
@@ -224,6 +224,6 @@ The tracker retires a snapshot when the stream passes the snapshot `database_lsn
 | Server returns 409 | Reset the stream and publish `must-refetch` | `src/client.ts:1083-1111` |
 | Offset is up to date and `subscribe` is false | Stop the request loop | `src/client.ts:992-997` |
 
-The required response headers are `electric-offset` and `electric-handle`. A live response also requires `electric-cursor`. A non-live response requires `electric-schema`, unless it is a snapshot request whose subset parameters are in the URL; the header check skips those snapshot requests only. The citation is `src/fetch.ts:310-348`.
+The required response headers are `electric-offset` and `electric-handle`. A live response also requires `electric-cursor`. A non-live response requires `electric-schema`. The exception is a snapshot request with subset parameters in the URL. The header check skips only those snapshot requests. The citation is `src/fetch.ts:310-348`.
 
 Read [01-shape-stream-client.md](01-shape-stream-client.md) for the client that drives this protocol. Read [03-fetching-caching-and-reconnect.md](03-fetching-caching-and-reconnect.md) for the transport behavior.

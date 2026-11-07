@@ -48,7 +48,7 @@ Each provider has a narrow duty:
 - `ThemeProvider` supplies design tokens to the Base UI components.
 - `ServerConnectionProvider` stores the saved servers, the active server, and the connection status.
 - `ElectricAgentsProvider` creates the shape-backed collections. It receives `baseUrl` only when the connection is active.
-- `PinnedEntitiesProvider` stores pinned entity URLs.
+- `PinnedEntitiesProvider` stores pinned Uniform Resource Locator (URL) addresses for entities.
 - `WorkspaceProvider` holds the tile tree.
 - `PaneFindProvider` holds the search state for each tile.
 - `ToastProvider` renders notifications.
@@ -156,7 +156,7 @@ The settings route has its own schema with one optional field, `serverId`. Sourc
 | B2 | `/entity/<url>` while the active tile shows the same entity | Swap the view in place. The tile identifier does not change. |
 | B3 | `/entity/<url>` for a new entity | Replace the active tile, or create the first tile. |
 
-A `lastSyncedKey` reference guards both directions. Without the guard, the address-to-workspace effect would dispatch a change, the workspace-to-address effect would write the address, and the first effect would run again in a loop. Source: `packages/agents-server-ui/src/components/workspace/Workspace.tsx:117`.
+A `lastSyncedKey` reference guards both directions. Without the guard, the address-to-workspace effect would dispatch a change. The workspace-to-address effect would then write the address. The first effect would run again in a loop. Source: `packages/agents-server-ui/src/components/workspace/Workspace.tsx:117`.
 
 The address-to-workspace key includes the entity URL, the view, and the State Explorer source:
 
@@ -189,11 +189,11 @@ useEffect(() => {
   // Strip the ?layout= param regardless of decode success.
 ```
 
-After import, the parameter is removed from the address. A bad payload is also removed. The code does not leave a broken link in the address bar.
+After import, the code removes the parameter from the address. It also removes a bad payload. The code does not leave a broken link in the address bar.
 
 ## Persistence
 
-The workspace persists to browser local storage after each change. The write is debounced by 250 milliseconds. Source: `packages/agents-server-ui/src/hooks/useWorkspacePersistence.ts:35-36`.
+The workspace persists to browser local storage after each change. The code debounces the write by 250 milliseconds. Source: `packages/agents-server-ui/src/hooks/useWorkspacePersistence.ts:35-36`.
 
 The key includes the schema version and the server URL:
 
@@ -205,9 +205,9 @@ function storageKey(serverId: string | null): string | null {
 }
 ```
 
-The stored value is an envelope: `{ v: 2, workspace }`. Version 1 envelopes are ignored. The server URL is the namespace instead of the server name, because a name can change or repeat. Source: `packages/agents-server-ui/src/hooks/useWorkspacePersistence.ts:13-19`, `:53-59`, `:115`, `:158`.
+The stored value is an envelope: `{ v: 2, workspace }`. The code ignores version 1 envelopes. The server URL is the namespace instead of the server name, because a name can change or repeat. Source: `packages/agents-server-ui/src/hooks/useWorkspacePersistence.ts:13-19`, `:53-59`, `:115`, `:158`.
 
-On hydration, the code prunes tiles whose entity no longer exists in the live `entities` collection. A split with one surviving child collapses to that child. Sizes are normalised again. Source: `packages/agents-server-ui/src/hooks/useWorkspacePersistence.ts:177-218`.
+On hydration, the code prunes tiles whose entity no longer exists in the live `entities` collection. A split with one surviving child collapses to that child. The code normalises the sizes again. Source: `packages/agents-server-ui/src/hooks/useWorkspacePersistence.ts:177-218`.
 
 ## Root shell layout
 

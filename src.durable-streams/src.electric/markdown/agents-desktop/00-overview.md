@@ -215,7 +215,7 @@ Settings have a version number. The current version is 2. A load migrates older 
 
 ## Aha: one state projection, many windows
 
-**Aha:** The desktop application does not keep one global "current server". It keeps one server selection per window and one runtime entry per saved server. `desktopStateForWindow` combines the two. As a result, two windows can watch two servers at the same time, and a connection for a server that no window shows still runs in the background. The tray menu reports every runtime entry, not only the active one.
+**Aha:** The desktop application does not keep one global "current server". It keeps one server selection per window and one runtime entry per saved server. `desktopStateForWindow` combines the two. As a result, two windows can watch two servers at the same time. A connection for a server that no window shows still runs in the background. The tray menu reports every runtime entry, not only the active one.
 
 This is why the tray menu builds a submenu for every saved server. Source: `packages/agents-desktop/src/ui/tray.ts:107-191`.
 

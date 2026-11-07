@@ -16,7 +16,7 @@ Every row carries `_timeline_order`, a string token. The token comes from the ev
 stream:<zero-padded-offset>:<zero-padded-sub-offset>
 ```
 
-The offset is padded to 24 characters. The sub-offset is padded to 8 characters. The citation is `packages/agents-runtime/src/event-pointer.ts:54-87`.
+The runtime pads the offset to 24 characters. It pads the sub-offset to 8 characters. The citation is `packages/agents-runtime/src/event-pointer.ts:54-87`.
 
 The offset is the anchor for the log entry that holds the event. The anchor is the end offset of the preceding log entry, or the previous batch offset for the first log entry in a batch. The sub-offset is the position of the event inside that one log entry, not the position inside the whole batch. One batch can hold several log entries, and one log entry can hold several events, so the pair is necessary. An example token is `stream:000000000000000000000123:00000001`.
 
@@ -35,12 +35,12 @@ export function compareTimelineOrders(
 
 The citation is `packages/agents-runtime/src/entity-timeline.ts:572-579`.
 
-The tokens are fixed-width ASCII digit strings. For that shape, `localeCompare` order matches code-unit order, so the comparison is safe. The helper normalizes each token before it compares.
+The tokens are fixed-width American Standard Code for Information Interchange (ASCII) digit strings. For that shape, `localeCompare` order matches code-unit order, so the comparison is safe. The helper normalizes each token before it compares.
 
 `materializeTimeline` uses this order. It also applies two corrections:
 
-1. An interrupted run is reordered before its `SIGINT` marker. An interrupted run is a run that has no normal end event. The runtime buffers run rows through its producer, but the server appends the `SIGINT` signal directly. The signal can therefore get a lower stream offset than the aborted run. The natural order puts the marker first. The correction restores the logical order.
-2. A superseded context entry is removed by last-wins on its identifier.
+1. `materializeTimeline` reorders an interrupted run before its `SIGINT` marker. An interrupted run is a run that has no normal end event. The runtime buffers run rows through its producer, but the server appends the `SIGINT` signal directly. The signal can therefore get a lower stream offset than the aborted run. The natural order puts the marker first. The correction restores the logical order.
+2. Last-wins on the identifier removes a superseded context entry.
 
 The citation is `packages/agents-runtime/src/timeline-context.ts:341-463`.
 
@@ -75,7 +75,7 @@ The citation is `packages/agents-runtime/src/context-entries.ts:77-102`.
 
 The insert also writes the manifest row. Its key is `context:<id>`, and its value carries the context identifier, the name, the attributes, and the current content. `attrs` holds structured metadata such as the compaction status and watermark.
 
-The suffix comes from a millisecond clock. A collision gets an underscore and a counter. The counter is local to the process. Two inserts in the same millisecond on different runners can still collide in theory; the stream order then decides which row is current.
+The suffix comes from a millisecond clock. A collision gets an underscore and a counter. The counter is local to the process. Two inserts in the same millisecond on different runners can still collide in theory. The stream order then decides which row is current.
 
 The manifest is the live view. `getContext` and `listContext` read the manifest, not the event log. The event log is the history.
 
@@ -102,7 +102,7 @@ The citation is `packages/agents-runtime/src/timeline-context.ts:483-486`.
 
 Only a `complete` checkpoint acts as a watermark. A `running` or `failed` checkpoint does not hide history. The citation is `packages/agents-runtime/src/timeline-context.ts:533-546`.
 
-The summary is a synthetic message that replaces the dropped range. It comes before the surviving newer items in the model message list. The runtime rebuilds it on each projection; it is not a new stream row.
+The summary is a synthetic message that replaces the dropped range. It comes before the surviving newer items in the model message list. The runtime rebuilds it on each projection. It is not a new stream row.
 
 ```mermaid
 flowchart TB
@@ -135,7 +135,7 @@ The citation is `packages/agents-runtime/src/context-assembly.ts:10-15`.
 The rules are:
 
 - `pinned`, `stable`, and `slow-changing` sources must declare `max`.
-- A string source is truncated to its max and gets a `load_source_range` marker. The marker is literal text in the prompt. It gives the source name, the dropped character range, and the snapshot identifier. The model can call the `load_source_range` tool to read the rest.
+- The runtime truncates a string source to its max and adds a `load_source_range` marker. The marker is literal text in the prompt. It gives the source name, the dropped character range, and the snapshot identifier. The model can call the `load_source_range` tool to read the rest.
 - An array source takes messages in order until its max is reached.
 - `volatile` sources have no fixed max. The runtime packs them newest-first into the remaining budget.
 - A tool call and its result stay together.
@@ -158,7 +158,7 @@ for (let i = volatileMessages.length - 1; i >= 0; i--) {
 accepted.reverse()
 ```
 
-The loop walks backward so it keeps the newest messages first. `accepted.reverse()` restores chronological order before the messages are appended. A tool message that does not fit gets a short `load_timeline_range` stub when the stub itself fits. Otherwise its offset joins the dropped range.
+The loop walks backward so it keeps the newest messages first. `accepted.reverse()` restores chronological order before the runtime appends the messages. A tool message that does not fit gets a short `load_timeline_range` stub when the stub itself fits. Otherwise its offset joins the dropped range.
 
 The citation is `packages/agents-runtime/src/context-assembly.ts:321-362`.
 
@@ -180,7 +180,7 @@ The threshold array also holds 0.5 and 0.75, but the notice rule tests only the 
 
 Usage is the cache-inclusive input plus output of the last step, divided by the context window. The input part is `input + cacheRead + cacheWrite`. The output tokens count because they re-enter the prompt on the next turn. The citation is `packages/agents-runtime/src/token-accountant.ts:60-66`.
 
-A single tool result is capped at 10,000 tokens. The citation is `packages/agents-runtime/src/token-accountant.ts:260`. A result above the cap is truncated before the model call.
+A single tool result is capped at 10,000 tokens. The citation is `packages/agents-runtime/src/token-accountant.ts:260`. The runtime truncates a result above the cap before the model call.
 
 ## Compaction checkpoints
 
@@ -201,7 +201,7 @@ export const COMPACTION_CHECKPOINT_ID = `compaction`
 
 The citation is `packages/agents-runtime/src/compaction.ts:11-18`.
 
-There is one foreground checkpoint identifier: `compaction`. A background checkpoint uses `compaction-bg-<watermark>`. The citation is `packages/agents-runtime/src/context-factory.ts:1278-1280`.
+One foreground checkpoint identifier exists: `compaction`. A background checkpoint uses `compaction-bg-<watermark>`. The citation is `packages/agents-runtime/src/context-factory.ts:1278-1280`.
 
 The foreground identifier is self-superseding. A new checkpoint replaces the old one in the live view. The watermark in the checkpoint keeps the correct position. While the new checkpoint is `running`, only the old complete checkpoint is gone from the live view, so the old summary is not active. The events below the old watermark become visible again until the new checkpoint is complete.
 
@@ -230,7 +230,7 @@ The compactor caches the summary for the rest of the turn. A second crossing cha
 
 ## Background compaction
 
-Background compaction starts when the latest step usage is at or above 0.85. The threshold can be changed with the environment variable `ELECTRIC_AGENTS_COMPACT_BG_CEILING`.
+Background compaction starts when the latest step usage is at or above 0.85. A caller can change the threshold with the environment variable `ELECTRIC_AGENTS_COMPACT_BG_CEILING`.
 
 ```ts
 const ceiling = ratioFromEnv(
@@ -242,7 +242,7 @@ if (usage.ratio < ceiling) return null
 
 The citation is `packages/agents-runtime/src/context-factory.ts:1314-1317`.
 
-The runtime captures the timeline head as the watermark. The head is the latest timeline item at the moment compaction starts. Items added after that point are not covered by the summary. It writes a `running` checkpoint. It summarizes in parallel with the handler. When the summary is ready, it writes a `complete` checkpoint at the same watermark.
+The runtime captures the timeline head as the watermark. The head is the latest timeline item at the moment compaction starts. The summary does not cover items added after that point. It writes a `running` checkpoint. It summarizes in parallel with the handler. When the summary is ready, it writes a `complete` checkpoint at the same watermark.
 
 If the job fails, it writes a `failed` checkpoint. The next turn proceeds without compaction.
 
@@ -257,7 +257,7 @@ The defaults are:
 
 The citations are `packages/agents-runtime/src/compaction-summarize.ts:11-23`.
 
-An empty summary throws. A slow summary becomes a failure, not an unbounded wait. The timeout exists because background compaction runs at the same time as the main model stream and may share the same rate-limit token or concurrency slot. A stalled concurrent stream would otherwise hang the compaction call forever.
+An empty summary throws. A slow summary becomes a failure, not an unbounded wait. The timeout exists because background compaction runs at the same time as the main model stream. The two may share the same rate-limit token or concurrency slot. A stalled concurrent stream would otherwise hang the compaction call forever.
 
 ```mermaid
 sequenceDiagram
@@ -279,7 +279,7 @@ sequenceDiagram
 
 The `replay_watermark` event and the `replayWatermarks` collection are part of the built-in schema. The runtime defines and exports them. The consumer is in the agents-server fork path, which uses the watermark to record how far a replayed fork has progressed. A fork is a new entity that copies the history of an existing entity up to a chosen point.
 
-This package study does not trace that server code. The fact that the schema exists here is verified. The exact replay algorithm is outside this package.
+This package study does not trace that server code. This study verifies that the schema exists here. The exact replay algorithm is outside this package.
 
 ## Key insight
 

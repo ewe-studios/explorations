@@ -4,9 +4,9 @@ title: Skills and Runtime Helpers
 
 # Skills and Runtime Helpers
 
-This document covers seven helper surfaces in `@electric-ax/agents-runtime`. The surfaces are skills, the browser entry point, manifest key builders, the goal application programming interface (API), timeline query helpers, observation source constructors, and `createWakeSession`. Each surface is small. Each surface is tied to the same rule: the entity stream is the source of truth.
+This document covers seven helper surfaces in `@electric-ax/agents-runtime`. The surfaces are skills, the browser entry point, manifest key builders, the goal application programming interface (API), timeline query helpers, observation source constructors, and `createWakeSession`. Each surface is small. Each surface follows the same rule: the entity stream is the source of truth.
 
-Ten terms are needed here:
+This document uses ten terms:
 
 - An **entity** is an identified worker. It has an entity type, an instance identifier, and one append-only durable stream. The stream path is usually `/agent/<id>`.
 - The **runtime** is the `@electric-ax/agents-runtime` package. It projects the entity stream into typed collections, runs the entity handler for each wake, and writes results to the same stream.
@@ -281,9 +281,9 @@ The citation is `packages/agents-runtime/src/skills/registry.ts:82-90`.
 
 ### How a skill is loaded and invoked
 
-There are two load paths. An agent loads a skill with the `use_skill` tool. A user loads a skill with a slash command through `createContextSkillLoader`. Both paths call `loadSkillIntoContext`.
+Two load paths exist. An agent loads a skill with the `use_skill` tool. A user loads a skill with a slash command through `createContextSkillLoader`. Both paths call `loadSkillIntoContext`.
 
-`loadSkillIntoContext` performs six steps for the instructions, then a seventh step for reference documents. The six steps are: look up the metadata, reject an unknown name, reject an already loaded skill, read the file, substitute arguments, and insert the instructions into the handler context. The seventh step reads each reference document and inserts it as a separate context entry. The citation is `packages/agents-runtime/src/skills/tools.ts:20-89`.
+`loadSkillIntoContext` runs six steps for the instructions, then a seventh step for reference documents. The first two steps look up the metadata and reject an unknown name. The next two reject an already loaded skill and read the file. The last two substitute arguments and insert the instructions into the handler context. The seventh step reads each reference document and inserts it as a separate context entry. The citation is `packages/agents-runtime/src/skills/tools.ts:20-89`.
 
 ```ts
 export async function loadSkillIntoContext(
@@ -335,7 +335,7 @@ On success, `loadSkillIntoContext` returns `{ loaded: true, chars, message, cont
 
 The context identifier is `skill:<name>`. The `skillContextId` function builds it. The citation is `packages/agents-runtime/src/skills/tools.ts:8-10`.
 
-`insertContext` writes a `contextInserted` event and stages a `context` manifest entry with the fixed key `context:<id>`. A later insert with the same identifier replaces the staged manifest entry. A context entry is a durable manifest entry: no code in this package removes it at the end of a wake, and it stays until `removeContext` removes it. `getContext` scans the local `manifests` collection, not the staged wake-session map. The skill loader prevents a second load: it calls `getContext` first and returns `alreadyLoaded` when the identifier exists. The citation is `packages/agents-runtime/src/context-entries.ts:67-99`, `packages/agents-runtime/src/context-entries.ts:110-124`, and `packages/agents-runtime/src/skills/tools.ts:27-37`.
+`insertContext` writes a `contextInserted` event and stages a `context` manifest entry with the fixed key `context:<id>`. A later insert with the same identifier replaces the staged manifest entry. A context entry is a durable manifest entry. No code in this package removes it at the end of a wake. It stays until `removeContext` removes it. `getContext` scans the local `manifests` collection, not the staged wake-session map. The skill loader prevents a second load: it calls `getContext` first and returns `alreadyLoaded` when the identifier exists. The citation is `packages/agents-runtime/src/context-entries.ts:67-99`, `packages/agents-runtime/src/context-entries.ts:110-124`, and `packages/agents-runtime/src/skills/tools.ts:27-37`.
 
 The argument substitution supports three placeholder forms. A named argument uses `$name`. A positional argument uses `$0`, `$1`, and so on. The whole argument string uses `$ARGUMENTS`. If no placeholder matches, the loader appends `Arguments: <raw>` to the end. The citation is `packages/agents-runtime/src/skills/tools.ts:199-240`.
 
@@ -531,7 +531,7 @@ The citation is `packages/agents-runtime/src/skills/context-loader.ts:91-140`.
 
 `ctx.slashCommands.replaceOwned(owner, commands)` replaces the set of dynamic slash commands for that owner. It validates the commands and keeps commands from other owners. The citation is `packages/agents-runtime/src/composer-input.ts:97-105` and `packages/agents-runtime/src/context-factory.ts:487-500`.
 
-The catalog is a `stable` context source. A skill that the user command loads is a `volatile` context source under the source name `skill:<name>`. The `autoLoadedSkills` array lists the names. The load itself is user-triggered: it happens only when the wake carries a matching composer slash command.
+The catalog is a `stable` context source. A skill that the user command loads is a `volatile` context source under the source name `skill:<name>`. The `autoLoadedSkills` array lists the names. A user triggers the load: it happens only when the wake carries a matching composer slash command.
 
 `cache` is one of the four tiers in `CACHE_TIERS`: `pinned`, `stable`, `slow-changing`, and `volatile`. A `SourceConfig` has a `content` function that returns text or messages. It has a `max` token cap. `max` is required for every tier except `volatile`. `assembleContext` groups sources by tier and places the volatile group in a separate section at the end of the context. The citation is `packages/agents-runtime/src/types.ts:270-311` and `packages/agents-runtime/src/context-assembly.ts:221-307`.
 
@@ -693,7 +693,7 @@ The token accounting group comes from two modules. `formatTokenCount` comes from
 
 ## Manifest key helpers
 
-A manifest entry is keyed by a string. The key encodes the kind and the identity of the entry. The helpers are pure string builders. The citation is `packages/agents-runtime/src/manifest-helpers.ts:1-24`.
+The key of a manifest entry is a string. The key encodes the kind and the identity of the entry. The helpers are pure string builders. The citation is `packages/agents-runtime/src/manifest-helpers.ts:1-24`.
 
 ```ts
 export function manifestChildKey(entityType: string, id: string): string {
@@ -733,7 +733,7 @@ The citation is `packages/agents-runtime/src/manifest-helpers.ts:1-24`.
 | `manifestAttachmentKey(id)` | `attachment:<id>` | `attachment` | A file attachment record |
 | `getEntityAttachmentStreamPath(entityUrl, attachmentId)` | `<entityUrl>/attachments/<id>` | not an entry key | Stream path for attachment bytes |
 
-`manifestSourceKey` is defined in the observation source file, not in the manifest helper file. The citation is `packages/agents-runtime/src/observation-sources.ts:178-183`.
+The observation source file defines `manifestSourceKey`, not the manifest helper file. The citation is `packages/agents-runtime/src/observation-sources.ts:178-183`.
 
 ```ts
 export function manifestSourceKey(
@@ -746,9 +746,9 @@ export function manifestSourceKey(
 
 The citation is `packages/agents-runtime/src/observation-sources.ts:178-183`.
 
-The manifest kinds are declared in the entity schema. The field names are literal TypeScript properties. The names do not use one convention. A child entry has `entity_type`, `entity_url`, a `wake`, and an `observed` flag. A source entry has `sourceType`, `sourceRef`, an optional `wake`, and a `config` object. A shared-state entry has `mode`, `collections`, and an optional `wake`. An effect entry has `function_ref` and `config`. An attachment entry has `streamPath`, `status` (`pending`, `complete`, or `failed`), `subject` (`{ type, key }`, where type is `inbox`, `run`, `text`, `tool_call`, or `context`), and `role` (`input` or `output`). It also has `mimeType` and an optional `filename`, `byteLength`, `sha256`, `createdBy`, `error`, and `meta`. It also has `createdAt`. The citation is `packages/agents-runtime/src/entity-schema.ts:278-344`.
+The entity schema declares the manifest kinds. The field names are literal TypeScript properties. The names do not use one convention. A child entry has `entity_type`, `entity_url`, a `wake`, and an `observed` flag. A source entry has `sourceType`, `sourceRef`, an optional `wake`, and a `config` object. A shared-state entry has `mode`, `collections`, and an optional `wake`. An effect entry has `function_ref` and `config`. An attachment entry has `streamPath` and `status` (`pending`, `complete`, or `failed`). It has `subject` (`{ type, key }`, where type is `inbox`, `run`, `text`, `tool_call`, or `context`) and `role` (`input` or `output`). It also has `mimeType` and an optional `filename`, `byteLength`, `sha256`, `createdBy`, `error`, and `meta`. It also has `createdAt`. The citation is `packages/agents-runtime/src/entity-schema.ts:278-344`.
 
-`manifestChildKey` is used when the runtime spawns a child and registers its wake. The citation is `packages/agents-runtime/src/process-wake.ts:1400`.
+The runtime uses `manifestChildKey` when it spawns a child and registers its wake. The citation is `packages/agents-runtime/src/process-wake.ts:1400`.
 
 ## Goal command API
 
@@ -859,7 +859,7 @@ Every mutation goes through one write channel. When `writeEvent` is present, the
 
 The citation is `packages/agents-runtime/src/goal-api.ts:106-120`.
 
-`clearGoal` is the delete path. With `writeEvent`, it writes a manifest delete for `goal` only when a goal exists. Without `writeEvent`, it calls `wakeSession.removeManifestEntry`. `markGoalComplete` copies the current row, sets `status` to `complete`, and stores the trimmed summary as `summary` when the summary is not empty. The summary is stored on the same manifest entry. The citation is `packages/agents-runtime/src/goal-api.ts:154-189`.
+`clearGoal` is the delete path. With `writeEvent`, it writes a manifest delete for `goal` only when a goal exists. Without `writeEvent`, it calls `wakeSession.removeManifestEntry`. `markGoalComplete` copies the current row, sets `status` to `complete`, and stores the trimmed summary as `summary` when the summary is not empty. The code stores the summary on the same manifest entry. The citation is `packages/agents-runtime/src/goal-api.ts:154-189`.
 
 `setGoal` has two budget cases. An omitted budget uses 50,000. A `null` budget means unlimited. The citation is `packages/agents-runtime/src/goal-api.ts:129-132` and `packages/agents-runtime/src/types.ts:345-350`.
 
@@ -918,7 +918,7 @@ The citation is `packages/agents-runtime/src/goal-api.ts:123-152`.
 
 The citation is `packages/agents-runtime/src/goal-api.ts:191-203`.
 
-The goal API is wired into the handler context. `createHandlerContext` creates it at `packages/agents-runtime/src/context-factory.ts:540-544`. It exposes five methods on `ctx` at `packages/agents-runtime/src/context-factory.ts:1096-1100`.
+The handler context includes the goal API. `createHandlerContext` creates it at `packages/agents-runtime/src/context-factory.ts:540-544`. It exposes five methods on `ctx` at `packages/agents-runtime/src/context-factory.ts:1096-1100`.
 
 ### The goal command grammar
 
@@ -1275,7 +1275,7 @@ export interface EntityTimelineData {
 
 The citation is `packages/agents-runtime/src/entity-timeline.ts:194-202`.
 
-`normalizeEntityTimelineData` sorts runs by their order and calls `normalizeTimelineEntities` for the entity list. `normalizeTimelineEntities` groups rows by `url`. When two rows share a URL, `mergeTimelineEntities` returns one row. The first row is `existing`; the second row is `incoming`. A child row supplies `key`, `kind: child`, `url`, and `wake` when either row is a child. A source row supplies `id` when there is no child. For `type` and `status`, the merge takes the first defined value in this order: the child row, the source row, `existing`, `incoming`. `observed` is true when either row is observed. The citation is `packages/agents-runtime/src/entity-timeline.ts:430-500`.
+`normalizeEntityTimelineData` sorts runs by their order and calls `normalizeTimelineEntities` for the entity list. `normalizeTimelineEntities` groups rows by `url`. When two rows share a URL, `mergeTimelineEntities` returns one row. The first row is `existing`; the second row is `incoming`. A child row supplies `key`, `kind: child`, `url`, and `wake` when either row is a child. A source row supplies `id` when no child exists. For `type` and `status`, the merge takes the first defined value in this order: the child row, the source row, `existing`, `incoming`. `observed` is true when either row is observed. The citation is `packages/agents-runtime/src/entity-timeline.ts:430-500`.
 
 ### Live queries
 
@@ -1309,7 +1309,7 @@ The citation is `packages/agents-runtime/src/entity-timeline.ts:215-223`.
 
 The `inboxMode` option has two values. `processed` keeps rows whose status is `processed` or missing. It also keeps a local pending row: `$synced === false`, status `pending` or missing, and `_timeline_order` that starts with `~pending:`. It hides other pending rows. `all` keeps every inbox row. The default is `processed`. The citation is `packages/agents-runtime/src/entity-timeline.ts:1393-1407`.
 
-The returned function is a TanStack DB query builder. The runtime imports the `InitialQueryBuilder` type from `@tanstack/db` and the query operators from `@durable-streams/state/db`. A query is composed with `q.from(...)`, `.where(...)`, `.select(...)`, `.unionAll(...)`, and `.orderBy(...)`. TanStack DB keeps the query live: it recomputes the result when a source collection changes. Document [04-entity-stream-db.md](04-entity-stream-db.md) explains the collection layer. The citation for the imports is `packages/agents-runtime/src/entity-timeline.ts:1-28`.
+The returned function is a TanStack DB query builder. The runtime imports the `InitialQueryBuilder` type from `@tanstack/db` and the query operators from `@durable-streams/state/db`. A caller composes a query with `q.from(...)`, `.where(...)`, `.select(...)`, `.unionAll(...)`, and `.orderBy(...)`. TanStack DB keeps the query live: it recomputes the result when a source collection changes. Document [04-entity-stream-db.md](04-entity-stream-db.md) explains the collection layer. The citation for the imports is `packages/agents-runtime/src/entity-timeline.ts:1-28`.
 
 The query unions the sources. It orders the union by the order reference, then by the source name, then by the row key. The citation is `packages/agents-runtime/src/entity-timeline.ts:1694-1710`.
 
@@ -1673,7 +1673,7 @@ stateDiagram-v2
 
 The session starts in `setup`. `finishSetup` moves it to `active` and returns the manifest, the shared-state handles, the spawn handles, and the source handles. `close` moves it to `closing`, rolls back a pending manifest transaction, and then moves it to `closed`. The citation is `packages/agents-runtime/src/wake-session.ts:41-62`, `packages/agents-runtime/src/wake-session.ts:174-196`.
 
-Manifest writes are staged, not written immediately. `registerManifestEntry` checks the setup or active phase, compares the new entry with the previous entry, stores the entry in an in-memory map, and stages the mutation. A duplicate entry returns false. `removeManifestEntry` does the same for a delete. The citation is `packages/agents-runtime/src/wake-session.ts:68-91`.
+The session stages manifest writes; it does not write them immediately. `registerManifestEntry` checks the setup or active phase. It compares the new entry with the previous entry, stores the entry in an in-memory map, and stages the mutation. A duplicate entry returns false. `removeManifestEntry` does the same for a delete. The citation is `packages/agents-runtime/src/wake-session.ts:68-91`.
 
 ```ts
   registerManifestEntry(entry: ManifestEntry): boolean {
@@ -1725,7 +1725,7 @@ The citation is `packages/agents-runtime/src/wake-session.ts:68-79`.
 
 The citation is `packages/agents-runtime/src/wake-session.ts:93-118`.
 
-The transaction has two modes. Without `writeEvent`, it calls `this.db.collections.manifests.utils.acceptMutations(transaction)` and applies the mutations to the local collection. This call is legal because `WakeSessionDb` takes the full `manifests` collection, and that collection includes its `utils` field. The source does not say when this path is used in production. The goal API calls its analogous path a fallback for tests. With `writeEvent`, it writes typed manifest events with a shared transaction identifier (txid), flushes the writes, and waits for `awaitTxId`. The timeout is 20,000 milliseconds. The source does not state what happens when the wait times out. The citation is `packages/agents-runtime/src/wake-session.ts:16-19` and `packages/agents-runtime/src/wake-session.ts:234-279`.
+The transaction has two modes. Without `writeEvent`, it calls `this.db.collections.manifests.utils.acceptMutations(transaction)` and applies the mutations to the local collection. This call is legal because `WakeSessionDb` takes the full `manifests` collection, and that collection includes its `utils` field. The source does not say when the runtime uses this path in production. The goal API calls its analogous path a fallback for tests. With `writeEvent`, it writes typed manifest events with a shared transaction identifier (txid), flushes the writes, and waits for `awaitTxId`. The timeout is 20,000 milliseconds. The source does not state what happens when the wait times out. The citation is `packages/agents-runtime/src/wake-session.ts:16-19` and `packages/agents-runtime/src/wake-session.ts:234-279`.
 
 ```ts
   private createManifestTransaction(): ManifestTransaction {

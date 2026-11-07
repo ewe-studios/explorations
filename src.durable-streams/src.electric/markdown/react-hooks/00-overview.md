@@ -79,7 +79,7 @@ The key is the output of `sortedOptionsHash`. That function sorts object keys at
 
 The cache checks the cached stream's abort signal before it returns that stream. If the signal is aborted, the cache removes the stream and its shape. It then creates a new stream. The citation is `src/react-hooks.tsx:53-62`.
 
-The signal belongs to the call that created the cached stream. The constructor stores it in `stream.options`; later callers whose options produce the same hash receive that same stream and do not replace its signal. A component that shares an existing stream does not own that stream's signal and must not abort it.
+The signal belongs to the call that created the cached stream. The constructor stores it in `stream.options`. Later callers whose options produce the same hash receive that same stream and do not replace its signal. A component that shares an existing stream does not own that stream's signal and must not abort it.
 
 **Aha:** the cache treats an aborted stream as a dead cache entry, not as an error. When the owner aborts the signal, the next lookup removes the entry and creates a fresh stream automatically. The cache does not need a separate cleanup registry. The cost is that a shared stream lives as long as its creating signal: unmounting a component that shares it does not close it.
 

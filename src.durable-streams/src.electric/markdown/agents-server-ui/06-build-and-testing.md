@@ -69,13 +69,13 @@ export default defineConfig(({ command, mode }) => {
 
 This distinction is load-bearing:
 
-- A web build is served by the agents server under `/__agent_ui/`.
+- The agents server serves a web build under `/__agent_ui/`.
 - A desktop development server runs at `http://localhost:5183/` and needs an absolute base for hot module replacement.
-- A desktop production build is loaded from `file://`. Assets must use relative paths, so the base is `./`.
+- The desktop application loads a desktop production build from `file://`. Assets must use relative paths, so the base is `./`.
 
 A single base value for both desktop cases would break one of them.
 
-The output directory is selected here:
+The configuration selects the output directory here:
 
 ```ts
 // packages/agents-server-ui/vite.config.ts:73
@@ -210,9 +210,9 @@ The package has 18 test files. They are concentrated in pure logic:
 
 The list comes from a file search under `packages/agents-server-ui/src` for names ending in `.test.ts` or `.test.tsx`.
 
-The two component tests handle the environment differently. `InlineEventCard.test.tsx` uses `renderToStaticMarkup`, so it needs no DOM. `ReasoningSection.test.tsx` starts with `// @vitest-environment jsdom` and uses `createRoot`. Source: `packages/agents-server-ui/src/components/InlineEventCard.test.tsx:2` and `packages/agents-server-ui/src/components/ReasoningSection.test.tsx:1`. The shared configuration does not declare an environment, so Vitest uses its default `node` environment. A component test that needs a DOM must opt in per file.
+The two component tests handle the environment differently. `InlineEventCard.test.tsx` uses `renderToStaticMarkup`, so it needs no DOM. `ReasoningSection.test.tsx` starts with `// @vitest-environment jsdom` and uses `createRoot`. Source: `packages/agents-server-ui/src/components/InlineEventCard.test.tsx:2` and `packages/agents-server-ui/src/components/ReasoningSection.test.tsx:1`. The shared configuration does not declare an environment, so Vitest uses its default `node` environment. A component test that needs a Document Object Model (DOM) must opt in per file.
 
-The package has no end-to-end test file. There is no Playwright or Cypress configuration in the package. The conformance suite in `agents-server-conformance-tests` is a separate package and tests servers, not this interface.
+The package has no end-to-end test file. The package has no Playwright or Cypress configuration. The conformance suite in `agents-server-conformance-tests` is a separate package and tests servers, not this interface.
 
 ### What the tests protect
 

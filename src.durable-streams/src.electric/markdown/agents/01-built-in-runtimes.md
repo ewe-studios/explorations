@@ -131,7 +131,7 @@ Source: `packages/agents/src/server.ts:184-193`.
 
 The stream cache is installed first. It installs a cache interceptor on the global fetch path. It allows a long stream read to be cached in memory or on disk. The default cache size is one hundred mebibytes.
 
-The MCP registry is created next. The public address (Uniform Resource Locator, URL) is the base for Open Authorization (OAuth) callback addresses. The registry is created even when there is no `mcp.json`, because embedders can add servers through `extraMcpServers`. The registry is the component described in [../agents-mcp/01-mcp-registry.md](../agents-mcp/01-mcp-registry.md).
+The MCP registry is created next. The public address (Uniform Resource Locator, URL) is the base for Open Authorization (OAuth) callback addresses. The registry is created even when no `mcp.json` exists, because embedders can add servers through `extraMcpServers`. The registry is the component described in [../agents-mcp/01-mcp-registry.md](../agents-mcp/01-mcp-registry.md).
 
 ### The MCP merge rule
 

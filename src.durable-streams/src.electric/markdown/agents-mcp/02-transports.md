@@ -18,7 +18,7 @@ export interface McpTransport {
 
 Source: `packages/agents-mcp/src/transports/types.ts:3-7`.
 
-Every transport returns an SDK client with the same shape. `SDK` means Software Development Kit. The registry does not know which transport it holds. It calls `connect`, then `client.listTools()`, then `transport.close()`. The registry closes the transport, and the transport closes its client.
+Every transport returns a Software Development Kit (SDK) client with the same shape. The registry does not know which transport it holds. It calls `connect`, then `client.listTools()`, then `transport.close()`. The registry closes the transport, and the transport closes its client.
 
 ## Which transport to use
 
@@ -38,7 +38,7 @@ flowchart TD
 
 | Property | HTTP | Stdio |
 |----------|------|-------|
-| Address | Uniform Resource Locator (URL) | Executable plus arguments |
+| Address | URL | Executable plus arguments |
 | Process | Remote or local server | Child process of the runtime |
 | Authentication | Application Programming Interface (API) key, client credentials, Open Authorization (OAuth) | Usually `none` |
 | Network | Required | Not required |
@@ -69,7 +69,7 @@ Source: `packages/agents-mcp/src/transports/http.ts:17-30`.
 Three parts deserve attention.
 
 1. **The URL object.** The constructor receives `new URL(opts.url)`, not a string. An invalid URL fails early.
-2. **The auth provider.** The SDK transport uses this provider for the OAuth handshake, the token refresh, and the retry after a `401` response.
+2. **The auth provider.** The SDK transport uses this provider for the OAuth handshake and the token refresh. It also uses it for the retry after a `401` response.
 3. **The fetch wrapper.** When a header provider exists, the wrapper adds one header to every request. This is how the `apiKey` mode works without a custom transport. `fetchImpl` is the fetch function that the wrapper calls; it defaults to the global `fetch`.
 
 The header provider is asynchronous. It can read a token from a store at request time. The wrapper creates a new `Headers` object, so it does not change the caller's object.
@@ -102,13 +102,13 @@ export function createStdioTransport(opts: StdioTransportOpts): McpTransport {
 
 Source: `packages/agents-mcp/src/transports/stdio.ts:12-17`.
 
-The stdio transport starts a child process. The child speaks MCP over its standard input and standard output. The transport ends when the child exits or when `close()` is called.
+The stdio transport starts a child process. The child speaks MCP over its standard input and standard output. The transport ends when the child exits or when the caller calls `close()`.
 
-An `env` map is passed to the SDK unchanged. Whether the SDK merges this map with the parent environment is not visible in this package. This is an open question for a stdio server that needs `PATH` or other inherited variables.
+The transport passes an `env` map to the SDK unchanged. Whether the SDK merges this map with the parent environment is not visible in this package. This is an open question for a stdio server that needs `PATH` or other inherited variables.
 
 ## Timeouts
 
-Every tool call is wrapped in a timeout. The wrapper is `withTimeout`, and the bridge applies it when it invokes the tool.
+The bridge wraps every tool call in a timeout. The wrapper is `withTimeout`, and the bridge applies it when it invokes the tool.
 
 ```ts
 export const DEFAULT_TIMEOUT_MS = 120_000

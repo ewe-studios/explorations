@@ -9,7 +9,7 @@ This directory studies `packages/agents-desktop`, the Electron desktop applicati
 Electron is a runtime that puts a web page inside a native window. The application has two processes:
 
 1. The **main process** is a Node.js program. It owns the window, the tray icon, the application menu, the saved settings, the local agent runtime, and every operating-system call. The local runtime is the `BuiltinAgentsServer`. It runs the agent engine inside the desktop process.
-2. The **renderer** is the `agents-server-ui` web application. It runs in a Chromium web view and cannot call the operating system directly. `agents-server-ui` is the shared web interface package that the web, desktop, and mobile clients use.
+2. The **renderer** is the `agents-server-ui` web application. It runs in a Chromium web view and cannot call the operating system directly. `agents-server-ui` is the shared package for the web interface. The web, desktop, and mobile clients use it.
 
 A preload script connects the two processes. A preload script runs in the renderer before the page loads and exposes a limited application programming interface (API) on `window.electronAPI`.
 
@@ -134,7 +134,7 @@ ipcMain.handle(`desktop:get-state`, (event) => {
 
 ## A note about Electric Cloud
 
-The package README says: "Electric Cloud has been shut down. The Electric Cloud sign-in and server discovery in this app no longer work. Connect to a self-hosted agents server instead." Source: `packages/agents-desktop/README.md:3-6`. The code still contains the cloud sign-in window, the cloud token store, and the cloud server preparation path. This exploration documents what the code does. It marks the cloud path as historical where the shutdown matters.
+The package README says: "Electric Cloud has been shut down. The Electric Cloud sign-in and server discovery in this app no longer work. Connect to a self-hosted agents server instead." Source: `packages/agents-desktop/README.md:3-6`. The code still contains the cloud sign-in window, the cloud token store, and the preparation path for the cloud server. This exploration documents what the code does. It marks the cloud path as historical where the shutdown matters.
 
 ## Related documents
 

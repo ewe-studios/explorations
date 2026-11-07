@@ -67,7 +67,7 @@ The `clientCredentials` cache rule means the provider stops using a token when l
 
 ## The core type
 
-Every server configuration is a discriminated union on `transport`. The HTTP member is shown here. The stdio member has `transport: 'stdio'`, a `command`, an optional `args` array, and an optional `env` map instead of a `url`.
+Every server configuration is a discriminated union on `transport`. This document shows the HTTP member here. The stdio member has `transport: 'stdio'`, a `command`, an optional `args` array, and an optional `env` map instead of a `url`.
 
 ```ts
 export interface McpHttpServerConfig {

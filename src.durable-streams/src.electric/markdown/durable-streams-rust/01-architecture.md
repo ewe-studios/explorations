@@ -4,7 +4,7 @@ title: Architecture
 
 # Architecture
 
-The server has one design goal: make an append cheap and make a read a direct copy. It reaches that goal with three choices. First, a stream is one contiguous file of encoded bytes. For a binary stream these are the posted bytes; for a JavaScript Object Notation (JSON) stream they are each value plus a comma. Second, a per-stream lock orders appends, and a sharded write-ahead log (WAL) carries a second copy of each append and groups their durability barriers. Third, a read resolves an offset to a byte range and sends that range without decoding it.
+The server has one design goal: make an append cheap and make a read a direct copy. It reaches that goal with three choices. First, a stream is one contiguous file of encoded bytes. For a binary stream these are the posted bytes. For a JavaScript Object Notation (JSON) stream they are each value plus a comma. Second, a per-stream lock orders appends. A sharded write-ahead log (WAL) carries a second copy of each append and groups their durability barriers. Third, a read resolves an offset to a byte range and sends that range without decoding it.
 
 This document follows one append and one read through the code. It then explains the Hypertext Transfer Protocol (HTTP) engine and the three response body types.
 
@@ -52,16 +52,16 @@ A close is a `POST` with `Stream-Closed: true` and an empty body (`src/handlers.
 
 The handler loads the stream from the store. A missing stream returns 404. A soft-deleted stream returns 410 (`src/handlers.rs:924-936`). A soft-deleted stream still exists on disk but is closed to reads and appends. The server removes it when its last fork reference is released, as the delete section below explains. The handler checks the producer headers and the body content type (`src/handlers.rs:937-963`).
 
-A producer sends `Producer-Id`, `Producer-Epoch`, and `Producer-Seq`. The identifier names the producer. The epoch names one incarnation of that producer; a new epoch replaces the old one. The sequence number counts appends inside one epoch. A repeat of the same triple returns a success without a second append (`src/handlers.rs:812-884`). A lower epoch returns 403. A higher epoch is accepted only when its sequence is 0; otherwise it returns 400 (`src/handlers.rs:864-869`). A sequence gap returns 409 (`src/handlers.rs:1052-1073`). The deduplication state lives in the sidecar and can lag an acknowledged append, so a producer should start a new epoch after a server restart (source package `README.md:147`).
+A producer sends `Producer-Id`, `Producer-Epoch`, and `Producer-Seq`. The identifier names the producer. The epoch names one incarnation of that producer. A new epoch replaces the old one. The sequence number counts appends inside one epoch. A repeat of the same triple returns a success without a second append (`src/handlers.rs:812-884`). A lower epoch returns 403. A higher epoch is accepted only when its sequence is 0. Otherwise it returns 400 (`src/handlers.rs:864-869`). A sequence gap returns 409 (`src/handlers.rs:1052-1073`). The deduplication state lives in the sidecar. It can lag an acknowledged append. A producer should therefore start a new epoch after a server restart (source package `README.md:147`).
 
 ### Step 2: encode the wire bytes
 
-The create request sets the stream type from the `Content-Type` header. The default is `application/octet-stream` (`src/handlers.rs:366-375`). Only the media type `application/json` selects a JavaScript Object Notation (JSON) stream, after parameter removal and case folding; every other type is binary (`src/store.rs:1206-1212`). An append must send the same media type as the stream, after parameter removal. A binary stream therefore accepts its configured type, which is normally `application/octet-stream`; a JSON stream accepts `application/json` (`src/handlers.rs:948-956`).
+The create request sets the stream type from the `Content-Type` header. The default is `application/octet-stream` (`src/handlers.rs:366-375`). Only the media type `application/json` selects a JSON stream, after parameter removal and case folding. Every other type is binary (`src/store.rs:1206-1212`). An append must send the same media type as the stream, after parameter removal. A binary stream therefore accepts its configured type. That type is normally `application/octet-stream`. A JSON stream accepts `application/json` (`src/handlers.rs:948-956`).
 
 `encode_wire` turns the body into the on-disk representation (`src/handlers.rs:641-670`).
 
 - A binary stream stores the body unchanged.
-- A JavaScript Object Notation (JSON) stream with one value stores the value followed by a comma.
+- A JSON stream with one value stores the value followed by a comma.
 - A JSON stream with an array stores each element followed by a comma. On append, an empty array is rejected. On create, it is accepted as an empty initial body (`src/handlers.rs:548`, `src/handlers.rs:650-655`, `src/handlers.rs:969`).
 
 The flatten is one level only. The body `[1,[2,3]]` is stored as two values, `1,` and `[2,3],`. The nested array stays one value (`src/handlers.rs:641-664`).
@@ -72,7 +72,7 @@ The append takes one asynchronous mutex for the stream (`src/handlers.rs:975-982
 
 ### Step 4: write the bytes to the data file
 
-`write_wire` calls `write_all` on the data file (`src/handlers.rs:749-770`). The bytes enter the operating system page cache. This write is not durable. The function then advances the writer tail under a short read-write lock. A reader must not use that tail; it uses the durable tail from step 7.
+`write_wire` calls `write_all` on the data file (`src/handlers.rs:749-770`). The bytes enter the operating system page cache. This write is not durable. The function then advances the writer tail under a short read-write lock. A reader must not use that tail. It uses the durable tail from step 7.
 
 A failed partial write is truncated back to the previous length (`src/handlers.rs:751-759`). Without that rollback, later appends would land after garbage bytes and every logical offset would be wrong.
 
@@ -84,11 +84,11 @@ The stage function does three things:
 
 1. In `memory` mode, it returns no log sequence number (LSN) and writes no second copy.
 2. In `wal` mode, it registers the stream in the shard's dirty set before it stages the record. The dirty set is the list of streams touched since the last checkpoint.
-3. It reserves an LSN and writes the framed record, which contains the same bytes just written to the data file, into the shard segment.
+3. It reserves an LSN and writes the framed record into the shard segment. That record contains the same bytes just written to the data file.
 
 The WAL record is the second copy, not a staging area for a later copy. A checkpoint never reads this record and rewrites it. It syncs the data-file copy and then unlinks whole segments whose records are below the recycle floor (`src/wal/shard.rs:915-1022`).
 
-The register-before-stage order closes a race with checkpoint recycling. If the server staged the record first, a checkpoint could make the record durable and take a recycle floor above it. It could then unlink its segment without ever syncing the stream's data file. Registering first guarantees that any checkpoint that can recycle a record of this stream also syncs that stream's file (`src/handlers.rs:720-723`).
+The register-before-stage order closes a race with checkpoint recycling. If the server staged the record first, a checkpoint could make the record durable and take a recycle floor above it. It could then unlink its segment without ever syncing the stream's data file. Registering first prevents that race. Any checkpoint that can recycle a record of this stream also syncs that stream's file (`src/handlers.rs:720-723`).
 
 ### Step 6: wait for durability without the lock
 
@@ -140,18 +140,18 @@ sequenceDiagram
 
 ### Close is a separate ordering problem
 
-A close sets the writer-visible `closed` flag at once, so a later append fails (`src/handlers.rs:1151-1163`). It does not wake readers yet. The handler first writes the metadata sidecar with a durable write: the sidecar data is synced, the file is renamed, and the parent directory is synced (`src/handlers.rs:1231-1236`, `src/store.rs:1446-1473`). Only then does it set `closed_durable`, the reader-visible flag, and wake the readers (`src/handlers.rs:1237-1244`). A reader never observes an end-of-file that a crash could roll back.
+A close sets the writer-visible `closed` flag at once, so a later append fails (`src/handlers.rs:1151-1163`). It does not wake readers yet. The handler first writes the metadata sidecar with a durable write. It syncs the sidecar data, renames the file, and syncs the parent directory (`src/handlers.rs:1231-1236`, `src/store.rs:1446-1473`). Only then does it set `closed_durable`, the reader-visible flag, and wake the readers (`src/handlers.rs:1237-1244`). A reader never observes an end-of-file that a crash could roll back.
 
 ### Create, delete, head, and fork
 
 The other methods are short, but each has one ordering rule.
 
-- **Create** (`PUT`) resolves the optional fork source, sets the content type, encodes the initial body, and calls `Store::create` on the blocking pool (`src/handlers.rs:367-569`). The blocking pool is the Tokio blocking thread pool, which runs calls that would block an asynchronous worker, such as a file fsync. The blocking pool matters because create writes the sidecar with a data fsync and a parent-directory fsync. A success therefore means the stream is durable (`src/handlers.rs:554-568`).
-- **Delete** (`DELETE`) is durable before the 204 response (`src/handlers.rs:2111-2120`). If a fork still refers to the stream, delete marks it soft-deleted and writes the sidecar durably; the file stays until the last child is released (`src/store.rs:993-1010`). Otherwise delete unlinks the sidecar and the data file, then syncs the directory (`src/store.rs:1011-1024`). A soft-deleted parent is collected when its last child calls `release_parent`; that call decrements the reference count and cascades up the chain. There is no periodic garbage collection pass (`src/store.rs:1036-1062`).
+- **Create** (`PUT`) resolves the optional fork source, sets the content type, and encodes the initial body. It then calls `Store::create` on the blocking pool (`src/handlers.rs:367-569`). The blocking pool is the Tokio blocking thread pool. It runs calls that would block an asynchronous worker, such as a file fsync. The blocking pool matters because create writes the sidecar with a data fsync and a parent-directory fsync. A success therefore means the stream is durable (`src/handlers.rs:554-568`).
+- **Delete** (`DELETE`) is durable before the 204 response (`src/handlers.rs:2111-2120`). If a fork still refers to the stream, delete marks it soft-deleted and writes the sidecar durably. The file stays until the last child is released (`src/store.rs:993-1010`). Otherwise delete unlinks the sidecar and the data file, then syncs the directory (`src/store.rs:1011-1024`). A soft-deleted parent is collected when its last child calls `release_parent`. That call decrements the reference count and cascades up the chain. The server has no periodic garbage collection pass (`src/store.rs:1036-1062`).
 - **Head** (`HEAD`) returns the same metadata headers as a read and no body (`src/handlers.rs:2075`). It does not reset the TTL (`src/handlers.rs:2075-2100`).
-- **Fork** is copy-on-write. The client sends `Stream-Forked-From` and the optional `Stream-Fork-Offset` and `Stream-Fork-Sub-Offset` in the create request (`src/handlers.rs:399-401`). The new stream stores its own bytes from `base_offset`, the fork point, and keeps a reference to the parent (`src/handlers.rs:432-528`, `src/store.rs:279-284`). A read below `base_offset` follows the parent chain. A parent therefore outlives its forks. Fork reads at or above `base_offset` use the child file in the normal way.
+- **Fork** is copy-on-write. The client sends `Stream-Forked-From` and the optional `Stream-Fork-Offset` and `Stream-Fork-Sub-Offset` in the create request (`src/handlers.rs:399-401`). The new stream stores its own bytes from `base_offset`, the fork point. It keeps a reference to the parent (`src/handlers.rs:432-528`, `src/store.rs:279-284`). A read below `base_offset` follows the parent chain. A parent therefore outlives its forks. Fork reads at or above `base_offset` use the child file in the normal way.
 
-A stream time to live (TTL) is enforced lazily, not by a background sweep. `Store::get` calls `is_expired` before it returns a stream. An expired stream is deleted, or soft-deleted when a fork still refers to it, and the lookup then reports it as missing (`src/store.rs:451-464`, `src/store.rs:959-972`). `is_expired` checks the absolute expiry time first, then `last_access + ttl`. A read or an append updates `last_access`; HEAD does not (`src/handlers.rs:766`, `src/handlers.rs:1539`).
+The TTL of a stream is enforced lazily, not by a background sweep. `Store::get` calls `is_expired` before it returns a stream. An expired stream is deleted, or soft-deleted when a fork still refers to it, and the lookup then reports it as missing (`src/store.rs:451-464`, `src/store.rs:959-972`). `is_expired` checks the absolute expiry time first, then `last_access + ttl`. A read or an append updates `last_access`. HEAD does not (`src/handlers.rs:766`, `src/handlers.rs:1539`).
 
 ## The read path
 
@@ -164,8 +164,8 @@ The server does not check that an offset lands on a JSON value boundary (`src/ha
 `read_range_body` builds the response for a byte range (`src/handlers.rs:1323-1371`).
 
 1. An empty range returns `[]` for JSON or an empty body for binary.
-2. A range fully covered by the resident tail cache returns `Body::Full` from memory. The cache holds only the newest append chunk, and only when that chunk is at most the `--tail-cache-bytes` cap; a larger append is not cached. A range that the cache covers only in part falls back to the file path (`src/store.rs:419-434`, `src/handlers.rs:1334-1345`).
-3. Otherwise the store resolves the range to placement-aware slices, where each slice is tagged local or remote (`src/handlers.rs:1361`). A placement-aware slice is a subrange plus the place that holds it, either the live file or a cold-tier segment.
+2. A range fully covered by the resident tail cache returns `Body::Full` from memory. The cache holds only the newest append chunk. It does so only when that chunk is at most the `--tail-cache-bytes` cap. A larger append is not cached. A range that the cache covers only in part falls back to the file path (`src/store.rs:419-434`, `src/handlers.rs:1334-1345`).
+3. Otherwise the store resolves the range to placement-aware slices. Each slice is tagged local or remote (`src/handlers.rs:1361`). A placement-aware slice is a subrange plus the place that holds it. That place is either the live file or a cold-tier segment.
 4. If every slice is local, the response is `Body::FileRange`.
 5. If any slice is remote, the response is a chunked channel with one range request per remote segment (`src/handlers.rs:1369`).
 
@@ -181,7 +181,7 @@ An SSE request subscribes to the same tail watch channel (`src/handlers.rs:2005-
 
 Sizes use binary units: one kibibyte (KiB) is 1,024 bytes, one mebibyte (MiB) is 1,048,576 bytes, and one gibibyte (GiB) is 1,073,741,824 bytes.
 
-On Linux, a separate reactor can own many subscribers (`src/sse_reactor.rs:29-37`). If a subscriber lets 8 MiB of framed data queue unsent, the reactor closes its connection; the client reconnects from its last offset (`src/sse_reactor.rs:33-37`, `src/sse_reactor.rs:413-416`). The value 256 is the epoll event batch size, not a per-subscriber limit (`src/sse_reactor.rs:37`, `src/sse_reactor.rs:241-248`). The reactor removes the per-subscriber connection task from the shared runtime; each subscriber becomes one compact slab entry on a fixed reactor thread (`src/sse_reactor.rs:1-11`).
+On Linux, a separate reactor can own many subscribers (`src/sse_reactor.rs:29-37`). If a subscriber lets 8 MiB of framed data queue unsent, the reactor closes its connection. The client reconnects from its last offset (`src/sse_reactor.rs:33-37`, `src/sse_reactor.rs:413-416`). The value 256 is the epoll event batch size, not a per-subscriber limit (`src/sse_reactor.rs:37`, `src/sse_reactor.rs:241-248`). The reactor removes the per-subscriber connection task from the shared runtime. Each subscriber becomes one compact slab entry on a fixed reactor thread (`src/sse_reactor.rs:1-11`).
 
 ```mermaid
 flowchart TD
@@ -217,7 +217,7 @@ The engine limits are:
 
 A semaphore caps concurrent connections (`src/engine_raw.rs:83-85`). Shutdown waits for in-flight requests for up to 25 seconds, then stops waiting and cuts off any request still running (`src/main.rs:445-464`). The committers then drain the records already staged, so no acknowledged append is lost. Shutdown does not force a checkpoint, so the next boot may replay the WAL.
 
-The engine also chooses where a file read runs. The `--read-offload` flag accepts `inline`, `tail`, or `always` (`src/engine_raw.rs:38-59`). A live-tail read is a caught-up read whose range begins at or near the durable tail; a non-tail catch-up read covers older bytes. The default `tail` serves a live tail inline and sends a non-tail catch-up read to the blocking pool. `inline` sends every read inline. `always` sends every read to the blocking pool. A disk fault on a non-tail read therefore does not stall the asynchronous workers (`src/engine_raw.rs:38-59`, `src/engine_raw.rs:372-388`).
+The engine also chooses where a file read runs. The `--read-offload` flag accepts `inline`, `tail`, or `always` (`src/engine_raw.rs:38-59`). A live-tail read is a caught-up read whose range begins at or near the durable tail. A non-tail catch-up read covers older bytes. The default `tail` serves a live tail inline and sends a non-tail catch-up read to the blocking pool. `inline` sends every read inline. `always` sends every read to the blocking pool. A disk fault on a non-tail read therefore does not stall the asynchronous workers (`src/engine_raw.rs:38-59`, `src/engine_raw.rs:372-388`).
 
 ## The three body types
 
@@ -231,7 +231,7 @@ The body choice is in `read_range_body` (`src/handlers.rs:1339-1369`) and the en
 
 ## Key insight
 
-**Aha:** the WAL stage happens under the per-stream appender lock, but the durability wait happens after the unlock, and the LSN order still matches the byte order. This looks like a contradiction. The resolution is that the stage reserves the LSN, and the reservation is the ordered event. `write_wire` runs first under the same lock, so the record's `stream_offset` describes the bytes just written (`src/handlers.rs:1103-1126`, `src/handlers.rs:1165-1174`). A later append can take the lock and get a higher LSN while the first append is still waiting for the disk. The shard publishes a contiguous watermark, so the first wait also covers every lower LSN (`src/wal/shard.rs:1451-1473`). The wait is long, so it must be off the lock. The order is short, so it belongs under the lock.
+**Aha:** the WAL stage happens under the per-stream appender lock. The durability wait happens after the unlock. The LSN order still matches the byte order. This looks like a contradiction. The resolution is that the stage reserves the LSN, and the reservation is the ordered event. `write_wire` runs first under the same lock, so the record's `stream_offset` describes the bytes just written (`src/handlers.rs:1103-1126`, `src/handlers.rs:1165-1174`). A later append can take the lock and get a higher LSN while the first append is still waiting for the disk. The shard publishes a contiguous watermark, so the first wait also covers every lower LSN (`src/wal/shard.rs:1451-1473`). The wait is long, so it must be off the lock. The order is short, so it belongs under the lock.
 
 ## Cross-references
 

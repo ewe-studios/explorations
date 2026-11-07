@@ -32,7 +32,7 @@ This document explains the configuration, the registration body, signature verif
 | Constructor | Returns | Use case |
 |-------------|---------|----------|
 | `createRuntimeRouter` | `RuntimeRouter` | Tests and custom hosts |
-| `createRuntimeHandler` | `RuntimeHandler` | Node.js HTTP server |
+| `createRuntimeHandler` | `RuntimeHandler` | Node.js Hypertext Transfer Protocol (HTTP) server |
 
 `createRuntimeHandler` calls `createRuntimeRouter`. It adds `onEnter`, a Node.js adapter that converts an `IncomingMessage` into a Fetch `Request`, calls the router, and writes the `Response` back to the `ServerResponse`.
 
@@ -73,7 +73,7 @@ The citation is `packages/agents-runtime/src/create-handler.ts:655-702`.
 | `onWakeError` | None | Background error observer |
 | `registrationConcurrency` | `8` | Parallel registration limit |
 | `sandboxProfiles` | Empty | Advertised sandbox profiles |
-| `publicUrl` | None | Public runtime URL list entry |
+| `publicUrl` | None | An entry in the public runtime URL list |
 | `name` | `default` | Runtime instance name |
 
 The citation is `packages/agents-runtime/src/create-handler.ts:35-130`.
@@ -193,7 +193,7 @@ await forEachWithConcurrency(types, effectiveConcurrency, async (entry) => {
 
 The citation is `packages/agents-runtime/src/create-handler.ts:542-545`.
 
-The default is 8. A value below 1 is clamped to 1. The router collects failed names and throws one error after all workers finish:
+The default is 8. The router clamps a value below 1 to 1. The router collects failed names and throws one error after all workers finish:
 
 ```
 [agent-runtime] N/M entity types registered (X failed: ...)
@@ -310,7 +310,7 @@ The method returns immediately. The webhook can respond before the handler finis
 
 ## Drain and error behavior
 
-`drainWakes` waits until the pending set is empty. It then throws the stored errors, if there are any:
+`drainWakes` waits until the pending set is empty. It then throws the stored errors, if any exist:
 
 ```ts
 while (pendingWakes.size > 0) {
@@ -331,7 +331,7 @@ The citation is `packages/agents-runtime/src/create-handler.ts:455-473`.
 
 ## Key insight
 
-**Key insight:** the handler separates fast acceptance from slow execution. The webhook response says only that the notification was valid and dispatched. It does not say that the handler succeeded. Success is recorded in the stream by `processWake`, and the control plane learns of it through the done callback and the ack offsets.
+**Key insight:** the handler separates fast acceptance from slow execution. The webhook response says only that the notification was valid and dispatched. It does not say that the handler succeeded. `processWake` records success in the stream, and the control plane learns of it through the done callback and the ack offsets.
 
 This split has a cost. A process crash after the 200 response but before the handler writes its result loses the in-memory work. The stream claim and the epoch protect against double execution. An epoch is a stream ownership generation number. A producer with an old epoch cannot append. Document [03-wake-processing.md](03-wake-processing.md) explains the claim protocol, the done callback, and the acknowledgement offsets.
 

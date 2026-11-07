@@ -12,7 +12,9 @@ This exploration studies two repositories as one system:
 
 Electric Agents is a platform for durable artificial-intelligence agents. Each agent is an *entity*. Each entity owns one append-only event stream. Durable Streams stores and delivers that stream. The agent runtime writes events into the stream. A wake mechanism tells the runtime when to run the handler again.
 
-The most important question in this exploration is: **how does the runtime set up the durable stream, and where is that stream stored?** Document [04-how-the-runtime-sets-up-a-stream.md](04-how-the-runtime-sets-up-a-stream.md) answers that question in full.
+The most important question in this exploration is: **how does the runtime set up the durable stream, and where is that stream stored?**
+
+Document [04-how-the-runtime-sets-up-a-stream.md](04-how-the-runtime-sets-up-a-stream.md) answers that question in full.
 
 ## Reading order
 
@@ -28,7 +30,9 @@ The most important question in this exploration is: **how does the runtime set u
 | 8 | [07-critical-assessment.md](07-critical-assessment.md) | Limits, risks, and open questions |
 | 9 | [08-glossary.md](08-glossary.md) | Key terms and abbreviations |
 
-**Aha: one stream is the unit of everything.** An entity, its memory, its inbox, its audit log, and its wake cursor are all views of one append-only stream. The master documents follow that stream from creation, through delivery, to the stored bytes.
+**Aha: one stream is the unit of everything.**
+
+An entity, its memory, its inbox, its audit log, and its wake cursor are all views of one append-only stream. The master documents follow that stream from creation, through delivery, to the stored bytes.
 
 ```mermaid
 flowchart LR
@@ -55,7 +59,7 @@ Each package has its own directory. Each directory has a `README.md` that indexe
 | Package | Documents | Purpose |
 |---------|-----------|---------|
 | [agents-runtime](agents-runtime/README.md) | 11 documents | The library that defines entities, materializes streams, and runs handlers |
-| [agents-server](agents-server/README.md) | 12 documents | The control plane: entity registry, HTTP routes, wakes, scheduler, bridges |
+| [agents-server](agents-server/README.md) | 12 documents | The control plane: entity registry, Hypertext Transfer Protocol (HTTP) routes, wakes, scheduler, bridges |
 | [durable-streams](durable-streams/README.md) | 12 documents | The protocol, the Node.js server, storage, clients, and the state layer |
 
 ### Agent application packages
@@ -63,7 +67,7 @@ Each package has its own directory. Each directory has a `README.md` that indexe
 | Package | Documents | Purpose |
 |---------|-----------|---------|
 | [agents](agents/README.md) | 5 documents | Built-in runtime implementations, including Horton and the worker runtime |
-| [agents-mcp](agents-mcp/README.md) | 5 documents | Model Context Protocol registry, transports, and OAuth bridges |
+| [agents-mcp](agents-mcp/README.md) | 5 documents | Model Context Protocol registry, transports, and Open Authorization (OAuth) bridges |
 | [agents-server-ui](agents-server-ui/README.md) | 7 documents | The browser single-page application for the server |
 | [agents-desktop](agents-desktop/README.md) | 4 documents | The Electron desktop application |
 | [agents-mobile](agents-mobile/README.md) | 5 documents | The mobile application |

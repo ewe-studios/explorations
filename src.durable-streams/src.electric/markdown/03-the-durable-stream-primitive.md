@@ -4,13 +4,13 @@ title: The Durable Stream Primitive
 
 # The durable stream primitive
 
-A durable stream is a URL that accepts bytes at the end and returns bytes from any saved position. That is the whole primitive. Everything else in Electric Agents is a convention layered on top: which bytes to write, which content type to use, and which subscription should hear about them.
+A durable stream is a Uniform Resource Locator (URL) that accepts bytes at the end and returns bytes from any saved position. That is the whole primitive. Everything else in Electric Agents is a convention layered on top. The convention decides which bytes to write, which content type to use, and which subscription should hear about them.
 
 This document explains the protocol at the depth needed to read the runtime code. The full specification is `PROTOCOL.md` in the Durable Streams repository.
 
 ## Stream model
 
-A stream has six properties. The first four matter most for the agent runtime; the last two matter for lifecycle and forking.
+A stream has six properties. The first four matter most for the agent runtime. The last two matter for lifecycle and forking.
 
 | Property | Meaning |
 |----------|---------|
@@ -25,7 +25,7 @@ Source: `PROTOCOL.md`, section 4.
 
 ## The six operations
 
-The protocol defines six operations. Each operation is an ordinary HTTP method on the stream URL.
+The protocol defines six operations. Each operation is an ordinary Hypertext Transfer Protocol (HTTP) method on the stream URL.
 
 | Operation | HTTP | Key headers | Result |
 |-----------|------|-------------|--------|
@@ -102,7 +102,7 @@ Source: `PROTOCOL.md`, section 8.
 
 ## JSON mode: how the agent runtime gets message boundaries
 
-The agent runtime creates every entity stream with `Content-Type: application/json`. JSON mode has four rules that the runtime depends on. These rules describe the HTTP request body. They do not describe the value that a client library passes to its `append` method: that method wraps the value in `[...]` before it sends the request.
+The agent runtime creates every entity stream with `Content-Type: application/json`. JavaScript Object Notation (JSON) mode has four rules that the runtime depends on. These rules describe the HTTP request body. They do not describe the value that a client library passes to its `append` method. That method wraps the value in `[...]` before it sends the request.
 
 1. **Message boundaries are preserved.** Each stored message is returned as one element of the read array. A POST of a single object stores one message. A POST whose body is an array is flattened one level, so `[a, b]` stores two messages.
 2. **Arrays are flattened exactly one level.** An append body `[a, b]` stores two messages. A body `[[a, b]]` stores one message.
@@ -136,7 +136,7 @@ A network retry can duplicate an append. The protocol prevents duplicates with p
 Rules:
 
 - An append with a `(Producer-Id, Producer-Epoch, Producer-Seq)` tuple that the server already accepted returns success without writing again.
-- An append whose sequence number is lower than or equal to the last accepted sequence in the same epoch returns `204 No Content` as a duplicate.
+- The sequence number can be lower than or equal to the last accepted sequence in the same epoch. In that case, the server treats the append as a duplicate. The server returns `204 No Content`.
 - An append whose sequence number is greater than the last accepted sequence plus one returns `409 Conflict` as a sequence gap.
 - An append with a stale epoch returns `403 Forbidden` and the current epoch.
 
@@ -152,7 +152,7 @@ Source: `packages/agents-runtime/src/process-wake.ts`.
 
 This identifier is stable across wakes. If a wake retries after a network error, the server deduplicates the second attempt.
 
-**Aha:** idempotency belongs to the transport layer, not the handler. The handler does not need to know that a retry occurred. It writes an event; the producer guarantees one stored copy.
+**Aha:** idempotency belongs to the transport layer, not the handler. The handler does not need to know that a retry occurred. It writes an event. The producer guarantees one stored copy.
 
 `Stream-Seq` is a different mechanism. It is one ordering value per writer, not a tuple. The server rejects a value that is not strictly greater than `lastSeq` with `409 Conflict`. Producer deduplication runs first: a duplicate producer tuple returns `204 No Content` before the server checks `Stream-Seq`. Source: `durable-streams/packages/server/src/file-store.ts:1288-1308`.
 
@@ -176,7 +176,7 @@ The stream server's notification names the stream and the new offsets. In Electr
 
 Source: `PROTOCOL.md`, sections 6 and 7.1.
 
-When a subscription is created, the server links each named existing stream at its current tail offset. Creation therefore does not replay history. A stream discovered later by a matching append is linked before that append, so its first message still creates a wake. Source: `PROTOCOL.md:895, 965`.
+When the server creates a subscription, it links each named existing stream at its current tail offset. Creation therefore does not replay history. A stream discovered later by a matching append is linked before that append, so its first message still creates a wake. Source: `PROTOCOL.md:895, 965`.
 
 ### Pull-wake subscriptions
 

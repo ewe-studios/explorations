@@ -43,7 +43,7 @@ All paths are relative to `packages/typescript-client`.
 | Helpers | `src/helpers.ts` | 28-132 | Type guards, offsets, JavaScript Object Notation (JSON), snapshot visibility |
 | Errors | `src/error.ts` | 1-125 | Error classes |
 | Column mapping | `src/column-mapper.ts` | 25-392 | Name mapping and `WHERE` encoding |
-| Expression compiler | `src/expression-compiler.ts` | 18-132 | Structured `WHERE` and `ORDER BY` to Structured Query Language (SQL) |
+| Expression compiler | `src/expression-compiler.ts` | 18-132 | Structured `WHERE` and `ORDER BY` to SQL |
 | Pause control | `src/pause-lock.ts` | 32-112 | Multi-reason pause lock |
 | Snapshots | `src/snapshot-tracker.ts` | 16-152 | Duplicate change filtering |
 | CDN cache memory | `src/expired-shapes-cache.ts` | 9-77 | Expired handle tracking |
@@ -65,9 +65,9 @@ flowchart TB
 
 `ShapeStream` is the protocol client. It tracks the offset, the shape handle, the schema, and the connection state. `Shape` is the projection client. It applies each change message to a map. It stops notifying during initial synchronization. It notifies when the stream reaches an up-to-date boundary. The rules are in `src/shape.ts:18-40`.
 
-The two control messages have different jobs. An `up-to-date` message marks a sync boundary: every change before it is present. A `must-refetch` message tells the projection to discard its rows and start again. The citations are `src/types.ts:120-128` and `src/shape.ts:251-267`.
+The two control messages have different jobs. An `up-to-date` message marks a sync boundary. Every change before the boundary is present. A `must-refetch` message tells the projection to discard its rows and start again. The citations are `src/types.ts:120-128` and `src/shape.ts:251-267`.
 
-**Aha:** the package has no database and no cache of rows on disk. `Shape` is a live projection of an HTTP message stream. The offset is a position in the shape log, in the form `<transaction>_<operation>`. The shape handle identifies one server-side build of the shape. A new `Shape` can rebuild the same state from the same offset and handle. This is why the client can resume after a reload with that pair. The pair is not sufficient alone: the new stream also needs the same shape URL, parameters, and authentication headers.
+**Aha:** the package has no database and no cache of rows on disk. `Shape` is a live projection of an HTTP message stream. The offset is a position in the shape log, in the form `<transaction>_<operation>`. The shape handle identifies one server-side build of the shape. A new `Shape` can rebuild the same state from the same offset and handle. This is why the client can resume after a reload with that pair. The pair is not enough alone. The new stream also needs the same shape URL, parameters, and authentication headers.
 
 ## Related studies
 

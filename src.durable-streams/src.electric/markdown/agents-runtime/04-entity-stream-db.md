@@ -32,7 +32,7 @@ The options include:
 
 - `stream`: an already-created stream handle.
 - `streamOptions`: options for a new stream handle.
-- `actorFrom`: the entity URL used as the writer identity.
+- `actorFrom`: the entity Uniform Resource Locator (URL) used as the writer identity.
 - `onEvent`: a callback for each event.
 - `onBatch`: a callback for each live batch.
 - `writeEvent`: the append function.
@@ -160,7 +160,7 @@ The citation is `packages/agents-runtime/src/entity-stream-db.ts:470-500`.
 
 An update for a missing key does not fail. It creates the row. This rule makes client retries safer. It also means a caller can upsert without a separate existence check.
 
-The runtime also generates `manifests_insert`, `manifests_update`, and `manifests_delete` when `writeEvent` exists. The `manifests` collection holds keyed durable entries such as context entries and goals. It gets generated actions because handlers write it directly. Custom actions from the entity definition are added last.
+The runtime also generates `manifests_insert`, `manifests_update`, and `manifests_delete` when `writeEvent` exists. The `manifests` collection holds keyed durable entries such as context entries and goals. It gets generated actions because handlers write it directly. The runtime adds custom actions from the entity definition last.
 
 ```mermaid
 flowchart TB
@@ -177,7 +177,7 @@ flowchart TB
 `persistMutationsNow` performs the write path:
 
 1. Reject the call when no `writeEvent` exists.
-2. Generate one transaction identifier (txid) per batch.
+2. Generate one transaction identifier per batch.
 3. Map each collection identifier back to its schema key.
 4. Remove `_seq`, `_timeline_order`, and `_principal`. `_seq` is a local stream sequence number. It orders rows that have no stream offset yet. It must not be persisted because the stream assigns the real order.
 5. Write an insert, update, or delete event with the txid and writer.
@@ -204,7 +204,7 @@ The return path is a later stream batch. The state layer sees the event with the
 
 ## Write serialization
 
-Writes are serialized through a promise queue:
+The runtime serializes writes through a promise queue:
 
 ```ts
 const next = persistQueue.then(() =>
@@ -258,9 +258,9 @@ The timeline is the ordered view of all rows. It reads these fields. That is why
 
 ## Externally writable collections
 
-A collection with `externallyWritable: true` accepts writes through the agents-server HTTP router. The router is the server-side route layer. The server route is `POST /:type/:instanceId/collections/:name`. The registration body from [02-runtime-handler-and-registration.md](02-runtime-handler-and-registration.md) forwards the collection type, contract, and operation allowlist.
+A collection with `externallyWritable: true` accepts writes through the agents-server Hypertext Transfer Protocol (HTTP) router. The router is the server-side route layer. The server route is `POST /:type/:instanceId/collections/:name`. The registration body from [02-runtime-handler-and-registration.md](02-runtime-handler-and-registration.md) forwards the collection type, contract, and operation allowlist.
 
-The default operation set is `insert` only. Open update and delete would let one principal overwrite or remove another principal's rows by key. An insert with an existing key is handled by the stream order, so the later write wins. The citation is `packages/agents-runtime/src/types.ts:678-685`.
+The default operation set is `insert` only. Open update and delete would let one principal overwrite or remove another principal's rows by key. The stream order handles an insert with an existing key, so the later write wins. The citation is `packages/agents-runtime/src/types.ts:678-685`.
 
 The `_principal` column is the control that makes shared writes auditable. A later read can tell which principal owns a row.
 
@@ -270,7 +270,7 @@ The `_principal` column is the control that makes shared writes auditable. A lat
 
 The rule has a cost. A typo in a key creates a row instead of reporting a missing target. The runtime accepts this cost because stream state is a log, not a relational store.
 
-There is no conflict check that rejects a write. The `_principal` column records the writer for audit and access control. The stream order is the only conflict resolver.
+No conflict check rejects a write. The `_principal` column records the writer for audit and access control. The stream order is the only conflict resolver.
 
 ## Next
 

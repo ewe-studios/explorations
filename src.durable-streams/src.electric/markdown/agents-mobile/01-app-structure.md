@@ -8,7 +8,7 @@ The mobile package has a small root and a clear split between routes, screens, s
 
 ## Entry point and routes
 
-`index.ts` is the package entry point. It loads the gesture handler and a random UUID polyfill, then hands control to Expo Router:
+`index.ts` is the package entry point. It loads the gesture handler and a random universally unique identifier (UUID) polyfill, then hands control to Expo Router:
 
 ```ts
 // packages/agents-mobile/index.ts:1-11
@@ -83,7 +83,7 @@ Each entry has one job:
 | `SafeAreaProvider` | Supplies screen insets |
 | `ThemeProvider` | Resolves system, light, or dark tokens |
 | `Sentry.ErrorBoundary` | Replaces a render crash with a retry screen |
-| `MobileAppStateProvider` | Loads the active server URL and onboarding flag |
+| `MobileAppStateProvider` | Loads the active server Uniform Resource Locator (URL) and onboarding flag |
 | `CloudAuthProvider` | Subscribes to the `cloudAuth` module singleton and listens for the authentication redirect |
 | `AgentsProvider` | Creates the five collections for the active server |
 
@@ -170,9 +170,9 @@ The aliases do two jobs. The runtime alias points at a source file, so the mobil
 - `@streamdown/math` is the mathematics extension for the Streamdown Markdown renderer.
 - Shiki is a syntax highlighter.
 
-The chat transcript still renders its text and code, but the mobile bundle does not carry a diagram engine, a mathematics engine, or the full syntax highlighter. Each stub supplies the module shape that the web code imports and a small fallback.
+The chat transcript still renders its text and code. The mobile bundle does not carry a diagram engine, a mathematics engine, or the full syntax highlighter. Each stub supplies the module shape that the web code imports and a small fallback.
 
-Expo DOM components are bundled by Metro like every other module. At run time, the web code of a DOM component executes inside a `react-native-webview` web view. The bundle therefore carries the component, and the web view renders it.
+Metro bundles Expo Document Object Model (DOM) components like every other module. At run time, the web code of a DOM component executes inside a `react-native-webview` web view. The bundle therefore carries the component, and the web view renders it.
 
 The resolver also pins React, React DOM, and React Native Web to the mobile package's own copies:
 
@@ -282,7 +282,7 @@ Vitest is a JavaScript unit test runner. The test command is `vitest run --passW
 
 **Aha:** Most files in `app/` are thin adapters, but the root layout is not. Each adapter reads the router, applies the guard, and passes callbacks. The behaviour lives in `src/screens`. The root layout is the exception: it owns the provider tree, the redirect rules, and the conditional `AgentsProvider`. `oauth/callback.tsx` is the second exception: it runs the sign-in state machine.
 
-This split is why `app/session.tsx` can arrange the DOM embed and the native composer in one view, while `SessionScreen.tsx` owns the composer logic and the signal calls. A signal is a POSIX-style control message, such as `SIGINT` to stop the current run. The route file decides the layout: the embed fills the area above the composer, and the composer sits at the bottom with the keyboard inset. The screen component decides the actions. A reader who wants to change user actions can start in `src/screens`. A reader who wants to change navigation or the provider order starts in `app/_layout.tsx`.
+Because of this split, `app/session.tsx` can arrange the DOM embed and the native composer in one view. `SessionScreen.tsx` owns the composer logic and the signal calls. A signal is a Portable Operating System Interface (POSIX)-style control message, such as `SIGINT` to stop the current run. The route file decides the layout: the embed fills the area above the composer, and the composer sits at the bottom with the keyboard inset. The screen component decides the actions. A reader who wants to change user actions can start in `src/screens`. A reader who wants to change navigation or the provider order starts in `app/_layout.tsx`.
 
 The route adapter pattern is visible in the home route:
 

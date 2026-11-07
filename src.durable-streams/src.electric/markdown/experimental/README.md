@@ -15,9 +15,9 @@ The package assumes four terms from Electric:
 
 The package has three behaviors:
 
-1. **One subscription over several shapes.** `MultiShapeStream` subscribes to many Electric shapes at the same time and publishes their messages through one callback. Each message gains a `shape` field that names its child shape.
+1. **One subscription over several shapes.** `MultiShapeStream` subscribes to many Electric shapes at the same time. It publishes their messages through one callback. Each message gains a `shape` field that names its child shape.
 2. **One callback per transaction.** `TransactionalMultiShapeStream` extends the first class. It holds messages until every child shape has passed the same transaction boundary, then publishes them together.
-3. **Wait for one matching message.** `matchStream` resolves a Promise when a chosen shape emits a change message that matches an operation list and a predicate.
+3. **Wait for one matching message.** `matchStream` resolves a Promise on a matching change message. The message must match an operation list and a predicate.
 
 The source is at `/Users/darkvoid/GitSources/src.Electric/electric/packages/experimental`. The package version is `6.0.28`. The licence is Apache-2.0 (`package.json:1-84`).
 
@@ -55,7 +55,7 @@ flowchart LR
     T -->|one batch per transaction| U
 ```
 
-Each box is a child `ShapeStream` object. `MultiShapeStream` subscribes to all of them. When one child delivers a batch, the class compares the newest data `LSN` with each child's last `up-to-date` `LSN`. A **Log Sequence Number (LSN)** is PostgreSQL's position in its write-ahead log; a higher value is a later database state. If a child has not reached the newest data `LSN`, the class calls `forceDisconnectAndRefresh()` on that child. That method, inherited from `ShapeStream`, drops the child's HTTP connection and re-fetches from its current offset. The transactional subclass holds the messages and publishes one batch per transaction.
+Each box is a child `ShapeStream` object. `MultiShapeStream` subscribes to all of them. When one child delivers a batch, the class compares the newest data `LSN` with each child's last `up-to-date` `LSN`. A **Log Sequence Number (LSN)** is PostgreSQL's position in its write-ahead log. A higher value is a later database state. If a child has not reached the newest data `LSN`, the class calls `forceDisconnectAndRefresh()` on that child. That method, inherited from `ShapeStream`, drops the child's HTTP connection and re-fetches from its current offset. The transactional subclass holds the messages and publishes one batch per transaction.
 
 The transaction gate waits for the slowest child shape:
 

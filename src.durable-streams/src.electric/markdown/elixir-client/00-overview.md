@@ -6,7 +6,7 @@ title: Overview
 
 `electric_client` connects an Elixir application to an Electric server. **Electric** is a sync engine that streams a filtered subset of a PostgreSQL database over the Hypertext Transfer Protocol (HTTP). The application defines a shape. The client fetches the current rows of that shape, then follows live changes forever or stops at a chosen point. The client returns plain Elixir structs. The caller decides what to do with them.
 
-A **shape** is a filtered subset of one PostgreSQL table. A **change message** describes one insert, update, or delete of one row. A **control message** describes protocol state. The values are `up-to-date` (the stream caught up) and `must-refetch` (the handle is invalid). An **offset** is a position in the stream that the client sends to resume. A **long poll** is one HTTP request that the server holds open until a change arrives or a timeout expires. A **409** is the HTTP status code Conflict; in this protocol it means that the server no longer holds the shape handle. A **cache buster** is a random query parameter that changes the URL so an HTTP cache cannot reuse an old response.
+A **shape** is a filtered subset of one PostgreSQL table. A **change message** describes one insert, update, or delete of one row. A **control message** describes protocol state. The values are `up-to-date` (the stream caught up) and `must-refetch` (the handle is invalid). An **offset** is a position in the stream that the client sends to resume. A **long poll** is one HTTP request that the server holds open until a change arrives or a timeout expires. A **409** is the HTTP status code Conflict. In this protocol it means that the server no longer holds the shape handle. A **cache buster** is a random query parameter that changes the Uniform Resource Locator (URL) so an HTTP cache cannot reuse an old response.
 
 The package has one central rule: **the protocol is the same for every consumer, and only the driving loop differs**. The streaming interface and the polling interface call the same `Electric.Client.Poll.request/3` function (`lib/electric/client/stream.ex:163`, `lib/electric/client.ex:606-625`). The streaming interface adds a buffer, an `Enumerable` implementation, and **fast-loop recovery**. Fast-loop recovery is detection of a server or cache that returns the same offset before the first `up-to-date`, with a reset and a backoff. It does not add a second protocol.
 
@@ -25,7 +25,7 @@ The package has one central rule: **the protocol is the same for every consumer,
 | Published Hex package name | `electric_client` (the package `README.md:10-18`) |
 | Documentation entry point | `Electric.Client` (`mix.exs:74-84`) |
 
-A Mix **optional dependency** is a package that the client does not force on its users. The user adds the package to their own project. When the package is present at compile time, the client compiles extra modules; when it is absent, those modules are skipped. This is not an `import` and it does not load code at run time by itself.
+A Mix **optional dependency** is a package that the client does not force on its users. The user adds the package to their own project. When the package is present at compile time, the client compiles extra modules. When it is absent, those modules are skipped. This is not an `import` and it does not load code at run time by itself.
 
 When the main `electric` application is present, the client compiles `Electric.Client.Embedded` and the `embedded/1` constructor (`lib/electric/client.ex:322-336`, `lib/electric/client/embedded.ex:1-2`). When `ecto_sql` is present, it compiles the Ecto adapter (`lib/electric/client/ecto_adapter.ex:1-2`). The `gen_stage` dependency is declared but no module in `lib/` uses it (`mix.exs:58`).
 
@@ -33,11 +33,11 @@ When the main `electric` application is present, the client compiles `Electric.C
 
 ### Problem 1: follow a shape
 
-An application needs the current rows of a filtered table, and then every change to those rows. A raw Hypertext Transfer Protocol (HTTP) client would need to handle offsets, long polls, control messages, schema decoding, and cache invalidation. `Electric.Client.stream/2` packages all of that into an `Enumerable` (`lib/electric/client.ex:489-494`).
+An application needs the current rows of a filtered table, and then every change to those rows. A raw HTTP client would need to handle offsets, long polls, control messages, schema decoding, and cache invalidation. `Electric.Client.stream/2` packages all of that into an `Enumerable` (`lib/electric/client.ex:489-494`).
 
 ### Problem 2: drive the request loop
 
-An application may already own a scheduler, a supervision tree, or a batch loop. It does not want to hand its loop to an `Enumerable`. An `Enumerable` does not block by itself; the process that enumerates it blocks. The polling interface avoids that transfer of control. `Electric.Client.poll/4` makes one request and returns the messages plus the next state (`lib/electric/client.ex:602-625`). The caller decides when to call again.
+An application may already own a scheduler, a supervision tree, or a batch loop. It does not want to hand its loop to an `Enumerable`. An `Enumerable` does not block by itself. The process that enumerates it blocks. The polling interface avoids that transfer of control. `Electric.Client.poll/4` makes one request and returns the messages plus the next state (`lib/electric/client.ex:602-625`). The caller decides when to call again.
 
 ```mermaid
 flowchart TD
@@ -52,13 +52,13 @@ flowchart TD
     ENGINE --> STATE[ShapeState]
 ```
 
-An arrow means "the left box calls the right box". The shape definition feeds the client. The client builds either a stream or a direct poll call. Both use the same poll engine. The engine uses the HTTP fetch, the tag tracker, and the shape state, but the diagram omits the message parser and the expired-shape cache for space. Both are part of the engine path.
+An arrow means "the left box calls the right box". The shape definition feeds the client. The client builds either a stream or a direct poll call. Both use the same poll engine. The engine uses the HTTP fetch, the tag tracker, and the shape state. The diagram omits the message parser and the expired-shape cache for space. Both are part of the engine path.
 
 The shared engine is the key design choice. A correction to offset handling, cache busting, or move-out logic reaches both interfaces at the same time.
 
 ## The layers
 
-The state layer uses several terms. A **cursor** is a cache-busting interval token that the server sends on a live response; the client sends it back so that a cache cannot serve an old response. A **mapper** is the `ValueMapper` that converts a wire string into an Elixir value. A **tag index** maps row keys to the filter tags that currently match them. A **disjunct** is one branch of a filter that is written as an OR of AND groups; **disjunctive normal form** is that OR-of-ANDs shape. **Visibility** is the test that at least one disjunct has all of its positions active. A **retry counter** counts failed attempts. A **self-heal flag** records that the client already tried to recover from a stale cached response.
+The state layer uses several terms. A **cursor** is a cache-busting interval token that the server sends on a live response. The client sends it back so that a cache cannot serve an old response. A **mapper** is the `ValueMapper` that converts a wire string into an Elixir value. A **tag index** maps row keys to the filter tags that currently match them. A **disjunct** is one branch of a filter that is written as an OR of AND groups. **Disjunctive normal form** is that OR-of-ANDs shape. **Visibility** is the test that at least one disjunct has all of its positions active. A **retry counter** counts failed attempts. A **self-heal flag** records that the client already tried to recover from a stale cached response.
 
 | Layer | Module | Role | Citation |
 |-------|--------|------|----------|
@@ -124,7 +124,7 @@ The `headers` struct carries `operation`, `relation`, `handle`, `lsn`, `txids`, 
 
 ## Key insight
 
-**Key insight:** the client treats every response as untrusted with respect to cache and proxy behaviour. A success response can be stale. A 409 body can be missing or mangled. The engine therefore validates headers, compares the returned handle with a cached expired handle, plants a random cache buster, and retries with a bounded policy (`lib/electric/client/poll.ex:138-204`, `lib/electric/client/poll.ex:336-376`). The protocol state is protected even when an HTTP intermediary is wrong.
+**Key insight:** the client treats every response as untrusted with respect to cache and proxy behaviour. A success response can be stale. A 409 body can be missing or mangled. The engine therefore validates headers and compares the returned handle with a cached expired handle. It also plants a random cache buster and retries with a bounded policy (`lib/electric/client/poll.ex:138-204`, `lib/electric/client/poll.ex:336-376`). The protocol state is protected even when an HTTP intermediary is wrong.
 
 The mechanisms have these meanings:
 

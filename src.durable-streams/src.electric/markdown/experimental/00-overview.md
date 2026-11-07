@@ -8,7 +8,7 @@ title: Overview
 
 **Electric** is a sync engine. It streams a filtered subset of a PostgreSQL database to clients over the Hypertext Transfer Protocol (HTTP). A **shape** is one filtered subset of one PostgreSQL table. A **shape stream** (`ShapeStream`) is the client object that follows one shape. It catches up to the current state and then follows live changes. This package does not replace that object. It composes it.
 
-A shape stream delivers two message kinds. A **change message** describes one insert, update, or delete of one row. A **control message** describes protocol state; the important control value here is `up-to-date`, which says that the stream has caught up. A **batch** is the array of messages that one child stream delivers in one callback. A **transaction boundary** is the point at which every shape has reported an `up-to-date` position at or above one PostgreSQL transaction's Log Sequence Number (LSN). An **LSN** is PostgreSQL's position in its write-ahead log; a higher value is a later database state. An **offset** is the position inside one shape stream that a client sends to resume. Each child stream keeps its own offset.
+A shape stream delivers two message kinds. A **change message** describes one insert, update, or delete of one row. A **control message** describes protocol state. The important control value here is `up-to-date`, which says that the stream has caught up. A **batch** is the array of messages that one child stream delivers in one callback. A **transaction boundary** is the point at which every shape has reported an `up-to-date` position at or above one PostgreSQL transaction's Log Sequence Number (LSN). An **LSN** is PostgreSQL's position in its write-ahead log. A higher value is a later database state. An **offset** is the position inside one shape stream that a client sends to resume. Each child stream keeps its own offset.
 
 ## Package facts
 
@@ -35,7 +35,7 @@ An application often needs data from more than one shape at the same time. For e
 
 ### Behavior 2: one callback per database transaction
 
-A caller can need the changes from several shapes in database order. For example, an issue row and its comment row can change in one PostgreSQL transaction. If the caller receives the issue change before the comment change, an intermediate state appears. `TransactionalMultiShapeStream` holds change messages until every shape has reached the same transaction boundary. It then publishes the held messages in Log Sequence Number (LSN) order, and within one LSN in `op_position` order. `src/multi-shape-stream.ts:379-468` contains the class.
+A caller can need the changes from several shapes in database order. For example, an issue row and its comment row can change in one PostgreSQL transaction. If the caller receives the issue change before the comment change, an intermediate state appears. `TransactionalMultiShapeStream` holds change messages until every shape has reached the same transaction boundary. It then publishes the held messages in LSN order, and within one LSN in `op_position` order. `src/multi-shape-stream.ts:379-468` contains the class.
 
 The transaction boundary is conservative. The class cannot see a PostgreSQL transaction identifier. It infers a boundary from two values that Electric adds to each message: the message LSN and the `up-to-date` control message's `global_last_seen_lsn`. The exact rule is in [01-experimental-modules.md](01-experimental-modules.md).
 
@@ -118,7 +118,7 @@ interface MultiShapeChangeMessage<
 
 The citation is `src/multi-shape-stream.ts:32-37`. The type parameter `ShapeNames` is the union of the keys in the `shapes` option. TypeScript therefore knows that `message.shape` is one of the configured names.
 
-A concrete batch from a stream with two shapes can look like this. The comments describe the fields; the values are illustrative.
+A concrete batch from a stream with two shapes can look like this. The comments describe the fields. The values are illustrative.
 
 ```jsonc
 [

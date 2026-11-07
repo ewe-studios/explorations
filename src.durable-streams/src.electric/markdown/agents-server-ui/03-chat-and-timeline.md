@@ -44,7 +44,7 @@ connectEntityStream({ baseUrl, entityUrl })
   })
 ```
 
-If the effect is cancelled before the connection is ready, the callback closes the connection at once. This prevents a connection leak when the user switches entity faster than the stream opens. Source: `packages/agents-server-ui/src/hooks/useEntityTimeline.ts:92-100`.
+If React cancels the effect before the connection is ready, the callback closes the connection at once. This prevents a connection leak when the user switches entity faster than the stream opens. Source: `packages/agents-server-ui/src/hooks/useEntityTimeline.ts:92-100`.
 
 The hook does not read the raw stream in the component. It builds a live query over the materialized collections. The query is reactive: an append changes a collection, the query recomputes, and the component renders the new rows.
 
@@ -112,7 +112,7 @@ const { data: manifests = [] } = useLiveQuery(
 )
 ```
 
-Manifests are ordered by the raw stream sequence number, not by the timeline order field. This keeps the declared tree in creation order.
+The query orders manifests by the raw stream sequence number, not by the timeline order field. This keeps the declared tree in creation order.
 
 The normalized entities list includes a `wake` field and an `observed` flag. A source entity is always `observed`. A child entity is observed only if its manifest says so. Source: `packages/agents-server-ui/src/hooks/useEntityTimeline.ts:221-243`.
 
@@ -150,7 +150,7 @@ A second sort in JavaScript refines the order:
 
 Source: `packages/agents-server-ui/src/hooks/useEntityTimeline.ts:196-214`.
 
-The position string is designed for lexical comparison. It starts with a 16-digit millisecond timestamp, a colon, and a fractional index. Source: `packages/agents-server-ui/src/lib/sendMessage.ts:94-123`.
+The position string supports lexical comparison. It starts with a 16-digit millisecond timestamp, a colon, and a fractional index. Source: `packages/agents-server-ui/src/lib/sendMessage.ts:94-123`.
 
 ### Compaction filtering
 
@@ -178,7 +178,7 @@ const ROW_SETTLE_MS = 500
 ```
 
 - `BOTTOM_PIN_THRESHOLD` is the distance in pixels from the bottom that still counts as "pinned to bottom". Source: `packages/agents-server-ui/src/components/EntityTimeline.tsx:1944`.
-- `CHAT_SURFACE_GUTTER` is removed from the content width to compute the text column. Source: `packages/agents-server-ui/src/components/EntityTimeline.tsx:1524`.
+- The code removes `CHAT_SURFACE_GUTTER` from the content width to compute the text column. Source: `packages/agents-server-ui/src/components/EntityTimeline.tsx:1524`.
 - `ROW_GAP` separates message rows.
 - `MANIFEST_ROW_GAP` separates compact rows such as manifests, wakes, signals, and compactions.
 - `ROW_SETTLE_MS` delays a second measurement until the row has settled. Source: `packages/agents-server-ui/src/components/EntityTimeline.tsx:1642`.
@@ -227,7 +227,7 @@ body: JSON.stringify({
 
 The default mode is `queued`. Source: `packages/agents-server-ui/src/lib/sendMessage.ts:303`.
 
-A message key is generated on the client:
+The client generates a message key:
 
 ```ts
 // packages/agents-server-ui/src/lib/sendMessage.ts:67
@@ -291,7 +291,7 @@ sequenceDiagram
     Note over C,L: if no transaction identifier arrives in 10,000 ms,<br/>the action reports a failure
 ```
 
-The key is the join between the two paths. The optimistic row and the real event carry the same client key, so the materializer can replace one with the other instead of showing a duplicate. The local order value puts the optimistic row after every real row until that replacement happens.
+The key is the join between the two paths. The optimistic row and the real event carry the same client key. The materializer can therefore replace one with the other instead of showing a duplicate. The local order value puts the optimistic row after every real row until that replacement happens.
 
 ### Attachments
 
@@ -375,7 +375,7 @@ const CHAT_VIEW_PERMISSIONS: ReadonlyArray<EntityPermission> = [
 ```
 
 - Without `write`, the composer shows the placeholder `Read-only`. Source: `packages/agents-server-ui/src/components/views/ChatView.tsx:418-420`.
-- Without `signal`, the stop control is disabled. Source: `packages/agents-server-ui/src/components/views/ChatView.tsx:419`.
+- Without `signal`, the code disables the stop control. Source: `packages/agents-server-ui/src/components/views/ChatView.tsx:419`.
 - Without `fork`, the fork controls appear disabled with the label `Fork permission required` (`packages/agents-server-ui/src/hooks/useForkFromHere.ts:46-60`; `packages/agents-server-ui/src/components/AgentResponse.tsx:808-840`).
 
 The server enforces the permission. The view only hides controls.
@@ -384,7 +384,7 @@ The server enforces the permission. The view only hides controls.
 
 While an entity is spawning, the chat does not connect the stream. `connectUrl` is null. Source: `packages/agents-server-ui/src/components/views/ChatView.tsx:52-55`.
 
-This avoids a 404 retry loop against an entity whose stream does not exist yet. The timeline shows an empty state and the composer is disabled until the entity row becomes active.
+This avoids a 404 retry loop against an entity whose stream does not exist yet. The timeline shows an empty state and the code disables the composer until the entity row becomes active.
 
 ## Aha: pending messages are a projection, not a second store
 

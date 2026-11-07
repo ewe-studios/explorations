@@ -68,7 +68,7 @@ The monitor thresholds come from the configuration and are passed to `:erlang.sy
 | Schema names | `long_message_queue_enable_threshold` (default 20), then `long_message_queue_disable_threshold` (default 0) (`lib/electric/telemetry/opts.ex:49-50`). |
 | `:erlang.system_monitor/2` call | `{disable, enable}`, so the defaults become `{0, 20}` (`lib/electric/telemetry/system_monitor.ex:33-34`). |
 
-The monitor sends `true` when a process queue reaches the enable value and `false` when it falls back to the disable value. The `SystemMonitor` then emits `[:vm, :monitor, :long_message_queue]` with the current length for each process in the active set, once on entry and then every 200 milliseconds (`lib/electric/telemetry/system_monitor.ex:102-117`, `lib/electric/telemetry/system_monitor.ex:145-162`).
+The monitor sends `true` when a process queue reaches the enable value and `false` when it falls back to the disable value. The `SystemMonitor` then emits `[:vm, :monitor, :long_message_queue]` with the current length for each process in the active set. It emits the event once on entry and then every 200 milliseconds (`lib/electric/telemetry/system_monitor.ex:102-117`, `lib/electric/telemetry/system_monitor.ex:145-162`).
 
 ```mermaid
 sequenceDiagram
@@ -94,18 +94,18 @@ The `SystemMonitor` has two timers. The first is a one-hour garbage collection t
 
 `ApplicationTelemetry.metrics/1` returns a list of `Telemetry.Metrics` definitions (`lib/electric/telemetry/application_telemetry.ex:88-145`). A definition such as `last_value("vm.memory.atom", unit: :byte)` maps to the event `[:vm, :memory]` and the measurement `:atom`. The library uses this naming rule: the last part of the metric name is the measurement, and the other parts are the event name.
 
-The rule has exceptions. A definition can set `event_name:` or `measurement:` directly. `electric.plug.serve_shape.requests.count` uses both: `event_name: [:electric, :plug, :serve_shape]` and `measurement: :count` (`lib/electric/telemetry/stack_telemetry.ex:88-92`). Without the explicit values, the name would map to the event `[:electric, :plug, :serve_shape, :requests]`, which does not exist. A metric can also set a `:measurement` function that transforms the value; `vm.uptime.total` does this to convert native time to seconds (`lib/electric/telemetry/application_telemetry.ex:136-139`). Read the definition, not only the name, when an event does not appear where the rule predicts.
+The rule has exceptions. A definition can set `event_name:` or `measurement:` directly. `electric.plug.serve_shape.requests.count` uses both: `event_name: [:electric, :plug, :serve_shape]` and `measurement: :count` (`lib/electric/telemetry/stack_telemetry.ex:88-92`). Without the explicit values, the name would map to the event `[:electric, :plug, :serve_shape, :requests]`, which does not exist. A metric can also set a `:measurement` function that transforms the value. The `vm.uptime.total` metric does this to convert native time to seconds (`lib/electric/telemetry/application_telemetry.ex:136-139`). Read the definition, not only the name, when an event does not appear where the rule predicts.
 
 | Group | Metric names | Type | Unit |
 |-------|--------------|------|------|
 | Process memory | `process.memory.total`, `process.bin_memory.total` | `last_value` | byte |
 | Binary detail | `process.bin_memory.max_bin_count`, `avg_bin_count`, `max_ref_count`, `avg_ref_count` | `last_value` | none |
 | ETS | `ets.memory.total` | `last_value` | byte |
-| CPU | `system.cpu.core_count`, `system.cpu.utilization.total`, `system.cpu.utilization.core_N` | `last_value` | none |
+| Central Processing Unit (CPU) | `system.cpu.core_count`, `system.cpu.utilization.total`, `system.cpu.utilization.core_N` | `last_value` | none |
 | Load | `system.load_percent.avg1`, `avg5`, `avg15` | `last_value` | percent |
 | Memory percent | `system.memory_percent.free_memory`, `available_memory`, `used_memory` | `last_value` | percent |
 | Garbage collection | `vm.garbage_collection.total_runs`, `total_bytes_reclaimed` | `last_value` | count, byte |
-| VM memory | `vm.memory.atom`, `atom_used`, `binary`, `code`, `ets`, `processes`, `processes_used`, `system`, `total` | `last_value` | byte |
+| Virtual Machine (VM) memory | `vm.memory.atom`, `atom_used`, `binary`, `code`, `ets`, `processes`, `processes_used`, `system`, `total` | `last_value` | byte |
 | Monitor | `vm.monitor.long_message_queue.length` (sum), `long_schedule.timeout` (distribution), `long_gc.timeout` (distribution) | mixed | count, millisecond |
 | Persistent term | `vm.persistent_term.count`, `memory` | `last_value` | count, byte |
 | Reductions | `vm.reductions.total`, `delta` | `last_value` | count |
@@ -209,7 +209,7 @@ Every measurement is wrapped in `{Poller, :safe_invoke, [m, f, a]}` (`lib/electr
 
 The citations are `lib/electric/telemetry/poller.ex:69-98`. The callback contract is documented on `lib/electric/telemetry/poller.ex:60-68`.
 
-The return value is discarded on purpose. A measurement function must publish its data with `:telemetry.execute/3`; a plain return value never reaches a reporter. The `:ok` return only tells `telemetry_poller` that the call completed, so the library keeps the measurement in its schedule.
+The return value is discarded on purpose. A measurement function must publish its data with `:telemetry.execute/3`. A plain return value never reaches a reporter. The `:ok` return only tells `telemetry_poller` that the call completed, so the library keeps the measurement in its schedule.
 
 ## Application periodic measurements
 
@@ -291,11 +291,11 @@ The binary label parser is more complex. It recognises request labels in the for
 
 - `{:count, n}` takes the first `n` groups after a descending sort (`lib/electric/telemetry/processes.ex:53-58`).
 - `{:mem_percent, p}` takes groups until their memory reaches `p` percent of `:erlang.memory(:processes_used)` (`lib/electric/telemetry/processes.ex:63-73`). It also stops at the first group below 1,048,576 bytes, and it includes that group as a marker (`lib/electric/telemetry/processes.ex:18-19`, `lib/electric/telemetry/processes.ex:95-110`).
-- `{:at_least_bytes, b}` takes groups until a group is below `b` bytes, and it includes that last group as a marker (`lib/electric/telemetry/processes.ex:75-80`, `lib/electric/telemetry/processes.ex:104-107`). With `b = 0`, no group is below the cutoff, so it returns every group.
+- `{:at_least_bytes, b}` takes groups until a group is below `b` bytes. It includes that last group as a marker (`lib/electric/telemetry/processes.ex:75-80`, `lib/electric/telemetry/processes.ex:104-107`). With `b = 0`, no group is below the cutoff, so it returns every group.
 
-The `:mem_percent` form works only for process heap memory. Binary memory uses reference counts, and several processes can share one binary, so a percentage of the total would count the same bytes more than once. The source comment states this reason, and the code has a `:mem_percent` clause only for `:proc_mem` (`lib/electric/telemetry/processes.ex:60-73`). For binary memory, use `{:at_least_bytes, b}` or `{:count, n}`.
+The `:mem_percent` form works only for process heap memory. Binary memory uses reference counts. Several processes can share one binary. A percentage of the total would therefore count the same bytes more than once. The source comment states this reason, and the code has a `:mem_percent` clause only for `:proc_mem` (`lib/electric/telemetry/processes.ex:60-73`). For binary memory, use `{:at_least_bytes, b}` or `{:count, n}`.
 
-The included group below the cutoff is deliberate. It shows the caller that the cutoff stopped the list before the target was reached, so a short list is not confused with a complete one (`lib/electric/telemetry/processes.ex:104-107`).
+The included group below the cutoff is deliberate. It shows the caller that the cutoff stopped the list before the target was reached. A short list is therefore not confused with a complete one (`lib/electric/telemetry/processes.ex:104-107`).
 
 The grouping function filters dead processes, groups by type, and computes these statistics for each group (`lib/electric/telemetry/processes.ex:82-93`, `lib/electric/telemetry/processes.ex:116-142`):
 
@@ -314,7 +314,7 @@ The grouping function filters dead processes, groups by type, and computes these
 
 The type extraction is the non-obvious part (`lib/electric/telemetry/ets_tables.ex:239-284`). It uses this rule:
 
-1. If the name contains a colon, split on the colon and remove the parts from the first Universally Unique Identifier (UUID)-like part onward. For example, `Electric.StatusMonitor:6dd7c00b` becomes `Electric.StatusMonitor`.
+1. If the name contains a colon, split on the colon. Remove the parts from the first Universally Unique Identifier (UUID)-like part onward. For example, `Electric.StatusMonitor:6dd7c00b` becomes `Electric.StatusMonitor`.
 2. If the name contains an underscore, apply the same rule with the underscore as the separator. For example, `stack_otel_telemetry_6dd7c00b` becomes `stack_otel_telemetry`.
 3. If neither rule applies, use the full name.
 
@@ -332,7 +332,7 @@ The UUID pattern is at `lib/electric/telemetry/ets_tables.ex:237`. The result is
 2. It creates a named protected ETS table named `ElectricTelemetry.DiskUsage:<stack_id>` (`lib/electric/telemetry/disk_usage.ex:35-40`, `lib/electric/telemetry/disk_usage.ex:109-111`).
 3. It loads the cache file. If the cache is missing or invalid, it schedules an immediate measurement (`lib/electric/telemetry/disk_usage.ex:42`, `57-61`).
 4. `read_disk_usage/1` times a recursive directory walk with `:timer.tc/2` (`lib/electric/telemetry/disk_usage.ex:79-95`).
-5. It writes the result to ETS and to the cache file, cancels the old timer, and schedules the next update (`lib/electric/telemetry/disk_usage.ex:90-94`).
+5. It writes the result to ETS and to the cache file. It cancels the old timer and schedules the next update (`lib/electric/telemetry/disk_usage.ex:90-94`).
 
 `current/1` reads the ETS table without a call to the server (`lib/electric/telemetry/disk_usage.ex:17-27`). It returns `:pending` when the table does not exist or when no value is present. It returns `{:ok, bytes, duration}` when a value is present. This is why an exporter can read the size at any time without blocking.
 
@@ -387,7 +387,7 @@ flowchart LR
 
 The option `additional_metrics` appends custom metric definitions to both supervisors (`lib/electric/telemetry/application_telemetry.ex:169-170`, `lib/electric/telemetry/stack_telemetry.ex:140-141`). The schema accepts five metric types: `Counter`, `LastValue`, `Sum`, `Summary`, and `Distribution` (`lib/electric/telemetry/opts.ex:65-76`).
 
-The option `additional_prometheus_metrics` adds definitions only to the Prometheus reporter (`lib/electric/telemetry/application_telemetry.ex:42-53`). The schema defaults it to an empty list (`lib/electric/telemetry/opts.ex:77-92`). This option exists because the stack supervisor exports its metrics through OpenTelemetry and StatsD, so adding the same metrics to those reporters from ApplicationTelemetry would double-report them. The test at `test/electric/telemetry/application_telemetry_test.exs:20-23` proves the positive half: the custom metric appears in Prometheus. The negative half is at `:25-35`: the same metric does not appear in OpenTelemetry or StatsD.
+The option `additional_prometheus_metrics` adds definitions only to the Prometheus reporter (`lib/electric/telemetry/application_telemetry.ex:42-53`). The schema defaults it to an empty list (`lib/electric/telemetry/opts.ex:77-92`). This option prevents double reporting. The stack supervisor exports its metrics through OpenTelemetry and StatsD. Adding the same metrics from ApplicationTelemetry to those reporters would double-report them. The test at `test/electric/telemetry/application_telemetry_test.exs:20-23` proves the positive half: the custom metric appears in Prometheus. The negative half is at `:25-35`: the same metric does not appear in OpenTelemetry or StatsD.
 
 ## Test coverage
 

@@ -126,7 +126,7 @@ The provider also creates one on-demand collection: `createRunnerRuntimeDiagnost
 
 ### Collection cache
 
-Collections are cached by base address in `appCollectionsCache`. Source: `packages/agents-server-ui/src/lib/ElectricAgentsProvider.tsx:350`.
+The code caches collections by base address in `appCollectionsCache`. Source: `packages/agents-server-ui/src/lib/ElectricAgentsProvider.tsx:350`.
 
 ```ts
 // packages/agents-server-ui/src/lib/ElectricAgentsProvider.tsx:352
@@ -152,7 +152,7 @@ A cache means two components that ask for the same server share one logical coll
 
 ## Data plane: one stream per entity
 
-The entity stream is separate from the shapes. The connection module keeps a cache of open connections, keyed by base address plus entity URL:
+The entity stream is separate from the shapes. The connection module keeps a cache of open connections. Each key is the base address plus the entity Uniform Resource Locator (URL):
 
 ```ts
 // packages/agents-server-ui/src/lib/entity-connection.ts:90
@@ -226,7 +226,7 @@ On a React Native runtime, the client uses long polling instead of Server-Sent E
 
 `connectEntityStream` increments a reference count. `close()` decrements it. Source: `packages/agents-server-ui/src/lib/entity-connection.ts:211-234`.
 
-When the count reaches zero, the entry is not closed at once. It is scheduled for eviction after 30,000 milliseconds. Source: `packages/agents-server-ui/src/lib/entity-connection.ts:101-112`.
+When the count reaches zero, the code does not close the entry at once. It schedules the entry for eviction after 30,000 milliseconds. Source: `packages/agents-server-ui/src/lib/entity-connection.ts:101-112`.
 
 This delay prevents a close and immediate reopen when the user switches between tiles that show the same entity. A new connection request clears the timer and reuses the entry. Source: `packages/agents-server-ui/src/lib/entity-connection.ts:150-154`.
 
@@ -236,7 +236,7 @@ This delay prevents a close and immediate reopen when the user switches between 
 
 ## Mutations and optimistic updates
 
-The provider exposes five write actions:
+The provider exposes five write actions over Hypertext Transfer Protocol (HTTP):
 
 | Action | HTTP request | Optimistic change |
 |--------|--------------|-------------------|
@@ -329,7 +329,7 @@ In the desktop application, mutating requests to a local server go through the m
 
 Source: `packages/agents-server-ui/src/lib/auth-fetch.ts:126-137`.
 
-The bridge cannot carry every body type. A `FormData` body cannot be serialized, so the code falls back to a browser fetch and applies the headers itself. Source: `packages/agents-server-ui/src/lib/auth-fetch.ts:253-259`.
+The bridge cannot carry every body type. The code cannot serialize a `FormData` body, so it falls back to a browser fetch and applies the headers itself. Source: `packages/agents-server-ui/src/lib/auth-fetch.ts:253-259`.
 
 The reason for this path is not visible in this package. The desktop package explains it: the main process adds credentials and avoids browser restrictions for local servers.
 

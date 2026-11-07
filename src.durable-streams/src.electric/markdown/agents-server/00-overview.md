@@ -108,11 +108,11 @@ The package exposes three surfaces.
 
 ### 1. The management application programming interface (API)
 
-All management routes use the prefix `/_electric`. Examples are `PUT /_electric/entities/:type/:instanceId`, `POST /_electric/entities/:type/:instanceId/send`, and `GET /_electric/runners/:id/health`. The routers are described in [06-http-routing.md](06-http-routing.md).
+All management routes use the prefix `/_electric`. Examples are `PUT /_electric/entities/:type/:instanceId`, `POST /_electric/entities/:type/:instanceId/send`, and `GET /_electric/runners/:id/health`. [06-http-routing.md](06-http-routing.md) describes the routers.
 
 ### 2. The stream pass-through
 
-Any path that is not a management route is forwarded to the Durable Streams server. The server adds authorization for entity streams, attachment streams, and shared-state streams. The catch-all is in `src/routing/durable-streams-router.ts`.
+The server forwards any path that is not a management route to the Durable Streams server. It adds authorization for entity streams, attachment streams, and shared-state streams. The catch-all is in `src/routing/durable-streams-router.ts`.
 
 ```ts
 // packages/agents-server/src/routing/durable-streams-router.ts:100-104
@@ -123,11 +123,11 @@ durableStreamsRouter.post(`*`, streamAppend)
 durableStreamsRouter.all(`*`, proxyPassThrough)
 ```
 
-The order matters. The JavaScript Object Notation (JSON) Web Key Set (JWKS) endpoint is served locally. Control-plane subscription calls are rewritten and forwarded. A `POST` append passes through a write-token and schema check first. All other traffic is a transparent proxy.
+The order matters. The server serves the JavaScript Object Notation (JSON) Web Key Set (JWKS) endpoint locally. The server rewrites and forwards control-plane subscription calls. A `POST` append passes through a write-token and schema check first. All other traffic is a transparent proxy.
 
 ### 3. The background workers
 
-The server starts five background components in a standard deployment. They run in the same Node.js process in the standalone deployment. Two of them are conditional: the projector does nothing without an Electric Uniform Resource Locator (URL), and the pg-sync bridge manager only acts when `pgSync` is configured. The two membership components are alternatives: the standalone runtime uses `EntityBridgeManager`, and the multi-tenant host uses `EntityProjector`.
+The server starts five background components in a standard deployment. They run in the same Node.js process in the standalone deployment. Two of them are conditional. The projector does nothing without an Electric Uniform Resource Locator (URL). The pg-sync bridge manager only acts when `pgSync` is configured. The two membership components are alternatives: the standalone runtime uses `EntityBridgeManager`, and the multi-tenant host uses `EntityProjector`.
 
 - `WakeRegistry` matches events to wake conditions.
 - `Scheduler` claims due rows from `scheduled_tasks`.
@@ -193,9 +193,9 @@ sequenceDiagram
     R-->>C: 201 Created and x-write-token header
 ```
 
-The dispatch subscription connects the entity stream to a runner wake stream or to a webhook target. The router writes it, because the router resolves the dispatch policy. If the request has an initial message and a dispatch target, the router links the subscription before it sends the message; otherwise the link runs after the send. See [09-runners-and-sandboxes.md](09-runners-and-sandboxes.md).
+The dispatch subscription connects the entity stream to a runner wake stream or to a webhook target. The router writes it, because the router resolves the dispatch policy. If the request has an initial message and a dispatch target, the router links the subscription before it sends the message. Otherwise the link runs after the send. See [09-runners-and-sandboxes.md](09-runners-and-sandboxes.md).
 
-If the stream creation fails with an ordinary error, the manager deletes the stream it created, deletes the entity row, and unregisters the wake when the request declared one. A duplicate entity or a stream conflict is different: the code skips all cleanup because it assumes the other spawn owns both the row and the stream. That assumption is not guaranteed when only one of the two resources conflicts. The rollback path is in [02-entity-manager.md](02-entity-manager.md).
+The stream creation can fail with an ordinary error. The manager then deletes the stream it created and deletes the entity row. It also unregisters the wake when the request declared one. A duplicate entity or a stream conflict is different. The code skips all cleanup, because it assumes the other spawn owns both the row and the stream. That assumption is not guaranteed when only one of the two resources conflicts. The rollback path is in [02-entity-manager.md](02-entity-manager.md).
 
 ## Package layout
 

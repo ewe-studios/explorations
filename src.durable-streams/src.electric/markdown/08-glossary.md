@@ -28,7 +28,7 @@ flowchart TD
 | **Entity** | The unit of agent identity. An entity has a type, an identifier, a status, one main stream, and a set of permissions. Source: `packages/agents-server/src/entity-manager.ts`. |
 | **Entity type** | A named template. It declares the state collections, the inbox schemas, the slash commands, the creation schema, and the default dispatch policy. |
 | **Handler** | The async function that runs on each wake. It receives a handler context and the wake description. |
-| **Durable stream** | An append-only byte sequence, reachable by HTTP at a URL, with ordered offsets and live reads. |
+| **Durable stream** | An append-only byte sequence, reachable by Hypertext Transfer Protocol (HTTP) at a Uniform Resource Locator (URL), with ordered offsets and live reads. |
 | **Wake** | A request to run a handler because something changed. |
 | **Materialization** | The process of reading stream events and applying them to typed in-memory collections. |
 | **Projection** | A derived view of events. The collections are a projection. The `/_entities/` streams are another projection. |
@@ -43,13 +43,13 @@ flowchart TD
 | **Catch-up read** | A read from an offset to the current tail that then stops. |
 | **Long-poll read** | A read that waits for new data until data arrives or a timeout expires. |
 | **Server-Sent Events (SSE)** | A one-way HTTP streaming mode. The server pushes events on an open response. |
-| **JSON mode** | The special behavior of streams created with `Content-Type: application/json`. Message boundaries are preserved, arrays flatten one level, and reads return arrays. |
+| **JavaScript Object Notation (JSON) mode** | The special behavior of streams created with `Content-Type: application/json`. Message boundaries are preserved, arrays flatten one level, and reads return arrays. |
 | **Content type** | The Multipurpose Internet Mail Extensions (MIME) type set at stream creation. |
 | **Closed stream** | A stream in the terminal state. It rejects appends. |
 | **Soft-deleted stream** | A deleted stream whose data remains for live forks. Its own URL returns `410 Gone`. |
 | **Fork** | A stream that inherits a prefix from a source stream without copying bytes. |
 | **Fork offset** | The divergence point between a source stream and its fork. |
-| **Sub-offset** | A position inside one message, used as the fork point when the split must occur inside a message: an element count in JSON mode, a byte count in binary mode. |
+| **Sub-offset** | A position inside one message. It marks the fork point when the split must occur inside a message. The value is an element count in JSON mode or a byte count in binary mode. |
 | **Reference count** | The number of forks that point at a source stream. |
 | **Time to live (TTL)** | An optional expiry rule for a stream. |
 | **Segment** | One append-only log file that holds stream bytes. |

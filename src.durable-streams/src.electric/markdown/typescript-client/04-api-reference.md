@@ -49,7 +49,7 @@ classDiagram
     ShapeStream --> MessageParser
 ```
 
-The diagram shows the main class relationships, not every member. The tables below are the complete reference. `ShapeStream` is declared in `src/client.ts:649-2417`. `Shape` is declared in `src/shape.ts:78-360`. `ShapeStreamInterface` is declared in `src/client.ts:557-589`. `MessageParser` is declared in `src/parser.ts:99-209`.
+The diagram shows the main class relationships, not every member. The tables below are the complete reference. `src/client.ts:649-2417` declares `ShapeStream`. `src/shape.ts:78-360` declares `Shape`. `src/client.ts:557-589` declares `ShapeStreamInterface`. `src/parser.ts:99-209` declares `MessageParser`.
 
 ## ShapeStreamOptions
 
@@ -82,9 +82,9 @@ The type is in `src/client.ts:300-555`.
 
 Reserved parameter names are `cursor`, `handle`, `live`, `offset`, and `cache-buster`. The client throws `ReservedParamError` when a caller supplies one. The citation is `src/client.ts:93-99`, `src/client.ts:165-171`, and `src/client.ts:2446-2455`.
 
-The `params` object also accepts the PostgreSQL-specific fields `table` (string), `columns` (array of column names), and `where` (SQL string). It also accepts `params` (array or numeric-keyed object of `WHERE` values), and `replica` (`default` or `full`). The citation is `src/client.ts:113-151`.
+The `params` object also accepts the PostgreSQL-specific fields `table` (string), `columns` (array of column names), and `where`. The `where` field is a Structured Query Language (SQL) string. It also accepts `params` (array or numeric-keyed object of `WHERE` values), and `replica` (`default` or `full`). The citation is `src/client.ts:113-151`.
 
-The subset request parameters use the prefix `subset__`. They are `subset__where`, `subset__params`, `subset__limit`, `subset__offset`, `subset__order_by`, `subset__where_expr`, and `subset__order_by_expr`. These names are internal to `requestSnapshot` and `fetchSnapshot`; they are not in the reserved-name set. The citation is `src/constants.ts:26-33`.
+The subset request parameters use the prefix `subset__`. They are `subset__where`, `subset__params`, `subset__limit`, `subset__offset`, `subset__order_by`, `subset__where_expr`, and `subset__order_by_expr`. These names are internal to `requestSnapshot` and `fetchSnapshot`. They are not in the reserved-name set. The citation is `src/constants.ts:26-33`.
 
 A subset call can use a string clause or a structured expression:
 
@@ -154,7 +154,7 @@ The type is in `src/shape.ts:78-360`.
 
 The subscriber callback receives `{ value, rows }`. The `value` is the map. The `rows` is the array. The citation is `src/shape.ts:10-14`.
 
-The `Shape` notification behavior is defined in `src/shape.ts:18-40`. The rules are N1 and N2 in [02-shape-protocol-and-offsets.md](02-shape-protocol-and-offsets.md).
+`src/shape.ts:18-40` defines the `Shape` notification behavior. The rules are N1 and N2 in [02-shape-protocol-and-offsets.md](02-shape-protocol-and-offsets.md).
 
 `Shape` also stores the requested snapshot parameters. After a `must-refetch` message, it re-executes those snapshots. The citation is `src/shape.ts:274-307`.
 
@@ -205,7 +205,7 @@ The parser symbols are internal. The package entry point does not export them, a
 
 `createColumnMapper(mapping)` builds a mapper from an explicit mapping. `snakeCamelMapper(schema?)` builds a bidirectional snake_case and camelCase mapper. The citation is `src/column-mapper.ts:159-177` and `src/column-mapper.ts:372-392`.
 
-`compileExpression(expr, columnMapper?)` turns a structured `WHERE` expression into Structured Query Language (SQL). It supports comparison, logical, special, string, and `coalesce` operators. The citation is `src/expression-compiler.ts:18-100`.
+`compileExpression(expr, columnMapper?)` turns a structured `WHERE` expression into SQL. It supports comparison, logical, special, string, and `coalesce` operators. The citation is `src/expression-compiler.ts:18-100`.
 
 `compileOrderBy(clauses, columnMapper?)` turns structured ordering clauses into a SQL `ORDER BY` string. The citation is `src/expression-compiler.ts:116-132`.
 
@@ -223,7 +223,7 @@ The transformer order is fixed. The column mapper decodes first. The transformer
 
 ## Backoff options
 
-`BackoffOptions` is declared in `src/fetch.ts:28-47`.
+`src/fetch.ts:28-47` declares `BackoffOptions`.
 
 | Field | Type | Default | Behavior |
 |-------|------|---------|----------|
@@ -238,7 +238,7 @@ The defaults are in `src/fetch.ts:49-54`.
 
 ## Error classes
 
-Only `FetchError` and `FetchBackoffAbortError` are exported from the package entry point (`src/index.ts:9`). The other classes below are internal to the package; they appear here because the client may throw them or use them in control flow.
+The package entry point exports only `FetchError` and `FetchBackoffAbortError` (`src/index.ts:9`). The other classes below are internal to the package. They appear here because the client may throw them or use them in control flow.
 
 | Error | Meaning | Source |
 |-------|---------|--------|
@@ -272,7 +272,7 @@ Only `FetchError` and `FetchBackoffAbortError` are exported from the package ent
 | `CACHE_BUSTER_QUERY_PARAM` | `cache-buster` | `src/constants.ts:34` |
 | `ELECTRIC_PROTOCOL_QUERY_PARAMS` | Array of protocol parameters | `src/constants.ts:37-54` |
 
-The server sets `electric-up-to-date` on a response that has reached a sync boundary. The chunk buffer reads it to decide not to prefetch. The server sets `electric-snapshot` to `true` on a subset response. The chunk buffer reads it to skip prefetch. The client sends `expired_handle` when it knows a handle is stale, so the server can bypass that cache entry. The citations are `src/fetch.ts:475-506` and `src/client.ts:1351-1353`.
+The server sets `electric-up-to-date` on a response that has reached a sync boundary. The chunk buffer reads it to decide not to prefetch. The server sets `electric-snapshot` to `true` on a subset response. The chunk buffer reads it to skip prefetch. The client sends `expired_handle` when it knows a handle is stale. The server can then bypass that cache entry. The citations are `src/fetch.ts:475-506` and `src/client.ts:1351-1353`.
 
 ## Minimal examples
 

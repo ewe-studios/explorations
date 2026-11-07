@@ -69,7 +69,7 @@ export default {
 }
 ```
 
-The Wrangler configuration must name the binding `STREAMS`. Wrangler is the Cloudflare Workers command-line tool. A fork is a new stream that inherits the messages of a source stream up to a chosen offset. The fork code uses the `STREAMS` binding for object-to-object RPC. The migration must use `new_sqlite_classes`, the Durable Object migration that creates a SQLite-backed class.
+The Wrangler configuration must name the binding `STREAMS`. Wrangler is the Cloudflare Workers command-line tool. A fork is a new stream that inherits the messages of a source stream up to a chosen offset. The fork code uses the `STREAMS` binding for object-to-object Remote Procedure Call (RPC). The migration must use `new_sqlite_classes`, the Durable Object migration that creates a SQLite-backed class.
 
 ### One object per stream
 
@@ -226,12 +226,12 @@ An inference call is expensive. A dropped connection must not lose the tokens th
 
 ### Routes
 
-Two authentication forms appear in the table. A service JWT is a JSON Web Token that a calling service signs for itself. A pre-signed URL carries its own signature in the query string.
+Two authentication forms appear in the table. A service JavaScript Object Notation (JSON) Web Token (JWT) is a token that a calling service signs for itself. A pre-signed Uniform Resource Locator (URL) carries its own signature in the query string.
 
 | Method | Path | Authentication | Action |
 |--------|------|----------------|--------|
-| `POST` | `/v1/proxy` | Service JavaScript Object Notation (JSON) Web Token (JWT) | Create a proxy stream |
-| `GET` | `/v1/proxy/:id` | Pre-signed Uniform Resource Locator (URL) or JWT | Read with offset and live mode |
+| `POST` | `/v1/proxy` | Service JWT | Create a proxy stream |
+| `GET` | `/v1/proxy/:id` | Pre-signed URL or JWT | Read with offset and live mode |
 | `HEAD` | `/v1/proxy/:id` | Service JWT | Read metadata |
 | `PATCH` | `/v1/proxy/:id` | Pre-signed URL | Abort the upstream call |
 | `DELETE` | `/v1/proxy/:id` | Service JWT | Delete the stream |
@@ -297,7 +297,7 @@ The package has a `./transports` export (`packages/proxy/package.json:48`). It g
 
 | Adapter | Export | Purpose |
 |---------|--------|---------|
-| Vercel artificial intelligence (AI) Software Development Kit (SDK) | `createDurableChatTransport`, `wasResumed` | Reconnect a chat transport to the proxy stream |
+| Vercel AI Software Development Kit (SDK) | `createDurableChatTransport`, `wasResumed` | Reconnect a chat transport to the proxy stream |
 | TanStack AI | `createDurableAdapter` | Reconnect a TanStack connection to the proxy stream |
 
 The files are `packages/proxy/src/transports/vercel.ts:51` and `packages/proxy/src/transports/tanstack.ts:53`. The adapters hide the reconnect endpoint and the offset from the application.
@@ -380,7 +380,7 @@ A crash between step 1 and step 2 leaves stale producer state. The next start ca
 
 The README judges the impact as low. The likely result is a false gap, a `409 Conflict` that reports a missing sequence when the data is in fact present. Duplicate data is not likely. A client can recover by incrementing its producer epoch. The higher epoch fences the stale epoch, so the server starts a new sequence space and accepts the new sequence. The repository tracks the issue as issue 143.
 
-This limitation is important for a correctness claim. The Node.js file store flushes the data with `fdatasync` before it commits metadata. It leaves a window where the data exists but the metadata is old. On recovery it rebuilds the metadata from the log files, so a message that the log holds is kept even when the old metadata does not name it. The Caddy store leaves a window in the producer state instead. Both are crash windows, but with different visible effects.
+This limitation is important for a correctness claim. The Node.js file store flushes the data with `fdatasync` before it commits metadata. It leaves a window where the data exists but the metadata is old. On recovery it rebuilds the metadata from the log files. A message that the log holds is therefore kept, even when the old metadata does not name it. The Caddy store leaves a window in the producer state instead. Both are crash windows, but with different visible effects.
 
 ### Webhooks
 
@@ -396,7 +396,7 @@ The Go package has a `webhook` directory with a manager, routes, signing code, a
 | Embedded in an existing Go service | Caddy plugin |
 | Resumable artificial intelligence responses | Proxy in front of a Durable Streams server |
 
-The Node.js server is the only one with the complete subscription plane. The Cloudflare server has the strongest isolation model of the three: one Durable Object per stream, with one event loop and one SQLite database per stream. The other two servers share one process and one store across streams. The Caddy plugin is the easiest to embed in a Go deployment, but its file store has a documented producer-state window.
+The Node.js server is the only one with the complete subscription plane. The Cloudflare server has the strongest isolation model of the three. It has one Durable Object per stream, with one event loop and one SQLite database per stream. The other two servers share one process and one store across streams. The Caddy plugin is the easiest to embed in a Go deployment, but its file store has a documented producer-state window.
 
 ## Related documents
 

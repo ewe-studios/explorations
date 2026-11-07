@@ -81,7 +81,7 @@ base: desktop ? (desktopServe ? `/` : `./`) : `/__agent_ui/`,
 
 - **Web mode.** The output directory is `dist`. The base path is `/__agent_ui/`. The agents server serves these files.
 - **Desktop mode.** The output directory is `dist-desktop`. A desktop development server uses `/`. A packaged desktop build uses `./` so that `file:` loading works.
-- **Desktop marker.** A plugin writes `data-electric-desktop="true"` and `data-electric-platform="darwin"` into the HTML element. Source: `packages/agents-server-ui/vite.config.ts:19-41`.
+- **Desktop marker.** A plugin writes `data-electric-desktop="true"` and `data-electric-platform="darwin"` into the HyperText Markup Language (HTML) element. Source: `packages/agents-server-ui/vite.config.ts:19-41`.
 
 The output directory selection is:
 
@@ -118,7 +118,7 @@ createRoot(root).render(
 
 The full chain is `DarkModeProvider`, `ThemedApp`, `ThemeProvider`, `ServerConnectionProvider`, `AppInner`, `ElectricAgentsProvider`, `PinnedEntitiesProvider`, and `RouterProvider`. Source: `packages/agents-server-ui/src/App.tsx:1-50`.
 
-The order encodes dependency. A provider can call only the providers above it. The server connection must exist before the data providers, because the data providers need a base URL. The router comes last, because every route can read all the state above it.
+The order encodes dependency. A provider can call only the providers above it. The server connection must exist before the data providers, because the data providers need a base Uniform Resource Locator (URL). The router comes last, because every route can read all the state above it.
 
 ```mermaid
 flowchart TD
@@ -151,7 +151,7 @@ A provider that moves up the chain loses access to the state below it. A provide
 ## What the package does not do
 
 - It does not start or stop agent processes. It sends signals such as `SIGINT` and `SIGKILL` to the server.
-- It does not write to the entity stream directly. It sends HTTP messages to `${entityUrl}/send` and the server writes the event.
+- It does not write to the entity stream directly. It sends Hypertext Transfer Protocol (HTTP) messages to `${entityUrl}/send` and the server writes the event.
 - It does not enforce permissions. It hides controls, but the server checks every request.
 - It does not own credentials in the browser. In the desktop application, the main process holds keys and injects headers.
 
@@ -161,7 +161,7 @@ The desktop application injects `window.electronAPI`. The user interface checks 
 
 - `serverFetch` sends mutating requests through the desktop main process when the active server is local. Source: `packages/agents-server-ui/src/lib/auth-fetch.ts:218`.
 - The native application menu sends `desktop:command` events. The router handles them in one switch statement. Source: `packages/agents-server-ui/src/router.tsx:288-347`.
-- Settings pages show desktop-only categories: Account, Command Line, Local Runtime, and MCP Servers.
+- Settings pages show desktop-only categories: Account, Command Line, Local Runtime, and Model Context Protocol (MCP) Servers.
 - The application calls `window.electronAPI.setNativeAppearance` when the theme preference changes.
 
 ```ts

@@ -49,7 +49,7 @@ stateDiagram-v2
 
 The `connect()` method returns immediately only when the provider is already `connected`. The citation is `src/y-electric.ts:263-266`.
 
-The guard does not cover the `connecting` state. A second `connect()` call before the first connection completes creates a second pair of shape streams. The second call also overwrites `unsubscribeShapes`, so the first pair is no longer reachable for cleanup. An application must call `connect()` only once until `connected` or `disconnected` is true.
+The guard does not cover the `connecting` state. A second `connect()` call before the first connection completes creates a second pair of shape streams. The second call also overwrites `unsubscribeShapes`. The first pair is then no longer reachable for cleanup. An application must call `connect()` only once until `connected` or `disconnected` is true.
 
 Otherwise it creates one `AbortController` for both shape streams. The citation is `src/y-electric.ts:267-273`.
 
@@ -101,7 +101,7 @@ The handler sees change messages with operations `insert`, `update`, and `delete
 
 `operationsShapeHandler` loops over every message in the batch. For a change message, it calls `getUpdateFromRow`. The function returns a `lib0` decoder. The handler reads variable-length byte arrays until the decoder reaches the end. It applies each array with the origin `server`. The citation is `src/y-electric.ts:310-321`.
 
-One row can contain more than one Yjs update. The decoder loop handles that case. The row value is the application's storage format, so `getUpdateFromRow` is the only application-specific parsing step on the receive path.
+One row can contain more than one Yjs update. The decoder loop handles that case. The row value is the storage format of the application. For this reason, `getUpdateFromRow` is the only application-specific parsing step on the receive path.
 
 For an `up-to-date` control message, the handler records the current offset and handle in `resumeState.document`. The citation is `src/y-electric.ts:322-329`.
 
@@ -111,7 +111,7 @@ The handler emits `resumeState` and sets `connected` to true on every `up-to-dat
 
 The `connected` setter emits a `status` event. When the state becomes true, it also calls `sendOperations()`. The `synced` setter emits both `synced` and `sync` with the same boolean. The citation is `src/y-electric.ts:148-172`.
 
-**Aha:** the up-to-date boundary is the sync point for two different state machines. The Electric stream says "you have every change up to this offset." The provider translates that into a Yjs state vector computed from the local document. The vector is not an acknowledgement from the server. It is `Y.encodeStateVector(this.doc)` at the moment of the boundary. If local edits are pending but no send is in flight, the vector includes those edits. On a later restart, the diff from that vector can then skip edits that the server never received. The offset and the vector are stored together because they describe one instant. However, the vector is only safe when the local document and the server history agree at that instant.
+**Aha:** the up-to-date boundary is the sync point for two different state machines. The Electric stream says "you have every change up to this offset." The provider translates that into a Yjs state vector. It computes the vector from the local document. The vector is not an acknowledgement from the server. It is `Y.encodeStateVector(this.doc)` at the moment of the boundary. If local edits are pending but no send is in flight, the vector includes those edits. On a later restart, the diff from that vector can then skip edits that the server never received. The provider stores the offset and the vector together because they describe one instant. However, the vector is only safe when the local document and the server history agree at that instant.
 
 If a document send is in flight at the up-to-date boundary, the handler does not set `synced` and does not store a new vector. The next boundary does. The citation is `src/y-electric.ts:331-334`.
 
@@ -119,7 +119,7 @@ If a document send is in flight at the up-to-date boundary, the handler does not
 
 `applyDocumentUpdate` is the local edit handler. It ignores any update whose origin is `server`. The citation is `src/y-electric.ts:341-345`.
 
-The guard prevents a received update from returning to the server. A received update is applied with the origin `server`, so it never enters the send path.
+The guard prevents a received update from returning to the server. The provider applies a received update with the origin `server`. Such an update therefore never enters the send path.
 
 For every other update, the handler calls `batch` and then `scheduleSendOperations`. The citation is `src/y-electric.ts:347-348`.
 
@@ -156,7 +156,7 @@ flowchart TD
 
 The loop guards three conditions:
 
-- There is a pending buffer.
+- A pending buffer exists.
 - The buffer is longer than two bytes.
 - The provider is still connected.
 
@@ -172,11 +172,11 @@ When the loop ends, the provider stores a new stable state vector and emits `res
 
 The `finally` block always clears `sendingPendingChanges`. The citation is `src/y-electric.ts:385-387`.
 
-The failure path has an ordering detail. `disconnect()` is called while `sendingPendingChanges` is still true. The flush inside `disconnect` calls `sendOperations`, but the guard returns because a send is already marked in flight. The outer loop then stops because `connected` is false. The citation is `src/y-electric.ts:354-356` and `src/y-electric.ts:377-380`.
+The failure path has an ordering detail. The provider calls `disconnect()` while `sendingPendingChanges` is still true. The flush inside `disconnect` calls `sendOperations`, but the guard returns because a send is already marked in flight. The outer loop then stops because `connected` is false. The citation is `src/y-electric.ts:354-356` and `src/y-electric.ts:377-380`.
 
-The loop also does not send a buffer of two bytes or less. A two-byte buffer is the usual encoding of an empty Yjs update, so the threshold skips an update with no content. The pending field remains set in that case, so the loop ends and the buffer stays in memory. The citation is `src/y-electric.ts:360-366`.
+The loop also does not send a buffer of two bytes or less. A two-byte buffer is the usual encoding of an empty Yjs update. The threshold therefore skips an update with no content. The pending field remains set in that case. The loop therefore ends and the buffer stays in memory. The citation is `src/y-electric.ts:360-366`.
 
-The loop ends in two ways. It ends when the pending buffer is empty or too small, or when `connected` becomes false. In both cases the code after the loop still computes a new stable vector from the document and emits `resumeState`. On the failure path, the failed buffer is re-batched and the provider disconnects, but the vector still moves forward. The citation is `src/y-electric.ts:377-384`. An application that relies on the stored vector for correctness must treat it as "document state at the last local attempt", not "document state acknowledged by the server".
+The loop ends in two ways. It ends when the pending buffer is empty or too small, or when `connected` becomes false. In both cases the code after the loop still computes a new stable vector from the document and emits `resumeState`. On the failure path, the provider re-batches the failed buffer and disconnects, but the vector still moves forward. The citation is `src/y-electric.ts:377-384`. An application that relies on the stored vector for correctness must treat the vector as "document state at the last local attempt". It must not treat the vector as "document state acknowledged by the server".
 
 ## The send helper
 
@@ -188,7 +188,7 @@ The catch block calls the optional `SendErrorRetryHandler` with `{ response, err
 
 If the handler returns true, `send` returns true. `sendOperations` treats that result as success and continues. It does not re-batch the buffer that failed. If the handler returns false, `send` returns false. `sendOperations` re-batches the sending buffer and disconnects. The citation is `src/y-electric.ts:377-380` and `src/y-electric.ts:482-488`.
 
-This behavior contradicts the type comment, which says true means "the send request should be retried". The code does not retry on true. A handler that returns true must perform its own retry if the data must not be lost. A handler that returns false causes the provider to re-batch the data and disconnect.
+This behavior contradicts the type comment. That comment says true means "the send request should be retried". The code does not retry on true. A handler that returns true must perform its own retry if the data must not be lost. A handler that returns false causes the provider to re-batch the data and disconnect.
 
 ## Awareness
 
@@ -196,7 +196,7 @@ The awareness path has the same shape as the document path, but with presence da
 
 The local handler is `applyAwarenessUpdate`. It acts only when the origin is `local` and the provider is connected. The citation is `src/y-electric.ts:390-396`.
 
-It assigns the update to `pendingAwarenessUpdate`. It then checks `sendingAwarenessState`. If a send is already in flight, it returns. The assignment replaces any earlier pending update; it does not merge with it. The later update usually contains the current state of the clients it names, but it does not necessarily name every client named by the replaced update. The citation is `src/y-electric.ts:398-402`.
+It assigns the update to `pendingAwarenessUpdate`. It then checks `sendingAwarenessState`. If a send is already in flight, it returns. The assignment replaces any earlier pending update. It does not merge with it. The later update usually contains the current state of the clients that it names. It does not necessarily name every client named by the replaced update. The citation is `src/y-electric.ts:398-402`.
 
 Otherwise it enters a single-flight loop. The loop takes the pending update, clears the field, and builds the list of changed clients from `added`, `updated`, and `removed`. The citation is `src/y-electric.ts:404-412`.
 
@@ -215,7 +215,7 @@ The awareness row must contain a `client_id` column. The provider reads `Number(
 
 The delete branch citation is `src/y-electric.ts:440-445`. The apply branch citation is `src/y-electric.ts:446-452`.
 
-The awareness shape starts at `now`, so the receive path handles only new presence changes. The citation is `src/y-electric.ts:290`.
+The awareness shape starts at `now`. The receive path therefore handles only new presence changes. The citation is `src/y-electric.ts:290`.
 
 ## Disconnect and destroy
 
@@ -233,7 +233,7 @@ A call to `connect()` while the provider is still connecting is not guarded. It 
 
 `destroy` clears the debounce timer, disconnects, removes the Yjs and awareness handlers, removes the process exit listener, and calls the parent `destroy`. The citation is `src/y-electric.ts:209-220`.
 
-The constructor stores a function in the `exitHandler` field. That function would register `process.on('exit')` if it ran. The source stores the function at `src/y-electric.ts:119-123` but never calls it. The only other use removes it at `src/y-electric.ts:216-218`. No exit hook is registered by this source, so nothing cleans up the provider at process exit.
+The constructor stores a function in the `exitHandler` field. That function would register `process.on('exit')` if it ran. The source stores the function at `src/y-electric.ts:119-123` but never calls it. The only other use removes it at `src/y-electric.ts:216-218`. This source does not register an exit hook. Nothing therefore cleans up the provider at process exit.
 
 ## Resume state persistence
 
@@ -266,7 +266,7 @@ persistence.subscribeToResumeState(provider)
 
 The provider has no option for a persistence object. The application wires the two objects together. The citation is `src/local-storage-resume-state.ts:14-23`.
 
-There is a field-name mismatch in the reference implementation. `save` stores `{ operations: resumeState.document }`. `load` returns the parsed object as a `ResumeState`. The `ResumeState` type names the field `document`, so the provider does not read the saved position from the loaded object. Treat this class as a sketch and check or correct the key before production use. The citation is `src/local-storage-resume-state.ts:25-29` and `src/types.ts:102-112`.
+A field-name mismatch exists in the reference implementation. `save` stores `{ operations: resumeState.document }`. `load` returns the parsed object as a `ResumeState`. The `ResumeState` type names the field `document`. For this reason, the provider does not read the saved position from the loaded object. Treat this class as a sketch and check or correct the key before production use. The citation is `src/local-storage-resume-state.ts:25-29` and `src/types.ts:102-112`.
 
 The reference class has no schema version and no error handling for malformed storage. It is a starting point, not a production store. The citation is `src/local-storage-resume-state.ts:6-10`.
 

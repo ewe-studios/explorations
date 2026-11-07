@@ -4,7 +4,7 @@ title: Telemetry and Observability
 
 # Telemetry and Observability
 
-The service can export metrics, traces, and logs. Telemetry is optional at compile time. It is enabled when the Mix target is `application`. Mix is the Elixir build tool, and a target is a build profile that selects optional dependencies. The official Docker image builds with the `application` target. A plain `mix test` run does not compile the telemetry exporters. When the code is compiled out, the stack telemetry child specification returns `nil` (`packages/sync-service/lib/electric/stack_supervisor/telemetry.ex:187-240`) and the application telemetry child list is empty (`packages/sync-service/lib/electric/application.ex:298-304`), so no telemetry supervisor starts. The Prometheus route still exists, but it returns an empty body (see the Prometheus section).
+The service can export metrics, traces, and logs. Telemetry is optional at compile time. It is enabled when the Mix target is `application`. Mix is the Elixir build tool, and a target is a build profile that selects optional dependencies. The official Docker image builds with the `application` target. A plain `mix test` run does not compile the telemetry exporters. When the code is compiled out, the stack telemetry child specification returns `nil` (`packages/sync-service/lib/electric/stack_supervisor/telemetry.ex:187-240`). The application telemetry child list is also empty (`packages/sync-service/lib/electric/application.ex:298-304`), so no telemetry supervisor starts. The Prometheus route still exists, but it returns an empty body (see the Prometheus section).
 
 This document lists the telemetry events, the metrics, the logging behavior, and the Phoenix LiveDashboard security warning.
 
@@ -41,7 +41,7 @@ Both supervisors start only when an exporter is configured. If no exporter is en
 
 ## Enabling telemetry
 
-There are two conditions for telemetry:
+Telemetry has two conditions:
 
 - The Mix target must be `application`.
 - At least one exporter must be configured.
@@ -66,7 +66,7 @@ The dependency rule is in `packages/sync-service/mix.exs:128-143`.
 
 ### Prometheus
 
-Prometheus is a metrics service that reads a text endpoint at a fixed interval. The Prometheus exporter is enabled when `ELECTRIC_PROMETHEUS_PORT` is set. The service starts a separate Bandit listener on that port. The only functional route is `GET /metrics`; any other path returns 404 with `Not found`. The `with_telemetry` macro is a compile-time switch. It includes the block only when telemetry is enabled and the named module is loaded. Otherwise it includes the `else` block. The macro is at `packages/sync-service/lib/electric/telemetry.ex:14-40`.
+Prometheus is a metrics service that reads a text endpoint at a fixed interval. The Prometheus exporter is enabled when `ELECTRIC_PROMETHEUS_PORT` is set. The service starts a separate Bandit listener on that port. The only functional route is `GET /metrics`. Any other path returns 404 with `Not found`. The `with_telemetry` macro is a compile-time switch. It includes the block only when telemetry is enabled and the named module is loaded. Otherwise it includes the `else` block. The macro is at `packages/sync-service/lib/electric/telemetry.ex:14-40`.
 
 ```elixir
 # packages/sync-service/lib/electric/plug/utility_router.ex:8-12
@@ -81,7 +81,7 @@ If telemetry is compiled out, the endpoint returns an empty body with status 200
 
 The Prometheus endpoint must be scraped. The `Electric` module documentation gives the reason: distribution metrics buffer in memory between scrapes. An enabled but unscraped endpoint grows without bound and can crash the service. Leave the port unset if nothing scrapes it.
 
-The Prometheus reporter receives the application metrics plus a curated set of stack metrics. The extra set is `Electric.StackSupervisor.Telemetry.prometheus_metrics/0`. It includes shape counts, retained write-ahead log (WAL) size, replication lag, request counts per status, and admission control values. The application passes those definitions as `additional_prometheus_metrics` at `packages/sync-service/lib/electric/application.ex:478`; the definitions are at `packages/sync-service/lib/electric/stack_supervisor/telemetry.ex:41-72`. The definitions carry no `stack_id` tag, so they assume one stack per instance. The source comment says that with multiple stacks the series would collide in the shared aggregator (`packages/sync-service/lib/electric/stack_supervisor/telemetry.ex:38-39`). [05-configuration-and-deployment.md](05-configuration-and-deployment.md) explains that library mode can run multiple stacks; in that configuration these curated Prometheus series are not separable by stack.
+The Prometheus reporter receives the application metrics plus a curated set of stack metrics. The extra set is `Electric.StackSupervisor.Telemetry.prometheus_metrics/0`. It includes shape counts, retained write-ahead log (WAL) size, replication lag, request counts per status, and admission control values. The application passes those definitions as `additional_prometheus_metrics` at `packages/sync-service/lib/electric/application.ex:478`. The definitions are at `packages/sync-service/lib/electric/stack_supervisor/telemetry.ex:41-72`. The definitions carry no `stack_id` tag, so they assume one stack per instance. The source comment says that with multiple stacks the series would collide in the shared aggregator (`packages/sync-service/lib/electric/stack_supervisor/telemetry.ex:38-39`). [05-configuration-and-deployment.md](05-configuration-and-deployment.md) explains that library mode can run multiple stacks. In that configuration these curated Prometheus series are not separable by stack.
 
 ### OpenTelemetry
 
@@ -89,7 +89,7 @@ The OpenTelemetry exporter is enabled when `ELECTRIC_OTLP_ENDPOINT` is set. The 
 
 The sampling ratio defaults to 0.01, which is one percent. The metric sampling ratio defaults to 1, which is all metrics. Both values are configurable with `ELECTRIC_OTEL_SAMPLING_RATIO` and `ELECTRIC_METRICS_SAMPLING_RATIO`.
 
-A Honeycomb shortcut is available. Honeycomb is a hosted observability service. Set `ELECTRIC_HNY_API_KEY` and `ELECTRIC_HNY_DATASET`. The service adds the `x-honeycomb-team` and `x-honeycomb-dataset` headers to the OpenTelemetry Protocol (OTLP) request.
+A Honeycomb shortcut is available. Honeycomb is a hosted observability service. Set `ELECTRIC_HNY_API_KEY` and `ELECTRIC_HNY_DATASET`. The service adds the `x-honeycomb-team` and `x-honeycomb-dataset` headers to the OTLP request.
 
 If no OTLP endpoint is set, the service disables the exporter processors:
 
@@ -117,7 +117,7 @@ The StatsD exporter is enabled when `ELECTRIC_STATSD_HOST` is set. StatsD is a m
 
 ### Sentry
 
-Sentry export is configured when `SENTRY_DSN` (Data Source Name) is set. The service installs a logger handler at boot when the build includes telemetry. The handler captures error-level log messages. It also sets the stack identifier as a tag. When telemetry is enabled, the runtime configuration always sets the Sentry client; it sets the Data Source Name only when `SENTRY_DSN` exists (`packages/sync-service/config/runtime.exs:357-363`). Without the variable, no destination is configured for events.
+Sentry export is configured when `SENTRY_DSN` (Data Source Name) is set. The service installs a logger handler at boot when the build includes telemetry. The handler captures error-level log messages. It also sets the stack identifier as a tag. When telemetry is enabled, the runtime configuration always sets the Sentry client. It sets the Data Source Name only when `SENTRY_DSN` exists (`packages/sync-service/config/runtime.exs:357-363`). Without the variable, no destination is configured for events.
 
 The handler has a bounded queue:
 
@@ -136,7 +136,7 @@ The Sentry client is `Electric.Telemetry.SentryReqHTTPClient`. It uses `Req`, an
 
 ## Telemetry events
 
-Four terms recur in this document. An event is a named message with a measurement map and a metadata map. A metric is an aggregation of one event's measurements over time. A span is one timed operation with a start, an end, and a parent. A trace is the tree of spans that share one root. The service uses the Erlang `telemetry` library for events and metrics, and OpenTelemetry for spans and traces. The service emits these main events. The event names below use the Erlang list form. The exported metric names use a dotted form; for example, the event `[:electric, :shape, :response_size]` with measurement `bytes` becomes the metric `electric.shape.response_size.bytes`.
+Four terms recur in this document. An event is a named message with a measurement map and a metadata map. A metric is an aggregation of one event's measurements over time. A span is one timed operation with a start, an end, and a parent. A trace is the tree of spans that share one root. The service uses the Erlang `telemetry` library for events and metrics, and OpenTelemetry for spans and traces. The service emits these main events. The event names below use the Erlang list form. The exported metric names use a dotted form. For example, the event `[:electric, :shape, :response_size]` with measurement `bytes` becomes the metric `electric.shape.response_size.bytes`.
 
 ### Request events
 
@@ -145,9 +145,9 @@ Four terms recur in this document. An event is a named message with a measuremen
 | `[:electric, :plug, :serve_shape]` | `count`, `bytes`, `duration`, `monotonic_time` | `live`, `shape_handle`, `client_ip`, `status`, `stack_id`, `known_error`, `empty` |
 | `[:electric, :shape, :response_size]` | `bytes` | `root_table`, `is_live`, `stack_id` |
 
-The event is emitted after the full response, including a streamed response. The function is `emit_shape_telemetry/1` at `packages/sync-service/lib/electric/plug/serve_shape_plug.ex:444-485`. There is one exception. If the response is already committed and an error occurs, the plug re-raises the error and does not emit this event. The reason is that the `catch` clause sees the connection passed into `call/2`, not the connection that holds the accumulated assignments. The source states this limit at `packages/sync-service/lib/electric/plug/serve_shape_plug.ex:116-121`. The admission permit and the OpenTelemetry span are still released. Only the aggregate request metric is lost.
+The event is emitted after the full response, including a streamed response. The function is `emit_shape_telemetry/1` at `packages/sync-service/lib/electric/plug/serve_shape_plug.ex:444-485`. One exception applies. If the response is already committed and an error occurs, the plug re-raises the error and does not emit this event. The reason is that the `catch` clause sees the connection passed into `call/2`, not the connection that holds the accumulated assignments. The source states this limit at `packages/sync-service/lib/electric/plug/serve_shape_plug.ex:116-121`. The admission permit and the OpenTelemetry span are still released. Only the aggregate request metric is lost.
 
-The `duration` value is in native time units. Erlang reports time as a "native" unit, and the runtime chooses the scale at start. Code must not assume that the unit is a nanosecond or a microsecond. The metric definition names the target unit, and the reporter asks the runtime to convert the value to milliseconds. The `bytes` value is the count of streamed bytes. It is zero for a non-streamed response, because only `Electric.Shapes.Api.Response.send_stream/2` assigns `streaming_bytes_sent`. A zero is an actual measurement of zero, not a missing sample. The plug reads `assigns[:streaming_bytes_sent] || 0` at `packages/sync-service/lib/electric/plug/serve_shape_plug.ex:447`; the assignment is at `packages/sync-service/lib/electric/shapes/api/response.ex:503`.
+The `duration` value is in native time units. Erlang reports time as a "native" unit, and the runtime chooses the scale at start. Code must not assume that the unit is a nanosecond or a microsecond. The metric definition names the target unit, and the reporter asks the runtime to convert the value to milliseconds. The `bytes` value is the count of streamed bytes. It is zero for a non-streamed response, because only `Electric.Shapes.Api.Response.send_stream/2` assigns `streaming_bytes_sent`. A zero is an actual measurement of zero, not a missing sample. The plug reads `assigns[:streaming_bytes_sent] || 0` at `packages/sync-service/lib/electric/plug/serve_shape_plug.ex:447`. The assignment is at `packages/sync-service/lib/electric/shapes/api/response.ex:503`.
 
 The `empty` metadata value is true for an up-to-date response. That is the no-change response that carries the `up-to-date` control message, set at `packages/sync-service/lib/electric/shapes/api.ex:1172-1175`. It is not true for a response with zero rows from the snapshot or the log.
 
@@ -169,7 +169,7 @@ The service exports these metrics. Each name below is the exported metric name, 
 - `electric.postgres.replication.pg_wal_offset`: current WAL position.
 - `electric.storage.used.bytes` and `electric.storage.used.measurement_duration`: storage used and the duration of the measurement.
 
-The definitions are at `packages/electric-telemetry/lib/electric/telemetry/stack_telemetry.ex:77-121`; the WAL metrics are at `packages/sync-service/lib/electric/stack_supervisor/telemetry.ex:48-56` and `:227-233`.
+The definitions are at `packages/electric-telemetry/lib/electric/telemetry/stack_telemetry.ex:77-121`. The WAL metrics are at `packages/sync-service/lib/electric/stack_supervisor/telemetry.ex:48-56` and `:227-233`.
 
 The metric list uses four metric types. A `last_value` metric reports the most recent value, such as a queue depth or a shape count. A `distribution` metric reports a histogram, such as request duration or response size. A `counter` reports a monotonic total since start. A `sum` adds every measurement that arrives inside the export interval and then resets. Use `sum` for a quantity such as bytes written during the interval. Use `counter` for a total since start. Units name the scale: `:byte`, `:millisecond`, `:microsecond`, or `{:native, :millisecond}` for a native time value that the reporter converts. The definitions are at `packages/electric-telemetry/lib/electric/telemetry/stack_telemetry.ex:75-138`.
 
@@ -245,7 +245,7 @@ The system monitor emits events when a process behaves badly:
 
 The two message-queue numbers form a hysteresis band. The monitor reports a process when its queue reaches 20 messages. It stops reporting when the queue falls to 0. Without the band, a queue near one threshold would produce a stream of start and stop events.
 
-The monitor events include a list of the busiest process groups. The list defaults to 5 groups, ranked by memory. Each group holds one process type, and its memory is the total for that type (`packages/electric-telemetry/lib/electric/telemetry/processes.ex:82-93`). `count:N` sets how many groups are reported. It is not a limit on the total number of processes. The option schema also allows a memory share (`mem_percent:N`) or a low byte cutoff (`at_least_bytes:N`) (`packages/electric-telemetry/lib/electric/telemetry/opts.ex:24-36`). The environment variable `ELECTRIC_TELEMETRY_TOP_PROCESS_LIMIT` accepts only `count:N` and `mem_percent:N`; `at_least_bytes:N` is available only when the host sets the library option (`packages/sync-service/lib/electric/config.ex:590-618`). The list of largest ETS tables defaults to 10 tables. These values are in `packages/electric-telemetry/lib/electric/telemetry/opts.ex:22-50`.
+The monitor events include a list of the busiest process groups. The list defaults to 5 groups, ranked by memory. Each group holds one process type, and its memory is the total for that type (`packages/electric-telemetry/lib/electric/telemetry/processes.ex:82-93`). `count:N` sets how many groups are reported. It is not a limit on the total number of processes. The option schema also allows a memory share (`mem_percent:N`) or a low byte cutoff (`at_least_bytes:N`) (`packages/electric-telemetry/lib/electric/telemetry/opts.ex:24-36`). The environment variable `ELECTRIC_TELEMETRY_TOP_PROCESS_LIMIT` accepts only `count:N` and `mem_percent:N`. `at_least_bytes:N` is available only when the host sets the library option (`packages/sync-service/lib/electric/config.ex:590-618`). The list of largest ETS tables defaults to 10 tables. These values are in `packages/electric-telemetry/lib/electric/telemetry/opts.ex:22-50`.
 
 ## Where request telemetry is captured
 
@@ -287,7 +287,7 @@ Start with the symptom, then read the metric that names the cause.
 Three rules make the table useful.
 
 1. **Check retained WAL first.** It is the only metric that combines every consumer. One slow consumer is enough to make it grow. Request metrics show the client effect, not the cause.
-2. **Distinguish a rate from a single event.** One 409 after a truncate or a schema change is correct behavior. The schema-change path is `{:error, %SnapshotError{type: :schema_changed}}` at `packages/sync-service/lib/electric/shapes/api.ex:747-754`, and the shape-invalidation path is at `:922-934`. The service calls the message tag `:shape_rotation`. It is an internal process message to the waiting request process, not a telemetry event. It is sent when an asynchronous cleanup removes a shape (`packages/sync-service/lib/electric/shape_cache/shape_cleaner/cleanup_task_supervisor.ex:75-86`) or when the resolved handle differs from the request handle, or when a read goes backward (`packages/sync-service/lib/electric/shapes/api.ex:846-852`, `:868-886`). A waiting live request turns the event into a 409 must-refetch. A sustained 409 rate means clients hold invalidated handles or request handles that do not exist. Compaction does not cause a 409; a read below the compaction boundary uses the compacted file ([03-shape-log-and-storage.md](03-shape-log-and-storage.md) gives the detail).
+2. **Distinguish a rate from a single event.** One 409 after a truncate or a schema change is correct behavior. The schema-change path is `{:error, %SnapshotError{type: :schema_changed}}` at `packages/sync-service/lib/electric/shapes/api.ex:747-754`, and the shape-invalidation path is at `:922-934`. The service calls the message tag `:shape_rotation`. It is an internal process message to the waiting request process, not a telemetry event. It is sent when an asynchronous cleanup removes a shape (`packages/sync-service/lib/electric/shape_cache/shape_cleaner/cleanup_task_supervisor.ex:75-86`). It is also sent when the resolved handle differs from the request handle, or when a read goes backward (`packages/sync-service/lib/electric/shapes/api.ex:846-852`, `:868-886`). A waiting live request turns the event into a 409 must-refetch. A sustained 409 rate means clients hold invalidated handles or request handles that do not exist. Compaction does not cause a 409. A read below the compaction boundary uses the compacted file ([03-shape-log-and-storage.md](03-shape-log-and-storage.md) gives the detail).
 3. **Read the labels before the value.** The request event carries `live`, `shape_handle`, `status`, and `known_error`. A high count with `live=true` describes long polls, not row traffic. The `known_error` tag is true only for two 503 classes: admission control overload (`packages/sync-service/lib/electric/plug/serve_shape_plug.ex:315-327`) and a snapshot failure that the service recognizes as transient (`packages/sync-service/lib/electric/shapes/api.ex:760-768`). A 503 caused by an unreachable database does not set it. It is false for a 409 must-refetch. A 409 is an expected protocol step, not an internal fault. A 500 also has `known_error=false`, and it is a fault.
 
 Sampling changes what is visible. The OpenTelemetry trace ratio defaults to 0.01, so one trace in 100 is kept. The metric ratio defaults to 1, so every metric is kept. Use metrics for counting and traces for one slow request. A low-volume error may not appear in a trace sample.
@@ -302,9 +302,9 @@ The service uses the Elixir `Logger`. The default formatter has this format:
 "\n$time $metadata[$level] $message\n"
 ```
 
-The format starts and ends with a newline, so each entry gets one blank line above and below. The source comment calls these doubled line breaks a boundary for long messages (`packages/sync-service/config/runtime.exs:21-25`). The metadata fields are `pid`, `shape_handle`, and `request_id`; `pid` means process identifier. Colors are enabled by default and can be disabled with `ELECTRIC_LOG_COLORS=false`.
+The format starts and ends with a newline, so each entry gets one blank line above and below. The source comment calls these doubled line breaks a boundary for long messages (`packages/sync-service/config/runtime.exs:21-25`). The metadata fields are `pid`, `shape_handle`, and `request_id`. `pid` means process identifier. Colors are enabled by default and can be disabled with `ELECTRIC_LOG_COLORS=false`.
 
-The default handler has bounded queues. The `sync_mode_qlen` value is 2000, the `drop_mode_qlen` value is also 2000, and the `flush_qlen` value is 5000 (`packages/sync-service/config/runtime.exs:30-31`). Because the two thresholds are equal, the handler goes from asynchronous mode directly to drop mode; it has no synchronous phase. When the queue reaches the drop mode, the handler drops events. It does not block the caller.
+The default handler has bounded queues. The `sync_mode_qlen` value is 2000, the `drop_mode_qlen` value is also 2000, and the `flush_qlen` value is 5000 (`packages/sync-service/config/runtime.exs:30-31`). Because the two thresholds are equal, the handler goes from asynchronous mode directly to drop mode. It has no synchronous phase. When the queue reaches the drop mode, the handler drops events. It does not block the caller.
 
 The router sets the stack identifier in the logger metadata for every request. The stack supervisors set it for their child processes. This means a log line from a consumer can be traced to the stack.
 
@@ -334,7 +334,7 @@ if live_dashboard_port do
   ...
 ```
 
-The warning is not decorative. The dashboard has no login. It shows the Erlang virtual machine (VM) state, process lists, ETS tables, and application configuration. The route uses the default `phoenix_live_dashboard` pages (`packages/sync-service/lib/electric/live_dashboard/router.ex:24`). Those pages include a Processes page with an action that terminates a process. An attacker who can reach the port can therefore read internal data and change the running system.
+The warning is not decorative. The dashboard has no login. It shows the Erlang virtual machine (VM) state, process lists, ETS tables, and application configuration. The route uses the default `phoenix_live_dashboard` pages (`packages/sync-service/lib/electric/live_dashboard/router.ex:24`). Those pages include a Processes page with an action that stops a process. An attacker who can reach the port can therefore read internal data and change the running system.
 
 The safe default is to leave `ELECTRIC_LIVE_DASHBOARD_PORT` unset. If you enable it, bind it to a private network and restrict access with a firewall or a private load balancer. Do not expose it on a public port.
 
@@ -356,7 +356,7 @@ The service maps the pair to four status values. For example, the pair `%{conn: 
 
 The last row is a deliberate translation. The health plug reports a sleeping stack as `active`, because an incoming shape request restores the connection subsystem before it serves the request. The internal value `sleeping` does not appear in the response body. The public body therefore has three values: `active`, `waiting`, and `starting` (`packages/sync-service/lib/electric/plug/health_check_plug.ex:14-28`).
 
-The status monitor uses an ETS table. Each subsystem marks its condition. The conditions are the PostgreSQL advisory lock, the replication client, the admin pool, the snapshot pool, the shape log collector, the supervisor processes, the integrity checks, and the shape metadata. The integrity condition reports that the shape database passed its SQLite `quick_check` when it opened. The connection manager marks the condition after the shape subtree starts, at `packages/sync-service/lib/electric/connection/manager.ex:528`. The condition list is at `packages/sync-service/lib/electric/status_monitor.ex:12-21`.
+The status monitor uses an ETS table. Each subsystem marks its condition. The conditions cover the PostgreSQL advisory lock, the replication client, the admin pool, and the snapshot pool. They also cover the shape log collector, the supervisor processes, the integrity checks, and the shape metadata. The integrity condition reports that the shape database passed its SQLite `quick_check` when it opened. The connection manager marks the condition after the shape subtree starts, at `packages/sync-service/lib/electric/connection/manager.ex:528`. The condition list is at `packages/sync-service/lib/electric/status_monitor.ex:12-21`.
 
 ## Observability checklist
 

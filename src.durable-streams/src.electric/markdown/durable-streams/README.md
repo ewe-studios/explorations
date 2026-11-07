@@ -6,11 +6,11 @@ title: Durable Streams Package
 
 Durable Streams is an open Hypertext Transfer Protocol (HTTP) protocol for append-only byte streams. A client creates a stream at a Uniform Resource Locator (URL). The client appends data. Any client can read the stream again from any position. A client can also follow the stream live. The stream survives a refresh, a network failure, and a server restart.
 
-This directory studies the Durable Streams repository at commit `461b4026`. The repository holds the protocol specification, a Node.js reference server, a TypeScript client, clients for nine other languages, a state layer, alternative servers, and test suites.
+This directory studies the Durable Streams repository at commit `461b4026`. The repository holds the protocol specification, a Node.js reference server, and a TypeScript client. It also holds clients for nine other languages, a state layer, alternative servers, and test suites.
 
 ## The one-paragraph architecture
 
-A stream is a URL path and an ordered sequence of bytes. The server gives every append a new offset, an opaque position string that a client must not parse. The client stores the offset and sends it back on the next read. An append is atomic and immutable. A stream can be closed, but it cannot be changed. A fork continues the source offset numbering at its fork point, but an offset is meaningful only within one stream. An idempotent producer, a writer that can retry without a duplicate append, uses three headers to make a retried append safe: `Producer-Id`, `Producer-Epoch`, and `Producer-Seq`. Live reads use long-poll or Server-Sent Events (SSE). The state layer turns a JavaScript Object Notation (JSON) stream into typed collections with a transaction identifier.
+A stream is a URL path and an ordered sequence of bytes. The server gives every append a new offset. The offset is an opaque position string, and a client must not parse it. The client stores the offset and sends it back on the next read. An append is atomic and immutable. A stream can be closed, but it cannot be changed. A fork continues the source offset numbering at its fork point, but an offset is meaningful only within one stream. An idempotent producer is a writer that can retry without a duplicate append. It uses three headers to make a retried append safe: `Producer-Id`, `Producer-Epoch`, and `Producer-Seq`. Live reads use long-poll or Server-Sent Events (SSE). The state layer turns a JavaScript Object Notation (JSON) stream into typed collections with a transaction identifier.
 
 ```mermaid
 flowchart LR
@@ -73,14 +73,14 @@ flowchart TD
 | `packages/client-elixir` | Elixir | Open Telecom Platform (OTP) client with a supervised consumer and writer |
 | `packages/client-rust` | Rust | Tokio (a Rust asynchronous runtime) client with a producer builder |
 | `packages/client-rb` | Ruby | Ruby client with enumerable readers |
-| `packages/state` | TypeScript | State protocol, materialized state, TanStack database (TanStack DB; a reactive client-side database) layer |
+| `packages/state` | TypeScript | State protocol, materialized state, and the TanStack database (TanStack DB) layer. TanStack DB is a reactive client-side database. |
 | `packages/server-cloudflare` | TypeScript | Cloudflare Workers and Durable Objects server |
 | `packages/proxy` | TypeScript | Durable proxy for artificial intelligence (AI) streaming APIs |
 | `packages/caddy-plugin` | Go | Caddy v2 server plugin |
-| `packages/y-durable-streams` | TypeScript | Yjs (a Conflict-free Replicated Data Type, CRDT, library) provider and server |
+| `packages/y-durable-streams` | TypeScript | Yjs provider and server. Yjs is a library for a Conflict-free Replicated Data Type (CRDT). |
 | `packages/tanstack-ai-transport` | TypeScript | TanStack AI transport |
 | `packages/aisdk-transport` | TypeScript | Vercel AI Software Development Kit (SDK) transport |
-| `packages/cli` | TypeScript | Command-Line Interface (CLI) |
+| `packages/cli` | TypeScript | Command-line interface |
 | `packages/server-conformance-tests` | TypeScript | Server conformance suite |
 | `packages/client-conformance-tests` | TypeScript | Language-neutral client conformance suite |
 
@@ -119,7 +119,7 @@ HTTP/1.1 204 No Content
 Stream-Next-Offset: 0000000000000000_0000000000000037
 ```
 
-The offset has two parts in the reference implementation. The first part is a reserved read sequence. It stays at zero. The second part is a byte position. Both parts use 16 digits. The body is 31 bytes; JSON mode adds one comma; the frame adds 5 bytes; the total is 37. See [05-storage-and-durability.md](05-storage-and-durability.md) for the frame format that produces the byte position.
+The offset has two parts in the reference implementation. The first part is a reserved read sequence. It stays at zero. The second part is a byte position. Both parts use 16 digits. The body is 31 bytes. JSON mode adds one comma, and the frame adds 5 bytes. The total is 37. See [05-storage-and-durability.md](05-storage-and-durability.md) for the frame format that produces the byte position.
 
 ## The same request in code
 

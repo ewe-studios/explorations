@@ -68,13 +68,13 @@ Registration is an upsert on `(tenant_id, id)`. A second registration with the s
 
 A runner can only claim for its owner. `claimWake` rejects a different principal with 403 and a disabled runner with `409 NOT_RUNNING`.
 
-Every runner route needs the owner. Health, get, heartbeat, enable, and disable all call `assertRunnerOwnerIfAuthenticated`, which first requires an authenticated principal (401 when absent) and then returns 403 for a different principal (`packages/agents-server/src/routing/runners-router.ts:428-439`). The list route ignores that helper and always filters to the authenticated principal's own rows, so a caller cannot list another owner's runners (`packages/agents-server/src/routing/runners-router.ts:253-280`).
+Every runner route needs the owner. Health, get, heartbeat, enable, and disable all call `assertRunnerOwnerIfAuthenticated`. That helper first requires an authenticated principal (401 when absent). It then returns 403 for a different principal (`packages/agents-server/src/routing/runners-router.ts:428-439`). The list route ignores that helper and always filters to the authenticated principal's own rows, so a caller cannot list another owner's runners (`packages/agents-server/src/routing/runners-router.ts:253-280`).
 
 ## The wake stream and the subscription
 
 A runner does not poll its own wake stream for work. The Durable Streams server manages a subscription. The server links each entity main stream to a pull-wake subscription. A *pull-wake* subscription is one where the worker claims pending work and reads the stream itself; a *webhook* subscription posts the event to a URL. The link runs per entity, through `linkEntityDispatchSubscription()`, and it uses an in-memory cache keyed by tenant, subscription identifier, and stream path. A repeated link for the same triple makes no network call.
 
-The snippet shows one call. `subscriptionId` is `runner:<id>:<suffix>`, `streamPath` is the entity main stream, and `existing` is the subscription that the cache read returned, or `undefined` when there is none. `ensureSubscriptionIncludesStream` creates the subscription when it is missing and adds the stream to it otherwise; it never replaces the stream list.
+The snippet shows one call. `subscriptionId` is `runner:<id>:<suffix>`, `streamPath` is the entity main stream, and `existing` is the subscription that the cache read returned, or `undefined` when none exists. `ensureSubscriptionIncludesStream` creates the subscription when it is missing and adds the stream to it otherwise; it never replaces the stream list.
 
 ```ts
 // packages/agents-server/src/routing/dispatch-policy.ts:301-312
@@ -95,11 +95,11 @@ await ensureSubscriptionIncludesStream(
 )
 ```
 
-The subscription identifier has two parts. The base is `runner:<runnerId>`. The per-entity form appends a suffix: the first 16 hexadecimal characters of the Secure Hash Algorithm 256-bit (SHA-256) digest of the entity Uniform Resource Locator (URL). The full identifier is therefore `runner:<runnerId>:<16 hex characters>`.
+The subscription identifier has two parts. The base is `runner:<runnerId>`. The per-entity form appends a suffix: the first 16 hexadecimal characters of the Secure Hash Algorithm 256-bit (SHA-256) digest of the entity URL. The full identifier is therefore `runner:<runnerId>:<16 hex characters>`.
 
 A webhook target has a different rule. Without an explicit `subscription_id`, its base is `webhook:<16 hex characters of the SHA-256 digest of the webhook URL>`, and it stays base-only for every entity. With an explicit `subscription_id`, the identifier gains the per-entity suffix. See [06-http-routing.md](06-http-routing.md).
 
-When a spawn has an initial message and a dispatch target exists, the server links the subscription before it sends the message. `shouldLinkDispatchBeforeInitialMessage` returns true when a target exists. Without that order, a fast append could reach the stream before the subscription includes it, and the runner would never wake. When either condition is absent, the link runs after the send, or after entity creation when there is no send.
+When a spawn has an initial message and a dispatch target exists, the server links the subscription before it sends the message. `shouldLinkDispatchBeforeInitialMessage` returns true when a target exists. Without that order, a fast append could reach the stream before the subscription includes it, and the runner would never wake. When either condition is absent, the link runs after the send. It runs after entity creation when no send occurs.
 
 ## The claim handshake
 
@@ -138,7 +138,7 @@ The server returns 204 when the backend reports no work. It passes `409 NO_PENDI
 
 The claim body may omit `subscription_id`. The default is the base `runner:<runnerId>`. The route accepts the base or any identifier that starts with `base:`. Any other value returns `400`. A claim on the base identifier asks the Durable Streams server for a stream from the whole subscription.
 
-`notificationFromClaim` chooses the primary stream. It prefers a stream with `has_pending: true`, then falls back to the first stream. The `has_pending` flag is a field of the upstream claim response; this package does not compute it. In the fallback case the claim can name a stream with no pending work, and the runner gets a wake for a stream that looks empty. The code resolves the entity from that stream path. A path counts as attached when `getEntityByStream` finds the entity that owns it; the lookup strips a trailing `/main`, so `/worker/abc/main` resolves to the entity at `/worker/abc`. A stream that is not attached to an entity returns 404.
+`notificationFromClaim` chooses the primary stream. It prefers a stream with `has_pending: true`, then falls back to the first stream. The `has_pending` flag is a field of the upstream claim response; this package does not compute it. In the fallback case the claim can name a stream with no pending work. The runner then gets a wake for a stream that looks empty. The code resolves the entity from that stream path. A path counts as attached when `getEntityByStream` finds the entity that owns it. The lookup strips a trailing `/main`, so `/worker/abc/main` resolves to the entity at `/worker/abc`. A stream that is not attached to an entity returns 404.
 
 A stopped or paused entity releases the claim at once and returns `{ done: true }`. This is the safe path: a stale pending append cannot start work on a dead entity.
 
@@ -163,9 +163,9 @@ The system has two leases, and they are not the same:
 1. The **claim lease** is `consumer_claims.lease_expires_at`. `materializeActiveClaim` sets it to `now + lease_ttl_ms`, where `lease_ttl_ms` is the *lease time to live*, in milliseconds, from the upstream claim response. This package supplies no default. When the upstream claim has no `lease_ttl_ms`, the claim row and the dispatch row store `null`, and the claim has no expiry. It limits exclusive access to the stream.
 2. The **liveness lease** is `runner_runtime_diagnostics.liveness_lease_expires_at`. It limits how long the runner counts as alive.
 
-Durable Streams enforces the claim lease. The agents-server records the value and never sweeps it. When the lease passes, another consumer can claim the same stream. This package does not revoke the old write token at that moment; a new claim mints a new token and replaces the old one in `ClaimWriteTokenStore`. The old runner can still append until that replacement if it still holds the token, so the lease is a coordination signal, not a hard write barrier in this package.
+Durable Streams enforces the claim lease. The agents-server records the value and never sweeps it. When the lease passes, another consumer can claim the same stream. This package does not revoke the old write token at that moment. A new claim mints a new token and replaces the old one in `ClaimWriteTokenStore`. The old runner can still append until that replacement if it still holds the token. The lease is therefore a coordination signal, not a hard write barrier in this package.
 
-The runner heartbeat route writes the liveness lease. `heartbeatRunner` sets it to `now + leaseMs`, and `leaseMs` defaults to `DEFAULT_RUNNER_LEASE_MS`, which is 30,000 ms. The request field is `lease_ms`, and the alternative absolute field is `liveness_lease_expires_at`. The absolute field wins when both are present: the code is `livenessLeaseExpiresAt ?? now + leaseMs`. The route also stores `wake_stream_offset`, the runner's read position on its wake stream, and a sanitized diagnostics object. The word *sanitized* is literal. The route copies only known keys, drops wrong types, and limits status strings to a fixed set. Arbitrary fields from a runner therefore never reach the table (`packages/agents-server/src/routing/runners-router.ts:158-206`).
+The runner heartbeat route writes the liveness lease. `heartbeatRunner` sets it to `now + leaseMs`, and `leaseMs` defaults to `DEFAULT_RUNNER_LEASE_MS`, which is 30,000 milliseconds (ms). The request field is `lease_ms`, and the alternative absolute field is `liveness_lease_expires_at`. The absolute field wins when both are present: the code is `livenessLeaseExpiresAt ?? now + leaseMs`. The route also stores `wake_stream_offset`, the runner's read position on its wake stream, and a sanitized diagnostics object. The word *sanitized* is literal. The route copies only known keys, drops wrong types, and limits status strings to a fixed set. Arbitrary fields from a runner therefore never reach the table (`packages/agents-server/src/routing/runners-router.ts:158-206`).
 
 The claim lease does not change on that route. It changes only through `materializeHeartbeatClaim`, which the wake callback calls. That method updates `last_heartbeat_at`, and it updates `lease_expires_at` only when the callback supplies a value:
 
@@ -274,7 +274,7 @@ The dispatch state also records the pending source streams and the last claim ti
 
 A sandbox is not created by this package. The server stores a *selection* on the entity, and the runner uses it. The selection has five fields:
 
-A spawn can name a `parent` entity. The new entity is then a child, and the parent link feeds lineage and inherited dispatch. Two entities that share one sandbox key are *collaborators*. The server keeps only the selection. The runner reads that selection from the claim response and starts or attaches to the sandbox; this package never starts a container or a virtual machine.
+A spawn can name a `parent` entity. The new entity is then a child, and the parent link feeds lineage and inherited dispatch. Two entities that share one sandbox key are *collaborators*. The server keeps only the selection. The runner reads that selection from the claim response and starts or attaches to the sandbox. This package never starts a container or a virtual machine.
 
 | Field | Meaning |
 |-------|---------|
@@ -319,7 +319,7 @@ export async function resolveSandboxForSpawn(
 
 ### Inherit
 
-`inherit: true` copies the parent's keyed sandbox. The child takes the parent's profile, key, and durability, and it becomes an attacher (`owner: false`). If the parent has no key, the child gets no sandbox. It does not fail. The inherit form ignores any `persistent` value next to `inherit` in the same request, because the child cannot change how the parent's sandbox is torn down. The server reads the parent's stored sandbox, not the live sandbox of a running parent. The stored selection is what the database row holds; the live sandbox is the process or container that the runner started for the parent wake.
+`inherit: true` copies the parent's keyed sandbox. The child takes the parent's profile, key, and durability, and it becomes an attacher (`owner: false`). If the parent has no key, the child gets no sandbox. It does not fail. The inherit form ignores any `persistent` value next to `inherit` in the same request. The child cannot change how the parent's sandbox is torn down. The server reads the parent's stored sandbox, not the live sandbox of a running parent. The stored selection is what the database row holds; the live sandbox is the process or container that the runner started for the parent wake.
 
 ### Profile validation
 
@@ -355,7 +355,7 @@ if (!pinnedToSingleRunner) {
 }
 ```
 
-A remote shared sandbox skips the rule, because every runner can reach it. A local profile with the same name on several runners is not enough, because a profile name says what to start, not where the existing sandbox is. The guard stays in place unless every advertiser is remote.
+A remote shared sandbox skips the rule, because every runner can reach it. A local profile with the same name on several runners is not enough. A profile name says what to start, not where the existing sandbox is. The guard stays in place unless every advertiser is remote.
 
 ## Sandbox profiles on a runner
 

@@ -4,7 +4,7 @@ title: The agents Package
 
 # The agents package
 
-The `agents` package gives Electric Agents its built-in agent behavior. It is the layer that turns the generic runtime into a working assistant. The package supplies two entity types, **Horton** and **worker**, plus the tools, model catalog, sandbox profiles, and Model Context Protocol (MCP) wiring that those types use.
+The `agents` package gives Electric Agents its built-in agent behavior. It is the layer that turns the generic runtime into a working assistant. The package supplies two entity types, **Horton** and **worker**. It also supplies the tools, model catalog, sandbox profiles, and Model Context Protocol (MCP) wiring that those types use.
 
 Electric Agents is the durable agent runtime in the Electric project. An entity is one agent instance with an address and an append-only event stream. A handler is a function that runs one entity turn. A stream is that ordered event log. A wake is a server request that asks a runtime to run one entity turn. A pull-wake runner is the process that claims pending wake work and calls the handler. A sandbox is the environment where the entity's tools run.
 
@@ -14,7 +14,7 @@ Package location: `packages/agents`. Version: `0.6.3`. Command-line binary: `ele
 
 ## Why this package matters
 
-The `agents-runtime` package defines what an entity is. It provides the entity registry, the handler contract, and the stream database. It does not define what an agent does. The `agents` package answers the practical question: when a user sends a message, which model receives it, which tools can it call, and where does it run?
+The `agents-runtime` package defines what an entity is. It provides the entity registry, the handler contract, and the stream database. It does not define what an agent does. The `agents` package answers the practical question. When a user sends a message, which model receives it, which tools can it call, and where does it run?
 
 Read the platform-level document [04-how-the-runtime-sets-up-a-stream.md](../04-how-the-runtime-sets-up-a-stream.md) first. It explains the stream that every handler in this package reads and writes.
 

@@ -4,9 +4,9 @@ title: Overview
 
 # Overview: two repositories, one durable agent system
 
-Electric Agents is a platform for long-lived artificial-intelligence agents that survive process restarts. The design has one central idea: **an entity is its event stream**. There is no separate database row that holds the agent's memory. The append-only stream holds every event: what the user said, what the model produced, which tool ran, which wake fired, and which errors occurred. A typed projection over that stream gives the handler its working state.
+Electric Agents is a platform for long-lived artificial-intelligence agents that survive process restarts. The design has one central idea: **an entity is its event stream**. No separate database row holds the agent's memory. The append-only stream holds every event: what the user said, what the model produced, which tool ran, which wake fired, and which errors occurred. A typed projection over that stream gives the handler its working state.
 
-Durable Streams is the family of libraries and servers that make this possible. It turns an ordinary HTTP endpoint into an append-only byte log with resumable offsets, live reads, and delivery subscriptions.
+Durable Streams is the family of libraries and servers that make this possible. It turns an ordinary Hypertext Transfer Protocol (HTTP) endpoint into an append-only byte log with resumable offsets, live reads, and delivery subscriptions.
 
 ## The problem each part solves
 

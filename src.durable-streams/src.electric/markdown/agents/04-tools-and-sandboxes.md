@@ -36,7 +36,7 @@ flowchart TD
 | Sandbox-bound | `bash`, `read`, `write`, `edit`, `fetch_url` | A sandbox object |
 | Entity-bound | `spawn_worker`, `fork`, `observe_pg_sync`, `unobserve_pg_sync`, `set_title`, `send`, `mark_goal_complete` | A handler context |
 
-`PG` in `observe_pg_sync` means PostgreSQL. A fourth provider, the MCP tool provider, adds remote tools at wake time. It is described in [01-built-in-runtimes.md](01-built-in-runtimes.md) and in [../agents-mcp/04-tools-and-resources.md](../agents-mcp/04-tools-and-resources.md).
+`PG` in `observe_pg_sync` means PostgreSQL. A fourth provider, the Model Context Protocol (MCP) tool provider, adds remote tools at wake time. It is described in [01-built-in-runtimes.md](01-built-in-runtimes.md) and in [../agents-mcp/04-tools-and-resources.md](../agents-mcp/04-tools-and-resources.md).
 
 The second tool builder is `createBuiltinElectricTools`. It adds the shared Electric tools:
 
@@ -136,7 +136,7 @@ Four properties are important.
 - **Open network by default.** `initialNetworkPolicy` is `allow-all`. The comment states that this is a development default. The policy is a capability of the profile, not a separate profile. Here a capability means a profile that the deployment can actually run.
 - **Reclaim.** A lease is the right to use and reclaim a sandbox. An owner lease can remove the container by key at the end of a terminal wake. A terminal wake is the last wake for an entity. An attacher is an entity that uses an existing sandbox without owning it. An attacher cannot reclaim another owner's sandbox.
 
-At startup, the package calls `sweepOrphanedDockerSandboxes`. This removes containers that a crashed or force-quit process left behind. There is no periodic reaper. A shared container is a container that more than one entity attaches to through the same key. Shared containers stop themselves after their last lease is disposed.
+At startup, the package calls `sweepOrphanedDockerSandboxes`. This removes containers that a crashed or force-quit process left behind. The package has no periodic reaper. A shared container is a container that more than one entity attaches to through the same key. Shared containers stop themselves after their last lease is disposed.
 
 ### E2B
 
@@ -230,7 +230,7 @@ let installed = false
 
 Source: `packages/agents/src/durable-streams-cache.ts:8-10`.
 
-The cache can use memory or SQLite. The default store is memory. The store is chosen by the option that installation receives. The installation composes on the current global dispatcher. The global dispatcher is the `undici` object that sends HTTP requests. An interceptor is a middleware layer on that dispatcher.
+The cache can use memory or SQLite. The default store is memory. The store is chosen by the option that installation receives. The installation composes on the current global dispatcher. The global dispatcher is the `undici` object that sends Hypertext Transfer Protocol (HTTP) requests. An interceptor is a middleware layer on that dispatcher.
 
 ```ts
 setGlobalDispatcher(

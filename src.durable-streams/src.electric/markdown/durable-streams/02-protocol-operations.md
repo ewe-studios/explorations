@@ -36,7 +36,7 @@ flowchart TD
     K -->|yes| M[204 append]
 ```
 
-The diagram shows the main cases. A duplicate close returns `204`, and a producer epoch or sequence error can return `400` or `409`; `PROTOCOL.md` section 5.2.1 gives those rules.
+The diagram shows the main cases. A duplicate close returns `204`, and a producer epoch or sequence error can return `400` or `409`. `PROTOCOL.md` section 5.2.1 gives those rules.
 
 ## Create a stream
 
@@ -48,7 +48,7 @@ The configuration comparison includes five parts:
 2. Time To Live (TTL) or expiry.
 3. Closure status.
 4. Fork source and fork offset.
-5. Fork sub-offset; an omitted value and `0` are equivalent (`packages/server/src/store.ts:287`).
+5. Fork sub-offset. An omitted value and `0` are equivalent (`packages/server/src/store.ts:287`).
 
 Closure status is easy to miss. A `PUT` without `Stream-Closed` to a closed stream returns `409 Conflict`. A `PUT` with `Stream-Closed: true` to an open stream also returns `409 Conflict`.
 
@@ -56,7 +56,7 @@ Closure status is easy to miss. A `PUT` without `Stream-Closed` to a closed stre
 
 | Header | Required | Meaning |
 |--------|----------|---------|
-| `Content-Type` | No | Stream content type; the default is `application/octet-stream` |
+| `Content-Type` | No | Stream content type. The default is `application/octet-stream` |
 | `Stream-TTL` | No | Sliding Time To Live in seconds |
 | `Stream-Expires-At` | No | Absolute deadline in Request for Comments 3339 (RFC 3339) format, an Internet date and time format |
 | `Stream-Closed` | No | `true` creates the stream in the closed state |
@@ -115,7 +115,7 @@ A create with `Stream-Closed: true` and a body is an atomic create and close. Th
 |--------|----------|---------|
 | `Content-Type` | When body is non-empty | Must match the stream content type |
 | `Transfer-Encoding` | No | `chunked` for a streaming body |
-| `Stream-Seq` | No | Opaque writer sequence for ordering; compared as text, not as a number |
+| `Stream-Seq` | No | Opaque writer sequence for ordering. The server compares it as text, not as a number |
 | `Stream-Closed` | No | `true` closes after this append |
 | `Producer-Id` | Producer mode | Stable producer identifier |
 | `Producer-Epoch` | Producer mode | Producer generation |
@@ -266,7 +266,7 @@ This constant is at `packages/server/src/store.ts:15`. A persistent store should
 
 ### Producer and closure
 
-A producer can close a stream with a final append. The tuple is recorded with the close; the tuple is (`Producer-Id`, `Producer-Epoch`, `Producer-Seq`). A retry of the same tuple returns `204 No Content` with `Stream-Closed: true`. A different tuple returns `409 Conflict` with `Stream-Closed: true`.
+A producer can close a stream with a final append. The tuple is recorded with the close. That tuple is (`Producer-Id`, `Producer-Epoch`, `Producer-Seq`). A retry of the same tuple returns `204 No Content` with `Stream-Closed: true`. A different tuple returns `409 Conflict` with `Stream-Closed: true`.
 
 ## Stream-Seq
 
@@ -327,7 +327,7 @@ headers[`etag`] =
   `"${Buffer.from(path).toString(`base64`)}:-1:${stream.currentOffset}${closedSuffix}"`
 ```
 
-This block is from `packages/server/src/server.ts:831`. The `:c` suffix changes the tag when the stream closes. A cached reader cannot receive `304 Not Modified` and miss the closure. The `:-1:` part is a fixed literal in this tag format; it is not the `-1` offset sentinel.
+This block is from `packages/server/src/server.ts:831`. The `:c` suffix changes the tag when the stream closes. A cached reader cannot receive `304 Not Modified` and miss the closure. The `:-1:` part is a fixed literal in this tag format. It is not the `-1` offset sentinel.
 
 ## Catch-up read
 
@@ -335,7 +335,7 @@ This block is from `packages/server/src/server.ts:831`. The `:c` suffix changes 
 
 The response returns only the data after the offset. The `Stream-Next-Offset` header is the position after the returned data. The server can return less than the full stream. The client sends the next offset to continue.
 
-A read at the tail returns `200 OK` with an empty body; for a JSON stream the body is the empty array `[]`. The `Stream-Up-To-Date: true` header says the reader is caught up. If the stream is closed, the response also has `Stream-Closed: true`.
+A read at the tail returns `200 OK` with an empty body. For a JSON stream the body is the empty array `[]`. The `Stream-Up-To-Date: true` header says the reader is caught up. If the stream is closed, the response also has `Stream-Closed: true`.
 
 The protocol defines this as the canonical end-of-stream signal in catch-up mode.
 

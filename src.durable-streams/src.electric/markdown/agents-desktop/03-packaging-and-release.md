@@ -148,7 +148,7 @@ The `@electric-ax/agents` build output is not a resource entry. The command-line
 
 The bundled command-line interface becomes the `electric` command at run time. The installer is a small shim script, not a symbolic link. On macOS and Linux it is `~/.local/bin/electric`. On Windows it is `AppData\Local\Electric\bin\electric.cmd`. The shim starts the Electron binary with `ELECTRON_RUN_AS_NODE=1` and the bundled entry path. Source: `packages/agents-desktop/src/cli/controller.ts:132-145` and `packages/agents-desktop/src/cli/controller.ts:224-241`.
 
-The application archive packs `dist`, `assets`, and `package.json`. The `assets` directory appears twice: once inside the archive from the `files` list, and once in the application resources from `extraResources`. The tray and icon paths read the resource copy. The `files` list does not exclude production dependencies except `node_modules/@rollup`, so the external modules stay in the archive as production dependencies. Every native `.node` file, `better-sqlite3`, and `sqlite-vec` is unpacked from the archive. A native module cannot load from inside an archive. Source: `packages/agents-desktop/electron-builder.yml:9-39`.
+The application archive packs `dist`, `assets`, and `package.json`. The `assets` directory appears twice: once inside the archive from the `files` list, and once in the application resources from `extraResources`. The tray and icon paths read the resource copy. The `files` list does not exclude production dependencies except `node_modules/@rollup`, so the external modules stay in the archive as production dependencies. `electron-builder` unpacks every native `.node` file, `better-sqlite3`, and `sqlite-vec` from the archive. A native module cannot load from inside an archive. Source: `packages/agents-desktop/electron-builder.yml:9-39`.
 
 ```yaml
 # packages/agents-desktop/electron-builder.yml:35
@@ -192,7 +192,7 @@ The artifact name is `Electric-Agents-${os}-${arch}.${ext}`. The output director
 
 ### Publish channel
 
-The update provider is `generic`, not `github`. A generic provider is a static file host. The updater reads a metadata file, such as `latest-mac.yml`, from the configured URL. That file names the newest version and the installer files. The configuration comment explains why the project does not use the GitHub provider. The repository publishes many packages to the same Releases page. GitHub's "latest" marker follows the most recent tag from any package. A desktop build would then find the wrong release metadata.
+The update provider is `generic`, not `github`. A generic provider is a static file host. The updater reads a metadata file, such as `latest-mac.yml`, from the configured Uniform Resource Locator (URL). That file names the newest version and the installer files. The configuration comment explains why the project does not use the GitHub provider. The repository publishes many packages to the same Releases page. GitHub's "latest" marker follows the most recent tag from any package. A desktop build would then find the wrong release metadata.
 
 ```yaml
 # packages/agents-desktop/electron-builder.yml:84

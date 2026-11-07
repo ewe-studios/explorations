@@ -51,7 +51,7 @@ The notification is a `WebhookNotification`:
 | `wakeId` | The unique wake identifier |
 | `streamPath` | The entity stream path |
 | `streams` | Streams and offsets that caused the wake |
-| `callback` | The claim and done callback URL |
+| `callback` | The claim and done callback Uniform Resource Locator (URL) |
 | `claimToken` | The initial claim token |
 | `triggeredBy` | Optional triggering sources |
 | `triggerEvent` | Optional trigger event name |
@@ -107,7 +107,7 @@ The citation is `packages/agents-runtime/src/process-wake.ts:529-553`.
 
 The producer identifier is `entity-${entityUrl}`. The `epoch` binds the producer to the current stream ownership. The custom `fetch` adds the write token to every request. The producer claims stream write ownership automatically. This is not the same claim as the wake claim callback. The wake claim asks the control plane for the right to run this wake. The producer claim asks the stream store for the right to append under the epoch. Both are required.
 
-The database is created next:
+The runtime creates the database next:
 
 ```ts
 const db = createEntityStreamDB(
@@ -129,7 +129,7 @@ const db = createEntityStreamDB(
 
 The citation is `packages/agents-runtime/src/process-wake.ts:558-574`. `entry` is the registry entry for `typeName`. `serverHeaders` are the control-plane request headers from the runtime configuration. `streamUrl` is `baseUrl` plus `streamPath`.
 
-`writeEvent` appends one JSON event to the producer. `flushWrites` flushes the producer. The database therefore shares one write path with the handler. Document [04-entity-stream-db.md](04-entity-stream-db.md) explains the inside of this call.
+`writeEvent` appends one JavaScript Object Notation (JSON) event to the producer. `flushWrites` flushes the producer. The database therefore shares one write path with the handler. Document [04-entity-stream-db.md](04-entity-stream-db.md) explains the inside of this call.
 
 ## Claim and preload run in parallel
 
@@ -173,7 +173,7 @@ sequenceDiagram
 
 After the claim succeeds, the runtime starts an interval timer. Each tick posts `{ epoch }` to the callback URL with the active claim token. The default interval is 10 seconds.
 
-The claim callback can return a claim token and a write token. The claim token authorizes the claim callback and the heartbeat. The write token authorizes appends to the stream. A deployment can return the same value for both, but the runtime stores them in separate variables and uses each one for its own request type. "Active" means the claim token for the current claim. A later claim or heartbeat can replace it, and the old token stops working.
+The claim callback can return a claim token and a write token. The claim token authorizes the claim callback and the heartbeat. The write token authorizes appends to the stream. A deployment can return the same value for both. The runtime still stores them in separate variables. It uses each one for its own request type. "Active" means the claim token for the current claim. A later claim or heartbeat can replace it, and the old token stops working.
 
 The interval stays active while the handler runs and while the wake is idle. It stops in the cleanup block.
 
@@ -283,7 +283,7 @@ On a handler failure, the runtime sets `ackCurrentWakeOnFailure` at `packages/ag
 
 ## Failure handling
 
-A handler error creates an `error` event. The error code is either the model provider error code or `HANDLER_FAILED`. The runtime also:
+A handler error creates an `error` event. The error code is either the error code from the model provider or `HANDLER_FAILED`. The runtime also:
 
 1. Rolls back the manifest entries that the handler added.
 2. Sets `ackCurrentWakeOnFailure`.
@@ -294,7 +294,7 @@ The handler-error path does not call `failBackgroundWake`. That helper serves th
 
 A write failure is different. The producer `onError` handler calls `failBackgroundWake(error, 'WRITE_FAILED')`. The runtime cannot safely continue when it cannot persist events. `failBackgroundWake` records the error for the wake result and marks the background wake as failed. The wake then ends through the cleanup path, and the error reaches the caller or `drainWakes`.
 
-A model provider error code is the code that the model adapter classified, for example an authentication or rate-limit code. The adapter uses `HANDLER_FAILED` when the failure is not a model provider failure.
+A model-provider error code is the code that the model adapter classified, for example an authentication or rate-limit code. The adapter uses `HANDLER_FAILED` when the failure is not a model-provider failure.
 
 ## Cleanup and done
 
@@ -348,7 +348,7 @@ stateDiagram-v2
     active --> active: handler iterations
 ```
 
-The wake session has four phases: `setup`, `active`, `closing`, and `closed`. Manifest writes are allowed in `setup` and `active`. A send is a request to append or to send a message. It is rejected after `closing` begins because the session is draining its writes and a new send could arrive after the done callback. The phase logic is in `packages/agents-runtime/src/wake-session.ts:41-196`.
+The wake session has four phases: `setup`, `active`, `closing`, and `closed`. The session allows manifest writes in `setup` and `active`. A send is a request to append or to send a message. The session rejects a send after `closing` begins because the session is draining its writes and a new send could arrive after the done callback. The phase logic is in `packages/agents-runtime/src/wake-session.ts:41-196`.
 
 ## Key insight
 

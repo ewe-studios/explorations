@@ -22,7 +22,7 @@ A stream is an append-only sequence of bytes. The protocol gives a stream seven 
 | Retention | A server option that drops data older than a set age while the stream continues |
 | Stream state | Open or closed |
 
-A stream is addressable by URL. The URL is the identity. There is no separate stream identifier in the protocol.
+A stream is addressable by URL. The URL is the identity. The protocol has no separate stream identifier.
 
 Aha: the stream has no schema and no message type. The protocol sees bytes. A higher layer gives the bytes meaning. This is why one protocol can serve database synchronization, collaborative editing, and artificial intelligence token streams.
 
@@ -113,7 +113,7 @@ The client libraries use this rule to batch. A client call `append({"x":1})` can
 An empty array has different meaning on create and append:
 
 - `PUT` with `[]` creates an empty stream. The array means "no initial messages".
-- `POST` with `[]` returns `400 Bad Request`. The array means "append nothing", which is probably a client bug.
+- `POST` with `[]` returns `400 Bad Request`. The array means "append nothing". That is probably a client bug.
 
 The reference server implements the difference with the `isInitialCreate` argument.
 
@@ -172,8 +172,8 @@ Fork creation uses `PUT` with three headers:
 | Header | Meaning |
 |--------|---------|
 | `Stream-Forked-From` | Source stream path on the same server |
-| `Stream-Fork-Offset` | Divergence offset; default is the source tail |
-| `Stream-Fork-Sub-Offset` | Refinement past the fork offset; default `0` |
+| `Stream-Fork-Offset` | Divergence offset. The default is the source tail |
+| `Stream-Fork-Sub-Offset` | Refinement past the fork offset. The default is `0` |
 
 The sub-offset has a content-type-dependent meaning:
 
@@ -311,7 +311,7 @@ if (!ttlPattern.test(ttlHeader)) {
 }
 ```
 
-This block is from `packages/server/src/server.ts:643`. The pattern rejects a leading zero, a plus sign, a decimal point, and whitespace. The value `0` is valid; it makes the stream expire at the next access check, because the sliding window has zero length.
+This block is from `packages/server/src/server.ts:643`. The pattern rejects a leading zero, a plus sign, a decimal point, and whitespace. The value `0` is valid. It makes the stream expire at the next access check, because the sliding window has zero length.
 
 An expired stream with no forks is removed. An expired stream with forks becomes soft-deleted. The `get` method enforces this rule at `packages/server/src/store.ts:480`.
 

@@ -68,7 +68,7 @@ The normalizer adds empty `properties` and `required` fields. Without them, the 
 
 ## The call wrapper
 
-The SDK method signature has three positions. `SDK` means Software Development Kit. The second position is a result schema, not an options bag.
+The Software Development Kit (SDK) method signature has three positions. The second position is a result schema, not an options bag.
 
 ```ts
 const callArgs: Parameters<typeof opts.client.callTool> =
@@ -115,7 +115,7 @@ A timeout keeps its `timeout` kind. Every other error becomes `transport_error`.
 | `server_error` | The server reported an error |
 | `tool_not_found` | The named tool does not exist |
 
-The bridge uses only two of these kinds directly. It produces `timeout` and `transport_error`. The registry produces `auth_unavailable` when a credential is missing (`packages/agents-mcp/src/registry.ts:206`, `:255`, `:284`). The types `server_error` and `tool_not_found` are declared in `types.ts:116-117`, but no code in the repository produces them. A search of every TypeScript file in `packages/` finds them only at that declaration.
+The bridge uses only two of these kinds directly. It produces `timeout` and `transport_error`. The registry produces `auth_unavailable` when a credential is missing (`packages/agents-mcp/src/registry.ts:206`, `:255`, `:284`). `types.ts:116-117` declares the types `server_error` and `tool_not_found`, but no code in the repository produces them. A search of every TypeScript file in `packages/` finds them only at that declaration.
 
 ## Resource tools
 
@@ -240,7 +240,7 @@ sequenceDiagram
 
 ## Aha: the sentinel defers the decision
 
-The tool list is built at wake time, not at code time. A server can connect after the entity starts. The add-on tools appear at the next wake without a restart or a new entity.
+The runtime builds the tool list at wake time, not at code time. A server can connect after the entity starts. The add-on tools appear at the next wake without a restart or a new entity.
 
 Key insight: the sentinel is the boundary between a static declaration and a dynamic registry. The handler says "give me MCP tools". The provider decides which servers exist at that moment.
 

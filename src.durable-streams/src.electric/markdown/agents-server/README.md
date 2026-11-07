@@ -4,7 +4,7 @@ title: agents-server package
 
 # agents-server package
 
-This directory documents `@electric-ax/agents-server`, the server package of Electric Agents. Each agent is an entity. Each entity owns an append-only Durable Stream. A Durable Stream is an append-only log served by the Durable Streams server. For agent-visible data, the stream is the database, the message bus, and the audit log. Postgres holds the control tables that point to those streams, plus control state that has no stream.
+This directory documents `@electric-ax/agents-server`, the server package of Electric Agents. Each agent is an entity. Each entity owns an append-only Durable Stream. A Durable Stream is an append-only log served by the Durable Streams server. For agent-visible data, the stream is the database, the message bus, and the audit log. PostgreSQL (Postgres) holds the control tables that point to those streams, plus control state that has no stream.
 
 Source root: `packages/agents-server` in the Electric repository.
 Package version at the time of writing: 0.6.4.
@@ -65,7 +65,7 @@ flowchart TB
 
 **A client reads state from a stream, not from a table.** A spawn writes the entity row and then appends the creation events. A send appends a message. A tag change goes through a transactional outbox and then reaches the entity stream. A wake is a notification that a registered stream condition matched, and it follows a stream event. A runner claims a stream, not a row. Every part of the package follows this rule.
 
-The Postgres tables exist to make the streams findable, permissioned, and recoverable. They are an index over the stream log, and they also own state that the log does not carry, such as grants, dispatch state, and schedules.
+The Postgres tables exist to make the streams findable, permissioned, and recoverable. They are an index over the stream log. They also own state that the log does not carry, such as grants, dispatch state, and schedules.
 
 ## Source map
 
@@ -83,7 +83,7 @@ The Postgres tables exist to make the streams findable, permissioned, and recove
 | `src/entity-bridge-manager.ts`, `src/pg-sync-bridge-manager.ts`, `src/tag-stream-outbox-drainer.ts` | [10](10-pg-sync-and-bridges.md) |
 | `test/*`, `vitest.config.ts`, `docker-compose.dev.yml` | [11](11-operations-testing-and-conformance.md) |
 
-**Key insight: the naming tells you where to look.** The package name, the module type, and the tenant default are three short facts that explain most of the design:
+**Key insight: the naming tells you where to look**. The package name, the module type, and the tenant default are three short facts that explain most of the design:
 
 ```json
 // packages/agents-server/package.json:2-3

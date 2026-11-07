@@ -18,7 +18,7 @@ The tool has five jobs.
 
 1. Start a local Docker Compose environment with PostgreSQL, the Electric sync service, and the agents server.
 2. Start the built-in Horton runtime in the current terminal.
-3. Send commands to the agents server over Hypertext Transfer Protocol (HTTP) to the server Application Programming Interface (API): spawn, send, inspect, list, and kill.
+3. Send commands to the agents server over the Hypertext Transfer Protocol (HTTP) Application Programming Interface (API). The commands are spawn, send, inspect, list, and kill.
 4. Observe an entity conversation in a terminal user interface.
 5. Scaffold a new project from a starter template.
 
@@ -67,7 +67,7 @@ flowchart TD
     A --> C[completion]
 ```
 
-Both `electric` and `electric-ax` run the same file. The subcommand `agents` is required after the binary name. The two names differ only in the help text.
+Both `electric` and `electric-ax` run the same file. The `agents` subcommand must come after the binary name. The two names differ only in the help text.
 
 An entity address is a path with a type name and an instance identifier, such as `/horton/my-agent`. The `horton` segment is the built-in agent entity type.
 
@@ -92,7 +92,7 @@ The CLI identifies the caller with one header. The `Electric-Principal` header c
 | `ELECTRIC_AGENTS_IDENTITY` | `<username>@<hostname>` | Supplies the default identity, but is not sent as a header |
 | `ELECTRIC_AGENTS_PRINCIPAL` | `user:<identity>` | Supplies the `Electric-Principal` header value |
 
-The default identity comes from the operating system user and host. When `ELECTRIC_AGENTS_PRINCIPAL` is absent, the CLI builds the principal from that identity with the `user:` prefix. When the variable is present, its value is used directly.
+The default identity comes from the operating system user and host. When `ELECTRIC_AGENTS_PRINCIPAL` is absent, the CLI builds the principal from that identity with the `user:` prefix. When the variable is present, the CLI uses its value directly.
 
 ```ts
 const explicitIdentity = env.ELECTRIC_AGENTS_IDENTITY?.trim()
@@ -101,7 +101,7 @@ const explicitPrincipal = env.ELECTRIC_AGENTS_PRINCIPAL?.trim()
 
 Source: `packages/electric-ax/src/index.ts:173-174`.
 
-Additional headers can come from a JavaScript Object Notation (JSON) object in `ELECTRIC_AGENTS_SERVER_HEADERS`.
+The CLI can add more headers from a JavaScript Object Notation (JSON) object in `ELECTRIC_AGENTS_SERVER_HEADERS`.
 
 The development environment uses the same port as the default server address.
 
@@ -116,7 +116,7 @@ Source: `packages/electric-ax/src/start.ts:20-21`.
 
 The command handlers do not read the database. They do not hold a WebSocket. They call the same HTTP endpoints that any client can call. The `view` command even reuses the runtime's timeline builder.
 
-Key insight: you can replace the CLI with `curl` for most operations. The CLI adds convenience: argument parsing, a table renderer, a live terminal interface, and shell completion. Every request goes through the HTTP wrapper shown in [00-overview.md](00-overview.md), and that wrapper adds only the principal header and the configured extra headers. No private protocol exists between the CLI and the server.
+Key insight: you can replace the CLI with `curl` for most operations. The CLI adds convenience: argument parsing, a table renderer, a live terminal interface, and shell completion. Every request goes through the HTTP wrapper shown in [00-overview.md](00-overview.md). That wrapper adds only the principal header and the configured extra headers. No private protocol exists between the CLI and the server.
 
 ## Related documents
 

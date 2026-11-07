@@ -23,7 +23,7 @@ The package does not store the stream. It uses the Durable Streams client. The p
 
 The two build outputs explain the `main` and `module` fields. `main` points to the CommonJS file. `module` points to the ECMAScript module file. The `e2b` peer dependency is the remote sandbox provider. The `xstate` dependency drives the pull-wake runner state machine. The pull-wake runner is an alternative transport. It pulls wakes from a runner stream instead of receiving webhook notifications. The `@mariozechner/pi-ai` dependency supplies `streamSimple` and `getModel` to the agent adapter. `streamSimple` is the streaming model call. `getModel` looks up a model by its provider and identifier.
 
-The package metadata is in `packages/agents-runtime/package.json:1-150`; the license is at line 150 and the peer dependencies are at lines 89-108. The snippet is abbreviated and omits the `exports` map:
+The package metadata is in `packages/agents-runtime/package.json:1-150`; the license is at line 150 and the peer dependencies are at lines 89-108. The snippet below shows an abbreviated form and omits the `exports` map:
 
 ```json
 {
@@ -90,7 +90,7 @@ The surface has these groups:
 10. **Skills.** A Markdown skill registry and skill tools.
 11. **Browser helpers.** Composer input parsing, the comments collection, and the browser agents client.
 
-The sample above shows one export from each group. The citation range covers all exports. Groups 1 through 8 have a dedicated document in this directory. Group 9 is covered in [09-server-client-signals-and-testing.md](09-server-client-signals-and-testing.md) for the client part. Group 10 is summarized here only. Group 11 is listed here only.
+The sample above shows one export from each group. The citation range covers all exports. Groups 1 through 8 have a dedicated document in this directory. [09-server-client-signals-and-testing.md](09-server-client-signals-and-testing.md) covers group 9 for the client part. This document summarizes group 10 only. This document lists group 11 only.
 
 ## What happens on one wake
 

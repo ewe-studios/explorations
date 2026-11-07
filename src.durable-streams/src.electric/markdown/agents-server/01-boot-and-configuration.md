@@ -61,15 +61,15 @@ The resolver is `resolveElectricAgentsEntrypointOptions` at `src/entrypoint-lib.
 
 | Setting | Variable names | Default | Notes |
 |---------|----------------|---------|-------|
-| Tenant or service identifier | `ELECTRIC_AGENTS_SERVICE`, `SERVICE`, then `ELECTRIC_AGENTS_TENANT_ID`, `TENANT_ID` | `default` | The service name wins over the tenant name. It is the Postgres tenant key and is passed to stream routing adapters |
-| Public base URL (Uniform Resource Locator) | `ELECTRIC_AGENTS_BASE_URL`, `BASE_URL` | none | Must parse as a URL. It is used for callback and webhook URLs |
+| Tenant or service identifier | `ELECTRIC_AGENTS_SERVICE`, `SERVICE`, then `ELECTRIC_AGENTS_TENANT_ID`, `TENANT_ID` | `default` | The service name wins over the tenant name. It is the Postgres tenant key, and the server passes it to stream routing adapters |
+| Public base URL | `ELECTRIC_AGENTS_BASE_URL`, `BASE_URL` | none | Must parse as a URL. The server uses it for callback and webhook URLs |
 | Durable Streams URL | `ELECTRIC_AGENTS_DURABLE_STREAMS_URL`, `DURABLE_STREAMS_URL`, `STREAMS_URL` | none | This must be a backend prefix, not a bare origin. When absent, the process starts an embedded server |
 | Durable Streams bearer token | `ELECTRIC_AGENTS_DURABLE_STREAMS_BEARER`, `DURABLE_STREAMS_BEARER` | none | The client adds the `Bearer ` prefix when it is absent |
 | Postgres URL | `ELECTRIC_AGENTS_DATABASE_URL`, `DATABASE_URL` | **required** | Start-up fails when neither name is set |
 | Electric URL | `ELECTRIC_AGENTS_ELECTRIC_URL`, `ELECTRIC_URL` | none | Needed for shape sync, projection, and bridges |
 | Electric secret | `ELECTRIC_AGENTS_ELECTRIC_SECRET` | none | Passed to shape requests as `secret` |
 | Webhook signing private key | `ELECTRIC_AGENTS_WEBHOOK_SIGNING_PRIVATE_KEY`, `WEBHOOK_SIGNING_PRIVATE_KEY` | generated at start | An Ed25519 key in PEM (Privacy-Enhanced Mail), JSON (JavaScript Object Notation) Web Key, buffer, or key-object form. An invalid or non-Ed25519 key throws at start |
-| HTTP host | `ELECTRIC_AGENTS_HOST`, `HOST` | `0.0.0.0` | The entry point sets `0.0.0.0`. If the option is absent when the class is constructed directly, the class uses `127.0.0.1` |
+| HTTP host | `ELECTRIC_AGENTS_HOST`, `HOST` | `0.0.0.0` | The entry point sets `0.0.0.0`. If the option is absent when a caller constructs the class directly, the class uses `127.0.0.1` |
 | HTTP port | `ELECTRIC_AGENTS_PORT`, `PORT` | `4437` | Must be an integer from 1 to 65,535. A bad value throws at start |
 | Working directory | `ELECTRIC_AGENTS_WORKING_DIRECTORY`, `WORKING_DIRECTORY` | `process.cwd()` | Base for the `.streams-data` directory |
 | Dispatch recovery interval | `ELECTRIC_AGENTS_DISPATCH_RECOVERY_INTERVAL_MS` | none | Positive integer; read into the server options. No code reads the option in version 0.6.4. See [11](11-operations-testing-and-conformance.md) |
@@ -78,7 +78,7 @@ The resolver is `resolveElectricAgentsEntrypointOptions` at `src/entrypoint-lib.
 | Embedded streams host | `ELECTRIC_AGENTS_STREAMS_HOST`, `STREAMS_HOST` | `127.0.0.1` | Used only when the embedded server starts |
 | Embedded streams port | `ELECTRIC_AGENTS_STREAMS_PORT`, `STREAMS_PORT` | `0` | `0` means an ephemeral port |
 
-Other variables are read outside the entrypoint resolver:
+The code reads other variables outside the entrypoint resolver:
 
 | Variable | Default | Effect |
 |----------|---------|--------|
@@ -87,7 +87,7 @@ Other variables are read outside the entrypoint resolver:
 | `ELECTRIC_AGENTS_MAX_ATTACHMENT_BYTES` | `26,214,400` (25 mebibytes) | Largest attachment the server accepts |
 | `ELECTRIC_AGENTS_REWRITE_LOOPBACK_WEBHOOKS_TO` | none | Rewrites `localhost`, `127.0.0.1`, and `::1` webhook hosts. Docker Compose sets this to `host.docker.internal` |
 | `ELECTRIC_AGENTS_LOG_LEVEL` | `info` | Log level for the Pino logger |
-| `ELECTRIC_AGENTS_LOG_FILE` | enabled | The file is disabled only when the value is exactly `false`; any other value keeps it on |
+| `ELECTRIC_AGENTS_LOG_FILE` | enabled | The server disables the file only when the value is exactly `false`; any other value keeps it on |
 | `ELECTRIC_AGENTS_LOG_DIR` | `<cwd>/logs` | Directory for the JSON Lines log file |
 | `ELECTRIC_INSECURE` | none | `true` enables the development principal fallback |
 | `NODE_ENV` | none | A value other than `production` also enables the development principal fallback |
@@ -119,9 +119,9 @@ return new DurableStreamTestServer({
 
 The package depends on `@durable-streams/server`. That package exports `DurableStreamTestServer`. Despite the name, the entrypoint uses it as a real local server when no external URL is set.
 
-The embedded server is enabled by *absence*. `createEmbeddedStreamsServer` returns `undefined` when `ELECTRIC_AGENTS_DURABLE_STREAMS_URL`, `DURABLE_STREAMS_URL`, or `STREAMS_URL` has a value.
+The embedded server runs only when the streams URL is *absent*. `createEmbeddedStreamsServer` returns `undefined` when `ELECTRIC_AGENTS_DURABLE_STREAMS_URL`, `DURABLE_STREAMS_URL`, or `STREAMS_URL` has a value.
 
-The embedded server returns an HTTP origin. Its stream backend is mounted under `/v1/stream`. The server class converts the origin to a backend prefix:
+The embedded server returns an HTTP origin. The server mounts its stream backend under `/v1/stream`. The server class converts the origin to a backend prefix:
 
 ```mermaid
 flowchart TB
@@ -183,11 +183,11 @@ The order is deliberate:
 - The runtime and its background loops start before the HTTP listener accepts work.
 - The principal entity type exists before the first request can create an entity.
 
-The class stores the start options and mutates `durableStreamsUrl` after the embedded server starts. This mutation is safe because the stream client is constructed immediately after it.
+The class stores the start options and mutates `durableStreamsUrl` after the embedded server starts. This mutation is safe because the class constructs the stream client immediately after it.
 
 The host default depends on the caller. The executable always sets a host, so the option is never absent and the default is `0.0.0.0`. A program that constructs `ElectricAgentsServer` directly and omits the host gets `127.0.0.1`, because `server.ts` supplies that value at listen time. A deployment that needs to accept connections from another machine must set `ELECTRIC_AGENTS_HOST` or pass the option.
 
-The HTTP connection pool uses these values: keep-alive timeout 60,000 milliseconds (ms), maximum keep-alive 600,000 ms, 256 connections, pipelining 1, no body timeout, and no headers timeout. The constants are in `packages/agents-server/src/server.ts:224-231`. The keep-alive timeout is how long an idle connection waits for the next request. The maximum keep-alive caps that timeout, so a connection does not stay in the pool without bound. The long timeouts are necessary because Durable Streams reads can stay open for a long time.
+The HTTP connection pool uses these values: keep-alive timeout 60,000 milliseconds (ms), maximum keep-alive 600,000 ms, 256 connections, and pipelining 1. It sets no body timeout and no headers timeout. The constants are in `packages/agents-server/src/server.ts:224-231`. The keep-alive timeout is how long an idle connection waits for the next request. The maximum keep-alive caps that timeout, so a connection does not stay in the pool without bound. The long timeouts are necessary because Durable Streams reads can stay open for a long time.
 
 ## The stop sequence
 

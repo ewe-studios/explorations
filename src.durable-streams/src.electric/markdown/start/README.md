@@ -4,7 +4,7 @@ title: Start
 
 # Start
 
-`@electric-sql/start` is the command-line quickstart for Electric. Electric is a sync engine that serves live queries, called shapes, from PostgreSQL. An Electric source is a named connection between Electric and one PostgreSQL database. An application uses the source identifier and secret to read shapes. The command creates a TanStack Start application, which is a full-stack React framework. In the default mode it also provisions an Electric Cloud source and a Neon PostgreSQL database. It writes the environment file, installs dependencies, and runs migrations. It can also configure an existing database through a supplied database uniform resource locator (URL).
+`@electric-sql/start` is the command-line quickstart for Electric. Electric is a sync engine that serves live queries, called shapes, from PostgreSQL. An Electric source is a named connection between Electric and one PostgreSQL database. An application uses the source identifier and secret to read shapes. The command creates a TanStack Start application. This is a full-stack React framework. In the default mode it also provisions an Electric Cloud source and a Neon PostgreSQL database. It writes the environment file, installs dependencies, and runs migrations. It can also configure an existing database through a supplied database uniform resource locator (URL).
 
 The package is published as `@electric-sql/start` at version `1.0.3`. The license is Apache-2.0. It declares no runtime dependencies. The citation is `package.json:2-9`, `package.json:29`, and `package.json:58`.
 
@@ -68,7 +68,7 @@ The branch at the top is the main design choice of the package. If the caller su
 **Aha:** this package has no npm runtime dependencies. It does not ship a Hypertext Transfer Protocol (HTTP) library, a template engine, a prompt library, or a database driver. It uses `fetch` for the Electric Cloud interface, `readline` for prompts, `child_process` for template retrieval and package commands, and `fs` for file writes. The citation is `package.json:29`, `src/cli.ts:3-6`, `src/template-setup.ts:3` for `fs`, and `src/electric-api.ts:49-57`. The whole quickstart is a thin orchestrator over tools that Node.js already provides.
 
 "No npm dependencies" does not mean "no prerequisites". The command also needs:
-- Node.js with the global `fetch` function, which Node.js 18 and later provide.
+- Node.js with the global `fetch` function. Node.js 18 and later provide it.
 - The `npx` command, to run the package and `gitpick`.
 - The `pnpm` command, for `pnpm install` and `pnpm migrate`.
 - Network access to the Electric Cloud application programming interface (API), the template repository, and the package registry.
@@ -82,11 +82,11 @@ The citation is `src/cli.ts:234-257` and `src/template-setup.ts:32-37`.
 
 | Symbol | Kind | Behavior | Source |
 |--------|------|----------|--------|
-| `main` | Function (internal) | Run the full quickstart; reached through `src/bin.ts` | `src/cli.ts:169-281` |
+| `main` | Function (internal) | Run the full quickstart. The command reaches it through `src/bin.ts` | `src/cli.ts:169-281` |
 | `provisionElectricResources` | Function | Create and poll a claimable source | `src/electric-api.ts:93-151` |
 | `claimResources` | Function | Create a claim URL for a source | `src/electric-api.ts:153-189` |
 | `setupTemplate` | Function | Pull and configure the template | `src/template-setup.ts:24-104` |
-| `getElectricApiBase` | Function | Read the dashboard application programming interface (API) base | `src/electric-api.ts:29-31` |
+| `getElectricApiBase` | Function | Read the dashboard API base | `src/electric-api.ts:29-31` |
 | `getElectricUrl` | Function | Read the Electric service URL | `src/electric-api.ts:33-35` |
 | `getElectricDashboardUrl` | Function | Read the dashboard URL | `src/electric-api.ts:37-39` |
 | `ElectricCredentials` | Type | Source identifier, secret, and database URL | `src/electric-api.ts:3-7` |

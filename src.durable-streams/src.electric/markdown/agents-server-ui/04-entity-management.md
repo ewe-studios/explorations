@@ -39,11 +39,11 @@ const { data: visibleEntities = [] } = useLiveQuery(
 )
 ```
 
-Results are ordered by `updated_at` in descending order. A recent session therefore appears near the top.
+The query orders results by `updated_at` in descending order. A recent session therefore appears near the top.
 
 Two filters run in JavaScript because their source value is not a plain column:
 
-- **Creator.** The value comes from `created_by`, normalized to a principal URL. Source: `packages/agents-server-ui/src/components/Sidebar.tsx:251-257`.
+- **Creator.** The value comes from `created_by`, normalized to a Uniform Resource Locator (URL) for the principal. Source: `packages/agents-server-ui/src/components/Sidebar.tsx:251-257`.
 - **Runner.** The value comes from `dispatch_policy`, which is a JavaScript Object Notation (JSON) column. The helper `getEntityRunnerId` reads it. Source: `packages/agents-server-ui/src/components/Sidebar.tsx:259-268`.
 
 The `RUNNER_NONE` sentinel represents an entity with no pinned runner. The definition is at `packages/agents-server-ui/src/hooks/useSidebarView.ts:214`; `Sidebar.tsx:15` only imports it.
@@ -135,13 +135,13 @@ A child whose parent is filtered out becomes a root. The sidebar never shows an 
 
 ### Pins
 
-Pinned entities are removed from the grouped list and shown in a separate pinned section. Source: `packages/agents-server-ui/src/components/Sidebar.tsx:270-288`.
+The sidebar removes pinned entities from the grouped list and shows them in a separate pinned section. Source: `packages/agents-server-ui/src/components/Sidebar.tsx:270-288`.
 
 The pinned URL list lives in `PinnedEntitiesProvider`. Source: `packages/agents-server-ui/src/hooks/usePinnedEntities.tsx`.
 
 ### Width
 
-The sidebar width is stored in local storage under `electric-agents-ui.sidebar.width`. Source: `packages/agents-server-ui/src/components/Sidebar.tsx:32`.
+The code stores the sidebar width in local storage under `electric-agents-ui.sidebar.width`. Source: `packages/agents-server-ui/src/components/Sidebar.tsx:32`.
 
 ```ts
 // packages/agents-server-ui/src/components/Sidebar.tsx:33
@@ -150,7 +150,7 @@ const SIDEBAR_MIN_WIDTH = 200
 const SIDEBAR_MAX_WIDTH = 600
 ```
 
-A stored width outside the minimum and maximum is ignored, and the default applies. Source: `packages/agents-server-ui/src/components/Sidebar.tsx:102-121`.
+The code ignores a stored width outside the minimum and maximum, and the default applies. Source: `packages/agents-server-ui/src/components/Sidebar.tsx:102-121`.
 
 On a narrow viewport, the sidebar becomes an overlay with a backdrop. Selecting a row closes it. Source: `packages/agents-server-ui/src/components/Sidebar.tsx:151-164`.
 
@@ -303,7 +303,7 @@ Three choices are important:
 
 The spawn action adds a temporary row with status `spawning` before the server answers. Source: `packages/agents-server-ui/src/lib/ElectricAgentsProvider.tsx:526-542`.
 
-The HTTP request is `PUT /_electric/entities/<type>/<name>`. The helper `entitySpawnApiUrl` builds the path, and the action sends the request at `packages/agents-server-ui/src/lib/ElectricAgentsProvider.tsx:564`. Source: `packages/agents-server-ui/src/lib/entity-api.ts:18-27`.
+The Hypertext Transfer Protocol (HTTP) request is `PUT /_electric/entities/<type>/<name>`. The helper `entitySpawnApiUrl` builds the path, and the action sends the request at `packages/agents-server-ui/src/lib/ElectricAgentsProvider.tsx:564`. Source: `packages/agents-server-ui/src/lib/entity-api.ts:18-27`.
 
 After a successful spawn, the view opens the entity in the current tile by replacing it. Source: `packages/agents-server-ui/src/components/views/NewSessionView.tsx:403-405`.
 
@@ -381,7 +381,7 @@ export type DropPosition =
   | `split-up`
 ```
 
-`replace` is used by URL navigation and a plain sidebar click. It is not a visible drop zone. The other four positions are the drop edges. Source: `packages/agents-server-ui/src/lib/workspace/types.ts:72-93`.
+URL navigation and a plain sidebar click use `replace`. It is not a visible drop zone. The other four positions are the drop edges. Source: `packages/agents-server-ui/src/lib/workspace/types.ts:72-93`.
 
 ### Navigation and splits
 
@@ -395,7 +395,7 @@ Source: `packages/agents-server-ui/src/hooks/useWorkspaceHotkeys.ts:31-54` and `
 
 ## The view registry
 
-Views are registered, not hard-coded in a switch. `registerView` adds a definition to a map. Source: `packages/agents-server-ui/src/lib/workspace/viewRegistry.tsx:74-82`.
+The code registers views; it does not hard-code them in a switch. `registerView` adds a definition to a map. Source: `packages/agents-server-ui/src/lib/workspace/viewRegistry.tsx:74-82`.
 
 A view has one of two kinds:
 

@@ -54,7 +54,7 @@ The boundary is not a security sandbox. The web view is a full browser runtime w
 
 Source: `packages/agents-mobile/app/session.tsx:42-58` and `packages/agents-mobile/app/session.tsx:194-218`.
 
-The web component types are declared in the shared web package. The native package maps those module paths to one local type file with the TypeScript `paths` setting. This is a compile-time mapping only; Metro still bundles the real web module. The native build therefore does not depend on the Expo types that the web package cannot use. Source: `packages/agents-mobile/tsconfig.json:7-18`.
+The shared web package declares the web component types. The native package maps those module paths to one local type file with the TypeScript `paths` setting. This is a compile-time mapping only; Metro still bundles the real web module. The native build therefore does not depend on the Expo types that the web package cannot use. Source: `packages/agents-mobile/tsconfig.json:7-18`.
 
 ## Properties are cold, handles are hot
 
@@ -164,13 +164,13 @@ const handleNavigatePathname = useCallback(
 )
 ```
 
-A path that starts with `/entity/` opens that entity. The shared web application uses a hash router, which stores the route after the `#` in the URL. In the embed, the native stack owns navigation, so the router must not push a route of its own. Every other path is ignored for that reason. The callback identity is stable, because a new identity would remount the timeline. Source: `packages/agents-server-ui/src/embed/SessionChatLogDomEmbed.tsx:70-84`.
+A path that starts with `/entity/` opens that entity. The shared web application uses a hash router, which stores the route after the `#` in the URL. In the embed, the native stack owns navigation, so the router must not push a route of its own. The embed ignores every other path for that reason. The callback identity is stable, because a new identity would remount the timeline. Source: `packages/agents-server-ui/src/embed/SessionChatLogDomEmbed.tsx:70-84`.
 
 The state explorer uses the same mapping inline. It does not receive the fork callback. Source: `packages/agents-server-ui/src/embed/SessionStateInspectorDomEmbed.tsx:17-27`.
 
 ## Request headers across contexts
 
-The native context registers the active server and its headers in the `auth-fetch` module. A cloud server needs a bearer token. The native code obtains the token for the cloud service and registers two headers:
+The native context registers the active server and its headers in the `auth-fetch` module. A cloud server needs a bearer token. The native code gets the token for the cloud service and registers two headers:
 
 ```ts
 // packages/agents-mobile/src/lib/serverHeaders.ts:28-42
@@ -192,7 +192,7 @@ if (token) {
 }
 ```
 
-The `electric-principal` header is necessary. The shared message code runs in the web context, and it reads the sender identity from the active headers in that context. The web context cannot read the native authentication state. Without the header, `getActivePrincipal` falls back to `system:dev-local`, which is the built-in development principal. The cloud server then receives a bearer token for one user and a sender field for another, and it responds with status 400 because the two do not match. Source: `packages/agents-mobile/src/lib/serverHeaders.ts:28-48` and `packages/agents-server-ui/src/lib/auth-fetch.ts:17` and `packages/agents-server-ui/src/lib/auth-fetch.ts:200-208`.
+The `electric-principal` header is necessary. The shared message code runs in the web context, and it reads the sender identity from the active headers in that context. The web context cannot read the native authentication state. Without the header, `getActivePrincipal` falls back to `system:dev-local`, which is the built-in development principal. The cloud server then receives a bearer token for one user and a sender field for another. It responds with status 400 because the two do not match. Source: `packages/agents-mobile/src/lib/serverHeaders.ts:28-48` and `packages/agents-server-ui/src/lib/auth-fetch.ts:17` and `packages/agents-server-ui/src/lib/auth-fetch.ts:200-208`.
 
 The web context has its own copy of the `auth-fetch` module. It cannot see the registration in the native context. The native route therefore takes a snapshot and passes it as a property:
 
@@ -224,7 +224,7 @@ The shared `serverFetch` then applies the registered headers to each request, un
 
 ## Forking over native networking
 
-The fork control can run in two places. In a desktop window, the web code uses the desktop network bridge: the preload `electronAPI` sends the request from the main process. In the mobile web view, there is no preload, so the web code calls the native callback instead.
+The fork control can run in two places. In a desktop window, the web code uses the desktop network bridge: the preload `electronAPI` sends the request from the main process. The mobile web view has no preload, so the web code calls the native callback instead.
 
 The native route passes a stable wrapper around the provider's `forkEntity`:
 
@@ -247,7 +247,7 @@ The web view fills the area below the native header. The native composer floats 
 
 The keyboard inset uses different events on each platform. iOS listens for `keyboardWillChangeFrame` and `keyboardWillHide`. Android listens for `keyboardDidShow` and `keyboardDidHide`. This gives a smooth animation on iOS and a correct final value on Android. Source: `packages/agents-mobile/app/session.tsx:298-334`.
 
-The web view options disable scrolling and content inset adjustment, so the native frame owns the geometry. The options also set the same background colour through `backgroundColor`, `style`, `containerStyle`, and `webViewStyle`. The native web view paints its own default background while the web bundle starts, and a single themed colour on every layer prevents a white flash. Source: `packages/agents-mobile/app/session.tsx:246-272`.
+The web view options disable scrolling and content inset adjustment, so the native frame owns the geometry. The options also set the same background colour through `backgroundColor`, `style`, `containerStyle`, and `webViewStyle`. The native web view paints its own default background while the web bundle starts. A single themed colour on every layer prevents a white flash. Source: `packages/agents-mobile/app/session.tsx:246-272`.
 
 ## The missing random function
 
@@ -306,7 +306,7 @@ Three delivery paths can feed the same callback:
 2. The provider-level `Linking.addEventListener` receives a warm-start URL.
 3. The provider-level `Linking.getInitialURL` reads the launch URL on a cold start.
 
-The callback route runs the same initial-URL read again as a safety net, builds a URL from its own parameters, and listens for a URL event while it is mounted. Source: `packages/agents-mobile/src/lib/CloudAuthContext.tsx:51-75` and `packages/agents-mobile/app/oauth/callback.tsx:91-122`.
+The callback route runs the same initial-URL read again as a safety net. It builds a URL from its own parameters. It also listens for a URL event while it is mounted. Source: `packages/agents-mobile/src/lib/CloudAuthContext.tsx:51-75` and `packages/agents-mobile/app/oauth/callback.tsx:91-122`.
 
 The singleton removes duplicates with the `completingUrl` field. The first caller sets the field and processes the URL. A second caller with the same URL returns a boolean: true when the state is already signed in, otherwise false. Source: `packages/agents-mobile/src/lib/cloudAuth.ts:457-467`.
 
@@ -336,11 +336,11 @@ The plugin has three safety rules:
 
 Source: `packages/agents-mobile/plugins/with-android-on-new-intent.js:44-94`.
 
-The plugin imports `expo/config-plugins`, not `@expo/config-plugins`. The package manager does not hoist the `@expo/config-plugins` name into this package, so a `require` of that name fails during the Expo Application Services (EAS) Build configuration step. The `expo` package is a direct dependency, and it re-exports the plugin helpers. Source: `packages/agents-mobile/plugins/with-android-on-new-intent.js:1-7`.
+The plugin imports `expo/config-plugins`, not `@expo/config-plugins`. The package manager does not hoist the `@expo/config-plugins` name into this package. A `require` of that name therefore fails during the Expo Application Services (EAS) Build configuration step. The `expo` package is a direct dependency, and it re-exports the plugin helpers. Source: `packages/agents-mobile/plugins/with-android-on-new-intent.js:1-7`.
 
 ## Image attachments
 
-The composer supports images only. The native picker produces an image asset. The attachment library then transcodes the asset to JPEG (Joint Photographic Experts Group):
+The composer supports images only. The native picker produces an image asset. The attachment library then transcodes the asset to Joint Photographic Experts Group (JPEG):
 
 ```ts
 // packages/agents-mobile/src/lib/attachments.ts:29-43

@@ -21,7 +21,7 @@ This document describes the module map, the environment variables, and the Hyper
 | `src/entity-stream-db.ts` | Stream database for local reads of entity event streams |
 | `src/shape-fetch.ts` | One-time fetch of an Electric shape |
 | `src/api-types.ts` | Response shapes |
-| `src/types-table.tsx` | Entity type table renderer |
+| `src/types-table.tsx` | Renderer for the entity type table |
 | `src/prompt-api-key.ts` | Interactive key prompt |
 | `src/version.ts` | Build-time version constants |
 
@@ -93,11 +93,11 @@ The endpoints are:
 
 Source: `packages/electric-ax/src/index.ts:462`, `500`, `512-515`, `525-529`, `552-555`, `587-590`, `686-692`, `715-718`; `packages/electric-ax/src/start.ts:294`; `packages/electric-ax/src/shape-fetch.ts:15`.
 
-The table groups the endpoints. Each command that calls an endpoint is listed with its own source line in [01-cli-commands.md](01-cli-commands.md).
+The table groups the endpoints. [01-cli-commands.md](01-cli-commands.md) lists each command that calls an endpoint, with its own source line.
 
 ## Programmatic exports
 
-The package main entry is `src/index.ts`. It exports a programmatic surface in addition to the command-line interface (CLI). The `./entity-stream-db` subpath exports the stream database helper.
+The package main entry is `src/index.ts`. It exports a programmatic surface in addition to the CLI. The `./entity-stream-db` subpath exports the stream database helper.
 
 | Symbol | Kind | Source |
 |--------|------|--------|
@@ -123,7 +123,7 @@ The package main entry is `src/index.ts`. It exports a programmatic surface in a
 | `EntityStreamDB` | Type | `src/entity-stream-db.ts:17` |
 | `createEntityStreamDB` | Function | `src/entity-stream-db.ts:30` |
 
-The other modules are build entries, but the package does not list them as subpaths. Their functions are internal. The three start environment types in the table are the re-export of `src/start.ts` at `src/index.ts:22-24`.
+The other modules are build entries, but the package does not list them as subpaths. Their functions are internal. The three start environment types in the table come from `src/start.ts`, through the re-export at `src/index.ts:22-24`.
 
 ## Entity URL construction
 
@@ -153,11 +153,11 @@ The function adds a leading slash to the entity URL when it is absent. A user ca
 | `ELECTRIC_IMAGE_TAG` | `latest` | Electric image tag |
 | `ELECTRIC_AGENTS_SERVER_IMAGE_TAG` | build value or `latest` | Agents server image tag |
 
-The `.env` file is read from the current directory. The process environment has higher priority. A value from the process environment wins, and the file value is used only when the variable is absent from the process environment.
+The CLI reads the `.env` file from the current directory. The process environment has higher priority. A value from the process environment wins. The CLI uses the file value only when the process environment has no value for the variable.
 
 The build writes the `agents-server` package version into `ELECTRIC_AGENTS_SERVER_IMAGE_TAG`. The canary pipeline can overwrite that value. See [03-package-and-publish.md](03-package-and-publish.md) for the build plugin.
 
-A pull-wake runner is the process that claims pending wake work from the server and runs the entity handlers. `ELECTRIC_AGENTS_PULL_WAKE_RUNNER_ID` is the primary name for the runner identifier. `PULL_WAKE_RUNNER_ID` is the alternate name. The default identifier appends an identity slug, which is the identity with characters that are not valid in an identifier replaced.
+A pull-wake runner is the process that claims pending wake work from the server and runs the entity handlers. `ELECTRIC_AGENTS_PULL_WAKE_RUNNER_ID` is the primary name for the runner identifier. `PULL_WAKE_RUNNER_ID` is the alternate name. The default identifier appends an identity slug. To make the slug, the code replaces each character that is not valid in an identifier in the identity.
 
 ## The principal fallback
 
@@ -171,7 +171,7 @@ function defaultPullWakeOwnerPrincipal(): string {
 
 Source: `packages/electric-ax/src/start.ts:133-137`.
 
-The principal key accepts four prefixes: `user`, `agent`, `service`, and `system`. A value without one of these prefixes gets `user:` in front. The function returns the principal that owns the pull-wake runner. The CLI sends a principal in the `Electric-Principal` header, so the runner and the CLI identify the same caller.
+The principal key accepts four prefixes: `user`, `agent`, `service`, and `system`. A value without one of these prefixes gets `user:` in front. The function returns the principal that owns the pull-wake runner. The CLI sends a principal in the `Electric-Principal` header. The runner and the CLI therefore identify the same caller.
 
 ## Data flow for one command
 
@@ -192,7 +192,7 @@ sequenceDiagram
     C-->>U: table
 ```
 
-In the diagram, the HTTP API is the request router inside the agents server. The two participants show two roles, not two network hops.
+In the diagram, the HTTP application programming interface (API) is the request router inside the agents server. The two participants show two roles, not two network hops.
 
 ## Aha: the CLI reuses runtime code for rendering
 

@@ -31,7 +31,7 @@ A wake registration has these fields:
 
 `timeout_consumed` is a stored flag, not a caller field. The registry sets it after a match or a timeout delivery.
 
-The table has a unique constraint on `(tenant_id, subscriber_url, source_url, one_shot, debounce_ms, timeout_ms, condition, manifest_key)`. That constraint makes `register()` idempotent. The `condition` column is `jsonb`, so key order does not change identity. Two conditions that differ only by an omitted optional field are different values, for example `{ on: 'change', collections: ['runs'] }` and the same object with `ops: []`. They create two rows that match the same events.
+The table has a unique constraint on `(tenant_id, subscriber_url, source_url, one_shot, debounce_ms, timeout_ms, condition, manifest_key)`. That constraint makes `register()` idempotent. The `condition` column is `jsonb`, so key order does not change identity. Two conditions that differ only by an omitted optional field are different values. An example is `{ on: 'change', collections: ['runs'] }` and the same object with `ops: []`. They create two rows that match the same events.
 
 A conflicting `register()` does nothing. `onConflictDoNothing()` returns no row, and the method reloads the cache. It does not update the stored `debounce_ms`, `timeout_ms`, `one_shot`, or `include_response`, so the first registration's timing stays in force.
 
@@ -79,7 +79,7 @@ Start-up waits for the first `up-to-date` control message. The method resolves i
 4. Start the shape stream again.
 5. Clear the recovery promise, whether the restart worked or not.
 
-A failed restart is logged. The registry then waits for the next shape error to try again. If no Electric sync Uniform Resource Locator (URL) is configured, the method logs the error and returns without a restart.
+The registry logs a failed restart. It then waits for the next shape error to try again. If no Electric sync Uniform Resource Locator (URL) is configured, the method logs the error and returns without a restart.
 
 ### The cache
 
@@ -103,7 +103,7 @@ It returns a change with collection `runs` and the run status attached.
 
 The change form has these tests:
 
-- If `collections` is set, `event.type` must be in the list. A *collection* is the entity collection name, and the code reads it from the event `type` field. There is no separate collection field.
+- If `collections` is set, `event.type` must be in the list. A *collection* is the entity collection name, and the code reads it from the event `type` field. No separate collection field exists.
 - The header operation maps to `insert`, `update`, or `delete`. A missing operation counts as `insert`.
 - If `ops` is set, the mapped kind must be in the list.
 
@@ -127,7 +127,7 @@ if (
 }
 ```
 
-For an `inbox` event, the match also copies `from`, `from_principal`, `from_agent`, `payload`, `timestamp`, and `message_type` into the change. The code detects an inbox event by the test `event.type === 'inbox'`. The handler then receives the message fields without a second stream read. The copy is shallow and only for fields of the right type; a `payload` field is copied even when its value is `undefined`.
+For an `inbox` event, the match also copies `from`, `from_principal`, `from_agent`, `payload`, `timestamp`, and `message_type` into the change. The code detects an inbox event by the test `event.type === 'inbox'`. The handler then receives the message fields without a second stream read. The copy is shallow and only for fields of the right type. The code copies a `payload` field even when its value is `undefined`.
 
 ### Debounce
 
@@ -135,7 +135,7 @@ Debounce is a trailing timer per registration. Each match appends to a buffer an
 
 The last run status wins for a debounced `runFinished` wake. The registry stores it in a separate map so a later `failed` status replaces an earlier `completed` status.
 
-The buffer and the timer live only in process memory. A crash before the timer fires loses the buffered changes, and no other component keeps a copy. A restart does not replay them: the source events stay in the stream, but the wake is a derived notification, and the registry does not recompute it from history. Debounce is therefore at-most-once for the buffered window. Delivery after the timer is retried through the producer identifier, so that part is at-least-once.
+The buffer and the timer live only in process memory. A crash before the timer fires loses the buffered changes, and no other component keeps a copy. A restart does not replay them. The source events stay in the stream, but the wake is a derived notification, and the registry does not recompute it from history. Debounce is therefore at-most-once for the buffered window. The registry retries delivery after the timer through the producer identifier, so that part is at-least-once.
 
 ### The source event key
 
@@ -164,7 +164,7 @@ if (typeof key === `string`) {
 return crypto.randomUUID()
 ```
 
-The key becomes part of the delivery producer identifier. An event without an offset and without a key therefore produces a new identifier on each delivery and cannot be deduplicated. A debounced delivery uses the last buffered change key, not this helper. A timeout delivery uses the literal string `timeout`.
+The key becomes part of the delivery producer identifier. An event without an offset and without a key therefore produces a new identifier on each delivery, and the server cannot deduplicate it. A debounced delivery uses the last buffered change key, not this helper. A timeout delivery uses the literal string `timeout`.
 
 ### Timeout
 
@@ -175,9 +175,9 @@ The deadline comes from Postgres, not from process memory. After a restart, `syn
 - `upsertCachedRegistration()`, which `register()`, `loadRegistrations()`, and the shape handler all call.
 - `syncTenantTimeoutTimers()`, which `setTimeoutCallback()` calls.
 
-If the deadline has already passed and the row is not marked delivered, the registry delivers the timeout at once. The set `timeoutDelivered` prevents a second delivery in the same process.
+If the deadline already passed and the row is not marked as delivered, the registry delivers the timeout at once. The set `timeoutDelivered` prevents a second delivery in the same process.
 
-When a match arrives first, `evaluate()` clears the timer and starts `markTimeoutConsumed()`, which writes `timeout_consumed = true`. The call is fire-and-forget: `evaluate()` does not await it. The write normally prevents a second process from delivering the timeout after a restart. Two small windows remain. If the process crashes before the write lands, the flag stays false, and a restarted process can deliver a second wake (a duplicate). If the write lands but the process crashes before the append, the timeout wake is lost. A timeout is therefore neither strictly once nor strictly at-least-once across a crash.
+When a match arrives first, `evaluate()` clears the timer and starts `markTimeoutConsumed()`, which writes `timeout_consumed = true`. The call is fire-and-forget: `evaluate()` does not await it. The write normally prevents a second process from delivering the timeout after a restart. Two small windows remain. If the process crashes before the write lands, the flag stays false, and a restarted process can deliver a second wake (a duplicate). If the write lands but the process crashes before the append, the process loses the timeout wake. A timeout is therefore neither strictly once nor strictly at-least-once across a crash.
 
 A timeout delivery has `timeout: true` and an empty change list:
 
@@ -198,13 +198,13 @@ return {
 
 ### One-shot
 
-A one-shot registration is removed when it *matches*, not when it delivers. The removal happens in the same `evaluate()` call, after the result is built. It does three things in order:
+The registry removes a one-shot registration when it *matches*, not when it delivers. The removal happens in the same `evaluate()` call, after it builds the result. It does three things in order:
 
 1. It deletes the registration from the cache array.
 2. It clears local timers and buffers.
 3. It starts a Postgres delete and does not await it.
 
-If the array becomes empty, the whole cache key is deleted. Because the Postgres delete is not awaited, a process crash between the memory removal and the database delete leaves the row in Postgres. The shape stream then re-adds it, and the registration can match again.
+If the array becomes empty, it deletes the whole cache key. Because the Postgres delete is not awaited, a process crash between the memory removal and the database delete leaves the row in Postgres. The shape stream then re-adds it, and the registration can match again.
 
 One edge case follows from the order. A one-shot registration with a debounce first buffers the change and starts a timer. The same call then clears the debounce state, which removes the timer and the buffer. The buffered wake is therefore discarded. This is the observed behaviour of the code, and the source has no comment that states it as intended.
 
@@ -232,8 +232,8 @@ flowchart TB
 
 The registry does not append events itself. Each match returns a `WakeEvalResult`, and `EntityManager.evaluateWakes()` delivers it. The delivery has three gates:
 
-1. A result whose tenant differs from the manager's tenant is dropped.
-2. A subscriber entity that no longer exists is dropped, with no error.
+1. The manager drops a result whose tenant differs from its own tenant.
+2. The manager drops a subscriber entity that no longer exists, with no error.
 3. Otherwise the manager appends a `wakes` event to the subscriber main stream.
 
 The producer identifier is `wake-reg-<dbId>-<sourceEventKey>`, and the event key has the same two parts. That identifier makes the append idempotent across retries.
@@ -316,7 +316,7 @@ The defaults are `claimExpiryMs = 30_000` and `safetyPollMs = 10_000`. The loop 
 
 ### Claiming
 
-The claim query uses `FOR UPDATE SKIP LOCKED`. It selects at most 50 rows, ordered by `fire_at` and `id`. The query has three forms, chosen by the scheduler mode:
+The claim query uses `FOR UPDATE SKIP LOCKED`. It selects at most 50 rows, ordered by `fire_at` and `id`. The scheduler mode chooses one of three query forms:
 
 | `tenantId` value | `tenantIds` provider | Claimed scope |
 |------------------|----------------------|---------------|
@@ -324,7 +324,7 @@ The claim query uses `FOR UPDATE SKIP LOCKED`. It selects at most 50 rows, order
 | `null` | Present | Only the listed tenants; an empty list claims nothing |
 | `null` | Absent | Every tenant in the table |
 
-The standalone runtime passes the service identifier, so it uses the first form. The multi-tenant `AgentsHost` passes `tenantId: null` and a provider of its registered tenants, so it uses the second form. The third form is a fallback for a shared scheduler built without a provider. No constructor in this package uses it in version 0.6.4: both in-package callers pass a provider when the tenant is null. The code is in [01-boot-and-configuration.md](01-boot-and-configuration.md) for the standalone case and [08-tenancy-permissions-and-principals.md](08-tenancy-permissions-and-principals.md) for the shared case.
+The standalone runtime passes the service identifier, so it uses the first form. The multi-tenant `AgentsHost` passes `tenantId: null` and a provider of its registered tenants, so it uses the second form. The third form is a fallback for a shared scheduler built without a provider. No constructor in this package uses it in version 0.6.4: both in-package callers pass a provider when the tenant is null. The code is described in [01-boot-and-configuration.md](01-boot-and-configuration.md) for the standalone case and [08-tenancy-permissions-and-principals.md](08-tenancy-permissions-and-principals.md) for the shared case.
 
 ```ts
 // packages/agents-server/src/scheduler.ts:560-577
@@ -385,7 +385,7 @@ await this.pgClient`
 
 The reset makes the task available again. The reset query has the same three tenant forms as the claim query. The operation must therefore be idempotent. Delayed sends use the manifest producer identifier. Cron ticks use `scheduler-cron-<base64url-encoded cron spec>-<tickNumber>`, where the encoded spec is the final segment of the `/_cron/<encoded spec>` stream path.
 
-The claim is not renewed. The loop does not extend `claimed_at` while a task runs. A task that takes longer than 30,000 ms therefore becomes visible to the reset query, and another instance can claim it. The completion update still checks `claimed_by = instanceId`, so when the first worker finishes late, its update matches zero rows. The update reports success and raises no error, because a zero-row `UPDATE` is not an error in Postgres. The first worker cannot tell that it lost the claim, and the scheduler logs nothing. The producer identifiers above make the duplicate execution harmless.
+The loop does not renew the claim. It does not extend `claimed_at` while a task runs. A task that takes longer than 30,000 ms therefore becomes visible to the reset query, and another instance can claim it. The completion update still checks `claimed_by = instanceId`, so when the first worker finishes late, its update matches zero rows. The update reports success and raises no error, because a zero-row `UPDATE` is not an error in Postgres. The first worker cannot tell that it lost the claim, and the scheduler logs nothing. The producer identifiers above make the duplicate execution harmless.
 
 ### Error classes
 
@@ -434,7 +434,7 @@ This makes the manifest the source of truth. A user edit replaces the pending se
 
 ## How the pieces meet
 
-`syncManifestSchedules()` is the bridge from the entity stream to the future-send part of the task table. It accepts one event or an array. It ignores every event whose type is not `manifest` and every event with no key. It then passes the key, the header operation, and the value to `applyManifestFutureSendSchedule`. A manifest entry that is not a `schedule` with `scheduleType: 'future_send'` and `status` absent or `pending` cancels any delayed send for that key instead of creating one.
+`syncManifestSchedules()` is the bridge from the entity stream to the future-send part of the task table. It accepts one event or an array. It ignores every event whose type is not `manifest` and every event with no key. It then passes the key, the header operation, and the value to `applyManifestFutureSendSchedule`. A manifest entry must be a `schedule` with `scheduleType: 'future_send'` and `status` absent or `pending`. Any other entry cancels the delayed send for that key instead of creating one.
 
 Cron manifests travel a different path. `syncManifestWakes()` builds the wake registration and also calls `extractManifestCronSpec()`. When a cron spec is present, it calls `getOrCreateCronStream()`, which seeds the first tick. See [02-entity-manager.md](02-entity-manager.md).
 
@@ -458,7 +458,7 @@ The same append can also arrive through the Hypertext Transfer Protocol (HTTP) p
 
 ## Related documents
 
-- [02-entity-manager.md](02-entity-manager.md) shows where registrations are created and where wakes are appended.
+- [02-entity-manager.md](02-entity-manager.md) shows where the code creates registrations and appends wakes.
 - [04-stream-layout-and-stream-client.md](04-stream-layout-and-stream-client.md) explains the idempotent append used for delivery.
 - [10-pg-sync-and-bridges.md](10-pg-sync-and-bridges.md) shows another producer that calls `evaluateWakes`.
 - [11-operations-testing-and-conformance.md](11-operations-testing-and-conformance.md) explains how these loops are tested.

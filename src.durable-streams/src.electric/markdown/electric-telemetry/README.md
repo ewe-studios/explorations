@@ -10,10 +10,10 @@ These terms are used throughout:
 
 - A **measurement** is one data point with a name, a value, and optional metadata. A collection function produces it.
 - An **event** is a Telemetry event. It has an event name, a measurements map, and a metadata map.
-- A **metric** is a rule that selects events and one measurement, adds tags from the metadata, and produces one exported time series.
-- A **reporter** is a process that owns a list of metrics, subscribes to their events, and exports the series to an external system. This document also calls it an **exporter**.
+- A **metric** is a rule that selects events and one measurement. It adds tags from the metadata and produces one exported time series.
+- A **reporter** is a process that owns a list of metrics. It subscribes to their events and exports the series to an external system. This document also calls it an **exporter**.
 - **StatsD** is a plain-text metric protocol. An **agent** is the local StatsD process that receives the text and forwards it.
-- **OpenTelemetry** is a vendor-neutral observability standard. **OTLP** is the OpenTelemetry Protocol that carries the data to a collector.
+- **OpenTelemetry** is a vendor-neutral observability standard. The **OpenTelemetry Protocol (OTLP)** carries the data to a collector.
 
 The source is at `/Users/darkvoid/GitSources/src.Electric/electric/packages/electric-telemetry`. The library version is `0.4.0`, taken from `package.json:1-5`. The licence is Apache-2.0. The library requires Elixir `~> 1.17` (`mix.exs:8`).
 
@@ -55,7 +55,7 @@ flowchart LR
 
 The cost is that collection does not exist without at least one exporter. A caller cannot use this library only to emit events for a separate Telemetry handler. The caller must enable one reporter, or call the collection functions directly.
 
-**Aha:** the `:ignore` return is the whole configuration mechanism for "off". There is no `enabled: false` flag and no separate development branch. An empty reporter set stops the supervisor before any child starts.
+**Aha:** the `:ignore` return is the whole configuration mechanism for "off". The library has no `enabled: false` flag and no separate development branch. An empty reporter set stops the supervisor before any child starts.
 
 ```mermaid
 flowchart TD
@@ -98,14 +98,14 @@ All paths are relative to `/Users/darkvoid/GitSources/src.Electric/electric/pack
 | Poller wrapper | `lib/electric/telemetry/poller.ex` |
 | System monitor | `lib/electric/telemetry/system_monitor.ex` |
 | Process sampling | `lib/electric/telemetry/processes.ex` |
-| ETS table sampling | `lib/electric/telemetry/ets_tables.ex` |
+| Erlang Term Storage (ETS) table sampling | `lib/electric/telemetry/ets_tables.ex` |
 | Disk sampling | `lib/electric/telemetry/disk_usage.ex` |
 | Disk walk | `lib/electric/telemetry/disk_usage/disk.ex` |
 | Exporters | `lib/electric/telemetry/reporters/` |
 
 ## Build and test
 
-The package is a Mix project. `mix.exs:19-31` lists the dependencies. The runtime dependencies are `otel_metric_exporter`, `telemetry`, `telemetry_metrics`, `telemetry_metrics_prometheus_core`, `telemetry_metrics_statsd`, and `telemetry_poller`. The list also contains `jason`, with no `only:` restriction, so Mix installs it in every environment; no module in the package refers to it (`mix.exs:33-41`).
+The package is a Mix project. `mix.exs:19-31` lists the dependencies. The runtime dependencies are `otel_metric_exporter`, `telemetry`, `telemetry_metrics`, `telemetry_metrics_prometheus_core`, `telemetry_metrics_statsd`, and `telemetry_poller`. The list also contains `jason`, with no `only:` restriction, so Mix installs it in every environment. No module in the package refers to it (`mix.exs:33-41`).
 
 ```bash
 mix deps.get

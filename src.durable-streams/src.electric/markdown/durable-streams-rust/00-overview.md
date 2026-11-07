@@ -4,9 +4,9 @@ title: Overview
 
 # Overview
 
-`durable-streams-rust` is a single-binary server for the Durable Streams protocol. This study covers the server, not the protocol definition. The protocol study is [durable-streams](../durable-streams/README.md). It keeps each stream's own encoded bytes in one contiguous data file and one small metadata sidecar. That is the whole layout for a root stream with tiering off. A fork also reads its parent below its fork point, and the optional cold tier moves a sealed prefix into separate chunk files. The file holds the stream's encoded bytes: the posted bytes for a binary stream, and each JSON value plus a comma for a JavaScript Object Notation (JSON) stream. In the default `wal` mode, each append is written to the data file and also to a record in a sharded write-ahead log (WAL). The WAL `fdatasync` is the durability point, and the reader sees the bytes only after that point. The alternative `memory` mode has no WAL and no local crash guarantee.
+`durable-streams-rust` is a single-binary server for the Durable Streams protocol. This study covers the server, not the protocol definition. The protocol study is [durable-streams](../durable-streams/README.md). It keeps each stream's own encoded bytes in one contiguous data file and one small metadata sidecar. That is the whole layout for a root stream with tiering off. A fork also reads its parent below its fork point, and the optional cold tier moves a sealed prefix into separate chunk files. The file holds the stream's encoded bytes. For a binary stream, it holds the posted bytes. For a JavaScript Object Notation (JSON) stream, it holds each JSON value plus a comma. In the default `wal` mode, each append is written to the data file and also to a record in a sharded write-ahead log (WAL). The WAL `fdatasync` is the durability point, and the reader sees the bytes only after that point. The alternative `memory` mode has no WAL and no local crash guarantee.
 
-The package has one central rule: **in `wal` mode, durability comes before visibility, and visibility comes before the acknowledgement.** The writer tail can run ahead of the durable tail. A reader observes only the durable tail (`src/store.rs:48-85`). The append handler waits for the WAL barrier before it publishes the new durable tail and returns a success status (`src/handlers.rs:1214-1225`). A crash cannot roll back a byte that a reader has already seen.
+The package has one central rule: **in `wal` mode, durability comes before visibility, and visibility comes before the acknowledgement**. The writer tail can run ahead of the durable tail. A reader observes only the durable tail (`src/store.rs:48-85`). The append handler waits for the WAL barrier before it publishes the new durable tail and returns a success status (`src/handlers.rs:1214-1225`). A crash cannot roll back a byte that a reader has already seen.
 
 ## Package facts
 
@@ -24,7 +24,7 @@ Sizes use binary units: one kibibyte (KiB) is 1,024 bytes, one mebibyte (MiB) is
 | Default address | `127.0.0.1:4437` | `src/main.rs:116-117` |
 | Default data directory | system temporary directory | `src/main.rs:118` |
 | Default durability mode | `wal` | `src/handlers.rs:41-49` |
-| Default WAL shard count | the `--worker-threads` value on the first boot, which defaults to available parallelism (normally the number of central processing unit (CPU) cores) | `src/main.rs:335-337` |
+| Default WAL shard count | the `--worker-threads` value on the first boot, which defaults to available parallelism (normally the number of Central Processing Unit (CPU) cores) | `src/main.rs:335-337` |
 | WAL segment size | 128 MiB | `src/wal/segment.rs:20-22` |
 | Cold-tier segment size | 8 MiB | `src/tier.rs:33-35` |
 | Default long-poll timeout | 30,000 milliseconds | `src/handlers.rs:32` |
@@ -90,7 +90,7 @@ The boot order is load-bearing. The sidecar pass runs first because it owns stre
 | `wal` | after the shard `fdatasync` | yes | yes |
 | `memory` | after the page-cache write | no | no |
 
-`wal` is the default (`src/handlers.rs:41-49`). `memory` is for benchmarking or for a deployment where another system copies each acknowledged write to a second machine. Memory mode refuses to start over a data directory that holds a WAL from an earlier `wal` run. It would ignore those records and could lose data. The check does not parse a record. It reads the first 16 bytes of each segment, and any non-zero byte inside that window proves that the segment came from a `wal` run (`src/main.rs:38-82`, `src/main.rs:298-322`).
+`wal` is the default (`src/handlers.rs:41-49`). `memory` is for benchmarking or for a deployment where another system copies each acknowledged write to a second machine. Memory mode refuses to start over a data directory that holds a WAL from an earlier `wal` run. It would ignore those records and could lose data. The check does not parse a record. It reads the first 16 bytes of each segment. Any non-zero byte inside that window proves that the segment came from a `wal` run (`src/main.rs:38-82`, `src/main.rs:298-322`).
 
 ## Storage terms
 
@@ -111,7 +111,7 @@ These terms appear in all four documents. The line citations point to the defini
 | Resident tail cache | An optional in-memory copy of the newest append chunk (`StreamState.last_chunk`), sized by `--tail-cache-bytes`. It is not a cold-tier chunk file (`src/store.rs:315-325`, `src/store.rs:419-434`). |
 | Committer | The dedicated thread, one per shard, that `fdatasync`s group commits (`src/wal/walset.rs:169-177`, `src/wal/shard.rs:1552-1560`). |
 | WAL | Write-ahead log. A sharded, append-only log of records that carries the second copy of each append. |
-| Log sequence number (LSN) | A number that orders records inside one WAL shard. |
+| Log Sequence Number (LSN) | A number that orders records inside one WAL shard. |
 | WAL segment | A file of up to 128 MiB in one shard's directory (`src/wal/segment.rs:20-22`). |
 | Cold-tier segment | An 8 MiB sealed range of one stream, stored locally or in an object store (`src/tier.rs:33-35`). |
 | Checkpoint | The pass that syncs data files, persists durable tails, and recycles WAL segments. |

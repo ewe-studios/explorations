@@ -28,9 +28,9 @@ export * from './types'
 
 Source: `packages/agents-mcp/src/index.ts:1-3`.
 
-The code block shows the version and the type re-export. The other five groups are named in the table. `createRegistry` is the factory that this package exports. The built-in runtime refers to that factory as `createMcpRegistry`.
+The code block shows the version and the type re-export. The table names the other five groups. `createRegistry` is the factory that this package exports. The built-in runtime refers to that factory as `createMcpRegistry`.
 
-Note: `VERSION` is `0.1.0` while the package manifest states `0.6.0`. The constant is not read from the manifest, so the two values can disagree. The value is visible at runtime because the transport client sends `0.1.0` as its version. This is a source inconsistency, not only a documentation issue.
+Note: `VERSION` is `0.1.0` while the package manifest states `0.6.0`. The constant is not read from the manifest, so the two values can disagree. The transport client sends `0.1.0` as its version, so the value is visible at runtime. This is a source inconsistency, not only a documentation issue.
 
 ## The configuration file
 
@@ -99,13 +99,13 @@ const FORBIDDEN_REF_KEYS = [`valueRef`, `clientIdRef`, `clientSecretRef`]
 
 Source: `packages/agents-mcp/src/config/loader.ts:16`.
 
-The error message states the design rule: secrets are not configured in `mcp.json`. They are passed inline on the auth config at the call site. For a file-loaded configuration, the call site is the code that calls `addServer` or `applyConfig`; that code can replace the auth object. This lets the embedding application read secrets from its own secret store. The alternative to the forbidden reference keys is to resolve the secret in the embedding application and pass the value inline.
+The error message states the design rule: `mcp.json` does not configure secrets. The caller passes them inline on the auth config at the call site. For a file-loaded configuration, the call site is the code that calls `addServer` or `applyConfig`; that code can replace the auth object. This lets the embedding application read secrets from its own secret store. The alternative to the forbidden reference keys is to resolve the secret in the embedding application and pass the value inline.
 
 ## Environment expansion
 
 The loader expands `${env:NAME}` references in three places:
 
-1. The HTTP address (Uniform Resource Locator, URL).
+1. The HTTP address, a Uniform Resource Locator (URL).
 2. The deep auth object.
 3. The stdio command, arguments, and environment map.
 
@@ -117,7 +117,7 @@ Source: `packages/agents-mcp/src/config/env-expand.ts:1`.
 
 An unset variable expands to an empty string. A detailed parse result also reports the missing names, so an embedder can warn the user.
 
-Key insight: expansion replaces strings before the auth mode value is used. The mode name itself is not expanded. A configuration cannot choose an auth mode from an environment variable.
+Key insight: expansion replaces strings before the loader uses the auth mode value. The mode name itself is not expanded. A configuration cannot choose an auth mode from an environment variable.
 
 ## The configuration watcher
 

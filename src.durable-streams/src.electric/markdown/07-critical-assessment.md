@@ -12,11 +12,11 @@ This document states what the code does well, what it does not do, and where a p
 
 The entity stream serves as the database, the message queue, the audit log, and the live feed. This removes a whole class of synchronization bugs. A reader that replays the stream gets the same state as a reader that never disconnected.
 
-The proof is in `packages/agents-runtime/src/entity-stream-db.ts`. The same `createEntityStreamDB` call, a wrapper over `createStreamDB`, serves catch-up and live reads, because the underlying `DurableStream` covers both through one SSE read connection.
+The proof is in `packages/agents-runtime/src/entity-stream-db.ts`. The same `createEntityStreamDB` call serves catch-up and live reads. It is a wrapper over `createStreamDB`, and the underlying `DurableStream` covers both through one Server-Sent Events (SSE) read connection.
 
 ### 2. Clean plane separation
 
-The runtime does not import the server. The server does not import handler code. The contract is HTTP plus a signed webhook. This makes each plane replaceable.
+The runtime does not import the server. The server does not import handler code. The contract is Hypertext Transfer Protocol (HTTP) plus a signed webhook. This makes each plane replaceable.
 
 Source: `packages/agents-runtime/package.json` has no dependency on `@electric-ax/agents-server`.
 
@@ -74,7 +74,7 @@ A test server may lack:
 - Production backup and restore procedures.
 - Resource limits.
 
-The Docker Compose file names it as the default. A production deployment must set an external URL or accept the limits of a single process.
+The Docker Compose file names it as the default. A production deployment must set an external Uniform Resource Locator (URL) or accept the limits of a single process.
 
 **Recommendation:** require `ELECTRIC_AGENTS_DURABLE_STREAMS_URL` when `NODE_ENV=production`.
 
@@ -82,7 +82,7 @@ The Docker Compose file names it as the default. A production deployment must se
 
 `allowDevPrincipalFallback()` returns true when any of three conditions holds. One condition is simply that the server owns an embedded stream server. An explicit option overrides these conditions. Source: `packages/agents-server/src/server.ts:380-389`.
 
-A server with an embedded stream server accepts anonymous requests as `system:dev-local`, even when `NODE_ENV=production`, unless the deployment sets `allowDevPrincipalFallback: false` or its authentication hook rejects every anonymous request. That principal bypasses every permission check.
+A server with an embedded stream server accepts anonymous requests as `system:dev-local`, even when `NODE_ENV=production`. The exception is a deployment that sets `allowDevPrincipalFallback: false` or whose authentication hook rejects every anonymous request. That principal bypasses every permission check.
 
 **Recommendation:** make the fallback opt-in through one explicit flag, and log a warning on every request that uses it.
 
@@ -111,7 +111,7 @@ sequenceDiagram
 
 ### 4. Streams grow without bound
 
-An entity stream is append-only. The runtime never truncates it. The file store supports a time to live, but the agents-server does not set one on entity streams. Source: `packages/agents-server/src/entity-manager.ts` create call has no TTL.
+An entity stream is append-only. The runtime never truncates it. The file store supports a time to live (TTL), but the agents-server does not set one on entity streams. Source: `packages/agents-server/src/entity-manager.ts` create call has no TTL.
 
 Context compaction exists at the model-prompt level. It reduces what the model sees. It does not reduce what the stream stores.
 
@@ -200,7 +200,7 @@ Neither the agents server nor the durable stream store has a limitations documen
 
 | Question | Why it matters |
 |----------|----------------|
-| How does a multi-node agents-server coordinate entity claims? | The `consumer_claims` table (a lease table for stream consumers) exists, but the OSS entrypoint starts one runtime |
+| How does a multi-node agents-server coordinate entity claims? | The `consumer_claims` table (a lease table for stream consumers) exists, but the open-source entrypoint starts one runtime |
 | What is the intended production stream backend? | The embedded server is a test server; no first-party production server for Node.js is named |
 | How should an operator repair a row without a stream? | No repair command exists |
 | How large can one entity stream grow before preload is unacceptable? | No benchmark in the repository answers this |

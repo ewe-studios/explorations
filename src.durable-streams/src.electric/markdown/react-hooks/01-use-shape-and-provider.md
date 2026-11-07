@@ -55,9 +55,9 @@ The cache key is `sortedOptionsHash(options)`. The function calls `sortObjectKey
 
 The citation is `src/react-hooks.tsx:26-41`.
 
-Every other value returns unchanged; this covers primitives and `null`. An `undefined` value returns `undefined`, and `JSON.stringify` drops an object property whose value is `undefined`, so that property does not appear in the key. A `Date`, `Map`, `Set`, or `AbortSignal` has no enumerable own properties, so it becomes `{}`. A class instance is copied through its enumerable own properties. The function copies objects and arrays; it does not mutate the input.
+Every other value returns unchanged. This covers primitives and `null`. An `undefined` value returns `undefined`, and `JSON.stringify` drops an object property whose value is `undefined`, so that property does not appear in the key. A `Date`, `Map`, `Set`, or `AbortSignal` has no enumerable own properties, so it becomes `{}`. A class instance is copied through its enumerable own properties. The function copies objects and arrays. It does not mutate the input.
 
-The function case is important. `ShapeStreamOptions` accepts header functions and parameter functions. Two different function instances with the same source text produce the same hash. The captured values of a closure are not in that text. A header function that closes over a user token can therefore produce the same hash as a different function with the same body but a different token. The two functions would share one stream and one set of rows. The citation is `src/react-hooks.tsx:26-27`.
+The function case is important. `ShapeStreamOptions` accepts header functions and parameter functions. Two different function instances with the same source text produce the same hash. The captured values of a closure are not in that text. A header function that closes over a user token can produce the same hash as another function. That other function has the same body but a different token. The two functions would share one stream and one set of rows. The citation is `src/react-hooks.tsx:26-27`.
 
 The sort is recursive. A nested object also receives a stable key order. The citation is `src/react-hooks.tsx:34-40`.
 
@@ -101,7 +101,7 @@ The lookup logic mirrors the stream cache:
 
 The aborted branch also deletes the stream from `streamCache`. It computes the hash again from `shapeStream.options`. The citation is `src/react-hooks.tsx:81`.
 
-That second hash can differ from the key that stored the stream. The `ShapeStream` constructor copies the caller options and adds the default `subscribe: true`. The citation is `../typescript-client/src/client.ts:730`. If the caller omitted `subscribe`, the stored key has no `subscribe` field, but the recomputed hash has `subscribe: true`. The delete then misses the cache entry. The entry is not lost forever: a later `getShapeStream` call that hashes to the original key finds the aborted stream, deletes it, and creates a new stream. The shape from the aborted stream is removed by object key in this branch. The citation is `src/react-hooks.tsx:53-62` and `src/react-hooks.tsx:81-82`. A later call that passes an explicit `subscribe` value hashes to the other key, so it does not find or remove the stale entry.
+That second hash can differ from the key that stored the stream. The `ShapeStream` constructor copies the caller options and adds the default `subscribe: true`. The citation is `../typescript-client/src/client.ts:730`. If the caller omitted `subscribe`, the stored key has no `subscribe` field, but the recomputed hash has `subscribe: true`. The delete then misses the cache entry. The entry is not lost forever. A later `getShapeStream` call that hashes to the original key finds the aborted stream, deletes it, and creates a new stream. The shape from the aborted stream is removed by object key in this branch. The citation is `src/react-hooks.tsx:53-62` and `src/react-hooks.tsx:81-82`. A later call that passes an explicit `subscribe` value hashes to the other key, so it does not find or remove the stale entry.
 
 ## `preloadShape`
 
@@ -147,11 +147,11 @@ This behavior keeps a shape warm across route changes. It also means that a comp
 
 An application can call `getShapeStream` once with a shared `AbortController.signal` before it renders components. The components then call `useShape` with the same options and share that stream. When the session ends, the application aborts the controller. The next lookup removes the dead entries and creates fresh streams. The citation is `src/react-hooks.tsx:47-69`.
 
-There is no public function that clears the caches. An application can remove a stream only by aborting its signal and then causing a new lookup. The caches are module-level constants with no export. The citation is `src/react-hooks.tsx:14-15`.
+The package exports no public function that clears the caches. An application can remove a stream only by aborting its signal and then causing a new lookup. The caches are module-level constants with no export. The citation is `src/react-hooks.tsx:14-15`.
 
 When `options.signal` is absent, the cache test passes, because `undefined` is not aborted. Nothing can then close that stream through the cache. The entry lives until the module unloads. Pass a signal if the stream must be released.
 
-The `ShapeStream` has a request loop: the repeated long-poll or Server-Sent Events (SSE) request cycle. A pause lock is a set of reason strings; the stream pauses while the set is not empty. "Pause" means that the lock stops the next loop iteration and aborts the active request with the reason string `PAUSE_STREAM`. It does not abort the stream signal. A hidden browser tab adds the `visibility` reason; a visible tab removes it. The hook does not expose pause state. A pause does not change `isLoading` or `lastSyncedAt`; those values reflect the last completed sync. The citation is `../typescript-client/src/client.ts:737-754`, `../typescript-client/src/client.ts:2010-2016`, and `../typescript-client/src/client.ts:985-1029`.
+The `ShapeStream` has a request loop: the repeated long-poll or Server-Sent Events (SSE) request cycle. A pause lock is a set of reason strings. The stream pauses while the set is not empty. "Pause" means that the lock stops the next loop iteration and aborts the active request with the reason string `PAUSE_STREAM`. It does not abort the stream signal. A hidden browser tab adds the `visibility` reason. A visible tab removes it. The hook does not expose pause state. A pause does not change `isLoading` or `lastSyncedAt`. Those values reflect the last completed sync. The citation is `../typescript-client/src/client.ts:737-754`, `../typescript-client/src/client.ts:2010-2016`, and `../typescript-client/src/client.ts:985-1029`.
 
 ## Options that affect sharing
 
@@ -167,7 +167,7 @@ The `ShapeStream` has a request loop: the repeated long-poll or Server-Sent Even
 
 The hash covers the options object. The hook removes `selector` from the options before it calls `getShapeStream`. The citation is `src/react-hooks.tsx:167-173`.
 
-`log` selects `full` (snapshot plus changes) or `changes_only` (changes only); the default is `full`. `liveSse` selects SSE instead of the default long polling. Both values change the protocol conversation, so they change stream identity.
+`log` selects `full` (snapshot plus changes) or `changes_only` (changes only). The default is `full`. `liveSse` selects SSE instead of the default long polling. Both values change the protocol conversation, so they change stream identity.
 
 An `AbortSignal` object has no enumerable data. It serializes to `{}`. Two components with different signals can therefore share a cached stream if every other option is equal, including whether they both supply a signal. A component that supplies a signal and a component that omits the option do not share, because their serialized objects have different keys. The cache checks the cached stream signal, not the caller signal. The first stream owns the signal that created it. A caller that needs an isolated stream must change another option, such as a parameter or a header. A caller that shares a stream must not abort the owner's signal, because the abort closes the stream for every component that shares it.
 

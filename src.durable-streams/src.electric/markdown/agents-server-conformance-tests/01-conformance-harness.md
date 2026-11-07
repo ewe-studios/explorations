@@ -4,7 +4,7 @@ title: The Conformance Harness
 
 # The conformance harness
 
-The harness is a fluent scenario builder. A test declares a sequence of steps. The harness starts a webhook receiver over Hypertext Transfer Protocol (HTTP), runs the steps against the server, records a history, and checks invariants against that history.
+The harness is a fluent scenario builder. A test declares a sequence of steps. The harness starts a webhook receiver over Hypertext Transfer Protocol (HTTP). It runs the steps against the server and records a history. It then checks invariants against that history.
 
 The implementation is `packages/agents-server-conformance-tests/src/electric-agents-dsl.ts`, 2,574 lines. The file name uses `dsl`, which means domain-specific language. The scenario builder is that language.
 
@@ -126,7 +126,7 @@ The `finally` block is important. A failed assertion still cleans up the server 
 
 ## The webhook receiver
 
-The receiver is a local Hypertext Transfer Protocol (HTTP) server on a random port.
+The receiver is a local HTTP server on a random port.
 
 ```ts
 this.server.listen(0, `127.0.0.1`, () => {

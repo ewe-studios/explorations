@@ -4,7 +4,7 @@ title: React Hooks
 
 # React Hooks
 
-The `@electric-sql/react` package binds Electric shapes to React components. An Electric shape is a filtered, column-projected view of one PostgreSQL table. The server identifies it by the shape URL and its parameters. A `ShapeStream` is the live Hypertext Transfer Protocol (HTTP) connection to that shape. A `Shape` is the in-memory row map fed by the stream.
+The `@electric-sql/react` package binds Electric shapes to React components. An Electric shape is a filtered, column-projected view of one PostgreSQL table. The server identifies it by the shape uniform resource locator (URL) and its parameters. A `ShapeStream` is the live Hypertext Transfer Protocol (HTTP) connection to that shape. A `Shape` is the in-memory row map that the stream fills.
 
 The package exports one main hook, `useShape`, plus the cache helpers `getShapeStream`, `getShape`, `preloadShape`, and `sortedOptionsHash`. The hook returns rows and lifecycle state. It does not create a new network stream for each component.
 
@@ -58,9 +58,9 @@ flowchart TB
 
 `useShape` derives a string hash from the options. It looks up a shared `ShapeStream` by that hash. It looks up a shared `Shape` by the stream object. It then subscribes the component to the shape. The citation is `src/react-hooks.tsx:164-211`.
 
-**Aha:** the cache key is the full options object, not the shape uniform resource locator (URL). Two components that pass the same URL but different headers or parameters receive different streams. Two components that pass equal options in a different key order receive the same stream. The hash sorts every object key recursively. It also converts a function value to its source text. The citation is `src/react-hooks.tsx:26-45`.
+**Aha:** the cache key is the full options object, not the shape URL. Two components that pass the same URL but different headers or parameters receive different streams. Two components that pass equal options in a different key order receive the same stream. The hash sorts every object key recursively. It also converts a function value to its source text. The citation is `src/react-hooks.tsx:26-45`.
 
-The function rule has a cost. Two functions with the same source text but different captured values produce the same hash. A header function that closes over a user token can therefore collide with another function that has the same body. Use a function whose behavior depends only on its arguments, or pass per-user values in a separate option that changes the hash.
+The function rule has a cost. Two functions with the same source text but different captured values produce the same hash. A header function can close over a user token. Such a function can then collide with another function that has the same body. Use a function whose behavior depends only on its arguments. Or, pass per-user values in a separate option that changes the hash.
 
 ## What the hook returns
 
@@ -77,6 +77,6 @@ The default return value is the full result object. A caller can pass a `selecto
 
 ## Source of truth
 
-Every claim in this directory comes from the source files under `packages/react-hooks`. Some claims about `Shape` and `ShapeStream` cite the client package as `../typescript-client/src/...`, because those classes are defined there. A citation has the form `src/react-hooks.tsx:120-145`. The line range is inclusive.
+Every claim in this directory comes from the source files under `packages/react-hooks`. Some claims about `Shape` and `ShapeStream` cite the client package as `../typescript-client/src/...`, because the client package defines those classes there. A citation has the form `src/react-hooks.tsx:120-145`. The line range is inclusive.
 
 Return to the platform index: [../README.md](../README.md).

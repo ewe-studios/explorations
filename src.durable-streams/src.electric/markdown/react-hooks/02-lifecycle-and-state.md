@@ -4,7 +4,7 @@ title: Lifecycle and State
 
 # Lifecycle and State
 
-`useShape` must keep React state in step with an external `Shape` object. A `Shape` is the in-memory row map that one `ShapeStream` fills. The shape changes outside React. The change can arrive from a long poll, a Server-Sent Events (SSE) event, a snapshot, or an error. A snapshot here is a one-shot subset request whose rows the stream injects into the normal message batch between a `snapshot-end` message and a `subset-end` message. It is not the initial full-shape sync. A re-executed snapshot is one of those requests that the shape repeats after a `must-refetch` message. The hook uses `useSyncExternalStoreWithSelector` to bridge the two worlds.
+`useShape` must keep React state in step with an external `Shape` object. A `Shape` is the in-memory row map that one `ShapeStream` fills. The shape changes outside React. The change can arrive from a long poll, a Server-Sent Events (SSE) event, a snapshot, or an error. A snapshot here is a one-shot subset request. The stream injects its rows into the normal message batch between a `snapshot-end` message and a `subset-end` message. It is not the initial full-shape sync. A re-executed snapshot is one of those requests that the shape repeats after a `must-refetch` message. The hook uses `useSyncExternalStoreWithSelector` to bridge the two worlds.
 
 The bridge is in `src/react-hooks.tsx:176-210`. The snapshot path is in `../typescript-client/src/client.ts:2152-2235` and `../typescript-client/src/shape.ts:274-307`.
 
@@ -51,13 +51,13 @@ flowchart TD
 The adapter receives four arguments:
 
 1. `subscribe` registers a listener. It also checks for a change in the race window.
-2. `getSnapshot` returns the current value. Its first call builds the value; later calls return the cached object.
+2. `getSnapshot` returns the current value. Its first call builds the value. Later calls return the cached object.
 3. The same `getSnapshot` function is also passed as the server snapshot.
 4. `selector` extracts the value that the component consumes.
 
 The citation is `src/react-hooks.tsx:200-207`.
 
-The third argument is the `getServerSnapshot` parameter of `useSyncExternalStoreWithSelector`. This code passes the same function for both snapshots, so there is no separate server value. During server rendering, the function reads the current shape object. That object usually has no rows yet, because no subscription has started, so the rendered server snapshot is typically the loading state. The hook does not supply a static server fallback outside this snapshot. The module cache is shared for the life of the module instance; in a long-lived server process, that instance can serve more than one request. After hydration, React uses the client snapshot.
+The third argument is the `getServerSnapshot` parameter of `useSyncExternalStoreWithSelector`. This code passes the same function for both snapshots, so it has no separate server value. During server rendering, the function reads the current shape object. That object usually has no rows yet, because no subscription has started, so the rendered server snapshot is typically the loading state. The hook does not supply a static server fallback outside this snapshot. The module cache is shared for the life of the module instance. In a long-lived server process, that instance can serve more than one request. After hydration, React uses the client snapshot.
 
 The adapter is created inside `React.useMemo`. The dependency list is `[shape, selector]`. A new shape or a new selector recreates the adapter. The citation is `src/react-hooks.tsx:176-208`.
 
@@ -144,7 +144,7 @@ This rule has a visible effect. The hook can render a new row before the next up
 
 ## Error state
 
-`Shape` stores a `FetchError` in `#error`. A `FetchError` is the client error class. It carries a status, text, optional JSON body, headers, and URL. It represents an HTTP or response-body error in the client. The citation is `../typescript-client/src/error.ts:1-46`. The shape notifies subscribers when it receives an error from the stream. The citation is `../typescript-client/src/shape.ts:348-353`.
+`Shape` stores a `FetchError` in `#error`. A `FetchError` is the client error class. It carries a status, text, an optional JavaScript Object Notation (JSON) body, headers, and a Uniform Resource Locator (URL). It represents a Hypertext Transfer Protocol (HTTP) error or a response-body error in the client. The citation is `../typescript-client/src/error.ts:1-46`. The shape notifies subscribers when it receives an error from the stream. The citation is `../typescript-client/src/shape.ts:348-353`.
 
 The hook reports `isError` as `shape.error !== false`. The `error` field carries the error object or `false`. The citation is `src/react-hooks.tsx:133-136`.
 
@@ -170,6 +170,6 @@ A selector can return a primitive, a memoized object, or a value from a state ma
 
 The `shapeSubscribe` helper wraps `shape.subscribe`. It returns a function that removes the callback. The citation is `src/react-hooks.tsx:116-124`.
 
-The cleanup does not abort the stream. The stream remains in the module cache. A later component can reuse it. The signal belongs to the call that created the cached stream, not to every component that subscribes. A component that shares a stream must not abort that signal, because the abort closes the stream for all subscribers. A stream is treated as closed when its own signal is aborted; a later cache lookup removes that entry. The citation is `src/react-hooks.tsx:55-62` and `src/react-hooks.tsx:116-124`.
+The cleanup does not abort the stream. The stream remains in the module cache. A later component can reuse it. The signal belongs to the call that created the cached stream, not to every component that subscribes. A component that shares a stream must not abort that signal, because the abort closes the stream for all subscribers. The package treats a stream as closed when its own signal is aborted. A later cache lookup removes that entry. The citation is `src/react-hooks.tsx:55-62` and `src/react-hooks.tsx:116-124`.
 
 Read [01-use-shape-and-provider.md](01-use-shape-and-provider.md) for the cache model. Read the [TypeScript client Shape documentation](../typescript-client/04-api-reference.md) for the full `Shape` API.

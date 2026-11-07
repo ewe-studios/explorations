@@ -4,17 +4,17 @@ title: Operations, testing, and conformance
 
 # Operations, testing, and conformance
 
-This document describes how the server starts, what it rebuilds from durable state, how it stops, which recovery paths exist, and how the test suite proves the behaviour.
+This document describes how the server starts and stops. It describes what the server rebuilds from durable state, which recovery paths exist, and how the test suite proves the behaviour.
 
 ## Terms and architecture
 
 Three storage layers appear together. A reader must keep them apart.
 
 - **PostgreSQL (Postgres)** holds the control state: the entity table, the permission tables, the wake registrations, the bridge rows, the scheduler rows, and the claim rows. The server reads and writes this state through Drizzle.
-- **Durable Streams** holds the event log. Each entity owns a main stream at `/<entity path>/main`. A stream is append-only and has offsets. The stream server is a separate HTTP (Hypertext Transfer Protocol) service.
+- **Durable Streams** holds the event log. Each entity owns a main stream at `/<entity path>/main`. A stream is append-only and has offsets. The stream server is a separate Hypertext Transfer Protocol (HTTP) service.
 - **An Electric shape** is a live query result over one Postgres table, served by the Electric sync service at `/v1/shape`. A *shape stream* is an HTTP response that carries the rows and then the changes. The server uses shapes to learn about Postgres changes without polling.
 
-`ElectricAgentsServer` also starts a *standalone runtime*. This is the object that wires the entity manager, the wake registry, the entity bridge manager, the Postgres sync manager, the tag outbox drainer, and the scheduler. The name means "one tenant, all parts in one process". It is not a separate deployment.
+`ElectricAgentsServer` also starts a *standalone runtime*. This object wires the entity manager, the wake registry, the entity bridge manager, and the Postgres sync manager. It also wires the tag outbox drainer and the scheduler. The name means "one tenant, all parts in one process". It is not a separate deployment.
 
 The *embedded streams server* is a `DurableStreamTestServer` from `@durable-streams/server`. It is an in-process stream server for development and tests. When `durableStreamsServer` is set and `durableStreamsUrl` is not, `start()` starts it and uses its origin. When an external Uniform Resource Locator (URL) is set, the server uses that URL and starts nothing.
 
@@ -27,7 +27,7 @@ The word **claim** has five meanings in this package. The recovery table below u
 | Claim | Stored where | Who releases it |
 |-------|--------------|-----------------|
 | Runner claim | The stream server lease, with `claimToken` and `lease_ttl_ms` | The runner sends `done`, `stop`, or the lease expires |
-| Scheduler task claim | `scheduled_tasks.claimed_by` and `claimed_at` | The scheduler deletes or reschedules the task; otherwise the claim expires after 30,000 ms |
+| Scheduler task claim | `scheduled_tasks.claimed_by` and `claimed_at` | The scheduler deletes or reschedules the task; otherwise the claim expires after 30,000 milliseconds (ms) |
 | Tag outbox claim | `tag_stream_outbox.claimed_by` and `claimed_at` | The drainer deletes the row on success, or clears the claim on failure; a stale claim is older than 30,000 ms |
 | Dispatch claim | `consumer_claims`, one row for a wake delivery | No code in this package marks a row `expired`; see the gap below |
 | Claim token | The value in a claim response | The runner sends it to acknowledge or release work; it ends at `done` or `stop`. It is not the append credential. The append credential is the separate per-wake write token from the wake callback |
@@ -41,9 +41,9 @@ An **epoch** is a producer generation number. The Durable Streams protocol uses 
 | Step | Action |
 |------|--------|
 | 1 | Start the embedded `DurableStreamTestServer` when no external streams URL is set |
-| 2 | Create the HTTP (Hypertext Transfer Protocol) `undici` connection-pool agent with keep-alive |
+| 2 | Create the HTTP `undici` connection-pool agent with keep-alive |
 | 3 | Run the Drizzle migrations. Drizzle is the TypeScript object-relational mapper that defines the schema |
-| 4 | Create the PostgreSQL (Postgres) pool and the Drizzle database object |
+| 4 | Create the Postgres pool and the Drizzle database object |
 | 5 | Start the standalone runtime |
 | 6 | Ensure the principal entity type |
 | 7 | Listen on the host and port |
@@ -190,7 +190,7 @@ The replay keeps only the last `manifest` event per `key`. That is the same last
 5. End the Postgres pool.
 6. Close the HTTP agent.
 
-The standalone runtime stops its own parts in this order, which is the reverse of its start order: scheduler, tag outbox drainer, entity bridge manager, then the runtime. The runtime stops the entity manager and the pg-sync bridge manager in parallel. The entity manager is the object that owns the wake registry and evaluates wakes. Its shutdown first stops the wake registry sync, then closes the registry. The registry is the Postgres data-access layer for entities, permissions, bridges, and the outbox.
+The standalone runtime stops its own parts in the reverse of its start order. It stops the scheduler, the tag outbox drainer, the entity bridge manager, then the runtime. The runtime stops the entity manager and the pg-sync bridge manager in parallel. The entity manager is the object that owns the wake registry and evaluates wakes. Its shutdown first stops the wake registry sync, then closes the registry. The registry is the Postgres data-access layer for entities, permissions, bridges, and the outbox.
 
 ```mermaid
 flowchart TB
@@ -314,7 +314,7 @@ The entry point reads `ELECTRIC_AGENTS_DISPATCH_RECOVERY_INTERVAL_MS` and `ELECT
 - `consumer_claims` allows the status `expired`, but no statement in `src/` writes it.
 - `wake_notifications` allows the claim status `expired`, but no statement in `src/` writes it.
 
-So the periodic recovery loop described by the comment is not present in version 0.6.4. The safest statement is this. **Expired claims are recovered by the stream server lease and by a new claim, not by a Postgres sweep.** A claim row that is never released stays `active` in Postgres. A later claim with a new epoch inserts a new row, because the primary key is `(tenant_id, consumer_id, epoch)`; it does not overwrite the stale row. Treat the two environment variables as unused. This is an open question for the reader to confirm against a later version.
+So the periodic recovery loop described by the comment is not present in version 0.6.4. The safest statement is this. **Expired claims are recovered by the stream server lease and by a new claim, not by a Postgres sweep**. A claim row that is never released stays `active` in Postgres. A later claim with a new epoch inserts a new row, because the primary key is `(tenant_id, consumer_id, epoch)`. It does not overwrite the stale row. Treat the two environment variables as unused. This is an open question for the reader to confirm against a later version.
 
 ## Logging and tracing
 
@@ -325,7 +325,7 @@ Logging uses `pino`, a structured logger for Node.js. The logger writes two stre
 
 The `VITEST` variable is set by the test runner, so a test run does not colour its output. The Electron check is `process.versions.electron`, and the source names it `IS_ELECTRON_MAIN`. `ELECTRIC_AGENTS_LOG_FILE` disables the file only when its value is exactly the string `false`; any other value, including an empty string, keeps the file on. `ELECTRIC_AGENTS_LOG_LEVEL` sets the level and defaults to `info`. The level `silent` suppresses every record, but the file is still created and stays empty.
 
-Tracing uses the OpenTelemetry application programming interface (API). The tracer is named `agent-server`. Spans cover:
+Tracing uses the OpenTelemetry Application Programming Interface (API). The tracer is named `agent-server`. Spans cover:
 
 - `stream.create`, `stream.fork`, `stream.append`, and the other stream client methods
 - `electric_agents.spawn`, `electric_agents.forkSubtree`, `electric_agents.evaluateWakes`, and `electric_agents.deliverWake`
@@ -424,7 +424,7 @@ The backend must match the current migration set. `ensureExpectedSchema` checks 
 - the absence of the legacy `entities.metadata`
 - `entity_types.externally_writable_collections`
 
-When the markers do not match and `ELECTRIC_AGENTS_TEST_BACKEND_MANAGED` is exactly the string `1`, the code stops the stack, removes volumes, restarts, and runs the migrations again. When the variable has any other value, including `true` or `0`, the code does not reset and throws at once. A second mismatch after the reset also throws, with the exact reset command. The failure is loud by design. A stale schema would make a test pass for the wrong reason.
+When the markers do not match and `ELECTRIC_AGENTS_TEST_BACKEND_MANAGED` is exactly the string `1`, the code stops the stack. It removes volumes, restarts, and runs the migrations again. When the variable has any other value, including `true` or `0`, the code does not reset and throws at once. A second mismatch after the reset also throws, with the exact reset command. The failure is loud by design. A stale schema would make a test pass for the wrong reason.
 
 ### Global teardown
 
@@ -479,7 +479,7 @@ Some routes are proven by direct tests against the server:
 - `electric-agents-routes.test.ts` is 1,620 lines, the largest test file, and covers the entity routes.
 - `pg-sync-bridge-manager.test.ts` covers the probe, the retry, and `must-refetch`. The probe is one shape page fetched at registration to prove the source is a shape endpoint. `must-refetch` is the control message that tells a shape client its cursor is invalid.
 - `entity-bridge-manager.test.ts` covers the bootstrap and the membership events.
-- `server-claim-write-token.test.ts` covers the claim token lifecycle: the runner claims, receives a `claimToken`, then receives a write token on the wake callback, and loses both at `done` or `stop`.
+- `server-claim-write-token.test.ts` covers the claim token lifecycle. The runner claims, receives a `claimToken`, then receives a write token on the wake callback. It loses both at `done` or `stop`.
 - `scheduler-integration.test.ts` starts a real server and a real scheduler.
 
 A test usually starts a server, calls the route, then reads the stream to confirm the side effect. That pattern matches the product rule: the stream is the record.

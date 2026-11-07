@@ -15,7 +15,7 @@ Two groups are in scope:
 
 The full package names use the `@durable-streams/` scope, for example `@durable-streams/y-durable-streams`.
 
-A **protocol server** answers the protocol operations on a stream path: create, append, read, head, close, and delete. The Node.js server and the Cloudflare server are protocol servers. The Yjs server is not; it is an application server that calls a protocol server. Yjs is a Conflict-free Replicated Data Type (CRDT) library for shared documents, and `__ds` is the reserved subscription control prefix, `/v1/stream/__ds`, that holds webhook and pull-based subscriptions.
+A **protocol server** answers the protocol operations on a stream path: create, append, read, head, close, and delete. The Node.js server and the Cloudflare server are protocol servers. The Yjs server is not; it is an application server that calls a protocol server. Yjs is a Conflict-free Replicated Data Type (CRDT) library for shared documents. The prefix `__ds` is reserved for subscription control. Its path is `/v1/stream/__ds`. It holds webhook and pull-based subscriptions.
 
 The Command-Line Interface (CLI) is both a tool and a client. It is a thin command wrapper around the TypeScript client. The conformance suites do not test it.
 
@@ -85,7 +85,7 @@ The provider has three public methods (`yjs-provider.ts:248`, `:290`, `:328`):
 
 | Member | Result |
 |--------|--------|
-| `connect()` | Start the connection; safe to call when `connect: false` was used |
+| `connect()` | Start the connection; safe to call when the caller sets `connect: false` |
 | `disconnect()` | Stop the connection and set `synced` to `false` |
 | `destroy()` | Release listeners and internal state |
 
@@ -103,7 +103,7 @@ The status values are at `packages/y-durable-streams/src/yjs-provider.ts:64`.
 
 The provider exchanges Yjs document updates, not WebSocket messages. It listens to `doc.on("update")`. It encodes each update as a binary `Y.Doc` update and writes it to the document update stream. On the read side, it applies remote updates with `Y.applyUpdate` (`yjs-provider.ts:467`). A reconnect starts a new read from the last seen offset.
 
-The `awareness` object is optional. It carries presence data: cursor position, selection, and user status. The provider republishes its local awareness state every 15 seconds (`AWARENESS_HEARTBEAT_INTERVAL = 15000` at `yjs-provider.ts:131`). The package does not set a stale timeout; the `Awareness` object from `y-protocols` keeps its own clock, and its default removes a client after 30,000 milliseconds (ms) without an update.
+The `awareness` object is optional. It carries presence data: cursor position, selection, and user status. The provider republishes its local awareness state every 15 seconds (`AWARENESS_HEARTBEAT_INTERVAL = 15000` at `yjs-provider.ts:131`). The package does not set a stale timeout. The `Awareness` object from `y-protocols` keeps its own clock. Its default removes a client after 30,000 milliseconds (ms) without an update.
 
 ### The Yjs server
 
@@ -166,9 +166,9 @@ The `POST` body is the Yjs synchronization protocol framed by the `lib0` library
 
 `PUT` creates the `.updates` stream and the default `.awareness/default` stream. It does not create the `.index` or `.snapshots` streams; compaction creates those later. `PUT` is idempotent because it proxies the stream create rule: a matching create returns `200`, and a different configuration returns `409`.
 
-`DELETE` removes the `.updates` stream first. It then makes a best-effort cascade delete of the snapshot streams named in the index, the `.index` stream, the awareness streams, and the awareness registry stream (`yjs-server.ts:930`). The registry stream is `/v1/stream/yjs/{service}/docs/{docPath}/.awareness-index` (`types.ts:175`). New awareness names are recorded there so that they cannot match a snapshot subscription glob or collide with a named awareness stream. A failure in the cascade is logged but does not change the `204` response.
+`DELETE` removes the `.updates` stream first. It then makes a best-effort cascade delete. The targets are the snapshot streams named in the index, the `.index` stream, the awareness streams, and the awareness registry stream (`yjs-server.ts:930`). The registry stream is `/v1/stream/yjs/{service}/docs/{docPath}/.awareness-index` (`types.ts:175`). New awareness names are recorded there so that they cannot match a snapshot subscription glob or collide with a named awareness stream. A failure in the cascade is logged but does not change the `204` response.
 
-The `{id}` in the subscription route is chosen by the caller. It must be 1 to 256 characters and must not contain a slash (`snapshot-subscriptions.ts:38`). The server maps it to the delivery identifier `yjs:<base64url service>:<base64url id>` (`snapshot-subscriptions.ts:229`). `base64url` is the URL-safe base64 alphabet. The delivery identifier is the subscription name in the Durable Streams control plane: the Yjs server forwards the request to `/v1/stream/__ds/subscriptions/{deliveryId}` on the Durable Streams server (`snapshot-subscriptions.ts:226`). The Durable Streams server owns the stored subscription, not the Yjs server.
+The `{id}` in the subscription route is chosen by the caller. It must be 1 to 256 characters and must not contain a slash (`snapshot-subscriptions.ts:38`). The server maps it to the delivery identifier `yjs:<base64url service>:<base64url id>` (`snapshot-subscriptions.ts:229`). `base64url` is the URL-safe base64 alphabet. The delivery identifier is the subscription name in the Durable Streams control plane. The Yjs server forwards the request to `/v1/stream/__ds/subscriptions/{deliveryId}` on the Durable Streams server (`snapshot-subscriptions.ts:226`). The Durable Streams server owns the stored subscription, not the Yjs server.
 
 `PUT` is idempotent by the configuration hash. The server hashes the normalized configuration. That configuration includes the type, the pattern, the explicit streams, the delivery settings, the lease Time To Live, and the description. The server compares the hash on a repeated `PUT`. A different hash is a conflict (`PROTOCOL.md:885`). `GET` returns the stored subscription, and `DELETE` removes it.
 
@@ -267,7 +267,7 @@ All six fields are top-level. The fields `type`, `webhook.url`, and `lease_ttl_m
 
 `*` matches one path segment and `**` matches recursively. For example, `projects/**` matches `projects/a` and `projects/a/b`, but not `other/a`. The payload example is at `packages/y-durable-streams/README.md:191`.
 
-`lease_ttl_ms` bounds worker liveness. It is optional, must be an integer from 1,000 to 600,000 ms, and defaults to 30,000 ms (`PROTOCOL.md:872`). A wake is the notification that new work exists. The holder is the worker that owns the lease. The lease starts when the server issues a wake and is extended by valid callback responses (`PROTOCOL.md:1182`). If the lease expires, the server clears the holder and schedules another wake when work remains.
+`lease_ttl_ms` bounds worker liveness. It is optional, must be an integer from 1,000 to 600,000 ms, and defaults to 30,000 ms (`PROTOCOL.md:872`). A wake is the notification that new work exists. The holder is the worker that owns the lease. The lease starts when the server issues a wake, and valid callback responses extend it (`PROTOCOL.md:1182`). If the lease expires, the server clears the holder and schedules another wake when work remains.
 
 The notification does not carry the snapshot bytes. It says that one or more newer snapshots exist, and it may combine several compactions into one wake. The worker reads the document with `?offset=snapshot` and stores the result.
 
@@ -311,7 +311,7 @@ The returned connection has two methods:
 
 | Method | Signature | Behavior |
 |--------|-----------|----------|
-| `subscribe` | `(abortSignal?) => AsyncIterable<TanStackChunk>` | Reads JavaScript Object Notation (JSON) batches with `live: "sse"` and yields each chunk |
+| `subscribe` | `(abortSignal?) => AsyncIterable<TanStackChunk>` | Reads JSON batches with `live: "sse"` and yields each chunk |
 | `send` | `(messages, data?, abortSignal?) => Promise<void>` | Posts `{ messages, data }` to `sendUrl` |
 
 The read call is at `client.ts:70`; the send call is at `client.ts:117`.
@@ -320,7 +320,7 @@ The connection always uses SSE on the read path. It does not expose long-poll. T
 
 `initialOffset` is an opaque Durable Streams offset. It is a string, not a message index. The connection stores it in `state.offset` (`client.ts:66`) and updates that value after each batch (`client.ts:89`). When the caller omits it, `state.offset` is `undefined`, and the Durable Streams client starts the read at its default `-1`, the beginning of the stream. The offset lives in memory for the life of the connection. A page refresh discards it; the server-side loader that renders the chat route must supply a new value.
 
-The read uses JSON mode. Each SSE data event carries a JSON array of chunks, and `readJsonBatchesFromStream` groups the array with the offset after the batch. `subscribe` yields each element as one chunk. Catch-up is the read of stored messages up to the current tail. The batch that reaches the tail carries `upToDate`, which the server marks with the `Stream-Up-To-Date` header. On a first subscribe with no offset, the connection collects the catch-up chunks and yields one `MESSAGES_SNAPSHOT` object when it sees that signal (`client.ts:81` to `:105`). `MESSAGES_SNAPSHOT` is a marker type that carries the catch-up messages as one snapshot.
+The read uses JSON mode. Each SSE data event carries a JSON array of chunks, and `readJsonBatchesFromStream` groups the array with the offset after the batch. `subscribe` yields each element as one chunk. Catch-up is the read of stored messages up to the current tail. The batch that reaches the tail carries `upToDate`, which the server marks with the `Stream-Up-To-Date` header. On a first subscribe with no offset, the connection collects the catch-up chunks. It then yields one `MESSAGES_SNAPSHOT` object when it sees that signal (`client.ts:81` to `:105`). `MESSAGES_SNAPSHOT` is a marker type that carries the catch-up messages as one snapshot.
 
 ### Snapshot helper
 
@@ -413,11 +413,11 @@ sequenceDiagram
 
 The diagram shows an `immediate` response and a direct read URL. If `readUrl` points at an application proxy, the browser leg to Durable Streams becomes a leg to that proxy and then to Durable Streams. The client behaviour is the same.
 
-Key insight: the AI SDK transport resumes by replaying the whole stream, not by resuming an offset. The durable stream is the log; the client rebuilds the UI from the start. The TanStack transport is different: it carries `initialOffset` and reads only the new part, but that offset comes from the server-side snapshot loader and is lost on a page refresh. Both are valid, but they put the resume cost in different places.
+Key insight: the AI SDK transport resumes by replaying the whole stream, not by resuming an offset. The durable stream is the log; the client rebuilds the UI from the start. The TanStack transport is different. It carries `initialOffset` and reads only the new part. That offset comes from the server-side snapshot loader and is lost on a page refresh. Both are valid, but they put the resume cost in different places.
 
 ## The command-line interface
 
-The command-line interface (CLI) is a small client for local testing. It installs as `@durable-streams/cli`. The package declares three executable names (`packages/cli/package.json:6`):
+The CLI is a small client for local testing. It installs as `@durable-streams/cli`. The package declares three executable names (`packages/cli/package.json:6`):
 
 | Executable | Entry point | Purpose |
 |------------|-------------|---------|
@@ -458,14 +458,14 @@ This block is from `packages/cli/src/index.ts:555`.
 
 For non-empty input, the two JSON flags differ in both the number of append requests and the stored messages:
 
-- `--json` parses the input and sends one `stream.append(JSON.stringify(parsed))` call (`index.ts:388`). The client wraps that body in one array, so an input array of `n` items reaches the server as one nested array. The server stores one message with that array value.
+- `--json` parses the input and sends one `stream.append(JSON.stringify(parsed))` call (`index.ts:388`). The client wraps that body in one array. An input array of `n` items therefore reaches the server as one nested array. The server stores one message with that array value.
 - `--batch-json` calls `flattenJsonForAppend` on the parsed value and sends one `stream.append` for each item (`index.ts:287-296`). An input array of `n` items causes `n` requests, and each request stores one message.
 
-The difference comes from the client wrapper. The client wraps every JSON append body in an array, and the server flattens exactly one level (`packages/client/src/stream.ts:511-516` and `:643`). For example, `--json` with `[{"a":1},{"b":2}]` sends one request with body `[[{"a":1},{"b":2}]]`. The server flattens the outer array: it sees one element, the inner array, and stores that element as one message. `--batch-json` sends two requests, each with body `[{"a":1}]` or `[{"b":2}]`, and stores two messages. An empty array has the same split: `--batch-json` sends no request and writes zero messages, while `--json` sends one request that stores one message with the value `[]`.
+The difference comes from the client wrapper. The client wraps every JSON append body in an array, and the server flattens exactly one level (`packages/client/src/stream.ts:511-516` and `:643`). For example, `--json` with `[{"a":1},{"b":2}]` sends one request with body `[[{"a":1},{"b":2}]]`. The server flattens the outer array: it sees one element, the inner array, and stores that element as one message. `--batch-json` sends two requests, each with body `[{"a":1}]` or `[{"b":2}]`, and stores two messages. An empty array has the same split. `--batch-json` sends no request and writes zero messages. `--json` sends one request that stores one message with the value `[]`.
 
 ## StreamFS
 
-`docs/stream-fs.md` describes a package named `@durable-streams/stream-fs`. The package does not exist in `packages/`. There is no source file for `StreamFilesystem`, `streamFsTools`, or `PreconditionFailedError` outside that document. The documented install command is:
+`docs/stream-fs.md` describes a package named `@durable-streams/stream-fs`. The package does not exist in `packages/`. No source file exists for `StreamFilesystem`, `streamFsTools`, or `PreconditionFailedError` outside that document. The documented install command is:
 
 ```bash
 pnpm add @durable-streams/stream-fs
@@ -534,7 +534,7 @@ The suite has many `describe` blocks. The exact group names show the scope. In t
 | `Fork - Edge Cases` | `:11149` |
 | `Reserved subscription APIs` | `:11354` |
 
-The property group has seven sub-groups. They are `Byte-Exactness Property` (`:4944`), `Operation Sequence Properties` (`:5118`), `Immutability Properties` (`:5340`), `Offset Validation Properties` (`:5400`), `Sequence Ordering Properties` (`:5446`), `Concurrent Writer Stress Tests` (`:5534`), and `State Hash Verification` (`:5743`). Each uses `fc.assert` and `fc.asyncProperty` from `fast-check`, a property-based testing library. In this style, a test generates many inputs and checks that one rule holds for all of them. The alias `fc` is the library import. The state hash group hashes content with the Fowler-Noll-Vo (FNV-1a) hash (`:5746-5748`) and checks that a replay produces the same hash (`:5758`).
+The property group has seven sub-groups. They are `Byte-Exactness Property` (`:4944`), `Operation Sequence Properties` (`:5118`), `Immutability Properties` (`:5340`), and `Offset Validation Properties` (`:5400`). The other three are `Sequence Ordering Properties` (`:5446`), `Concurrent Writer Stress Tests` (`:5534`), and `State Hash Verification` (`:5743`). Each uses `fc.assert` and `fc.asyncProperty` from `fast-check`, a property-based testing library. In this style, a test generates many inputs and checks that one rule holds for all of them. The alias `fc` is the library import. The state hash group hashes content with the Fowler-Noll-Vo (FNV-1a) hash (`:5746-5748`) and checks that a replay produces the same hash (`:5758`).
 
 ### Use
 
@@ -679,7 +679,7 @@ The repository reports different numbers in different places:
 
 These numbers are copied from the named source files at commit `461b4026`. The files give no run date, no test-suite version, and no server commit for the run. They also cover different suites: the client suites test a client, and the server suite tests an HTTP server. The repository does not state one current count. The client counts are not directly comparable with the server count.
 
-Two mechanisms explain a lower client count. First, the suite grows over time, so an older run has fewer cases. Second, a client that declares fewer features skips the tests with a matching `requires` entry, and a skipped test is not in the pass count (`runner.ts:1311-1319`). The README files do not record the suite commit or the declared features, so this document cannot attribute a specific difference to one mechanism. Document [09-language-clients.md](09-language-clients.md) gives the client comparison.
+Two mechanisms explain a lower client count. First, the suite grows over time, so an older run has fewer cases. Second, a client that declares fewer features skips the tests with a matching `requires` entry. A skipped test is not in the pass count (`runner.ts:1311-1319`). The README files do not record the suite commit or the declared features, so this document cannot attribute a specific difference to one mechanism. Document [09-language-clients.md](09-language-clients.md) gives the client comparison.
 
 ## Related documents
 

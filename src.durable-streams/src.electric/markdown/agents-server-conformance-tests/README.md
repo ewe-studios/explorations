@@ -16,7 +16,7 @@ The suite has four run functions.
 
 | Function | What it starts | What it checks |
 |----------|----------------|----------------|
-| `runElectricAgentsConformanceTests` | No local agent | Protocol behavior by Hypertext Transfer Protocol (HTTP) |
+| `runElectricAgentsConformanceTests` | No local agent | Protocol behavior by HTTP |
 | `runCliConformanceTests` | No local agent | Command-line interface (CLI) against the server |
 | `runMockAgentTests` | Nothing; the caller supplies the mock model | End-to-end response events |
 | `runMockAgentCliTests` | Nothing; the caller supplies the mock model | End-to-end flow through the CLI |
@@ -41,7 +41,7 @@ The package exports four layers.
 1. **Fixed tests.** The four `run*` functions contain the complete test list.
 2. **A scenario builder.** `electricAgents(baseUrl)` builds a fluent test case.
 3. **A property-based model.** `enabledElectricAgentsActions` and `applyElectricAgentsAction` describe a random action sequence. The model types are `ElectricAgentsWorldModel`, `EntityModel`, `ElectricAgentsAction`, `HistoryEvent`, and `RunContext`.
-4. **Command-line interface and mock helpers.** `cliTest` and `CliScenario` build command-line interface (CLI) scenarios, `CliHistory` is their recorded history type, and `createMockStreamFn` supplies a mock model stream.
+4. **Command-line interface and mock helpers.** `cliTest` and `CliScenario` build CLI scenarios. `CliHistory` is their recorded history type. `createMockStreamFn` supplies a mock model stream.
 
 ## Reading order
 

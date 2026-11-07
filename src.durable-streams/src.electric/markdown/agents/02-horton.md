@@ -4,7 +4,7 @@ title: Horton
 
 # Horton
 
-Horton is the default assistant entity. It is a conversation partner that can read code, run shell commands, search the web, dispatch subagents, observe PostgreSQL tables, and manage its own title and goals. A subagent is a worker entity that Horton spawns.
+Horton is the default assistant entity. It is a conversation partner. It can read code, run shell commands, search the web, and dispatch subagents. It can also observe PostgreSQL tables and manage its own title and goals. A subagent is a worker entity that Horton spawns.
 
 The implementation lives in `packages/agents/src/agents/horton.ts`. The entity type name is `horton`.
 
@@ -278,7 +278,7 @@ A goal slash command is answered by the runtime without calling the main model. 
 
 ## Aha: the prompt is assembled, not stored
 
-There is no single prompt string in the repository that you can read from start to finish. The prompt is a function of the available tools, the loaded skills, the documentation support, the active goal, and the model identity.
+The repository holds no single prompt string that you can read from start to finish. The prompt is a function of the available tools, the loaded skills, the documentation support, the active goal, and the model identity.
 
 Key insight: this is why the prompt changes between deployments without a code change. Disable the documentation index and the prompt loses the documentation section. Load a skill and the prompt gains the skill instructions. The model sees only what the current process can actually do.
 

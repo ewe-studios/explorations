@@ -17,7 +17,7 @@ flowchart LR
     E --> F["ShapeStream request loop"]
 ```
 
-The order matters. In call order, the request loop calls the body consumer, which calls the header check, which calls the chunk buffer, which calls backoff, which calls the platform `fetch`. Backoff is therefore closest to the network. A prefetched request also receives retry behavior. The header check sees the final response. The body consumer is closest to the request loop, so the loop receives a response whose body is already read. The citation is `src/client.ts:806-815` and `src/fetch.ts:229-239`.
+The order matters. In call order, the request loop calls the body consumer. The body consumer calls the header check. The header check calls the chunk buffer. The chunk buffer calls backoff. Backoff calls the platform `fetch`. Backoff is therefore closest to the network. A prefetched request also receives retry behavior. The header check sees the final response. The body consumer is closest to the request loop. The loop therefore receives a response with its body already read. The citation is `src/client.ts:806-815` and `src/fetch.ts:229-239`.
 
 ## Retry with backoff
 
@@ -34,7 +34,7 @@ The defaults are:
 
 The citation is `src/fetch.ts:49-54`.
 
-The wrapper retries any failure except a client error. A client error is a status from 400 to 499. The status 429 is the exception: the wrapper retries it. The citation is `src/fetch.ts:133-145`.
+The wrapper retries any failure except a client error. A client error is a status from 400 to 499. The status 429 is the exception. The wrapper retries it. The citation is `src/fetch.ts:133-145`.
 
 The wait time uses full jitter. The client delay is a random value between zero and the current delay. The current delay is capped at `maxDelay`. The citation is `src/fetch.ts:166-173`.
 
@@ -46,7 +46,7 @@ The delay grows after each attempt. It stops growing at `maxDelay`. The citation
 
 The sleep is abortable. An abort signal cancels the timer and throws `FetchBackoffAbortError`. This behavior lets a system wake end a long backoff immediately. The citation is `src/fetch.ts:81-102`.
 
-**Aha:** the client does not use exponential backoff without jitter. It uses full jitter, so many clients that fail at the same time do not retry at the same moment. The server minimum is a floor, not a replacement. A `Retry-After` value can increase the wait beyond the client cap, but it cannot shorten it. The citation is `src/fetch.ts:166-173`.
+**Aha:** the client does not use exponential backoff without jitter. It uses full jitter. For this reason, many clients that fail at the same time do not retry at the same moment. The server minimum is a floor, not a replacement. A `Retry-After` value can increase the wait beyond the client cap, but it cannot shorten it. The citation is `src/fetch.ts:166-173`.
 
 ## Response body consumption
 
@@ -67,18 +67,18 @@ The reason is subtle. The stream needs to know that the body is valid before it 
 | Non-live response | `electric-schema` | `src/fetch.ts:317` |
 | Snapshot response with subset parameters in the URL | none; the check returns early | `src/fetch.ts:337-347` |
 
-A snapshot sent as a POST body carries its subset parameters in the body, so the URL check does not detect it. Such a response must carry the normal headers. A missing header throws `MissingHeadersError`. The error text names the uniform resource locator (URL) and the missing headers. It also names cross-origin resource sharing (CORS) as a common cause. The citation is `src/fetch.ts:361-363` and `src/error.ts:108-118`.
+A snapshot sent as a POST body carries its subset parameters in the body. The URL check therefore does not detect it. Such a response must carry the normal headers. A missing header throws `MissingHeadersError`. The error text names the uniform resource locator (URL) and the missing headers. It also names cross-origin resource sharing (CORS) as a common cause. The citation is `src/fetch.ts:361-363` and `src/error.ts:108-118`.
 
 ## Chunk prefetch
 
-A non-live response can say where the next chunk is. The client reads `electric-handle` and `electric-offset`, builds the next URL, and starts the next request before the caller asks for it. The queue holds at most two requests. The limit is fixed in the stream constructor; the stream does not pass an option to change it. The citation is `src/fetch.ts:245-247` and `src/fetch.ts:475-512`.
+A non-live response can say where the next chunk is. The client reads `electric-handle` and `electric-offset`, builds the next URL, and starts the next request before the caller asks for it. The queue holds at most two requests. The stream constructor fixes the limit. The stream does not pass an option to change it. The citation is `src/fetch.ts:245-247` and `src/fetch.ts:475-512`.
 
 The prefetch rules are strict:
 
 1. Prefetch only a `GET` request.
 2. Prefetch only when the response has a handle and an offset.
 3. Do not prefetch when the response has the `electric-up-to-date` header.
-4. Do not prefetch a snapshot response; the `electric-snapshot` header is `true`.
+4. Do not prefetch a snapshot response. Its `electric-snapshot` header is `true`.
 5. Do not prefetch a request that has the `live` query parameter.
 6. Do not prefetch when the response handle equals the `expired_handle` query parameter.
 
@@ -100,7 +100,7 @@ sequenceDiagram
 
 The queue matches by URL only. For this reason, a request with a method other than `GET` aborts the queue. A POST request with the same URL must not consume a prefetched GET response. The citation is `src/fetch.ts:270-278`.
 
-A consumed request starts a new prefetch if the queue tail exists. The queue head advances only in URL order. A request that is not at the head returns nothing, and the caller performs its own fetch. The citation is `src/fetch.ts:400-432`.
+A consumed request starts a new prefetch if the queue tail exists. The queue head advances only in URL order. A request that is not at the head returns nothing. The caller then performs its own fetch. The citation is `src/fetch.ts:400-432`.
 
 ## Fast loop detection
 
@@ -110,7 +110,7 @@ The detector keeps recent request entries for 500 milliseconds. It flags a fast 
 
 The first detection clears the expired handle cache and the up-to-date tracker. It resets the stream. The citation is `src/client.ts:1176-1199`.
 
-If the loop repeats, the client adds exponential delay with jitter. Each detection that reaches the threshold increments a consecutive count. When that count reaches five, the client throws a `FetchError` with status 502 and a troubleshooting message. The check runs before the reset branch, so the fifth detection throws instead of resetting. The citation is `src/client.ts:1154-1174`.
+If the loop repeats, the client adds exponential delay with jitter. Each detection that reaches the threshold increments a consecutive count. When that count reaches five, the client throws a `FetchError` with status 502 and a troubleshooting message. The check runs before the reset branch. The fifth detection therefore throws instead of resetting. The citation is `src/client.ts:1154-1174`.
 
 ## Stale response recovery
 
@@ -130,7 +130,7 @@ A 409 response means the server no longer has the shape handle. The client marks
 
 After a page reload, a CDN can serve cached chunks. The client could notify subscribers with data that it already reported in the previous session. The up-to-date tracker prevents this duplicate notification. The citation is `src/up-to-date-tracker.ts:6-16`.
 
-The tracker stores a timestamp and a cursor for each shape key. All entries live in one `localStorage` entry under the key `electric_up_to_date_tracker`; the stored value is a JSON object whose keys are shape keys. An entry lives for 60000 milliseconds. The citation is `src/up-to-date-tracker.ts:17-24` and `src/up-to-date-tracker.ts:43-49`.
+The tracker stores a timestamp and a cursor for each shape key. All entries live in one `localStorage` entry under the key `electric_up_to_date_tracker`. The stored value is a JavaScript Object Notation (JSON) object whose keys are shape keys. An entry lives for 60000 milliseconds. The citation is `src/up-to-date-tracker.ts:17-24` and `src/up-to-date-tracker.ts:43-49`.
 
 The tracker throttles `localStorage` writes to once per 60000 milliseconds. The in-memory data is always current. The citation is `src/up-to-date-tracker.ts:54-76`.
 
@@ -148,11 +148,11 @@ The SSE reader flushes its buffer on every up-to-date message. This rule keeps b
 
 ## Request timeout watchdog
 
-A live request can hang in some React Native fetch implementations. The client races the request against a timer. The default timeout is 45000 milliseconds. This value is longer than the Electric server long-poll timeout of 20 seconds. The citation is `src/client.ts:784-787` and `src/client.ts:1655-1685`.
+A live request can hang in some React Native fetch implementations. The client races the request against a timer. The default timeout is 45000 milliseconds. This value is longer than the 20-second long-poll timeout of the Electric server. The citation is `src/client.ts:784-787` and `src/client.ts:1655-1685`.
 
 The watchdog aborts the request with the reason `live-request-timeout`. The request loop treats this abort as a restart and sends a new request. The citation is `src/client.ts:1670-1677` and `src/client.ts:1050-1066`.
 
-The timeout applies only to a live request or a refresh catch-up request. A normal non-live request is not timed. The citation is `src/client.ts:1660-1667`.
+The timeout applies only to a live request or a refresh catch-up request. The client does not time a normal non-live request. The citation is `src/client.ts:1660-1667`.
 
 ## Visibility and system wake
 

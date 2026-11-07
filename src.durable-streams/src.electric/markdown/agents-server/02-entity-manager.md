@@ -67,7 +67,7 @@ The public method is `spawn()`. The main body is `spawnInner()` at line 636. It 
 
 Step 5 is important. The caller can supply `instance_id`. The server rejects an identifier that contains a slash. Otherwise it uses `randomUUID()`. It also mints a `write_token` with `randomUUID()`. The token is the fallback credential for a manager that has no custom validator. The standalone runtime and `AgentsHost` install a claim-token validator, so their append route never accepts this row token. See [08-tenancy-permissions-and-principals.md](08-tenancy-permissions-and-principals.md).
 
-Step 11 is a **wake registration**, not the dispatch subscription. It records the `req.wake` subscriber and source pair in `wake_registrations`. The dispatch subscription that connects the entity stream to a runner wake stream is created later by `entities-router`, after `spawn()` returns. If the request carries an initial message and a dispatch target exists, the router links that subscription before the send. Without that order, a fast append could reach the stream before the subscription includes it. If there is no initial message or no target, the link runs after the send or after creation. The two objects have different jobs: the wake registration decides *which events matter*, and the dispatch subscription decides *where those events go*. See [05-wake-registry-and-scheduler.md](05-wake-registry-and-scheduler.md) and [09-runners-and-sandboxes.md](09-runners-and-sandboxes.md).
+Step 11 is a **wake registration**, not the dispatch subscription. It records the `req.wake` subscriber and source pair in `wake_registrations`. `entities-router` creates the dispatch subscription that connects the entity stream to a runner wake stream later, after `spawn()` returns. If the request carries an initial message and a dispatch target exists, the router links that subscription before the send. Without that order, a fast append could reach the stream before the subscription includes it. If the request has no initial message or no target, the link runs after the send or after creation. The two objects have different jobs: the wake registration decides *which events matter*, and the dispatch subscription decides *where those events go*. See [05-wake-registry-and-scheduler.md](05-wake-registry-and-scheduler.md) and [09-runners-and-sandboxes.md](09-runners-and-sandboxes.md).
 
 The entity URL is `/{type}/{instanceId}`. The entity type `principal` is special. It is built in, it holds the identity of one principal, and its URL comes from `principalUrl(instanceId)`. That function returns `/principal/<percent-encoded kind:id>`, for example `/principal/agent%3Aworker-1` (`packages/agents-server/src/principal.ts:32`). The main stream path is `${entityURL}/main`.
 
@@ -99,7 +99,7 @@ Two optional groups follow it:
 
 ### The JSON body wrapping
 
-The stream server works in JSON (JavaScript Object Notation) mode. In this mode, the server flattens one level of array. A create request does not wrap the body. So the manager wraps the events by hand:
+The stream server works in JSON mode. In this mode, the server flattens one level of array. A create request does not wrap the body. The manager therefore wraps the events by hand:
 
 ```ts
 // packages/agents-server/src/entity-manager.ts:829-831
@@ -182,7 +182,7 @@ if (!isDuplicate && !isStreamConflict) {
 }
 ```
 
-Both duplicate cases then produce `ErrCodeDuplicateURL` with status 409. Any other rejected value that is an `Error` is rethrown unchanged. A non-`Error` rejected value becomes status 500 with code `SPAWN_FAILED`.
+Both duplicate cases then produce `ErrCodeDuplicateURL` with status 409. The manager rethrows any other rejected value that is an `Error` unchanged. A non-`Error` rejected value becomes status 500 with code `SPAWN_FAILED`.
 
 ```mermaid
 sequenceDiagram
@@ -220,7 +220,7 @@ sequenceDiagram
 
 The method waits for the subtree to become idle before it forks. The defaults are `DEFAULT_FORK_WAIT_TIMEOUT_MS` = 120,000 ms and `DEFAULT_FORK_WAIT_POLL_MS` = 250 ms. The caller can override both with `waitTimeoutMs` and `waitPollMs` in `ForkSubtreeOptions`. A fork failure code `FORK_WAIT_TIMEOUT` reports the timeout.
 
-While a fork is in progress, the manager holds a fork lock on the source subtree. The lock is three in-memory `Map` objects on the manager instance: one for write-locked entities, one for write-locked stream paths, and one for work-locked entities. Writes to a locked entity receive `409 FORK_IN_PROGRESS`, and the stream append router checks the same lock through `isForkWriteLockedEntity` and `isForkWriteLockedStream` in `src/routing/stream-append.ts:109` and `src/routing/stream-append.ts:136`. The lock does not survive a restart, and it does not travel between processes. Two servers that share the Postgres database do not see each other's fork locks. The lock only protects the process that runs the fork.
+While a fork is in progress, the manager holds a fork lock on the source subtree. The lock is three in-memory `Map` objects on the manager instance: one for write-locked entities, one for write-locked stream paths, and one for work-locked entities. Writes to a locked entity receive `409 FORK_IN_PROGRESS`. The stream append router checks the same lock through `isForkWriteLockedEntity` and `isForkWriteLockedStream` in `src/routing/stream-append.ts:109` and `src/routing/stream-append.ts:136`. The lock does not survive a restart, and it does not travel between processes. Two servers that share the Postgres database do not see each other's fork locks. The lock only protects the process that runs the fork.
 
 The fork operation remaps identifiers. It builds new URLs from the caller's target type or identifier. It then creates the new streams with fork headers:
 
@@ -289,8 +289,8 @@ The two branches differ. With a producer identifier, the send uses the idempoten
 
 Four behaviours are worth noting:
 
-1. A send to a `paused` entity changes the status to `idle`, unless the message mode is also `paused`. The send calls `onEntityChanged` and then appends the inbox event. The wake does not come from the status change: it comes from the pull-wake subscription on the entity main stream, which the appended inbox event satisfies. The runner then reads an entity that no longer blocks work. A send whose mode is `paused` leaves the entity paused and the message pending. The send never writes a separate wake stream. See [09-runners-and-sandboxes.md](09-runners-and-sandboxes.md).
-2. A scheduled send passes `producerId`, so a retry does not duplicate the message. Idempotent append is described in [04-stream-layout-and-stream-client.md](04-stream-layout-and-stream-client.md).
+1. A send to a `paused` entity changes the status to `idle`, unless the message mode is also `paused`. The send calls `onEntityChanged` and then appends the inbox event. The wake does not come from the status change. It comes from the pull-wake subscription on the entity main stream, which the appended inbox event satisfies. The runner then reads an entity that no longer blocks work. A send whose mode is `paused` leaves the entity paused and the message pending. The send never writes a separate wake stream. See [09-runners-and-sandboxes.md](09-runners-and-sandboxes.md).
+2. A scheduled send passes `producerId`, so a retry does not duplicate the message. [04-stream-layout-and-stream-client.md](04-stream-layout-and-stream-client.md) describes the idempotent append.
 3. A send to a principal entity of type `update_identity` also appends a second `identity` event, but only on the non-idempotent branch. The identity projection can then read the current identity without scanning all inbox messages. The two appends are separate, so they are not atomic. If the second append fails, the inbox message is durable but the identity event is not. The idempotent branch returns before the second append, so a scheduled `update_identity` send never writes an identity event. The identity state then comes only from the inbox replay.
 4. A closed stream produces `409 NOT_RUNNING`. The manager maps the low-level closed-stream error to a stable API (Application Programming Interface) error.
 
@@ -376,7 +376,7 @@ The handler is `serverHandlingForSignal()` at `packages/agents-server/src/entity
 - `SIGSTOP` produces `paused` from `idle` or `running`.
 - `SIGCONT` produces `idle` from `paused`.
 - After the `SIGKILL` and `SIGTERM` checks, a paused entity ignores every remaining signal except `SIGCONT`. The order of the checks makes `SIGTERM` an exception to the paused rule.
-- Every other state and signal pair is ignored: the status does not change. A `stopped` or `killed` entity rejects the request with 409 before the handler runs, so no event is appended. For the ignored pairs that the handler does process (`spawning` and `stopping` with `SIGSTOP` or `SIGTERM`), the event has `status: unhandled` and no `outcome` field. Only a `paused` entity's ignored signal sets `outcome: ignored`, because that case returns `handled: true`.
+- The server ignores every other state and signal pair: the status does not change. A `stopped` or `killed` entity rejects the request with 409 before the handler runs, so the server appends no event. For the ignored pairs that the handler does process (`spawning` and `stopping` with `SIGSTOP` or `SIGTERM`), the event has `status: unhandled` and no `outcome` field. Only a `paused` entity's ignored signal sets `outcome: ignored`, because that case returns `handled: true`.
 - The `handled` flag is not the same as a status change. `SIGTERM` from `running` moves the entity to `stopping` and returns `handled: false`, because the runner must finish the run. `SIGCONT` and `SIGSTOP` from `running` also return `handled: false`.
 
 The `stopping` to `stopped` step is not a signal. It happens when the runner posts its done callback to `/_electric/wake-callbacks/<wakeId>`. The handler at `packages/agents-server/src/routing/internal-router.ts:858-864` sets `stopped` when the entity is still in `stopping`, and `idle` otherwise. It makes that change only when the release cleared this entity's dispatch state, or when this consumer still owns the in-memory write token. If a newer wake owns the entity, the status stays as it is.
@@ -407,11 +407,11 @@ The checks are:
 
 - An entity type and an event type are both required before any schema check. If either is absent, the method returns no error.
 - A null effective `stateSchemas` map also returns no error, so an entity that declares no state schemas accepts every event type.
-- The event type must exist in the effective state schemas. An unknown type gets `422` with code `ErrCodeUnknownEventType`. There is no system-type exception in this method.
-- A known type whose schema value is null is accepted without a value check.
+- The event type must exist in the effective state schemas. An unknown type gets `422` with code `ErrCodeUnknownEventType`. This method has no system-type exception.
+- The method accepts a known type whose schema value is null without a value check.
 - `value` must validate against the schema. For a `delete` operation, the method reads `old_value` instead.
 
-The stream append router calls this method for every event in a `POST` body. This means a direct stream append by the agent runtime is validated the same way as a management API write.
+The stream append router calls this method for every event in a `POST` body. This means the append path validates a direct stream append by the agent runtime the same way as a management API write.
 
 `amendSchemas()` adds schemas to an entity type. It is additive only. It returns 409 when a key already exists with a different schema. Each change increments the type `revision`.
 

@@ -16,7 +16,7 @@ The class is `DurableStreamTestServer`. The name says what the package is: a tes
 | `packages/server/src/store.ts` | In-memory streams, long-poll waiting, producer state | 43,255 bytes |
 | `packages/server/src/file-store.ts` | File and Lightning Memory-Mapped Database (LMDB) storage | 65,820 bytes |
 | `packages/server/src/subscription-manager.ts` | Subscription state and delivery | 24,967 bytes |
-| `packages/server/src/subscription-routes.ts` | `__ds` route parsing; `__ds` is the reserved subscription control prefix | 13,167 bytes |
+| `packages/server/src/subscription-routes.ts` | `__ds` route parsing. `__ds` is the reserved subscription control prefix | 13,167 bytes |
 
 ## The server class
 
@@ -57,7 +57,7 @@ This block is from `packages/server/src/server.ts:191`.
 | `compression` | true | Compress large read responses |
 | `webhooks` | false | Enable webhook subscriptions |
 
-The `webhooks` default is at `packages/server/src/server.ts:203`, outside the short block above. Port 4437 was selected from the Internet Assigned Numbers Authority (IANA) unassigned range 4434-4440; it is not a registered port (`PROTOCOL.md:1493`). The default host keeps the test server off the network.
+The `webhooks` default is at `packages/server/src/server.ts:203`, outside the short block above. Port 4437 was selected from the Internet Assigned Numbers Authority (IANA) unassigned range 4434-4440. It is not a registered port (`PROTOCOL.md:1493`). The default host keeps the test server off the network.
 
 Aha: the in-memory store is the default, not the file-backed store. A caller must opt in to durability with `dataDir`. This default is correct for a test tool. It is wrong for a production deployment. The name `DurableStreamTestServer` warns the caller.
 
@@ -193,17 +193,17 @@ A `Stream` record has these fields:
 | `contentType` | Media type |
 | `messages` | Array of stored messages |
 | `currentOffset` | Tail offset |
-| `lastSeq` | Last `Stream-Seq` value; `Stream-Seq` is the optional monotonically increasing sequence header |
+| `lastSeq` | Last `Stream-Seq` value. `Stream-Seq` is the optional monotonically increasing sequence header |
 | `ttlSeconds` | Sliding Time To Live |
 | `expiresAt` | Absolute deadline |
 | `createdAt` | Creation time |
 | `lastAccessedAt` | Last read or write time |
 | `producers` | Producer state map |
 | `closed` | Closure flag |
-| `closedBy` | Producer tuple that closed the stream; the tuple is the producer identifier, epoch, and sequence |
+| `closedBy` | Producer tuple that closed the stream. The tuple is the producer identifier, epoch, and sequence |
 | `forkedFrom` | Source path for a fork |
 | `forkOffset` | Divergence offset |
-| `forkSubOffset` | Sub-offset at the divergence; a message count in JSON mode or a byte count in other modes |
+| `forkSubOffset` | Sub-offset at the divergence. It is a message count in JavaScript Object Notation (JSON) mode or a byte count in other modes |
 
 The interface is at `packages/server/src/types.ts:29`.
 
@@ -342,7 +342,7 @@ if (base64.length > MAX_ENCODED_LENGTH) {
 
 This block is from `packages/server/src/path-encoding.ts:26`.
 
-The `~` separator is safe because it is not in the base64url alphabet; the encoder adds it only before the hash in a truncated name. The decoder restores the padding and the base64 characters.
+The `~` separator is safe because it is not in the base64url alphabet. The encoder adds it only before the hash in a truncated name. The decoder restores the padding and the base64 characters.
 
 This function is not used by the in-memory store. The file store uses it, together with a timestamp and a random suffix. Document [05-storage-and-durability.md](05-storage-and-durability.md) gives the full name format.
 
@@ -364,7 +364,7 @@ return String(clientInterval + jitterIntervals)
 
 This block is from `packages/server/src/cursor.ts:128`.
 
-The epoch is `2024-10-09T00:00:00.000Z`. The interval is 20 seconds. The jitter range is 1 to 3600 seconds, which the helper converts to whole intervals with `ceil(jitter / 20)` and a minimum of one interval.
+The epoch is `2024-10-09T00:00:00.000Z`. The interval is 20 seconds. The jitter range is 1 to 3600 seconds. The helper converts it to whole intervals with `ceil(jitter / 20)` and a minimum of one interval.
 
 Document [03-live-reads-and-subscriptions.md](03-live-reads-and-subscriptions.md) explains why the cursor exists.
 

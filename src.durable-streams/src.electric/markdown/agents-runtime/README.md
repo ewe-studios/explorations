@@ -6,7 +6,7 @@ title: agents-runtime
 
 This directory explains the `@electric-ax/agents-runtime` package. The package is the behavioral stack for Electric agents.
 
-Three terms are used throughout:
+This document uses three terms:
 
 - An **entity** is an identified worker. It owns one append-only durable stream.
 - A **wake** is one unit of work for an entity. A wake notification tells the runtime that new work exists.
@@ -28,7 +28,7 @@ The parent study is [Electric and Durable Streams](../README.md). The package in
 5. **Agent loop.** The handler context (`ctx`) provides `ctx.useAgent()`. That call configures a model loop through `pi-agent-core`, the model agent library. `ctx.agent.run()` runs the loop. The loop writes runs, steps, text, reasoning, and tool calls.
 6. **Context management.** The runtime builds a model context from the timeline. It compacts the context when the token budget is tight.
 7. **Sandboxing.** File and shell tools call a `Sandbox` interface. The interface has unrestricted, Docker, and remote providers.
-8. **Server client.** `createRuntimeServerClient` wraps the agents-server HTTP interface.
+8. **Server client.** `createRuntimeServerClient` wraps the Hypertext Transfer Protocol (HTTP) interface of the agents server.
 
 ## Documents
 
@@ -70,7 +70,7 @@ flowchart TB
 
 ## Key insight
 
-**Key insight:** the stream is the only state store. The runtime holds a database in memory, but that database is a projection, not a second source of truth. A restart rebuilds it from the stream. This is why the package has no migrations. No persistent schema exists outside the stream, so there is no stored table to alter. A schema change applies when the runtime rebuilds the projection.
+**Key insight:** the stream is the only state store. The runtime holds a database in memory, but that database is a projection, not a second source of truth. A restart rebuilds it from the stream. This is why the package has no migrations. No persistent schema exists outside the stream, so no stored table exists to alter. A schema change applies when the runtime rebuilds the projection.
 
 The same property makes the stream a message bus. An appended event can satisfy a wake condition. The control plane reads the stream, sees the event, and sends the next wake.
 
@@ -166,7 +166,7 @@ The citation is `packages/agents-runtime/src/entity-stream-db.ts:167-172`.
 
 ## Build
 
-The package is a TypeScript library. Its source is an ECMAScript module (ESM). The build emits both an ESM file and a CommonJS file: `module` points to the ESM file, and `main` points to the CommonJS file for older tooling. Its `package.json` exposes these subpaths. The `exports` map is not shown in the overview snippet.
+The package is a TypeScript library. Its source is an ECMAScript module (ESM). The build emits both an ESM file and a CommonJS file. `module` points to the ESM file. `main` points to the CommonJS file for older tooling. Its `package.json` exposes these subpaths. The `exports` map is not shown in the overview snippet.
 
 - `.` for the full runtime.
 - `./client` for browser-side helpers.

@@ -90,7 +90,7 @@ The first request uses offset `-1` and no handle. The server returns a shape han
 Some terms need short definitions:
 
 - **Shape.** A named subset of a PostgreSQL table, selected by a `WHERE` clause and a column list.
-- **Shape handle.** A server-side identifier for one build of a shape's backing log. The server can retire a handle; a retired handle requires a refetch. The client sends the current handle on every later request.
+- **Shape handle.** A server-side identifier for one build of a shape's backing log. The server can retire a handle. A retired handle requires a refetch. The client sends the current handle on every later request.
 - **Offset.** A position in the shape log. The form is `<transaction>_<operation>`. The first number identifies the PostgreSQL transaction. The second identifies the operation inside that transaction.
 - **Up-to-date message.** A control message that marks the end of a batch and confirms that all data before it is present.
 - **Must-refetch message.** A control message that tells the client to discard its rows and restart from offset `-1`.

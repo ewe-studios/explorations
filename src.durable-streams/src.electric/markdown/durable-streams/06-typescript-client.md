@@ -200,7 +200,7 @@ async append(
 
 This block is from `packages/client/src/stream.ts:476`.
 
-Batching is on by default. The handle buffers a message and sends it in a group. A caller can disable it with `batching: false`; each append then becomes one request, which costs more network round trips but makes the exact request timing visible. The producer below has a separate batching layer. It bypasses the handle queue and sends its own batch with producer headers (`packages/client/src/idempotent-producer.ts:745`). When a caller uses the producer, the producer owns batching.
+Batching is on by default. The handle buffers a message and sends it in a group. A caller can disable it with `batching: false`. Each append then becomes one request. That costs more network round trips but makes the exact request timing visible. The producer below has a separate batching layer. It bypasses the handle queue and sends its own batch with producer headers (`packages/client/src/idempotent-producer.ts:745`). When a caller uses the producer, the producer owns batching.
 
 For a JSON stream, the client wraps the body in an array:
 
@@ -232,7 +232,7 @@ A caller must pre-serialize an object. The simple handle does not call `JSON.str
 
 The producer is the recommended write path. It adds four features to the handle:
 
-1. A producer identifier and epoch. The epoch is a generation number that a new writer increments; the server fences a writer that sends an older epoch.
+1. A producer identifier and epoch. The epoch is a generation number that a new writer increments. The server fences a writer that sends an older epoch.
 2. A sequence number per batch.
 3. Automatic batching.
 4. Pipelining.
@@ -388,7 +388,7 @@ A stale producer epoch throws a separate error class, `StaleEpochError`, from th
 
 ## What the client does not do
 
-The read path retries a general network error, a server error (`5xx`), and a rate-limit (`429`) response with exponential backoff; `createFetchWithBackoff` wraps the first request (`packages/client/src/fetch.ts:92`). The producer path is different. It does not add a general retry or backoff for a network error or a `5xx` response (`packages/client/src/idempotent-producer.ts:702`). A caller must add its own retry loop for the producer path.
+The read path retries a general network error, a server error (`5xx`), and a rate-limit (`429`) response with exponential backoff. `createFetchWithBackoff` wraps the first request (`packages/client/src/fetch.ts:92`). The producer path is different. It does not add a general retry or backoff for a network error or a `5xx` response (`packages/client/src/idempotent-producer.ts:702`). A caller must add its own retry loop for the producer path.
 
 The client does not compress a request body.
 

@@ -4,30 +4,30 @@ title: durable-streams-rust
 
 # durable-streams-rust
 
-`durable-streams-rust` is the native Rust server for the Durable Streams protocol. It is one self-contained binary with no database and no broker. It stores each stream as encoded bytes in one contiguous file, so a write is an append and a read is a byte range. For a binary stream the encoded bytes are the posted bytes. For a JavaScript Object Notation (JSON) stream they are each value plus a comma. In its default `wal` mode, a sharded write-ahead log carries a second copy of each append. It makes that copy durable with `fdatasync`, a POSIX call that flushes file data to the storage device, before any reader sees it. The optional `memory` mode has no WAL and is not crash-safe.
+`durable-streams-rust` is the native Rust server for the Durable Streams protocol. It is one self-contained binary with no database and no broker. It stores each stream as encoded bytes in one contiguous file, so a write is an append and a read is a byte range. For a binary stream the encoded bytes are the posted bytes. For a JavaScript Object Notation (JSON) stream they are each value plus a comma. In its default `wal` mode, a sharded write-ahead log carries a second copy of each append. It makes that copy durable with `fdatasync`, a Portable Operating System Interface (POSIX) call. That call flushes file data to the storage device before any reader sees the copy. The optional `memory` mode has no WAL and is not crash-safe.
 
 Five terms are used throughout:
 
 - A **stream** is an append-only log of bytes at one Hypertext Transfer Protocol (HTTP) path.
 - An **offset** is a byte position inside a stream. A reader sends the offset to resume.
-- A **write-ahead log (WAL)** is a sequential log that carries a second copy of each append until a checkpoint makes the data-file copy durable.
+- A **write-ahead log (WAL)** is a sequential log. It carries a second copy of each append until a checkpoint makes the data-file copy durable.
 - A **shard** is one WAL log with one committer thread that syncs it.
 - A **checkpoint** syncs the stream data files, records each stream's durable tail, and then recycles WAL segments.
 
 Sizes use binary units: one mebibyte (MiB) is 1,048,576 bytes.
 
-The source is at `/Users/darkvoid/GitSources/src.Electric/electric/packages/durable-streams-rust`. The Rust crate is `durable-streams`, version `0.1.0` (`Cargo.toml:2-10`). The npm wrapper package is `@electric-ax/durable-streams-server-rust`, version `0.1.5` (`package.json:2-5`); the benchmark reports use that release label. The licence is Apache-2.0 (`Cargo.toml:6`). The minimum supported Rust version is 1.75 (`Cargo.toml:8`). The binary name is `durable-streams-server` (`Cargo.toml:16-18`).
+The source is at `/Users/darkvoid/GitSources/src.Electric/electric/packages/durable-streams-rust`. The Rust crate is `durable-streams`, version `0.1.0` (`Cargo.toml:2-10`). The npm wrapper package is `@electric-ax/durable-streams-server-rust`, version `0.1.5` (`package.json:2-5`). The benchmark reports use that release label. The licence is Apache-2.0 (`Cargo.toml:6`). The minimum supported Rust version is 1.75 (`Cargo.toml:8`). The binary name is `durable-streams-server` (`Cargo.toml:16-18`).
 
 The parent study is [Electric and Durable Streams](../README.md). The protocol study is in [durable-streams](../durable-streams/README.md).
 
 ## What the package does
 
 1. **Speaks the Durable Streams protocol over HTTP.** One request dispatcher handles create, append, read, head, and delete (`src/handlers.rs:248-282`).
-2. **Stores encoded bytes contiguously.** The stream data file has no per-message header. A binary response is that byte range unchanged; a JSON response wraps the range in `[` and `]` and drops its final comma (`src/store.rs:1-8`, `src/handlers.rs:1318-1353`).
+2. **Stores encoded bytes contiguously.** The stream data file has no per-message header. A binary response is that byte range unchanged. A JSON response wraps the range in `[` and `]` and drops its final comma (`src/store.rs:1-8`, `src/handlers.rs:1318-1353`).
 3. **Makes appends durable.** A sharded WAL groups many appends into one `fdatasync` call per shard. A segment roll adds a file sync and a parent-directory sync, but only to the append that fills the segment. The usual case is one barrier for many appends (`src/wal/shard.rs:663-673`, `src/wal/shard.rs:699-711`, `src/wal/shard.rs:1450-1475`).
 4. **Gates visibility on durability.** A reader sees bytes only after the WAL barrier covers them (`src/handlers.rs:772-802`, `ARCHITECTURE.md:78`).
 5. **Serves live reads.** Long-poll requests park for up to 30 seconds. Server-Sent Events (SSE) stream frames for up to 60 seconds (`src/handlers.rs:32`, `src/handlers.rs:110-114`).
-6. **Offloads cold history.** Optional tiering seals cold-tier segments of 8 MiB each to an Amazon Simple Storage Service (S3)-compatible object store (`src/tier.rs:33-41`, `src/tier.rs:499-626`). A cold-tier segment is not a WAL segment; the WAL segment is 128 MiB (`src/wal/segment.rs:20-22`).
+6. **Offloads cold history.** Optional tiering seals cold-tier segments of 8 MiB each to an Amazon Simple Storage Service (S3)-compatible object store (`src/tier.rs:33-41`, `src/tier.rs:499-626`). A cold-tier segment is not a WAL segment. The WAL segment is 128 MiB (`src/wal/segment.rs:20-22`).
 7. **Recovers after a crash.** Recovery replays the WAL, repairs torn file tails, then resets the WAL (`src/wal/recovery.rs:1-45`, `src/main.rs:371-410`).
 
 ## Documents
@@ -89,9 +89,9 @@ durable-streams-rust/
 
 ## Key insight
 
-**Key insight:** for a binary stream, the storage format is the response format. The server does not decode a message, change it, and encode it again. It appends the posted bytes to a file. A catch-up read is then a byte range of that file, and the Linux server sends that range with `sendfile(2)` directly from the page cache to the socket (`ARCHITECTURE.md:159`, `src/handlers.rs:1361-1369`). `sendfile` is a Linux system call that copies file bytes to a socket without a user-space copy. The page cache is kernel memory that holds file data before the kernel writes it to disk. A JSON stream keeps the same byte-range model, but a read adds one `[` and one `]` and removes the range's one trailing comma (`src/handlers.rs:1318-1353`). The byte-range model removes a per-message copy from both paths. The cost is that every protocol feature must work on byte ranges. Sealing, compaction, and recovery all exist to keep that model correct (`src/tier.rs:551-564`, `src/wal/recovery.rs:34-45`).
+**Key insight:** for a binary stream, the storage format is the response format. The server does not decode a message, change it, and encode it again. It appends the posted bytes to a file. A catch-up read is then a byte range of that file. The Linux server sends that range with `sendfile(2)` directly from the page cache to the socket (`ARCHITECTURE.md:159`, `src/handlers.rs:1361-1369`). `sendfile` is a Linux system call that copies file bytes to a socket without a user-space copy. The page cache is kernel memory that holds file data before the kernel writes it to disk. A JSON stream keeps the same byte-range model, but a read adds one `[` and one `]` and removes the range's one trailing comma (`src/handlers.rs:1318-1353`). The byte-range model removes a per-message copy from both paths. The cost is that every protocol feature must work on byte ranges. Sealing, compaction, and recovery all exist to keep that model correct (`src/tier.rs:551-564`, `src/wal/recovery.rs:34-45`).
 
-**Aha:** the server writes each append twice, and the second write is what makes the durability barrier cheap. The data-file write fills the page cache and advances the writer tail. The WAL record is a second copy in a sequential log, and one `fdatasync` on that log covers many appends from many streams. The per-stream data files get their disk barrier later, in one checkpoint `syncfs` per lane. `syncfs` is a Linux system call that flushes every dirty file on one file system. `fsync` is the same barrier for a single file or directory. A lane is one directory that holds stream data files. If the server fsynced each stream file per append instead, every append would pay its own disk barrier. The duplicate write buys a shared barrier (`src/handlers.rs:1121-1174`, `src/wal/shard.rs:915-1022`). The price is real: the tuning study puts the residual gap to `memory` mode at about 1.6 times (`WAL_TUNING.md:29`), measured against the 328,000 row with pinned cores. Against the fully stacked 383,000 appends per second, the 512,000 memory result is about 1.3 times.
+**Aha:** the server writes each append twice, and the second write is what makes the durability barrier cheap. The data-file write fills the page cache and advances the writer tail. The WAL record is a second copy in a sequential log, and one `fdatasync` on that log covers many appends from many streams. The per-stream data files get their disk barrier later, in one checkpoint `syncfs` per lane. `syncfs` is a Linux system call that flushes every dirty file on one file system. `fsync` is the same barrier for a single file or directory. A lane is one directory that holds stream data files. If the server fsynced each stream file per append instead, every append would pay its own disk barrier. The duplicate write buys a shared barrier (`src/handlers.rs:1121-1174`, `src/wal/shard.rs:915-1022`). The price is real. The tuning study puts the residual gap to `memory` mode at about 1.6 times (`WAL_TUNING.md:29`). That value is measured against the 328,000 row with pinned cores. Against the fully stacked 383,000 appends per second, the 512,000 memory result is about 1.3 times.
 
 ```mermaid
 flowchart TD
@@ -141,7 +141,7 @@ All paths are relative to `/Users/darkvoid/GitSources/src.Electric/electric/pack
 
 ## Build, run, and test
 
-The package is a Cargo project. A stable Rust toolchain of 1.75 or later is sufficient (`Cargo.toml:8`). No system library is required.
+The package is a Cargo project. A stable Rust toolchain of 1.75 or later is enough (`Cargo.toml:8`). No system library is required.
 
 ```bash
 cargo build --release

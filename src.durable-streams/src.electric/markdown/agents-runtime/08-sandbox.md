@@ -6,9 +6,9 @@ title: Sandbox
 
 A sandbox is the environment for shell and file tools. The runtime gives the handler one sandbox handle per wake session. The handle can point to a fresh workspace, or to a workspace that an earlier wake created. The handler passes that handle to tools such as `bash`, `read`, `write`, and `edit`.
 
-Three terms from the rest of the study are needed here:
+This document needs three terms from the rest of the study:
 
-- An **entity** is an identified worker. It owns one durable stream. Its address is the entity URL, for example `/agent/abc`.
+- An **entity** is an identified worker. It owns one durable stream. Its address is the entity Uniform Resource Locator (URL), for example `/agent/abc`.
 - A **wake** is one unit of work for an entity. A **wake session** is the time from the wake claim to the wake acknowledgement.
 - The **control plane** is the agents-server. A **runner** is one runtime process that the control plane sends wakes to.
 
@@ -69,7 +69,7 @@ flowchart TB
     F --> X[Custom provider]
 ```
 
-The runtime reads `notification.entity.sandbox.profile`. There are two branches:
+The runtime reads `notification.entity.sandbox.profile`. The runtime has two branches:
 
 1. **No profile named.** The runtime creates an unrestricted sandbox at the host's current working directory.
 2. **A profile is named.** The runtime looks up the profile in `config.sandboxProfiles`. If the profile is missing, it throws `SandboxError` with kind `unavailable`.
@@ -88,13 +88,13 @@ if (requestedProfileName) {
 
 The citation is `packages/agents-runtime/src/process-wake.ts:1278-1319`.
 
-The wake is rejected before the done callback, so the server can redrive it on a runner that has the profile. The acknowledgement is the done callback: the HTTP request that the runtime sends when the wake finishes. The control plane reclaims a wake without a done callback after a timeout and sends it to another runner. Document [03-wake-processing.md](03-wake-processing.md) explains the callback.
+The wake is rejected before the done callback, so the server can redrive it on a runner that has the profile. The acknowledgement is the done callback: the Hypertext Transfer Protocol (HTTP) request that the runtime sends when the wake finishes. The control plane reclaims a wake without a done callback after a timeout and sends it to another runner. Document [03-wake-processing.md](03-wake-processing.md) explains the callback.
 
 The runtime logs the requested profile, the resolved sandbox name, and the working directory. The comment calls the isolation boundary security-relevant, so the log records it on every wake.
 
 ## Identity, persistence, and ownership
 
-Three facts are resolved before the provider is called:
+The runtime resolves three facts before it calls the provider:
 
 - **Identity**: the `sandboxKey`.
 - **Durability**: `persistent`.
@@ -120,7 +120,7 @@ The citation is `packages/agents-runtime/src/sandbox/identity.ts:62-78`.
 
 The rules are:
 
-1. An explicit `key` always wins. It is a cross-entity rendezvous handle: two entities that pass the same explicit key attach to the same sandbox and share one workspace.
+1. An explicit `key` always wins. It is a cross-entity rendezvous handle. Two entities that pass the same explicit key attach to the same sandbox and share one workspace.
 2. Without a key, `scope: "wake"` gives `${entityUrl}#${wakeId}`.
 3. Without a key, the default `scope: "entity"` gives `entityUrl`.
 4. An explicit `persistent` wins.
@@ -142,13 +142,13 @@ export function sandboxWipesOnDispose(
 
 The citation is `packages/agents-runtime/src/sandbox/identity.ts:94-99`.
 
-A terminal entity sets `reclaim: true`, so the sandbox is wiped. A terminal entity is an entity that reached `stopped` or `killed` during the wake. The wake loop sets the reclaim flag at cleanup:
+A terminal entity sets `reclaim: true`, so the runtime wipes the sandbox. A terminal entity is an entity that reached `stopped` or `killed` during the wake. The wake loop sets the reclaim flag at cleanup:
 
 ```ts
 await sandbox.dispose({ reclaim: entityTerminated })
 ```
 
-The citation is `packages/agents-runtime/src/process-wake.ts:2589-2592`. `entityTerminated` becomes true when a `SIGTERM` or `SIGKILL` signal is handled. An ephemeral sandbox is wiped on dispose. A persistent sandbox is preserved.
+The citation is `packages/agents-runtime/src/process-wake.ts:2589-2592`. `entityTerminated` becomes true when the runtime handles a `SIGTERM` or `SIGKILL` signal. The runtime wipes an ephemeral sandbox on dispose. It preserves a persistent sandbox.
 
 An attacher lease ignores `reclaim`. Only the owner wipes the workspace, because a child must not destroy the parent's environment.
 
@@ -196,7 +196,7 @@ The loop walks up the path until it finds a part that exists. It records the mis
 
 The citation is `packages/agents-runtime/src/sandbox/unrestricted.ts:269-307`.
 
-This walk follows symbolic links. It defends against a path that looks clean but has a component that points outside the workspace. The code comment names the class of bypass: CVE-2025-53109 and CVE-2025-53110. Those identifiers refer to symbolic-link path containment bypasses.
+This walk follows symbolic links. It defends against a path that looks clean but has a component that points outside the workspace. The code comment names the class of bypass: Common Vulnerabilities and Exposures (CVE) identifiers CVE-2025-53109 and CVE-2025-53110. Those identifiers refer to symbolic-link path containment bypasses.
 
 The defense has a time window. The check and the write are separate operations. The walk checks the path at check time. A time-of-check time-of-use race is the gap between those two moments. For a path that does not yet exist, the walk checks the deepest existing ancestor. Before the caller writes, an attacker can replace an intermediate component with a symbolic link. The write then follows the link outside the workspace.
 
@@ -225,7 +225,7 @@ The Docker provider runs a container. Its defaults are:
 
 The citations are `packages/agents-runtime/src/sandbox/docker.ts:35-190`.
 
-The image digest is fixed in the source. A caller can supply another image, but a floating tag is rejected unless `allowFloatingTag` is set. This keeps images reproducible.
+The image digest is fixed in the source. A caller can supply another image, but the provider rejects a floating tag unless `allowFloatingTag` is set. This keeps images reproducible.
 
 The provider uses several labels to track identity and ownership:
 
@@ -236,25 +236,25 @@ The provider uses several labels to track identity and ownership:
 - `com.electric.sandbox.persistent`
 - `com.electric.sandbox.owner-pid`
 
-The container name is derived from the sandbox key, so a later wake finds the container by name and reattaches. The identity labels confirm the match. A sibling container is another container for the same sandbox key.
+The provider derives the container name from the sandbox key. A later wake then finds the container by name and reattaches. The identity labels confirm the match. A sibling container is another container for the same sandbox key.
 
 The owner process identifier lets a boot sweep tell a live sibling container from a crash leftover. A boot sweep is a scan that a new runner process does over the labelled containers on its host. Docker labels are immutable, so the creation-time owner process identifier goes stale when another process adopts the container. The in-container marker at `/tmp/.electric-sbx-owner-pid` records the process identifier of the most recent adopter. The boot sweep reads the marker before it reclaims a running container whose labelled owner is dead. That check stops a new runner from removing a container that another live runner still uses.
 
-A persistent container is stopped on idle. Its writable layer survives, so a later wake restarts it with the file system intact. An ephemeral container is removed on idle. The two idle actions are set by the owner at creation.
+The provider stops a persistent container on idle. Its writable layer survives, so a later wake restarts it with the file system intact. The provider removes an ephemeral container on idle. The owner sets the two idle actions at creation.
 
-The process-local registry counts leases. A lease is one `DockerSandbox` wrapper held by a wake. Each acquire increments `refs`, and each dispose decrements it. The container is not torn down while a sibling lease still uses it.
+The process-local registry counts leases. A lease is one `DockerSandbox` wrapper held by a wake. Each acquire increments `refs`, and each dispose decrements it. The provider does not tear down the container while a sibling lease still uses it.
 
 The last dispose starts a timer for the idle grace of 120 seconds. If another lease arrives inside that window, the acquire cancels the timer. If no lease arrives, the timer applies the idle action: stop for a persistent container, remove for an ephemeral one. A reclaim from a terminal owner overrides the idle action and removes the container once the last lease drains.
 
 The order is therefore: idle first decides stop or remove after the grace, and an owner reclaim turns the decision into remove.
 
-Network policy is applied at container creation:
+The provider applies the network policy at container creation:
 
 - `allow-all`
 - `deny-all`
 - `allowlist` with a host list
 
-The docker provider also blocks private and link-local addresses for its `fetch` tool. This is a server-side request forgery defense: the tool must not reach the host network or cloud metadata endpoints. The check happens on the host before the request is dispatched. A literal private, loopback, link-local, or cloud-metadata address is refused even when the mode is `allow-all`. The citation is `packages/agents-runtime/src/sandbox/docker/net-policy.ts:120-143`.
+The docker provider also blocks private and link-local addresses for its `fetch` tool. This is a server-side request forgery defense: the tool must not reach the host network or cloud metadata endpoints. The provider checks on the host before it dispatches the request. It refuses a literal private, loopback, link-local, or cloud-metadata address even when the mode is `allow-all`. The citation is `packages/agents-runtime/src/sandbox/docker/net-policy.ts:120-143`.
 
 The file operations and `fetch` obey this policy. `exec` does not. Code that runs through `exec` has direct bridge network access unless the mode is `deny-all`, which creates the container with `NetworkMode=none`. The host-side `fetch` check cannot see traffic from `exec`. The citation is `packages/agents-runtime/src/sandbox/docker.ts:1348-1365`.
 
@@ -278,11 +278,11 @@ The citation is `packages/agents-runtime/src/sandbox/remote.ts:97-101`.
 
 The default network policy is `deny-all`. Egress runs from inside the virtual machine, not from the host process. The request therefore obeys the policy that the provider applied when it created the workspace. The runtime sets the policy at creation and does not change it later in the session.
 
-The remote provider allows reads outside the working directory. Reads of system binaries and language libraries are normal in a virtual machine. Writes are restricted to the working directory by a string-level containment check. The citation is `packages/agents-runtime/src/sandbox/remote.ts:270-284`.
+The remote provider allows reads outside the working directory. Reads of system binaries and language libraries are normal in a virtual machine. A string-level containment check restricts writes to the working directory. The citation is `packages/agents-runtime/src/sandbox/remote.ts:270-284`.
 
 The helper `path-containment.ts` supplies the write check. Its comment explains why the check is string-level: the container or virtual machine boundary provides the real isolation. The threat model is containment inside the virtual machine, not protection of the host.
 
-The security boundary is the virtual machine, not the `/work` directory. A write to a path outside `/work` inside the same virtual machine is prevented by the check. A symbolic link inside `/work` that points outside is a possible bypass, but the target is still inside the virtual machine. The workspace rule stops an accidental write to system files. It does not add host protection. The unrestricted provider uses the stricter realpath walk because it shares the host.
+The security boundary is the virtual machine, not the `/work` directory. The check prevents a write to a path outside `/work` inside the same virtual machine. A symbolic link inside `/work` that points outside is a possible bypass, but the target is still inside the virtual machine. The workspace rule stops an accidental write to system files. It does not add host protection. The unrestricted provider uses the stricter realpath walk because it shares the host.
 
 Disposal depends on ownership and persistence:
 
@@ -371,7 +371,7 @@ The source comment says this default is not a containment boundary. The reason i
 
 ## Key insight
 
-**Key insight:** identity is resolved before the provider sees anything. Every provider receives the same three identity values: a key, a persistent flag, and an owner flag. The provider also receives its own profile options. The key selects the workspace. The provider supplies the isolation.
+**Key insight:** the runtime resolves identity before the provider sees anything. Every provider receives the same three identity values: a key, a persistent flag, and an owner flag. The provider also receives its own profile options. The key selects the workspace. The provider supplies the isolation.
 
 A caller that wants a fresh workspace for every wake sets `scope: "wake"`, and the key becomes the entity URL plus the wake identifier. The default `scope: "entity"` shares one workspace across all wakes of the entity. Both choices use the same resolver. `wake` is a special scope value inside it.
 

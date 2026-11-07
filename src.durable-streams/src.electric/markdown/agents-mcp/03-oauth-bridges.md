@@ -50,7 +50,7 @@ if (cfg.auth.mode === `none`) {
 
 Source: `packages/agents-mcp/src/registry.ts:190-197`.
 
-The snippet shows the HTTP path. A stdio server with mode `none` uses the stdio transport. `transportFactoryOverride` is a test hook that replaces the transport for this server.
+The snippet shows the HTTP path. A standard input and output (stdio) server with mode `none` uses the stdio transport. `transportFactoryOverride` is a test hook that replaces the transport for this server.
 
 ## Mode apiKey
 
@@ -101,7 +101,7 @@ async tokens() {
 
 Source: `packages/agents-mcp/src/auth/client-credentials.ts:35-47`.
 
-The cache rule is a 30 second safety margin. A token that expires within 30 seconds is treated as expired. The refresh happens before the request, so the request does not fail on an expired token.
+The cache rule is a 30 second safety margin. The provider treats a token that expires within 30 seconds as expired. The refresh happens before the request, so the request does not fail on an expired token.
 
 The request is a form post. The provider optionally adds `scope`, `audience`, and `resource`. The auth configuration supplies those values. The default lifetime is 300 seconds when the response omits `expires_in`.
 
@@ -114,7 +114,7 @@ cached = {
 
 Source: `packages/agents-mcp/src/auth/client-credentials.ts:62-65`.
 
-The provider implements the SDK interface, but most methods are empty. The SDK reads three things during the flow: the client metadata getter, the redirect target property, and `clientInformation()`. The adapter also supplies `tokens()`, `saveTokens()`, and the PKCE verifier methods. The adapter does not implement the protocol steps themselves.
+The provider implements the Software Development Kit (SDK) interface, but most methods are empty. The SDK reads three things during the flow: the client metadata getter, the redirect target property, and `clientInformation()`. The adapter also supplies `tokens()`, `saveTokens()`, and the PKCE verifier methods. The adapter does not implement the protocol steps themselves.
 
 ## Mode authorizationCode
 
@@ -135,7 +135,7 @@ export function createSdkOAuthProvider(
 
 Source: `packages/agents-mcp/src/auth/sdk-provider.ts:41-48`.
 
-The redirect address defaults to `<publicUrl>/oauth/callback/<server>`, where the public address is a Uniform Resource Locator (URL). A trailing slash on the public URL is removed first. The server name is part of the path, so several servers can share one callback host. When `publicUrl` is absent, the caller must supply `redirectUri`. The source does not show a default for that case.
+The redirect address defaults to `<publicUrl>/oauth/callback/<server>`, where the public address is a Uniform Resource Locator (URL). The adapter removes a trailing slash on the public URL first. The server name is part of the path, so several servers can share one callback host. When `publicUrl` is absent, the caller must supply `redirectUri`. The source does not show a default for that case.
 
 ### What the SDK handles
 
@@ -230,7 +230,7 @@ async finishAuth(serverName, code, _state) {
 
 Source: `packages/agents-mcp/src/registry.ts:482-500`.
 
-The `state` parameter is accepted but not used. The registry relies on the SDK flow and the stored PKCE verifier instead of matching a state value. The registry reloads the server configuration after the exchange, so the new tokens take effect through the normal connection path.
+The registry accepts the `state` parameter but does not use it. The registry relies on the SDK flow and the stored PKCE verifier instead of matching a state value. The registry reloads the server configuration after the exchange, so the new tokens take effect through the normal connection path.
 
 ## The full interactive flow
 
@@ -277,7 +277,7 @@ Source: `packages/agents-mcp/src/persistence/file.ts:28-30`.
 
 Two safety rules apply.
 
-1. The file must have mode `0600` to be read. Any other mode is an error. The read path checks the mode before it parses the file.
+1. The read path requires mode `0600`. Any other mode is an error. It checks the mode before it parses the file.
 2. Writes use a temporary file and a rename. A crash does not leave a partial file.
 
 ### Keychain persistence

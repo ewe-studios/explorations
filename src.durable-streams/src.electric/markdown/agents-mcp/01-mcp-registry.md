@@ -71,7 +71,7 @@ stateDiagram-v2
     ready --> [*]: removeServer
 ```
 
-Five states are visible to subscribers. The transitions are all driven by `addServer`, `finishAuth`, `disable`, `enable`, `reauthorize`, or `removeServer`.
+Five states are visible to subscribers. The methods `addServer`, `finishAuth`, `disable`, `enable`, `reauthorize`, and `removeServer` drive all the transitions.
 
 ## Adding a server
 
@@ -119,7 +119,7 @@ Source: `packages/agents-mcp/src/registry.ts:132-150`.
 
 The hash sorts scopes. Two configurations with the same scopes in a different order therefore hash the same.
 
-The hash does not include the API key, the client identifier, the client secret, the header name, the header prefix, or the stdio environment map. A rotation of one of those values does not trigger a reconnect. `reauthorize` is not a general remedy: it returns immediately unless the entry uses the `authorizationCode` mode (`packages/agents-mcp/src/registry.ts:522-526`). For an API-key entry, only a restart applies a rotated value.
+The hash does not include the Application Programming Interface (API) key or the client identifier. It also does not include the client secret, the header name, the header prefix, or the stdio environment map. A rotation of one of those values does not trigger a reconnect. `reauthorize` is not a general remedy: it returns immediately unless the entry uses the `authorizationCode` mode (`packages/agents-mcp/src/registry.ts:522-526`). For an API-key entry, only a restart applies a rotated value.
 
 The method then seeds OAuth state when needed, builds the transport, and inserts the entry.
 
@@ -186,7 +186,7 @@ Source: `packages/agents-mcp/src/registry.ts:321-335`.
 
 `provider` is the auth provider that the transport builder created for this entry. It is optional. A `none` or `apiKey` server has no provider.
 
-The registry does not guess. The OAuth provider either captured a redirect address (Uniform Resource Locator, URL) or it did not. If it captured a URL, the server needs consent. If it did not, the connection failed.
+The registry does not guess. The OAuth provider either captured a redirect URL or it did not. If it captured a URL, the server needs consent. If it did not, the connection failed.
 
 Key insight: this check turns an ambiguous client error into a clear user action. A failed connect can mean "start the login flow" or "the server is down". The provider's captured URL is the discriminator.
 
@@ -234,7 +234,7 @@ const notify = (): void => {
 
 Source: `packages/agents-mcp/src/registry.ts:348-364`.
 
-The first snapshot has `seq: 0` and is delivered synchronously during `subscribe`. Later snapshots start at 1 and increase.
+The registry delivers the first snapshot with `seq: 0` synchronously during `subscribe`. Later snapshots start at 1 and increase.
 
 ```ts
 handler({ seq: 0, servers: registry.list() })
@@ -290,6 +290,6 @@ Key insight: this is why the server list does not jump around in the user interf
 ## Related documents
 
 - [00-overview.md](00-overview.md) for the configuration types.
-- [02-transports.md](02-transports.md) for how a transport is built.
+- [02-transports.md](02-transports.md) for how the registry builds a transport.
 - [03-oauth-bridges.md](03-oauth-bridges.md) for the authentication providers.
 - [04-tools-and-resources.md](04-tools-and-resources.md) for the tool list this registry produces.

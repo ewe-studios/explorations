@@ -4,11 +4,11 @@ title: elixir-client
 
 # elixir-client
 
-`electric_client` is the official Elixir client for Electric. **Electric** is a sync engine. It streams a filtered subset of a PostgreSQL database to clients over the Hypertext Transfer Protocol (HTTP). This client turns one Electric shape into an Elixir `Enumerable` of change messages. It also offers a request-response polling interface for callers that control their own loop. The client speaks the Electric shape protocol, decodes the wire messages into Elixir structs, and applies the same cache and move-out rules as the TypeScript client.
+`electric_client` is the official Elixir client for Electric. **Electric** is a sync engine. It streams a filtered subset of a PostgreSQL database to clients over the Hypertext Transfer Protocol (HTTP). This client turns one Electric shape into an Elixir `Enumerable` of change messages. It also offers a request-response polling interface for callers that control their own loop. The client speaks the Electric shape protocol and decodes the wire messages into Elixir structs. It applies the same cache and move-out rules as the TypeScript client.
 
 A **shape** is a filtered subset of one PostgreSQL table. A **shape stream** is the sequence of messages that follows one shape. A **shape handle** is the server-side identifier for one running shape. An **offset** is a position inside the shape stream. The client sends the offset to resume.
 
-The protocol delivers three message groups. A **change message** describes one insert, update, or delete of one row. A **control message** describes protocol state, such as `up-to-date` or `must-refetch`. A **move-out message** names row tags that left the shape filter; the client turns those tags into synthetic delete messages. A **resume message** is a client-side checkpoint that a finite stream adds at its end.
+The protocol delivers three message groups. A **change message** describes one insert, update, or delete of one row. A **control message** describes protocol state, such as `up-to-date` or `must-refetch`. A **move-out message** names row tags that left the shape filter. The client turns those tags into synthetic delete messages. A **resume message** is a client-side checkpoint that a finite stream adds at its end.
 
 A minimal use looks like this:
 
@@ -33,7 +33,7 @@ The parent study is [Electric and Durable Streams](../README.md). The package in
 2. **Shape definition.** `Electric.Client.ShapeDefinition` holds a table, a filter, a column list, parameters, and a replica mode. It serialises itself into query parameters (`lib/electric/client/shape_definition.ex:20-66`, `lib/electric/client/shape_definition.ex:208-223`).
 3. **Streaming.** `Electric.Client.Stream` implements `Enumerable` over repeated polls. **Live mode** (`live: true`, the default) follows changes until the caller halts. **Finite mode** (`live: false`) stops at the first `up-to-date` message and appends a resume message. **Resume** restarts a finite stream from a previous resume message (`lib/electric/client/stream.ex:99-121`, `lib/electric/client/stream.ex:279-306`).
 4. **Polling.** `Electric.Client.Poll` makes one request and returns messages plus a new state (`lib/electric/client/poll.ex:78-99`).
-5. **Transport.** `Electric.Client.Fetch` defines a behaviour. The default implementation uses Req, an HTTP client, and Finch, a connection pool. A pool coalesces identical concurrent requests, so two callers that ask for the same shape share one request (`lib/electric/client/fetch.ex:5-16`, `lib/electric/client/fetch/http.ex:79-84`, `lib/electric/client/fetch/pool.ex:18-40`).
+5. **Transport.** `Electric.Client.Fetch` defines a behaviour. The default implementation uses Req, an HTTP client, and Finch, a connection pool. A pool coalesces identical concurrent requests. Two callers that ask for the same shape therefore share one request (`lib/electric/client/fetch.ex:5-16`, `lib/electric/client/fetch/http.ex:79-84`, `lib/electric/client/fetch/pool.ex:18-40`).
 6. **Message decoding.** `Electric.Client.Message` parses change messages, control messages, move-out messages, and move-in messages. The stream also creates a resume message at the end of a finite stream (`lib/electric/client/message.ex:318-373`, `lib/electric/client/stream.ex:222-223`).
 7. **Tag tracking.** `Electric.Client.TagTracker` turns move-out patterns into synthetic delete messages (`lib/electric/client/tag_tracker.ex:49-135`, `lib/electric/client/tag_tracker.ex:155-245`).
 8. **Optional integrations.** An Ecto adapter converts a query or changeset into a shape definition. Embedded mode calls the Electric application programming interface (API) in the same virtual machine. A mock backend scripts responses for tests (`lib/electric/client/ecto_adapter.ex:10-17`, `lib/electric/client/embedded.ex:31-44`, `lib/electric/client/mock.ex:107-125`).
@@ -62,7 +62,7 @@ flowchart LR
     POLL --> CACHE[ExpiredShapesCache]
 ```
 
-An arrow means "the left box calls or uses the right box". The stream and the poll interface both call the same poll engine. The engine uses the request pool, the message parser, the tag tracker, and the expired-shape cache. The pool creates one monitor and one request process per request key; the diagram shows one of each, not one global pair. The shape definition and the poll state are data, not processes, and the diagram leaves them out.
+An arrow means "the left box calls or uses the right box". The stream and the poll interface both call the same poll engine. The engine uses the request pool, the message parser, the tag tracker, and the expired-shape cache. The pool creates one monitor and one request process per request key. The diagram shows one of each, not one global pair. The shape definition and the poll state are data, not processes, and the diagram leaves them out.
 
 ## Package map
 
@@ -165,4 +165,4 @@ mix deps.get
 mix test
 ```
 
-The integration tests need a running Electric server and PostgreSQL. Start both from the Electric installation guide, then set `DATABASE_URL` and `ELECTRIC_URL` in the environment. The defaults are in `config/runtime.exs:5-17`. `ELECTRIC_URL` is the server root, for example `http://localhost:3000`; the client adds `/v1/shape`. The package README gives the same steps (`README.md:24-34`). The test support directory is added to the compile path only in the test environment (`mix.exs:29-30`).
+The integration tests need a running Electric server and PostgreSQL. Start both from the Electric installation guide, then set `DATABASE_URL` and `ELECTRIC_URL` in the environment. The defaults are in `config/runtime.exs:5-17`. `ELECTRIC_URL` is the server root, for example `http://localhost:3000`. The client adds `/v1/shape`. The package README gives the same steps (`README.md:24-34`). The test support directory is added to the compile path only in the test environment (`mix.exs:29-30`).

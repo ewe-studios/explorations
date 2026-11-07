@@ -8,7 +8,7 @@ title: Agent Loop and Tools
 
 The loop is an adapter over `@mariozechner/pi-agent-core`. That package supplies the model agent loop and its event stream. The companion package `@mariozechner/pi-ai` supplies the model registry and the streaming model call. The adapter maps pi events to state protocol writes. It does not invent a second model protocol.
 
-The stream writer is created by `processWake`, the runtime entry point that opens the wake and owns the stream. Document [03-wake-processing.md](03-wake-processing.md) explains it.
+`processWake` creates the stream writer. It is the runtime entry point that opens the wake and owns the stream. Document [03-wake-processing.md](03-wake-processing.md) explains it.
 
 ## The call chain
 
@@ -33,7 +33,7 @@ sequenceDiagram
     B->>S: run, step, text, text_delta, tool_call
 ```
 
-The adapter is created per run. The bridge is created inside the adapter factory. The bridge writes through the `writeEvent` function that `processWake` supplied.
+The runtime creates one adapter per run. The adapter factory creates the bridge. The bridge writes through the `writeEvent` function that `processWake` supplied.
 
 ## Step one: message construction
 
@@ -97,7 +97,7 @@ The defaults are:
 
 The citations are `packages/agents-runtime/src/pi-adapter.ts:100-101`.
 
-The adapter creates one `Agent` with the converted history and the stream function. The history is passed in the `agentOptions` object, not in the `createPiAgentAdapter` call shown above:
+The adapter creates one `Agent` with the converted history and the stream function. The caller passes the history in the `agentOptions` object, not in the `createPiAgentAdapter` call shown above:
 
 ```ts
 const agent = new Agent(agentOptions)
@@ -173,7 +173,7 @@ onTextDelta(delta: string) {
 
 The citation is `packages/agents-runtime/src/outbound-bridge.ts:392-407`.
 
-An error key is the exception to the counter rule. It uses a random universally unique identifier (UUID), because two errors in one run must not overwrite each other and no consumer needs a stable error key.
+An error key is the exception to the counter rule. It uses a random universally unique identifier (UUID). Two errors in one run must not overwrite each other, and no consumer needs a stable error key.
 
 The bridge writes an insert for the start of a row and an update for the end. A text row starts with status `streaming` and ends with status `completed`. A tool call starts with status `started` and ends with `completed` or `failed`.
 
@@ -190,7 +190,7 @@ The bridge keeps its counters in a process-local cache keyed by the runs collect
 
 The bridge also records `context_input_tokens`, `context_window`, and a context breakdown. The citation is `packages/agents-runtime/src/outbound-bridge.ts:330-375`.
 
-The `onStepEnd` hook receives three values: `input`, `uncachedInput`, and `output`. `uncachedInput` is the input tokens that were not served from the provider cache. The handler configuration can use this hook for billing or for a custom progress display.
+The `onStepEnd` hook receives three values: `input`, `uncachedInput`, and `output`. `uncachedInput` is the input tokens that the provider cache did not serve. The handler configuration can use this hook for billing or for a custom progress display.
 
 ## The tool set
 
@@ -203,10 +203,10 @@ The package exports these tool factories:
 | `createWriteTool(sandbox)` | `write` | Writes through the sandbox |
 | `createEditTool(sandbox)` | `edit` | Edits through the sandbox |
 | `createFetchUrlTool` | `fetch_url` | Fetches and extracts page content |
-| `braveSearchTool` | `web_search` | Brave search integration; the caller supplies the Brave API key |
+| `braveSearchTool` | `web_search` | Brave search integration; the caller supplies the Brave Application Programming Interface (API) key |
 | `createScheduleTools` | `list_schedules`, `upsert_cron_schedule`, `upsert_future_send`, `delete_schedule` | Schedules |
 | `createWebhookSourceTools` | `list_webhook_sources`, `list_webhook_source_subscriptions`, `subscribe_webhook_source`, `unsubscribe_webhook_source` | Webhook sources |
-| `createSendTool` | `send` | Sends a message to a target entity URL supplied as a tool argument |
+| `createSendTool` | `send` | Sends a message to a target entity Uniform Resource Locator (URL) supplied as a tool argument |
 | `createMarkGoalCompleteTool` | `mark_goal_complete` | Marks the goal complete |
 | `createContextTools` | `load_timeline_range`, `load_source_range`, `load_context_history` | Loads context on demand |
 
