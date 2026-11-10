@@ -6,13 +6,13 @@ title: Durable promises and tasks
 
 A durable promise has five states. A durable task has five states. The two state machines live on one record. The promise answers "what is the result?" The task answers "who may produce it, and until when?"
 
-This document follows both machines through every transition. It explains the tags that decide the transitions, the version that fences a stale worker, the lease that bounds a claim, and the suspend and resume mechanism that lets a task wait without holding a process.
+This document follows both machines through every transition. It explains four mechanisms. The first is the tags that decide the transitions. The second is the version that fences a stale worker. The third is the lease that bounds a claim. The fourth is the suspend and resume mechanism, which lets a task wait without holding a process.
 
 Source: `spec/spec/02-abstract/state.lean:28-45`, `spec/spec/02-abstract/state.lean:74-146`
 
 ## The one row
 
-A durable promise is a named record for a result that may not exist yet. A durable task is the same record seen from a worker's side. It says who may produce the result and until when. The record has one identifier and two faces.
+A durable promise is a named record for a result that may not exist yet. A durable task is the same record seen from a worker's side. It says who may produce the result and until when. The object has one identifier and two faces. The server stores the two faces as two records with the same identifier. The word *workflow* names a function with at least one durable call. It is not a third record. A root workflow runs as a task. A local child workflow runs under its parent task, with no task face of its own.
 
 ```lean
 structure Object where
