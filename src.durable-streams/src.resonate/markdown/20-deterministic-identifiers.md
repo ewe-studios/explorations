@@ -25,7 +25,7 @@ The table lists the component that creates each identifier and the source locati
 | Origin | The Rust core server computes it from the identifier; the one-file PostgreSQL server reads the tag | `impl/server/core/crates/resonate-core/src/types.rs:420-423`, `impl/server/postgres/resonate.sql:33` |
 | Schedule-fired identifier | The server, from the schedule template | `impl/server/core/crates/resonate-oracle/src/lib.rs:2260-2266` |
 
-A replay runs the workflow body again from its first statement. The second run must ask for the same identifiers. The counter makes a child identifier a function of the call order, the order in which the workflow body builds each child call. A child identifier does not depend on the function name, the arguments, the wall-clock time, or a random number. A schedule identifier is different; its template can include the fire time.
+A replay runs the workflow body again from its first statement. The second run must ask for the same identifiers. The counter makes a child identifier a function of the call order, the order in which the workflow body builds each child call. A child identifier does not depend on the function name, the arguments, the wall-clock time, or a random number. A later run with a changed body can still move a call to another position; that case has its own section below. A schedule identifier is different; its template can include the fire time.
 
 ```mermaid
 flowchart LR
@@ -651,9 +651,9 @@ The other SDKs also send creation calls in order, but they differ after a failur
 - The Java SDK keeps a `Chain`. Its comment states that the chain order holds and that a call blocks until the promise is created. Sources: `impl/sdk/java/src/main/java/io/resonatehq/resonate/Context.java:45-52`, `impl/sdk/java/src/main/java/io/resonatehq/resonate/Context.java:179-180`.
 - The Go SDK has no separate chain type. It calls `CreatePromise` synchronously at each operation, so the normal path keeps source order. A failed create returns an error to the workflow body; the next call still runs if the body continues. Sources: `impl/sdk/go/context.go:396`, `impl/sdk/go/context.go:497`, `impl/sdk/go/context.go:519`.
 
-In the Rust SDK, the identifier comes from the builder. The slot comes from the terminal operation. In normal use, each call is awaited before the next, so the build order and the terminal-operation order match. A workflow that stores builders and runs them out of order can separate the two orders. The identifiers are still deterministic, because a replay builds and runs the builders in the same order as the first run. The server does not require the identifiers to arrive in numeric order. The validator checks that a child extends its declared parent. It does not compare sequence numbers between requests (`impl/server/core/crates/resonate-core/src/types.rs:359-374`).
+In the Rust SDK, the identifier comes from the builder. The slot comes from the terminal operation. In normal use, each call is awaited before the next, so the build order and the terminal-operation order match. A workflow that stores builders and runs them out of order can separate the two orders. The identifiers are still deterministic, because a replay builds and runs the builders in the same order as the first run, when the body does not change. The server does not require the identifiers to arrive in numeric order. The validator checks that a child extends its declared parent. It does not compare sequence numbers between requests (`impl/server/core/crates/resonate-core/src/types.rs:359-374`).
 
-The counter is not enough on its own. The workflow must take the same control-flow path on each run. A decision on wall-clock time or a random number can skip a call. Every later child then gets a different counter position.
+The counter is not enough on its own. The workflow must take the same control-flow path on each run. A decision on wall-clock time or a random number can skip a call. Every later child then gets a different counter position. A source edit that changes a branch or a loop count has the same effect.
 
 A durable call is an operation whose result the SDK stores in a promise. On replay, the SDK returns the stored result instead of calling the real function. The TypeScript SDK is the only SDK in this group with public durable helpers for time and random numbers. The context methods `ctx.date.now()` and `ctx.math.random()` are durable calls. Each records a value in a promise. On the second run, the workflow body reads the stored value; it does not call the operating system clock or the random source.
 
@@ -663,6 +663,87 @@ The other four SDKs in this study have no public equivalent in their context cla
 
 The server does not compare the function or the arguments of an existing promise. If the workflow calls a different function at the same counter position, the server returns the old promise. The identifier matches, but the payload does not. The workflow then reads a result from the old call, or fails to decode it. Determinism is therefore a property of the program, not a check in the server.
 
+### Moving a durable call
+
+The dangerous case needs two deployments of one root identifier. The first deployment creates promises and stops with unfinished work. The second deployment changes the body but uses the same root identifier. The promises from the first deployment are still in the store. A durable call that changed position now claims an identifier that the old body gave to a different call.
+
+A call can also change position without a source edit. A branch can take a different path. A loop can run a different number of times. A Rust workflow can store a builder and run it in another order. This subsection calls that order the **mint order**. The mint order is the order in which call sites in one context claim counter values. It is not the source order. It is not the order in which the server receives the creates.
+
+The counter follows the mint order. A statement changes the mint order only when it causes a different set of durable calls to run, or when it runs them in a different order. A durable call **crosses** another durable call when its mint position passes that call. Every minting operation can be crossed, including `detached` and the TypeScript time and random helpers.
+
+The table assumes one context, one SDK, an unchanged control-flow path, and the same body before the change. Unless a row says otherwise, each call runs once on each run.
+
+| Change | Effect on the identifiers |
+|--------|---------------------------|
+| Move a durable call within its current gap | No change. The gap is the space between its two neighbors. The call does not cross either neighbor. |
+| Move a statement that causes no durable call and does not change control flow | No change. |
+| Append a durable call at the end of the body, outside loops and branches, on every path | Earlier identifiers do not change. The new call consumes the next counter value. |
+| Insert a durable call in the middle | The new call consumes the next counter value. Every later call shifts by one. The new call can land on a value that already has a stored promise. Then it reads that promise and does not run. |
+| Remove a durable call that ran once | Every later call shifts down by one. Each later call now binds to the promise stored at its new value. |
+| Remove a durable call that ran N times | Every later call shifts down by N. |
+| Swap two durable calls | The two identifiers swap. Each call reads the other call's stored promise. Calls after the pair do not change. |
+| Move a call into a loop of N iterations | The call consumes N values instead of one. Later calls shift by N minus one. |
+| Add a new call inside a loop of N iterations | Later calls shift by N. |
+| Move a call across N calls | Only the calls whose ordinal position changes get a new identifier. Example: `A B C D` becomes `A C D B`. `B`, `C`, and `D` all change; `A` stays. |
+| Move a call to a new position when it has descendants | The call gets the new value. Every descendant takes the new prefix. Example: a call at `batch-1:1` with first child `batch-1:1.1` moves to `batch-1:2`; the child becomes `batch-1:2.1`. |
+| Move a call into or out of a child function | The call changes its parent context. Its identifier takes the new context prefix. Its descendants move with it. |
+| Move a detached call | The next child identifier changes, so the hash input changes. The identifier becomes a different hash, not a shifted number. The old promise stays and the new call runs again. |
+| Move a call that has an explicit identifier | The explicit identifier stays. The call still consumes one counter value. Later calls in the same context can shift. |
+
+In the table, N is a count. Two scopes apply. A *later call* is a call in the same context that mints after the changed call on the same path. A *descendant* is a call inside the moved call's child context. A descendant takes the moved identifier as its prefix.
+
+The table covers moves only. An edit in place can reuse a wrong promise without a move. An example is a change to the function or the arguments at the same counter value. The paragraph before this subsection describes that case.
+
+The example below uses the Rust base of 0. Python starts at 1, and the same shift applies.
+
+```rust
+// Body A
+let a = ctx.run(alpha).await?; // root:0
+let b = ctx.run(beta).await?;  // root:1
+let c = ctx.run(gamma).await?; // root:2
+
+// Body B: the body moves gamma above beta.
+let a = ctx.run(alpha).await?; // root:0, same promise
+let c = ctx.run(gamma).await?; // root:1, now reads beta's promise
+let b = ctx.run(beta).await?;  // root:2, now reads gamma's promise
+```
+
+In the new body, `gamma` claims the value that `beta` used, and `beta` claims the value that `gamma` used. The server returns the stored promise at each value. `gamma` reads `beta`'s result and `beta` reads `gamma`'s result.
+
+The counter counts every operation that mints a child identifier. The five categories are a run, a remote call, a sleep, a promise operation, and a detached call (`impl/sdk/rs/resonate/src/context.rs:278,343,373,400,452`, `impl/sdk/py/src/resonate/context.py:584,762,796,813,837`). These categories cover the Rust and Python calls. TypeScript adds `ctx.date.now()` and `ctx.math.random()`. Each helper is a local call (`impl/sdk/ts/src/context.ts:653-661`). Moving any of these operations across another changes the mint order.
+
+In Rust, the builder mints the identifier when the body creates it. The terminal operation sends the create later. Moving only the `.await` or `.spawn()` does not change the identifier. It changes only the order in which the server receives the creates. The server does not require numeric order (`impl/server/core/crates/resonate-core/src/types.rs:359-374`). Moving the builder creation changes the identifier. The build order is the mint order.
+
+The server does not detect the move, for three reasons. First, the validator checks that the child identifier extends the declared parent. It does not parse the sequence number or compare it with an earlier request (`impl/server/core/crates/resonate-core/src/types.rs:359-374`). The SDK declares the tags for the new position, so the request is self-consistent. Second, the server has no record of the old body and no expected mint order. Third, `promise.create` returns an existing promise without a comparison of the function, the arguments, or the body version.
+
+The outcome depends on the promise at the new identifier:
+
+- If the promise is resolved, the call reads a result that another call produced.
+- If the promise is pending, the parent suspends and waits for another call's work.
+- If no promise exists, the server creates one and the real function runs again. The second run can repeat an external side effect, such as a payment or an email. The old promise is now orphaned.
+
+The stored parameter does not help. Rust serializes local child arguments into the child promise parameter (`impl/sdk/rs/resonate/src/context.rs:213-227`). TypeScript stores the function name and version there. Python leaves a local child's parameter empty (`impl/sdk/py/src/resonate/context.py:556-565`). In every case, the server stores the value and does not compare it on a later create.
+
+The identifier is a function of the parent identifier and the counter value. The counter value is the number of earlier minting calls in the same context plus the SDK base. The formula has no source line and no call site. In most bodies, the mint order follows the source order, so a source edit usually changes an identifier. The rule at the start of this document stays true: a child identifier does not depend on the function name or the arguments. A move changes which call sits at a counter value; it does not change the rule that maps a value to an identifier.
+
+The SDK does not detect the move either. On replay, the SDK creates or looks up the promise by identifier. If the promise exists, the SDK returns the stored value and does not call the real function. The SDK does not compare the function, the arguments, or the body version with the stored promise. It knows the current mint order. It has no record of the old mint order. It cannot tell that a different call has claimed an old value.
+
+Two SDK features and four developer rules reduce the risk. None of them detects the move. Each rule keeps the old body or the old promises away from the new body.
+
+**SDK features**
+
+- **Versioned registration.** Python, TypeScript, and Java can register one name at more than one version (`impl/sdk/py/src/resonate/resonate.py:490-522`, `impl/sdk/ts/src/resonate.ts:240-270`, `impl/sdk/java/src/main/java/io/resonatehq/resonate/Registry.java:24-42`). The version is registration metadata. It is not part of any identifier or origin. A task records its version at create time, and the worker looks up that exact version on each replay (`impl/sdk/py/src/resonate/registry.py:12-21`). Children do not inherit the parent version (`impl/sdk/py/src/resonate/context.py:259-292`). Each child call selects its own version. A call by name uses the version in the call options: Python defaults to 1, and TypeScript defaults to 0, which selects the latest registration (`impl/sdk/ts/src/registry.ts:43-46`). A Python remote call by function object uses that object's registered version (`impl/sdk/py/src/resonate/context.py:749-759`). The old version must stay registered on every worker that can receive the task. If the version is missing, the worker cannot find the code and the task cannot run. Go and Rust register by name only, so they cannot keep two bodies (`impl/sdk/go/registry.go:25`, `impl/sdk/rs/resonate/src/registry.rs:60-77`).
+- **Explicit child identifier.** TypeScript accepts an explicit identifier in the call options (`impl/sdk/ts/src/context.ts:390-393`). The SDK marks the call as a lineage break: `resonate:branch`, `resonate:parent`, and `resonate:origin` all become the explicit identifier (`impl/sdk/ts/src/context.ts:684-689`). The call starts a new origin, so it is not a child of the current root in the identifier sense. The server still validates the grammar. An existing promise at that identifier wins. The call consumes one counter value, and only that call is pinned. Later siblings still shift when the call moves. The other four SDKs have no equivalent option.
+
+**Developer rules**
+
+- **Append only.** Add new calls at the end of the body, outside loops and branches, on every path. Do not insert, remove, swap, or move a call across another call while any workflow under the root is unfinished. An unfinished workflow is a root with a pending promise or a task that can still resume. A workflow already in flight will run the appended call when it reaches the new end. The call is new, so its identifier is new. This rule is safe only when the call is safe to run late.
+- **New root for a new order.** If the order must change, use a new root identifier. The new root has a new origin, so it cannot read the old root's promises. Old in-flight work still needs the old body deployed until it finishes; use versioned registration for that work.
+- **Pin the callee version.** A per-call version pins the code that a by-name call selects. In Python, `ctx.options(version=...)` returns a copy of the context with new options (`impl/sdk/py/src/resonate/context.py:346-363`). The copy shares the same state object: same identifier, same counter. In TypeScript, pass `{ version: ... }` in the call options (`impl/sdk/ts/src/context.ts:647-651`). This rule protects an in-place callee change at the same position. It does not protect a moved call in the parent body: the moved call still gets a new identifier.
+- **Keep the old body.** Versioned registration keeps the old body available to old tasks in one worker registry. Keep every version that can still receive a task until the last task under it finishes. This rule protects a moved call in the parent body, because the old task resumes under the old body.
+
+With these rules, a changed body is safe when the old body stays registered on every worker until the last old task finishes, or when no old work remains. Without a rule, a moved call can read a wrong result, wait on the wrong promise, or repeat a side effect. The rules do not make the move detectable. They keep the move away from old work.
+
 ## Where consistency holds
 
 The table separates the properties that hold from the properties that do not.
@@ -671,7 +752,9 @@ The table separates the properties that hold from the properties that do not.
 |----------|--------|-------|
 | One identifier grammar | Yes, in all five SDKs | The five modules: `ids.rs`, `ids.ts`, `ids.py`, `ids.go`, `Ids.java` |
 | One root maps to one origin | Yes | The origin functions in those modules |
-| Same-SDK replay gives the same child identifiers as the first run | Yes, for a deterministic workflow | The counter (`impl/sdk/rs/resonate/src/context.rs:137-140`) and the existing-promise return (`impl/server/core/crates/resonate-oracle/src/lib.rs:377-385`) |
+| Same-SDK replay gives the same child identifiers as the first run | Yes, for a deterministic workflow and an unchanged body | The counter (`impl/sdk/rs/resonate/src/context.rs:137-140`) and the existing-promise return (`impl/server/core/crates/resonate-oracle/src/lib.rs:377-385`) |
+| Same-SDK replay after a workflow body change | No | The counter follows the new mint order; the server returns the promise at the new identifier (`impl/server/core/crates/resonate-oracle/src/lib.rs:377-385`) |
+| The server detects a moved durable call | No | The validator does not compare sequence numbers, and `promise.create` does not compare the payload (`impl/server/core/crates/resonate-core/src/types.rs:359-374`) |
 | Same-family child identifiers from the counter match | Yes, by the rule | Rust and TypeScript both start at 0 and add 1; Python, Go, and Java both start at 1 and add 1. No test compares two SDKs. |
 | Cross-family child identifiers from the counter match | No | The two counter bases differ |
 | Cross-SDK detached identifiers match | No | Five hash functions and two counter bases |
@@ -683,13 +766,13 @@ The TypeScript and Java test headers name the Python test as their source (`impl
 
 > **Aha:** Identity is a rule that the SDK obeys, not a check that the server makes. The server can check that an identifier extends the lineage it declares. It cannot check that the identifier matches the call position, because it never sees the workflow body. Two SDKs from different counter families can pass every server check and still disagree about the first child of the same root. Every pair of SDKs shares the origin of a root when the caller supplies the same root string. Not every pair shares the child identifiers that the counter makes.
 
-The practical rule follows from the Aha. Use one SDK family for all calls under one root. A root identifier identifies a workflow across restarts of that family. The same root string does not give the same child identifiers in the other family. Detached identifiers are not portable between SDKs.
+The practical rule follows from the Aha. Use one SDK family for all calls under one root. A root identifier identifies a workflow across restarts of that family using the same body version. The same root string does not give the same child identifiers in the other family. Detached identifiers are not portable between SDKs. To change the body under an existing root, follow the rules in "Moving a durable call".
 
 The documents [09-the-typescript-sdk.md](09-the-typescript-sdk.md) and [10-the-other-sdks.md](10-the-other-sdks.md) describe the five SDKs. Document [03-durable-promises-and-tasks.md](03-durable-promises-and-tasks.md) describes the tags that carry the origin and lineage. Document [11-schedules-timers-and-time.md](11-schedules-timers-and-time.md) describes the schedule templates. Document [18-laws-of-durable-promises.md](18-laws-of-durable-promises.md) states the origin law as Durable Promise law 3 (DP-3).
 
 ## Limits and open questions
 
-The source leaves these questions open.
+The items below are open questions and known limits. Item 9 states a known limit with a procedural workaround.
 
 1. **The counter base is unexplained.** Rust and TypeScript start at 0. Python, Go, and Java start at 1. The source does not say why. The tests assert the values, so the split is not a typo in one test.
 2. **Detached identifiers are not portable.** The Go source says this in plain words. The Java source says that nothing cross-checks its hash. A workflow that moves between SDKs gets a new detached child, not the old one.
@@ -697,10 +780,11 @@ The source leaves these questions open.
 4. **The schedule template is not checked.** A template that adds a colon produces an origin tag with a colon. The oracle inserts the fired promise without the `promise.create` validator (`validate_promise_create_data`). The source does not state whether this case is supported.
 5. **The test copies reject a different character in `resonate:prefix`.** The TypeScript, Python, Go, and Java test copies reject a dot in the prefix. The server rejects a colon. The sources are `impl/sdk/ts/tests/id-format.test.ts:56-58`, `impl/sdk/py/tests/test_id_format.py:61-62`, `impl/sdk/go/id_format_test.go:59-61`, and `impl/sdk/java/src/test/java/io/resonatehq/resonate/IdFormatTest.java:86-88`. The ports carry a local copy of the validator, and the copy has drifted. The SDKs do not write the tag, so the difference is latent.
 6. **An older specification note uses a dot as the first separator.** `spec/work/ts/README.md:41-43` shows `demo.0`, `demo.1`, and `demo.2`. The current first-level separator is a colon. That note is not evidence for the current rule.
-7. **The server cannot detect a changed call.** `promise.create` returns an existing promise without a parameter comparison. A changed function or argument at the same counter position reuses the old promise.
+7. **The server cannot detect an in-place changed call.** `promise.create` returns an existing promise without a parameter comparison. A changed function or argument at the same counter position reuses the old promise.
 8. **No cross-SDK test exists.** Each SDK has a compliance test against a local copy of the server validator. No test runs two SDKs against one root and compares the identifiers.
+9. **A moved durable call is not detected.** This is a known limit. The counter follows the mint order. An insertion or removal shifts every later identifier in the same context. A swap changes only the two swapped identifiers. The server returns an existing promise or creates a new one without comparing the call. The old promises stay in the store. Versioned registration and the append-only rule are the workarounds.
 
-These limits do not break a single-runtime deployment. They do constrain a migration, a deployment that uses more than one SDK, and a shared history.
+These limits do not break a single-runtime deployment that never changes a workflow body without versioning. They do constrain a code deployment with in-flight work, a migration, a deployment that uses more than one SDK, and a shared history.
 
 ## Related documents
 
