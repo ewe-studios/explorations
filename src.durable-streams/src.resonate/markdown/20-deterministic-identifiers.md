@@ -284,7 +284,7 @@ A **durable call** is an operation whose result the SDK stores in a promise. Exa
 
 A **workflow** is a durable function with at least one durable call. A durable function is a function that the SDK registers under a name; the SDK tracks each invocation as a promise. The code of that function is the workflow body. This document uses workflow for the function and workflow body for its code. A workflow is a shape of code, not a server record. The runtime can run the same function more than one time.
 
-A **task** is the second half of the pair. It grants a worker the right to run the function for the promise. It holds the lease, the fence version, and the worker process identifier. The formal model puts the promise and an optional task in one object (`spec/spec/02-abstract/state.lean:28-45`). The server keeps them as two records with one identifier. This section uses task record for the stored task.
+A **task** is the second half of the pair. It grants a worker the right to run the function for the promise. It holds the lease, the fence version, and the worker process identifier. The formal model puts the promise and an optional task in one object (`spec/spec/02-abstract/state.lean:28-45`). A backend stores them in one row, in one node, or as two lines in one document. They always share one identifier. This section uses task record for the stored task.
 
 A promise has a task record when it has a `resonate:target` tag. The target is the address that the transport uses to send an execute message. The server stores a task record if and only if the target is present (`impl/server/core/crates/resonate-core/src/types.rs:601-642`). A promise without a target has no address for a dispatch. It has no task record.
 

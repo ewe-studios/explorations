@@ -43,7 +43,7 @@ Resonate makes one strong claim. A program can call a function, start several ca
 
 | Choice | What it means | Where it lives |
 |--------|---------------|----------------|
-| One record, two faces | A promise and its task are one record. The task is not a second table. | `spec/spec/02-abstract/state.lean:28-45`, `impl/server/core/crates/resonate-server-sqlite/migrations/0001_initial.sql:46-57` |
+| One record, two faces | A promise and its task are one object. A backend may fold them into one row, one node, or two lines of one document. | `spec/spec/02-abstract/state.lean:28-45`, `impl/server/core/crates/resonate-server-sqlite/migrations/0001_initial.sql:46-57` |
 | Tags carry the semantics | `resonate:target` makes a promise runnable. `resonate:timer` makes the deadline resolve the promise instead of rejecting it. `resonate:scope = global` and `resonate:external = true` are alternate ways to make a promise awaitable. | `spec/spec/02-abstract/state.lean:118-125` |
 | Execution is a lease | A task is acquired with a version and a time limit. A worker that lost its lease presents an old version and is refused. | `spec/spec/01-protocol/types.lean:42-49`, `impl/server/core/crates/resonate-server-sqlite/src/lib.rs:1023-1142` |
 
@@ -82,6 +82,7 @@ The documents build in dependency order. A reader who wants the shortest path sh
 | [18-laws-of-durable-promises.md](18-laws-of-durable-promises.md) | State the laws as 53 numbered rules, show the SQLite and PostgreSQL table structures, and run a 22-scenario Python model. |
 | [19-the-rust-sdk.md](19-the-rust-sdk.md) | Explain the separate Rust workspace: its three crates, the function macro, registration and naming, promise creation, retries, replay, and the mirror in the main repository. |
 | [20-deterministic-identifiers.md](20-deterministic-identifiers.md) | Show the shared identifier grammar, the per-SDK counters, detached hashes, task identity, and the server checks. |
+| [21-documents-rows-and-partitions.md](21-documents-rows-and-partitions.md) | Show the Blob and S3 documents, the SQLite row, the ScyllaDB partition, and the Neo4j node, and compare their write cost with SQLite as the baseline. |
 
 Source: `README.md:69-79`
 
@@ -97,7 +98,7 @@ Three paths cover most readers. A reader does not need to follow the full order.
 | Operator | 01, 05, 06, 07, 08, 15 | The composition root, the storage engines, the transports, the gateways, and operations |
 | SDK author | 02, 03, 09, 10, 11, 19, 20 | The protocol, the state machine, the TypeScript engine, the other SDKs, time, the Rust SDK, and identifiers |
 
-A reader who wants the formal argument should add document 04. A reader who wants the deployment options should add documents 12 and 13.
+A reader who wants the formal argument should add document 04. A reader who wants the deployment options should add documents 12 and 13. A reader who wants the storage detail should add document 21.
 
 ```mermaid
 flowchart LR
@@ -136,11 +137,14 @@ flowchart TB
         GW["08 Gateways, console, metrics"]
         PG["12 The PostgreSQL server"]
         S3S["13 The S3 server"]
+        DR["21 Documents, rows, partitions"]
         C --> ST
         C --> T
         C --> GW
         ST --> PG
         ST --> S3S
+        ST --> DR
+        S3S --> DR
     end
     subgraph SDK["SDKs"]
         TS["09 The TypeScript SDK"]

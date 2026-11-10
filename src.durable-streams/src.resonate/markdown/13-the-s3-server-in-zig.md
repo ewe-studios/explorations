@@ -393,3 +393,4 @@ Source: `impl/server/s3/README.md:232-236`
 - [06-storage-engines.md](06-storage-engines.md) — the other backends.
 - [11-schedules-timers-and-time.md](11-schedules-timers-and-time.md) — deadlines in every backend.
 - [12-the-postgres-server-in-one-file.md](12-the-postgres-server-in-one-file.md) — the same protocol with a database as the durable state.
+- [21-documents-rows-and-partitions.md](21-documents-rows-and-partitions.md) — the S3 document beside the Blob document, the SQLite row, the ScyllaDB partition, and the Neo4j node.

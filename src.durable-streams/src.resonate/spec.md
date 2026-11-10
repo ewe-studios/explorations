@@ -45,6 +45,8 @@ A reader must be able to:
    that uses both.
 8. Explain how each SDK creates promise and task identifiers, and how the
    server validates them.
+9. Explain how each storage backend holds one origin, and compare the write
+   cost of one transition with SQLite as the baseline.
 
 ## Documentation Structure
 
@@ -73,7 +75,8 @@ src.resonate/
 │   ├── 17-glossary.md
 │   ├── 18-laws-of-durable-promises.md ← the law set, Behavior-Driven Development cases, and the PostgreSQL and SQLite tables
 │   ├── 19-the-rust-sdk.md           ← the Rust software development kit and its promise naming
-│   └── 20-deterministic-identifiers.md ← the shared identifier grammar, the per-SDK counters, and the server checks
+│   ├── 20-deterministic-identifiers.md ← the shared identifier grammar, the per-SDK counters, and the server checks
+│   └── 21-documents-rows-and-partitions.md ← the Blob and S3 documents, and the SQL, ScyllaDB, and Neo4j shapes
 └── html/                            ← generated
 ```
 
@@ -104,9 +107,10 @@ src.resonate/
 | 7 | 18-laws-of-durable-promises.md | DONE |
 | 7 | 19-the-rust-sdk.md | DONE |
 | 7 | 20-deterministic-identifiers.md | DONE |
-| 8 | Grandfather review of every document | TODO |
-| 9 | Fresh-reader review of every document | TODO |
-| 10 | Build and verify HTML | DONE |
+| 8 | 21-documents-rows-and-partitions.md | DONE |
+| 9 | Grandfather review of every document | TODO |
+| 10 | Fresh-reader review of every document | TODO |
+| 11 | Build and verify HTML | DONE |
 
 ## Build System
 

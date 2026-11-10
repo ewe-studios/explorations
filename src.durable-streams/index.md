@@ -563,6 +563,7 @@ The rules of the architecture are:
 | [The S3 server in Zig](src.resonate/html/13-the-s3-server-in-zig.html) | Durable state as S3 objects |
 | [Critical assessment](src.resonate/html/16-critical-assessment.html) | Limits and risks |
 | [The Rust SDK](src.resonate/html/19-the-rust-sdk.html) | The function macro, promise naming, retries, and replay |
+| [Documents, rows, and partitions](src.resonate/html/21-documents-rows-and-partitions.html) | Blob and S3 documents, SQLite rows, ScyllaDB partitions, and Neo4j nodes |
 
 ### TanStack DB
 

@@ -12,7 +12,7 @@ Source: `spec/spec/02-abstract/state.lean:28-45`, `spec/spec/02-abstract/state.l
 
 ## The one row
 
-A durable promise is a named record for a result that may not exist yet. A durable task is the same record seen from a worker's side. It says who may produce the result and until when. The object has one identifier and two faces. The server stores the two faces as two records with the same identifier. The word *workflow* names a function with at least one durable call. It is not a third record. A root workflow runs as a task. A local child workflow runs under its parent task, with no task face of its own.
+A durable promise is a named record for a result that may not exist yet. A durable task is the same record seen from a worker's side. It says who may produce the result and until when. The object has one identifier and two faces. A backend stores the two faces in one row, in one node, or as two lines in one document. They always share the same identifier. The word *workflow* names a function with at least one durable call. It is not a third record. A root workflow runs as a task. A local child workflow runs under its parent task, with no task face of its own.
 
 ```lean
 structure Object where

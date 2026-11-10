@@ -382,4 +382,5 @@ Source: `impl/server/core/crates/resonate-sql/src/deadlines.rs:1-15`
 - [11-schedules-timers-and-time.md](11-schedules-timers-and-time.md) — the schedule and deadline model in depth.
 - [12-the-postgres-server-in-one-file.md](12-the-postgres-server-in-one-file.md) — the single-file PostgreSQL implementation.
 - [13-the-s3-server-in-zig.md](13-the-s3-server-in-zig.md) — the other object-store implementation.
+- [21-documents-rows-and-partitions.md](21-documents-rows-and-partitions.md) — the document, row, partition, and node shapes compared, with the write cost of each.
 - [README.md](README.md) — the reading order and the document map.
