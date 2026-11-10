@@ -43,6 +43,8 @@ A reader must be able to:
    other four SDKs relate to the protocol.
 7. Compare Resonate with an append-only durable stream, and design a system
    that uses both.
+8. Explain how each SDK creates promise and task identifiers, and how the
+   server validates them.
 
 ## Documentation Structure
 
@@ -70,7 +72,8 @@ src.resonate/
 │   ├── 16-critical-assessment.md
 │   ├── 17-glossary.md
 │   ├── 18-laws-of-durable-promises.md ← the law set, Behavior-Driven Development cases, and the PostgreSQL and SQLite tables
-│   └── 19-the-rust-sdk.md           ← the Rust software development kit and its promise naming
+│   ├── 19-the-rust-sdk.md           ← the Rust software development kit and its promise naming
+│   └── 20-deterministic-identifiers.md ← the shared identifier grammar, the per-SDK counters, and the server checks
 └── html/                            ← generated
 ```
 
@@ -100,6 +103,7 @@ src.resonate/
 | 6 | 17-glossary.md | DONE |
 | 7 | 18-laws-of-durable-promises.md | DONE |
 | 7 | 19-the-rust-sdk.md | DONE |
+| 7 | 20-deterministic-identifiers.md | DONE |
 | 8 | Grandfather review of every document | TODO |
 | 9 | Fresh-reader review of every document | TODO |
 | 10 | Build and verify HTML | DONE |
@@ -144,7 +148,7 @@ Resonate with an append-only durable stream instead of, or together with, it.
 
 ## Resume Point
 
-All 20 documents and the index are written. The remaining phases are the
+All 21 documents and the index are written. The remaining phases are the
 grandfather review against the source, the fresh-reader review, and the build.
 To change a page, edit Markdown under `markdown/` and run the combined build
 from `../`:

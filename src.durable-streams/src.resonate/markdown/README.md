@@ -81,6 +81,7 @@ The documents build in dependency order. A reader who wants the shortest path sh
 | [17-glossary.md](17-glossary.md) | Define every term and spell out every abbreviation used in this exploration. |
 | [18-laws-of-durable-promises.md](18-laws-of-durable-promises.md) | State the laws as 53 numbered rules, show the SQLite and PostgreSQL table structures, and run a 22-scenario Python model. |
 | [19-the-rust-sdk.md](19-the-rust-sdk.md) | Explain the separate Rust workspace: its three crates, the function macro, registration and naming, promise creation, retries, replay, and the mirror in the main repository. |
+| [20-deterministic-identifiers.md](20-deterministic-identifiers.md) | Show the shared identifier grammar, the per-SDK counters, detached hashes, task identity, and the server checks. |
 
 Source: `README.md:69-79`
 
@@ -94,7 +95,7 @@ Three paths cover most readers. A reader does not need to follow the full order.
 |--------|-----------|---------------|
 | Shortest path | 00, 01, 02, 03 | The thesis, the ports, the wire surface, and the state machine |
 | Operator | 01, 05, 06, 07, 08, 15 | The composition root, the storage engines, the transports, the gateways, and operations |
-| SDK author | 02, 03, 09, 10, 11 | The protocol, the state machine, the TypeScript engine, the other SDKs, and time |
+| SDK author | 02, 03, 09, 10, 11, 19, 20 | The protocol, the state machine, the TypeScript engine, the other SDKs, time, the Rust SDK, and identifiers |
 
 A reader who wants the formal argument should add document 04. A reader who wants the deployment options should add documents 12 and 13.
 
@@ -103,7 +104,7 @@ flowchart LR
     F["Foundation<br/>00, 01, 02, 03"]
     F --> S["Shortest path<br/>stop after 03"]
     F --> O["Operator path<br/>05, 06, 07, 08, 15"]
-    F --> A["SDK author path<br/>09, 10, 11"]
+    F --> A["SDK author path<br/>09, 10, 11, 19, 20"]
     O --> D["Add 12 and 13<br/>for deployment"]
     A --> FM["Add 04<br/>for the formal argument"]
 ```
@@ -144,6 +145,8 @@ flowchart TB
     subgraph SDK["SDKs"]
         TS["09 The TypeScript SDK"]
         OS["10 The other SDKs"]
+        RS["19 The Rust SDK"]
+        ID["20 Deterministic identifiers"]
     end
     subgraph OP["Operations"]
         SCH["11 Schedules, timers, and time"]
@@ -158,7 +161,10 @@ flowchart TB
     D --> FS
     P --> TS
     D --> TS
+    D --> RS
     TS --> OS
+    OS --> ID
+    RS --> ID
     D --> SCH
     D --> PAT
     C --> OBS
@@ -188,7 +194,7 @@ The groups are not only a reading order. Each one answers a different question.
 
 **Server.** Documents 05 through 08, 12, and 13 answer "how is the model implemented?" The Rust core is a single binary built from a plugin registry. Its storage engines are SQLite, PostgreSQL, MySQL, ScyllaDB, blob storage, and Neo4j. Its transports are HTTP push, HTTP poll with Server-Sent Events (SSE), Google Cloud Pub/Sub, and a bash execution worker. Its gateways are an HTTP edge, a web console, and a Prometheus metrics endpoint. The PostgreSQL server implements the same protocol in one SQL file. The Zig server implements it with objects in an S3 bucket. An S3 bucket is a container, and an S3 object is a stored file.
 
-**SDKs.** Documents 09, 10, and 19 answer "how does a program use the model?" The TypeScript SDK has two execution engines. The generator engine uses `yield`. The asynchronous engine uses `await`. Both produce the same protocol traffic. The Python, Go, Java, and Rust SDKs are separate protocol clients. They do not share code with the TypeScript SDK. They share the wire contract. Document 19 studies the separate Rust workspace in depth.
+**SDKs.** Documents 09, 10, 19, and 20 answer "how does a program use the model?" The TypeScript SDK has two execution engines. The generator engine uses `yield`. The asynchronous engine uses `await`. Both produce the same protocol traffic. The Python, Go, Java, and Rust SDKs are separate protocol clients. They do not share code with the TypeScript SDK. They share the wire contract. Document 19 studies the separate Rust workspace in depth. Document 20 follows one identifier through all five SDKs and the server.
 
 **Operations.** Documents 11, 14, 15, and 16 answer "how does the model behave in production?" Document 11 covers cron schedules, timer promises, lease deadlines, and retry deadlines. Document 14 turns the primitives into patterns: saga, fan-out, human in the loop, and retries. Document 15 covers metrics, traces, logs, readiness, configuration, and deployment. Document 16 states the limits, the open questions, and the risks.
 
