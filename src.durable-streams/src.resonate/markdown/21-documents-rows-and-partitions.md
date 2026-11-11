@@ -1039,3 +1039,5 @@ One claim needs care. A transition's messages exist only if the transition commi
 - [Deterministic identifiers](20-deterministic-identifiers.md) for the origin rule and the identifier algorithms.
 - [The protocol](02-the-protocol.md) for the operations that produce these transitions.
 - [The formal specification](04-the-formal-specification.md) for the state that the document encodes.
+- [Resonate S3 and celld](../../src.celld/markdown/11-resonate-s3-and-celld.md) for a comparison with a database kept in a bucket.
+- [Work placement and sharding](../../src.celld/markdown/12-work-placement-and-sharding.md) for how the origin, the timer shards, and the worker groups distribute work.

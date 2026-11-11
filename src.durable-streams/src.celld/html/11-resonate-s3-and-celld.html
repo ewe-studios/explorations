@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Resonate S3 and celld: two ways to keep durable state in a bucket -- src.celld</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue('--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        toolbar.appendChild(mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); }));
+        toolbar.appendChild(mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); }));
+        toolbar.appendChild(mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); }));
+        toolbar.appendChild(mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); }));
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.celld/docs</span>
+    <div class="nav-actions">
+      <a href="08-deployment-and-operations.html" class="nav-breadcrumb">Deployment and operations</a><a href="09-security-and-tenancy.html" class="nav-breadcrumb">Security and tenancy</a><a href="10-limitations-and-compatibility.html" class="nav-breadcrumb">Limitations and compatibility</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="10-limitations-and-compatibility.html" class="nav-btn" title="Previous: Limitations and compatibility">← prev</a>
+      <a href="12-work-placement-and-sharding.html" class="nav-btn nav-btn-next" title="Next: Work placement and sharding">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Resonate S3 and celld: two ways to keep durable state in a bucket</h1>
+<p>Both systems put their durable state in an object store bucket. Both use a conditional write to stop two writers from losing each other's work. They differ in what one write unit is.</p>
+<p>The Resonate S3 (Amazon Simple Storage Service) server stores one object for each origin. An origin is the text before the first colon of an identifier; an identifier with no colon is its own origin. The object begins with a canonical JavaScript Object Notation (JSON) header line. It then holds one canonical JSON line for each promise and each task that shares the origin. One protocol transition reads the object, applies the transition in memory, and replaces the whole object with a conditional write. A protocol transition is one operation of the Resonate protocol, such as create a promise, settle a promise, or acquire a task. <a href="../../src.resonate/html/13-the-s3-server-in-zig.html">The S3 server in Zig</a> explains each step.</p>
+<p>celld stores one SQLite database for each cell. A cell is one Durable Object instance. A Durable Object is a Cloudflare platform object: a named single-writer instance with private SQLite storage, WebSockets, and alarms. celld reimplements that interface on a self-hosted fleet, which is the set of nodes that share one bucket. A celld node is one process that runs the Worker code. The node's replication task captures each committed SQLite transaction as a Lite Transaction (LTX) segment. The segment holds the database pages that the transaction changed. The node ships the segment to a follower node or to the bucket. The bucket also holds an ownership record with a fencing epoch. An activation makes a cell resident on a node: a first claim of a new cell, a takeover from another node, or a local wake after the cell was dormant. A fencing epoch is a number that increases on each activation. It appears in the object key, so a writer with an old epoch writes to a prefix that no restore reads. Exactly one node serves a cell at a time.</p>
+<p>The sentence to remember is this: Resonate stores a materialized document and replaces it; celld stores a database and appends its write-ahead log under a fenced prefix.</p>
+<p>Sources: <code>README.md:16-35</code> and <code>docs/guarantees.md:1-7</code> in celld; <code>impl/server/core/crates/resonate-server-blob/README.md</code> and <code>impl/server/s3/src/doc.zig</code> in Resonate.</p>
+<h2>The two shapes</h2>
+<div class="mermaid">
+flowchart TB
+    subgraph R[&quot;Resonate S3&quot;]
+        RO[&quot;Origin: order&quot;] --&gt; RD[&quot;One JSON object per origin&lt;br/&gt;wf/order&quot;]
+        RD --&gt; RP1[&quot;Promise order:42&quot;]
+        RD --&gt; RP2[&quot;Promise order:42:charge&quot;]
+        RD --&gt; RP3[&quot;Promise order:42:ship&quot;]
+        RD --&gt; RT1[&quot;Task order:42:charge&quot;]
+        RD --&gt; RT2[&quot;Task order:42:ship&quot;]
+    end
+    subgraph C[&quot;celld&quot;]
+        CD[&quot;Owner node: SQLite database&lt;br/&gt;(live state)&quot;]
+        CD --&gt;|&quot;replication PUT&quot;| CL[&quot;cells/Order:42/ltx/e7/0000/&lt;br/&gt;segments and epoch-base snapshot&quot;]
+        CD --&gt;|&quot;handoff snapshot PUT&quot;| CS[&quot;cells/Order:42/ltx/e7/0009/&lt;br/&gt;handoff snapshot (level 9)&quot;]
+        CD --&gt;|&quot;claim or wake: compare-and-swap&quot;| CO[&quot;cells/Order:42/own.json&lt;br/&gt;node and epoch&quot;]
+        CL -.-&gt;|&quot;restore&quot;| CD
+        CS -.-&gt;|&quot;restore base&quot;| CD
+    end
+
+</div>
+<p>Solid arrows are writes. Dashed arrows are the restore path. A level is a numbered LTX compaction tier: level 0 holds new segments, and level 9 holds a handoff snapshot (a snapshot of a closed cell published during a handoff).</p>
+<p>The Resonate document is the state. The celld bucket objects are a log and a backup of the state. The live state is the SQLite database on the owner node.</p>
+<h2>What one write unit contains</h2>
+<table><tr><th>Property</th><th>Resonate S3</th><th>celld</th></tr><tr><td>Atomicity unit</td><td>Origin document</td><td>Cell (one SQLite transaction)</td></tr><tr><td>Write unit</td><td>Whole document</td><td>Dirty pages in one LTX segment</td></tr><tr><td>Identity</td><td>Origin string, percent-encoded in the key</td><td><code>Class:ID</code> cell scope: class and identifier (ID)</td></tr><tr><td>Format</td><td>JSON Lines: a header line, then one canonical JSON line per promise and task</td><td>SQLite pages inside LTX segments</td></tr><tr><td>Location</td><td><code>wf/<encoded origin></code></td><td><code>cells/<cell>/ltx/e<epoch>/<level:04x>/</code></td></tr><tr><td>Scope</td><td>Every promise and task whose identifier shares the origin; this can hold more than one call tree</td><td>Every table and index in one Durable Object</td></tr><tr><td>Ownership</td><td>None. Any server can write any origin.</td><td>One node at a time, named in <code>own.json</code></td></tr><tr><td>Fence</td><td>Entity tag (ETag) precondition</td><td>Fencing epoch in the key prefix</td></tr><tr><td>Contention</td><td>Conditional write fails, then the server re-decides</td><td>The ownership compare-and-swap admits one node per epoch; a stale writer writes under a superseded prefix</td></tr><tr><td>Read path</td><td>Read the document, or trust a validated cached copy</td><td>Read the local SQLite database</td></tr></table>
+<p>A call tree is one root promise and every promise created by its tasks, recursively. One origin can hold more than one call tree.</p>
+<p>The identity difference matters. Two Resonate tasks in different origins can run on different servers with no coordination. Two Durable Object instances are always different cells, so they can also run on different nodes. But a whole Resonate call tree is one document, while a celld application is split by the application author into as many Durable Objects as the author chooses.</p>
+<h2>How Resonate writes one transition</h2>
+<p>The S3 server keeps a cache of decoded documents. A cache entry is not authoritative by default. The default configuration sets <code>linearizable_reads = true</code>, so a cached entry is validated with a conditional read before it is used. A linearizable read returns the latest committed document. The validation read sends <code>If-None-Match</code> with the cached ETag. When the object is unchanged, the bucket answers <code>304 Not Modified</code> with no body, and the server reuses the cached document.</p>
+<p>The actor for the origin then applies the protocol transition in memory. To settle a promise is to move it to a resolved or rejected state. To wake a task is to make it runnable after its awaited promise settles. The actor arms or disarms timer objects, commits the document, sends the response messages, and answers the caller. The order is deliberate. A deadline object must exist before the document that depends on it. A response must not leave before the document that justifies it.</p>
+<div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant S as S3 server instance
+    participant B as Bucket
+    participant W as Worker
+    S-&gt;&gt;B: GET wf/&amp;lt;escaped origin&amp;gt; with If-None-Match (cached ETag)
+    B--&gt;&gt;S: document and ETag, or 304 Not Modified
+    S-&gt;&gt;S: decide the transition in memory
+    S-&gt;&gt;B: PUT t/&amp;lt;NN&amp;gt;/&amp;lt;20-digit deadline&amp;gt;_&amp;lt;escaped origin&amp;gt;@&amp;lt;generation&amp;gt;
+    B--&gt;&gt;S: armed
+    S-&gt;&gt;B: PUT wf/&amp;lt;escaped origin&amp;gt; with If-Match ETag
+    alt ETag still current
+        B--&gt;&gt;S: new ETag
+        S-&gt;&gt;B: DELETE old deadline object
+        S-&gt;&gt;W: messages and answer
+    else another writer won
+        B--&gt;&gt;S: 412 Precondition Failed
+        S-&gt;&gt;B: GET wf/&amp;lt;escaped origin&amp;gt;
+        B--&gt;&gt;S: current document and ETag
+        S-&gt;&gt;S: decide again from the new document
+    end
+
+</div>
+<p>A zero-byte timer object is a marker. The timer daemon lists the <code>t/</code> prefix, parses each key, and fires the deadline in memory when it is due. The key is <code>t/<NN>/<20-digit deadline>_<escaped origin>@<generation></code>. <code><NN></code> is the shard: the high 32 bits of a 64-bit hash of the origin, modulo the timer shard count (default 4). The 20-digit deadline makes a lexicographic listing return the nearest deadline first. <code><generation></code> is the token of the commit that armed the object. The server deletes the old object only after the new document commits, so a replaced deadline does not fire early or twice. The generation in the key makes that delete target its own predecessor. A crash therefore leaves at worst a stale deadline that fires into a sweep with nothing due.</p>
+<p>The precondition does not need a lock. It becomes a Hypertext Transfer Protocol (HTTP) header on the write:</p>
+<pre><code class="language-zig">// impl/server/s3/src/s3.zig:119-127
+.put =&gt; {
+    headers.append(.{ .name = &quot;Content-Type&quot;, .value = &quot;application/octet-stream&quot; }) catch {};
+    switch (op.precondition) {
+        .none, .unchanged =&gt; {},
+        // `*` means &quot;no version at all&quot;, which is what create-only is.
+        .absent =&gt; headers.append(.{ .name = &quot;If-None-Match&quot;, .value = &quot;*&quot; }) catch {},
+        .match =&gt; |etag| headers.append(.{ .name = &quot;If-Match&quot;, .value = etag.slice() }) catch {},
+    }
+},
+</code></pre>
+<p>The bucket evaluates the condition. A write with a stale ETag receives HTTP <code>412 Precondition Failed</code>. The server drops the decision, invalidates the cache, and after a backoff reads the document again. It then decides again from the new document. This is the whole concurrency control of the S3 backend.</p>
+<p>The document header records the origin hash, clock, and generation.</p>
+<pre><code class="language-zig">// impl/server/s3/src/doc.zig:538-564
+pub fn encode(self: *const Doc, out: *std.ArrayList(u8), origin: []const u8) !void {
+    out.clearRetainingCapacity();
+    const hash = origin_hash(origin);
+
+    try out.appendSlice(&quot;{\&quot;v\&quot;:&quot;);
+    try out.writer().print(&quot;{d}&quot;, .{format_version});
+    try out.appendSlice(&quot;,\&quot;og\&quot;:\&quot;&quot;);
+    try out.appendSlice(&amp;hash);
+    try out.appendSlice(&quot;\&quot;,\&quot;cl\&quot;:&quot;);
+    try out.writer().print(&quot;{d}&quot;, .{self.clock});
+    try out.appendSlice(&quot;,\&quot;gn\&quot;:&quot;);
+    try out.writer().print(&quot;{d}&quot;, .{self.generation});
+    if (self.timer_at) |at| {
+        try out.appendSlice(&quot;,\&quot;ta\&quot;:&quot;);
+        try out.writer().print(&quot;{d}&quot;, .{at});
+        try out.appendSlice(&quot;,\&quot;tgn\&quot;:&quot;);
+        try out.writer().print(&quot;{d}&quot;, .{self.timer_generation});
+    }
+    try out.append(&#x27;}&#x27;);
+
+    for (self.promises.items) |p| {
+        try out.append(&#x27;\n&#x27;);
+        try encode_promise(out, p);
+    }
+    for (self.tasks.items) |t| {
+        try out.append(&#x27;\n&#x27;);
+        try encode_task(out, t);
+    }
+}
+</code></pre>
+<p>The 16 hexadecimal characters in the header bind the document to its key. They are a Fowler-Noll-Vo 1a (FNV-1a) hash of the origin. They are not a checksum of the body. They guard against reading one origin's document as another origin's:</p>
+<pre><code class="language-zig">// impl/server/s3/src/doc.zig:515-530
+/// The 16 hex characters that bind a document to the key it lives under.
+///
+/// FNV-1a over the origin. Not a checksum of the body -- the store&#x27;s ETag is
+/// the integrity and concurrency token -- but a guard against a document
+/// being read as some other origin&#x27;s, which would silently graft one
+/// execution&#x27;s promises onto another.
+pub fn origin_hash(origin: []const u8) [16]u8 {
+    var h: u64 = 0xcbf29ce484222325;
+    for (origin) |b| {
+        h ^= b;
+        h *%= 0x100000001b3;
+    }
+    var out: [16]u8 = undefined;
+    _ = std.fmt.bufPrint(&amp;out, &quot;{x:0&gt;16}&quot;, .{h}) catch unreachable;
+    return out;
+}
+</code></pre>
+<p>Each promise line carries its state, timeout, creation time, optional settle time, arm flag, parameter, value, tags, callbacks, and listeners. Empty fields are omitted. There is no null and no empty string.</p>
+<pre><code class="language-zig">// impl/server/s3/src/doc.zig:568-603
+fn encode_promise(out: *std.ArrayList(u8), p: Promise) !void {
+    try out.appendSlice(&quot;{\&quot;p\&quot;:&quot;);
+    try json.write_string_ascii(out, p.id, true);
+    try out.appendSlice(&quot;,\&quot;s\&quot;:\&quot;&quot;);
+    try out.appendSlice(p.state.as_str());
+    try out.appendSlice(&quot;\&quot;,\&quot;to\&quot;:&quot;);
+    try out.writer().print(&quot;{d}&quot;, .{p.timeout_at});
+    try out.appendSlice(&quot;,\&quot;ca\&quot;:&quot;);
+    try out.writer().print(&quot;{d}&quot;, .{p.created_at});
+    if (p.settled_at) |sa| {
+        try out.appendSlice(&quot;,\&quot;sa\&quot;:&quot;);
+        try out.writer().print(&quot;{d}&quot;, .{sa});
+    }
+    if (p.timeout_armed) try out.appendSlice(&quot;,\&quot;ar\&quot;:true&quot;);
+    if (!p.param.is_empty()) {
+        try out.appendSlice(&quot;,\&quot;pa\&quot;:&quot;);
+        try encode_value(out, p.param);
+    }
+    if (!p.value.is_empty()) {
+        try out.appendSlice(&quot;,\&quot;va\&quot;:&quot;);
+        try encode_value(out, p.value);
+    }
+    if (p.tags.len() &gt; 0) {
+        try out.appendSlice(&quot;,\&quot;tg\&quot;:&quot;);
+        try encode_map(out, p.tags);
+    }
+    if (p.callbacks.len() &gt; 0) {
+        try out.appendSlice(&quot;,\&quot;cb\&quot;:&quot;);
+        try encode_set(out, p.callbacks);
+    }
+    if (p.listeners.len() &gt; 0) {
+        try out.appendSlice(&quot;,\&quot;ls\&quot;:&quot;);
+        try encode_set(out, p.listeners);
+    }
+    try out.append(&#x27;}&#x27;);
+}
+</code></pre>
+<p>The commit is one conditional put. A missing document is created only if it is still absent. An existing document is replaced only if its ETag is unchanged.</p>
+<pre><code class="language-zig">// impl/server/s3/src/applier.zig:634-647
+fn commit(self: *Actor) void {
+    const key = self.applier.keys.doc_key(&amp;self.key, self.origin) catch
+        return self.fail_batch(503, &quot;out of memory&quot;);
+    self.phase = .committing;
+    self.op = .{
+        .kind = .put,
+        .key = key,
+        .body = self.body,
+        .precondition = if (self.etag) |e| .{ .match = e } else .absent,
+        .arena = self.scratch.allocator(),
+    };
+    self.op.listen(*Actor, self, on_commit_complete);
+    self.applier.store.submit(&amp;self.op);
+}
+</code></pre>
+<p>A failed precondition does not replay the old decision. The server drops the decision and decides again against a document that it reads after a backoff. The default retry limit is eight re-decisions (<code>max_cas_retries: u32 = 8</code>; the <code>--cas-retries</code> option changes it). A separate token is randomly generated for each arm and becomes the <code><generation></code> in the timer key. It makes the object name unique to that arm, so a retry cannot collide with the object left by a failed attempt.</p>
+<pre><code class="language-zig">// impl/server/s3/src/applier.zig:684-699
+fn retry(self: *Actor) void {
+    self.attempt += 1;
+    if (self.attempt &gt; self.applier.cfg.max_cas_retries) {
+        return self.fail_batch(503, &quot;the origin was contended for too long&quot;);
+    }
+    const at = self.applier.clock.now_ms() + self.applier.backoff_ms(self.attempt);
+    self.phase = .waiting;
+    self.backoff = .{ .at_ms = at, .listen = .{ .actor = self, .fn = on_backoff } };
+    self.applier.timer.arm(&amp;self.backoff, at);
+}
+</code></pre>
+<p>The cache is a performance feature, not a correctness feature. The default S3 configuration validates each cached read. A server operator can turn validation off with <code>--sole-writer</code>, and must do so only when this server is the only writer to the bucket. A reader cannot set this flag.</p>
+<h2>How celld writes one transition</h2>
+<p>A celld node first claims the cell. The claim is a conditional create of <code>cells/<cell>/own.json</code>, or a compare-and-swap of an existing record. The new record names the node and the next epoch. Every activation advances the epoch, so every activation pays one conditional write, even when the owner does not change.</p>
+<pre><code class="language-rust">// crates/celld/ownership_store.rs:949-967
+pub async fn cas_owner(
+    &amp;self,
+    cell: &amp;str,
+    guard: CasGuard,
+    epoch: u64,
+) -&gt; anyhow::Result&lt;CasOutcome&gt; {
+    let key = format!(&quot;cells/{cell}/own.json&quot;);
+    let body = serde_json::to_vec(&amp;OwnerWire {
+        node: &amp;self.node,
+        epoch,
+    })?;
+    let etag = match &amp;guard {
+        CasGuard::Absent =&gt; None,
+        CasGuard::Match(etag) =&gt; Some(etag.as_str()),
+    };
+    match self.bucket.put_cas(&amp;key, body, etag).await? {
+        Some(_) =&gt; Ok(CasOutcome::Applied),
+        None =&gt; Ok(CasOutcome::Rejected),
+    }
+}
+</code></pre>
+<p>The token is the ETag of the record that the caller read. The bucket layer turns the token into the object store's write mode: no token means create-only, and a token means update-only on that version. A clean rejection means the store refused the condition. It is a normal <code>Rejected</code> answer, not an error:</p>
+<pre><code class="language-rust">// crates/celld/bucket.rs:1034-1077 (abridged)
+pub async fn put_cas(
+    &amp;self,
+    key: &amp;str,
+    body: impl Into&lt;PutPayload&gt;,
+    token: Option&lt;&amp;str&gt;,
+) -&gt; anyhow::Result&lt;Option&lt;String&gt;&gt; {
+    let key = self.key(key);
+    let mode = match token {
+        None =&gt; PutMode::Create,
+        Some(token) =&gt; PutMode::Update(self.backend.update(token)),
+    };
+    match self
+        .cas_store
+        .put_opts(&amp;Path::from(key.as_str()), body.into(), PutOptions::from(mode))
+        .await
+    {
+        Ok(result) =&gt; { /* the token of the new version */ }
+        Err(error) if is_clean_cas_rejection(&amp;error) =&gt; Ok(None),
+        Err(error) =&gt; Err(anyhow!(error).context(format!(
+            &quot;conditional write {}://{}/{key} may have committed&quot;,
+            self.scheme(),
+            self.name
+        ))),
+    }
+}
+</code></pre>
+<p>The last arm is the important one. An error that is not a clean rejection means "the write may have committed," so the caller must reconcile before it reports a failure. Reconciliation reads <code>own.json</code> again. If the record names this node at the expected epoch, the write landed. If not, it did not. The caller reports a failure only after that read.</p>
+<p>When the node owns the cell, the SQLite database lives on that node. The node starts the database in write-ahead log (WAL) mode. After each commit, the node's replication task reads the new WAL frames and encodes them as an LTX segment. The LTX format is a binary format, not JSON. The magic is <code>LTX1</code>. Each file has a 100-byte header, a 6-byte header for each page, and a 16-byte trailer.</p>
+<pre><code class="language-rust">// crates/ltx/src/ltx.rs:19-24
+pub const MAGIC: &amp;[u8; 4] = b&quot;LTX1&quot;;
+/// Current LTX file format version.
+pub const VERSION: i32 = 3;
+pub const HEADER_SIZE: usize = 100;
+pub const PAGE_HEADER_SIZE: usize = 6;
+pub const TRAILER_SIZE: usize = 16;
+</code></pre>
+<p>The segment holds changed database pages. It does not hold the whole database. A transaction that changes one row ships the pages that the row occupies, plus the pages that the indexes occupy.</p>
+<p>The prefix carries the epoch. The replicator uses unconditional puts, because the key already says which epoch may write it.</p>
+<div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant N as Owner node
+    participant Q as SQLite
+    participant F as Follower
+    participant B as Bucket
+    C-&gt;&gt;N: request
+    N-&gt;&gt;Q: BEGIN, write, COMMIT
+    Q--&gt;&gt;N: WAL frames
+    N-&gt;&gt;N: encode LTX segment
+    alt fleet durability (CELLD_DURABILITY=fleet)
+        N-&gt;&gt;F: POST append
+        F-&gt;&gt;F: fsync
+        F--&gt;&gt;N: durable
+    else bucket durability (CELLD_DURABILITY=bucket)
+        N-&gt;&gt;B: PUT cells/&amp;lt;cell&amp;gt;/ltx/e&amp;lt;epoch&amp;gt;/0000/&amp;lt;min&amp;gt;-&amp;lt;max&amp;gt;.ltx
+        B--&gt;&gt;N: 200 OK
+        N-&gt;&gt;B: GET cells/&amp;lt;cell&amp;gt;/own.json
+        B--&gt;&gt;N: record with node and epoch
+        alt record names this node at this epoch
+            N-&gt;&gt;N: release the output gate
+        else another node or a newer epoch
+            N-&gt;&gt;N: do not acknowledge
+        end
+    end
+    N--&gt;&gt;C: response
+
+</div>
+<p><code>CELLD_DURABILITY</code> selects one mode for the whole node, not one mode for each transaction. <code>fleet</code> is the default: the node sends each write to one or two followers and answers when a follower has fsynced it. That is a fleet proof. <code>bucket</code> makes every write wait for a bucket proof: the write is durable once it is in the bucket. A one-node fleet, or a fleet that lost all but one node, falls back to the bucket proof. The output gate holds each response until a durability proof (a fleet proof or a bucket proof) covers it. In the bucket proof, the node reads <code>own.json</code> after the LTX put and acknowledges only if the record still names this node at this epoch.</p>
+<p>The epoch is the safety argument. A node that lost ownership may still run and may still commit locally. Its segments land under a prefix that the next restore does not read. The new owner opens a new epoch and restores the chain from the newest epoch down to an epoch that opened with a whole-database snapshot.</p>
+<p><strong>Aha:</strong> Resonate resolves a race after it happens with an ETag, and the loser re-decides. celld makes a race harmless: the ownership compare-and-swap picks one node before the data write, and a node that lost ownership still writes, but only into a superseded epoch prefix that no restore reads. Resonate needs one conditional document write for each transition that changes the document. celld needs no conditional write for data. It pays one conditional ownership write on each activation, not once per transaction.</p>
+<h2>Serialization and size</h2>
+<p>Resonate pays a cost that grows with the number of promises and tasks in the origin. Every transition that changes the document rewrites every line of the document. The Blob backend documents this cost directly: the whole document is the unit of the conditional put. A large call tree with thousands of pending tasks makes each transition larger.</p>
+<p>The S3 server limits the cost of a transition in two ways. First, the <code>changed</code> check compares promises, tasks, and the timer, and skips the write when nothing changed. Second, deadlines are separate zero-byte objects, so the document does not carry the deadline list. This adds one arm write and one disarm write when a deadline changes, but it keeps the document small. The promise and task lines still all travel in one put.</p>
+<pre><code class="language-zig">// impl/server/s3/src/doc.zig:494-511 (abridged)
+/// Did the decision touch anything worth writing an object for?
+///
+/// The write law. `clock` and `generation` are excluded on purpose: the
+/// clock is a hint and the generation counts writes, so including either
+/// would make every read a write.
+pub fn changed(before: *const Doc, after: *const Doc) bool {
+    if (before.promises.items.len != after.promises.items.len) return true;
+    if (before.tasks.items.len != after.tasks.items.len) return true;
+    if (!eql_opt_i64(before.timer_at, after.timer_at)) return true;
+    if (before.timer_generation != after.timer_generation) return true;
+    for (before.promises.items, after.promises.items) |a, b| {
+        if (!a.eql(b)) return true;
+    }
+    for (before.tasks.items, after.tasks.items) |a, b| {
+        if (!Task.eql(a, b)) return true;
+    }
+    return false;
+}
+</code></pre>
+<p>The check is a full comparison of both documents. A skipped write still costs the read and the comparison, but it avoids the conditional put.</p>
+<p>LTX objects use numbered compaction levels. Level 0 holds the segments that the capture loop writes, including the whole-database snapshot at the start of an epoch. Higher levels hold compacted segments. Level 9 is the snapshot level that the restore planner probes first; celld publishes an authoritative whole-database handoff snapshot there. The key is <code>cells/<cell>/ltx/e<epoch>/<level:04x>/<min>-<max>.ltx</code>. An epoch base is an epoch that opens with a whole-database snapshot: an LTX file with minimum transaction identifier 1. A restore walks from the newest epoch down until it reaches an epoch base.</p>
+<p>celld pays a cost that grows with the number of changed pages. A SQLite page is usually 4,096 bytes. The write-ahead log records the pages that changed. A small transaction produces a small LTX segment, even when the database holds gigabytes. The snapshot is large, but it is written once per epoch base, not once per transaction.</p>
+<p>Columns: Resonate Blob is the Rust blob backend, with one object per origin and deadlines inside the object. Resonate S3 is the Zig S3 server, with one object per origin and deadlines in separate timer objects. celld fleet mode is <code>CELLD_DURABILITY=fleet</code> with at least one follower. celld bucket mode is <code>CELLD_DURABILITY=bucket</code>, or a one-node fleet that must use the bucket. The SQLite server baseline is the SQLite backend on one server, with its database file on local disk and no replication. A node lease is the heartbeat record <code>nodes/<node>.json</code>; peers read it to decide whether a node process is alive.</p>
+<table><tr><th>Cost of one small transition</th><th>Resonate Blob</th><th>Resonate S3</th><th>celld fleet mode</th><th>celld bucket mode</th><th>SQLite server baseline</th></tr><tr><td>Read before write</td><td>Whole document</td><td>Whole document, or a 304-validated cache entry</td><td>None: local SQLite</td><td>None: local SQLite</td><td>Rows needed by the transaction</td></tr><tr><td>Write</td><td>Whole document, one conditional put</td><td>Whole document, one conditional put, plus one timer object put and one delete when the deadline changes</td><td>Dirty pages, one LTX segment</td><td>Dirty pages, one LTX segment</td><td>Dirty pages, one transaction</td></tr><tr><td>Commit wait</td><td>Bucket round trip</td><td>Bucket round trip for the document put; the validation read, timer put, and timer delete are separate round trips</td><td>Follower fsync, usually local network; the bucket upload races it</td><td>Bucket round trip, plus one ownership record read</td><td>Local disk fsync</td></tr><tr><td>Bucket traffic per transition</td><td>Document size</td><td>Document size, plus one timer object put and one delete</td><td>One LTX object put in the background; the node does not wait for it</td><td>One LTX object put, plus one ownership record read</td><td>None</td></tr><tr><td>Coordination per transition</td><td>None, but a lost race re-decides</td><td>None, but a lost race re-decides</td><td>None while the lease and ownership record hold</td><td>One ownership read per bucket proof; no lock</td><td>None</td></tr></table>
+<p>The table is a shape, not a benchmark. The measured celld numbers in its README are about 90 milliseconds (ms) for a bucket proof in a region-local store, about 600 ms for a bucket proof against a store that was not region-local, and about 25 ms for a fleet proof once a second node held the write. The Resonate cost depends on document size, bucket latency, and contention.</p>
+<h2>Many promises, one document, one cell</h2>
+<p>The Resonate document can serve many durable promises at once because the origin is the unit of atomicity. A parent promise and its child promises share the origin. A settle of the parent and the wake of a child must be one atomic change, or the system can wake a task whose input is not yet visible. One document gives that atomicity for free.</p>
+<p>celld has a different atomic unit: the cell. Inside a cell, SQLite transactions give atomicity across tables and indexes. Across cells, there is no shared transaction. A Durable Object can call another Durable Object, but the two writes are separate and each has its own acknowledgement. The application author chooses the cell boundaries.</p>
+<p>This is the deepest design difference. Resonate chooses the unit from the protocol: the origin. celld chooses the unit from the application: the Durable Object. Resonate's unit is fixed and small enough to replace on each transition. celld's unit is arbitrary and can be large, so it uses a log instead of a snapshot-per-write.</p>
+<h2>Failure and recovery</h2>
+<p>A Resonate S3 server holds no durable local state. Any server can load any origin. A server crash loses only cached documents and in-flight decisions. A retry reads the current document and decides again. There is no takeover, no lease, and no recovery step. The bucket is the entire state.</p>
+<p>celld keeps the live database on the owner node, so a crash needs a recovery path. The node lease records an expiry, <code>CELLD_TTL_MS</code> (default 10,000 ms), and the node renews it after one third of that lifetime. A per-cell ownership record names the owner of one cell. When a node lease expires, a peer may claim that node's cells through their ownership records. <a href="06-ownership-failure-and-rebalancing.html">Ownership, failure, and rebalancing</a> gives the full protocol.</p>
+<p>The new owner runs the takeover gate. It reads the prior node's node-log record, <code>nodes/<node>.json</code>. An absent record proves that the prior session never acknowledged past the bucket, and a sealed record proves that recovery completed. An open or recovering record forces recovery before the restore. The new owner then compare-and-swaps the record to fence it, tells the reachable followers to seal their part of the log, uploads their retained segments and bundles into the per-cell prefixes, and marks the record sealed. Only then does it restore the epoch chain. The restore reads the newest epoch prefix, then the next, until it reaches an epoch base.</p>
+<p>This difference drives the operational cost. Resonate has no data to restore, because it never holds data outside the bucket. celld has a fast local path and a slower recovery path. A large dead node can take minutes to recover. A retained segment is a write that a follower holds on disk and that the bucket does not yet cover. A bundle is a container of LTX segments from many cells, written under <code>log/</code>. The recovery reads retained bundles in windows of at most 512 mebibytes (MiB). It uploads and releases each window before it reads the next, so memory does not grow with the session.</p>
+<table><tr><th>Failure</th><th>Resonate S3</th><th>celld</th></tr><tr><td>Server process dies</td><td>Another server serves the next request</td><td>The node lease expires; a peer claims the cell and runs the takeover gate</td></tr><tr><td>Server loses the bucket</td><td>It cannot read or write; requests fail</td><td>It commits locally, cannot prove durability, and does not acknowledge. When the expiry that it published passes, it stops each active cell, fails incomplete requests, and exits with code 3</td></tr><tr><td>Two servers write the same origin</td><td>One conditional write wins; the loser re-decides</td><td>The ownership compare-and-swap admits one node per epoch; a stale owner writes a superseded prefix</td></tr><tr><td>Bucket ignores preconditions</td><td>Two writers can lose one another's writes</td><td>Two owners could serve one cell. Before it serves, each node runs four conditional writes and a range read; it stops when the store accepts a condition it must reject or returns wrong bytes</td></tr><tr><td>Read after write</td><td>A validated cache read sees the new document</td><td>Local SQLite already has the write</td></tr></table>
+<h2>What each system optimizes</h2>
+<p>Resonate optimizes for a stateless server and a simple durability story. Every server is interchangeable. A request can go to any server. The bucket is the only source of truth. The price is a full-document rewrite for each transition and a limit on how large one origin can grow before the rewrite hurts.</p>
+<p>celld optimizes for local execution and fast repeated access. A cell runs on one node, near its clients, with a local SQLite database. WebSockets, SQL queries, and alarms are local operations. The bucket holds the long-term state and the ownership records. The price is ownership management, recovery, and a placement problem: a cell must move when its node fails or becomes full.</p>
+<p>Neither model is a superset of the other. Resonate's document is excellent for a protocol with a small, well-defined state machine. celld's database is excellent for arbitrary application state and long-lived connections.</p>
+<h2>Choosing between them</h2>
+<p>Choose the Resonate model when the state has a fixed schema, the atomic unit is a small call tree, and the server must be replaceable at any moment. Choose the celld model when the state is arbitrary and lives in Structured Query Language (SQL) tables, the application needs a single writer for a long-lived object, or the application needs WebSockets and alarms.</p>
+<p>A system can use both. The Resonate S3 server already keeps origin documents in a bucket, and any server can serve any origin, so it needs no placement layer. The complementary move is to host a Resonate-style protocol on celld: one origin per Durable Object, with the origin as the cell name. In that design the cell boundary is drawn at the origin, so the two atomic units coincide. The two models answer different questions: what is the unit of atomic change, and where does the code that changes it run.</p>
+<h2>Cross-references</h2>
+<ul><li><a href="00-overview.html">Overview</a> explains the celld promises and the four nouns:</li></ul>
+<p>  node, fleet, cell, and deployment.</p>
+<ul><li><a href="05-cell-storage-and-durability.html">Cell storage and durability</a> explains the</li></ul>
+<p>  LTX chain, restore, and garbage collection.</p>
+<ul><li><a href="06-ownership-failure-and-rebalancing.html">Ownership, failure, and rebalancing</a></li></ul>
+<p>  explains the lease and takeover in detail.</p>
+<ul><li><a href="../../src.resonate/html/21-documents-rows-and-partitions.html">Documents, rows, and partitions</a></li></ul>
+<p>  explains every Resonate write unit: the Blob and S3 documents, the SQLite,   PostgreSQL, and MySQL rows, the ScyllaDB partition, and the Neo4j nodes and   edges.</p>
+<ul><li><a href="../../src.resonate/html/13-the-s3-server-in-zig.html">The S3 server in Zig</a></li></ul>
+<p>  explains every step of the Resonate S3 commit path.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

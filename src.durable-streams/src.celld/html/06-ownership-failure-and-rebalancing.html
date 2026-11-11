@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ownership, failure, and rebalancing -- src.celld</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue('--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        toolbar.appendChild(mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); }));
+        toolbar.appendChild(mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); }));
+        toolbar.appendChild(mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); }));
+        toolbar.appendChild(mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); }));
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.celld/docs</span>
+    <div class="nav-actions">
+      <a href="03-the-worker-runtime.html" class="nav-breadcrumb">The Worker runtime</a><a href="04-durable-objects.html" class="nav-breadcrumb">Durable objects</a><a href="05-cell-storage-and-durability.html" class="nav-breadcrumb">Cell storage and durability</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="05-cell-storage-and-durability.html" class="nav-btn" title="Previous: Cell storage and durability">← prev</a>
+      <a href="07-the-services.html" class="nav-btn nav-btn-next" title="Next: The services">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Ownership, failure, and rebalancing</h1>
+<p>At most one node may serve a cell as its acknowledged owner. That rule is easy to write and hard to enforce: a node can pause, lose its network, restart under the same name, or run with a wrong clock. A node that has lost authority can keep running code and writing to its local database for a short time. It cannot acknowledge a reply. celld enforces the acknowledged rule with two records in the bucket and one rule about who may change which record.</p>
+<p>This document follows the two records through a normal acquisition, a dead owner, a planned handoff, and a fleet-wide change of membership. It also describes the client behaviour that depends on them, and the failure modes that remain.</p>
+<p>Sources: <code>crates/logic/lib.rs</code>, <code>crates/logic/types.rs</code>, <code>crates/logic/rebalance.rs</code>, <code>crates/logic/drain.rs</code>, <code>crates/celld/ownership_store.rs</code>, <code>crates/celld/actor.rs</code>, and <code>docs/guarantees.md</code> at commit <code>8702f6d186c77698dbfb30cf29e3b1922a88f008</code>, version 0.6.3.</p>
+<h2>The words this document uses</h2>
+<table><tr><th>Word</th><th>Meaning here</th></tr><tr><td>Node</td><td>One running celld process.</td></tr><tr><td>Node identifier</td><td>The name in <code>CELLD_NODE</code>. Two processes with one name are two generations of one logical node.</td></tr><tr><td>Cell</td><td>One addressable server unit with a name and a private SQLite database. In Cloudflare terms, a cell is a Durable Object.</td></tr><tr><td>Core</td><td>The <code>celld_logic</code> crate: the decision core. It reads events and returns effects, and it performs no input or output.</td></tr><tr><td>Shell</td><td>The <code>crates/celld</code> effect adapters: the executable that performs the core's effects, such as bucket reads, writes, and process exit.</td></tr><tr><td>Lease</td><td>The record at <code>nodes/<node>.json</code>. It carries an expiry and a process generation.</td></tr><tr><td>Process generation</td><td>A random value that one process instance writes into its lease. A restart makes a new one.</td></tr><tr><td>Authority</td><td>The right to act as a node: to route requests, to claim cells, and to acknowledge writes. Authority comes from a live lease.</td></tr><tr><td>Ownership record</td><td>The record at <code>cells/<cell>/own.json</code>. It carries a node name and an ownership epoch.</td></tr><tr><td>Ownership epoch</td><td>A counter that increases each time a cell changes owner. It never decreases and never resets.</td></tr><tr><td>Acquisition</td><td>The compare-and-swap (CAS) that writes a new ownership record and makes this node the owner.</td></tr><tr><td>Takeover</td><td>An acquisition over a cell whose recorded owner is not live: the named owner's lease has expired, or the record names no node.</td></tr><tr><td>Handoff</td><td>A deliberate release followed by an acquisition by a named successor.</td></tr><tr><td>Adoption</td><td>The successor's acknowledgement of a handoff. The acknowledgement carries the new epoch and the successor's address.</td></tr><tr><td>Drain</td><td>The planned exit of a node. The node hands its cells to peers before it stops.</td></tr><tr><td>Drain token</td><td>A bucket object that asks donors to take turns. It is advisory: a donor that cannot claim it within its wait bound proceeds unserialized.</td></tr><tr><td>Rebalance</td><td>The movement of idle cells from a dense node to a less dense node while every node keeps running.</td></tr><tr><td>Placement weight</td><td>The share of the fleet's cells that a node asks to own, relative to the other nodes.</td></tr><tr><td>Density</td><td>Owned cells divided by placement weight.</td></tr><tr><td>Deadband</td><td>A small margin below a receiver's target, so a receiver does not immediately give the cells back.</td></tr><tr><td>Planner</td><td>The pure function <code>celld_logic::rebalance::surplus</code>. Every node runs it on the interval; it only counts and returns a batch size for the densest node.</td></tr><tr><td>Executor</td><td>The donor node's shell code for a planned move. It quiesces, releases, and asks a receiver to adopt.</td></tr><tr><td>Interlock</td><td>A condition that must be settled before a takeover may proceed. The node log is the interlock here.</td></tr><tr><td>Node log</td><td>The per-session log of writes that the owner acknowledged before their bucket upload completed.</td></tr><tr><td>Follower</td><td>A peer node that holds a copy of the owner's node log and fsyncs each acknowledged write. One or two followers form the ensemble.</td></tr><tr><td>Fleet proof</td><td>A durability proof in which one or two followers fsync the write. It does not wait for the bucket.</td></tr><tr><td>Recovery</td><td>The act of draining a dead owner's node log into the per-cell prefixes, then sealing the session.</td></tr><tr><td>Fence</td><td>To remove a node's authority. A fenced node stops serving cells and fails its requests. It can still run code and write to its local database; it cannot acknowledge.</td></tr><tr><td>Self-fence</td><td>A node that fences itself because it cannot prove its lease is still live.</td></tr><tr><td>Routing</td><td>Forwarding a request to the node that owns the cell.</td></tr><tr><td>Park</td><td>To hold a request in the cell's request set while the cell quiesces for a handoff. Adoption answers it with the successor route; a failed move fails it or re-reads ownership.</td></tr><tr><td>Paced handoff</td><td>A lease flag that says the process accepts an ownership-only handoff request and acknowledges it after it claims the next epoch.</td></tr><tr><td>Pressured</td><td>True when a memory-pressure latch is engaged: a memory ceiling was crossed, or the sample is still above the 80 percent low watermark.</td></tr><tr><td>Memory headroom</td><td><code>Some(true)</code> when every configured memory measurement is at or below its low watermark. <code>Some(false)</code> when at least one is above. <code>None</code> when the peer record predates the field.</td></tr><tr><td>Restore bound</td><td>The limit on a node's unfinished cold routes: its pre-drain baseline plus <code>max_activations</code>.</td></tr><tr><td>Ownership bound</td><td>The limit on incumbent ownership skew: the busiest incumbent may exceed the mean by at most one equal successor share.</td></tr><tr><td>Output gate</td><td>The single choke point for every reply and outbound effect. It holds an output until a durability proof covers every write the output can reveal.</td></tr><tr><td>Ambiguous</td><td>A request whose outcome is unknown: the bytes may have reached the peer, and the reply may be lost.</td></tr><tr><td>At-most-once</td><td>The dispatcher's promise not to send its own request twice. It does not promise that an application retry after an ambiguous failure is safe.</td></tr><tr><td>LTX</td><td>The log-tier transaction file format. celld stores replicated SQLite segments as LTX objects under <code>cells/<cell>/ltx/</code>.</td></tr></table>
+<h2>The two records</h2>
+<p>The first record is the <strong>lease</strong>. One lease exists for each node name, and the process that writes it holds authority until the recorded expiry passes:</p>
+<pre><code class="language-rust">// crates/celld/ownership_store.rs:35-42
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(from = &quot;NodeLeaseWireRaw&quot;)]
+pub(crate) struct NodeLeaseWire {
+    pub(crate) node: String,
+    pub(crate) expires_ms: u64,
+    #[serde(default)]
+    pub(crate) addr: String,
+    ...
+}
+</code></pre>
+<p>The struct shown is abridged. The record also carries the process generation (<code>generation</code>, also written as <code>ownership_index_generation</code>), the address, the protocol version, a placement weight, a load sample, and the folded node-log state. The node log record is folded into the lease: its state, epoch, ensemble, and tiered offset live in a <code>log</code> object beside the authority fields, so one lease read carries both. Those fields let a peer route a request without asking the owner, and let the rebalancer compare load without a second read.</p>
+<p>The second record is the <strong>ownership record</strong>. It has exactly two fields:</p>
+<pre><code class="language-rust">// crates/celld/ownership_store.rs:21-26
+#[derive(Serialize)]
+struct OwnerWire&lt;&#x27;a&gt; {
+    node: &amp;&#x27;a str,
+    epoch: u64,
+}
+
+#[derive(Deserialize)]
+struct OwnerWireOwned {
+    node: String,
+    epoch: u64,
+}
+</code></pre>
+<p>An empty <code>node</code> is a released record: the cell has no owner, and any node may claim it. The epoch stays. A record that names a node is an owned record. The core (the <code>celld_logic</code> decision crate) reads it as:</p>
+<pre><code class="language-rust">// crates/logic/types.rs:164-171
+pub struct OwnerRecord {
+    /// `None` is a deliberately released, fenced record. Epochs never reset.
+    pub node: Option&lt;NodeId&gt;,
+    pub epoch: Epoch,
+    pub etag: String,
+}
+</code></pre>
+<p>The <code>etag</code> is the object version. It is the token for the compare-and-swap, and its presence in the record is what makes an acquire safe without a lock.</p>
+<p>The two records answer different questions. The lease answers "may this process act at all?" The ownership record answers "which process acts for this cell?" A node can hold a live lease and own no cells. A node can name a cell while its lease is dead; that is exactly the stale-owner case that a takeover must fix.</p>
+<h2>The lease: authority with an expiry</h2>
+<p>The lease lives for <code>CELLD_TTL_MS</code>, the time to live (TTL), which defaults to 10,000 milliseconds. The node renews after one third of the lifetime:</p>
+<pre><code class="language-rust">// crates/logic/lib.rs:2468-2475
+let renew_after = if std::mem::take(&amp;mut self.nudge_pending) {
+    // The nudge lane: a renewal that answered late already proved the
+    // record live, so the next one must follow at once, not a TTL later.
+    0
+} else {
+    (spec.ttl_ms / 3).max(1)
+};
+</code></pre>
+<p>A renewal is a conditional write against the entity tag (ETag) that this process last published. The write replaces the expiry and keeps the process generation. A failed renewal does not fence the node at once. The node reads its own record back and compares the result against the body that it actually sent:</p>
+<pre><code class="language-rust">// crates/logic/lib.rs:2758-2768 (abridged)
+Ok(LeaseCasOutcome::Rejected) =&gt; {
+    // A rejected renewal is NOT proof of usurpation: an earlier
+    // AMBIGUOUS renewal can land after its own readback missed
+    // it, and then the ETag moved under our hand (#482 — R2
+    // throttling manufactured exactly this, and fencing here
+    // halted a healthy follower with 549ms of real authority
+    // left). Read back and decide from the record; the readback
+    // compares against what the shell actually serialized.
+    let read = self.op();
+    let mut pending = pending;
+    pending.desired.log_state = stamped_log_state;
+    self.node_authority = NodeAuthority::Reading { op: read, pending };
+    effects.push(Effect::ReadSelfNodeLease { op: read });
+}
+</code></pre>
+<p>The readback distinguishes three results:</p>
+<ul><li>The record is the one this process wrote. The node continues; the rejection</li></ul>
+<p>  was a race with its own late write.</p>
+<ul><li>The record is gone. Another process removed it. The node fences with</li></ul>
+<p>  <code>NodeLeaseMissing</code>.</p>
+<ul><li>The record is present but carries another process generation. The readback</li></ul>
+<p>  compares the returned <code>generation</code> with the value this process wrote. The node   fences with <code>NodeLeaseMismatch</code>.</p>
+<p>A fourth case fences with <code>NodeLeaseExpired</code>: the published expiry passed before a renewal landed. The fence is one function:</p>
+<pre><code class="language-rust">// crates/logic/lib.rs:3522-3526
+fn fence_node(&amp;mut self, reason: HaltReason, effects: &amp;mut Vec&lt;Effect&gt;) {
+    self.node_authority = NodeAuthority::Fenced;
+    self.fence(effects);
+    effects.push(Effect::Halt { code: 3, reason });
+}
+</code></pre>
+<p>The shell (<code>crates/celld</code>, the effect adapters) prints the reason and exits with code 3:</p>
+<pre><code class="language-rust">// crates/celld/actor.rs:4212-4216 (abridged)
+celld_logic::HaltReason::NodeLeaseExpired =&gt; tracing::warn!(
+    event = &quot;node_lease_watchdog_fence&quot;,
+    code,
+    &quot;SELF-FENCE: node lease not renewed within TTL — halting&quot;
+),
+</code></pre>
+<p>The fence itself writes nothing to the bucket. Peers already treat an expired lease as dead, and the ownership records that name the dead node are exactly what a successor will compare-and-swap. Writing a tombstone would add a request on a path where the node may have no network.</p>
+<p>The clock decides liveness, not the final check. A peer treats a lease as dead when its recorded expiry is at or before the reader's clock. A node that lies about its own time can keep acting, but it cannot acknowledge on a stale claim. A bucket proof rereads the ownership record. A fleet proof is arbitrated by the takeover, which seals the prior log session.</p>
+<h2>The ownership record: who serves the cell</h2>
+<p><code>own.json</code> is the only table of ownership. There is no separate index. A node that asks "who owns this cell?" reads this object. The read is one GET:</p>
+<pre><code class="language-rust">// crates/celld/ownership_store.rs:584-596
+pub async fn read_owner(&amp;self, cell: &amp;str) -&gt; anyhow::Result&lt;Option&lt;OwnerRecord&gt;&gt; {
+    let key = format!(&quot;cells/{cell}/own.json&quot;);
+    let Some((owner, etag)) = load_json::&lt;OwnerWireOwned&gt;(&amp;self.bucket, &amp;key).await? else {
+        return Ok(None);
+    };
+    let record = OwnerRecord {
+        node: (!owner.node.is_empty()).then_some(owner.node),
+        epoch: owner.epoch,
+        etag,
+    };
+    Ok(Some(record))
+}
+</code></pre>
+<p><code>None</code> means the object does not exist. A missing object is different from a released object. A release keeps the object and blanks the node field, so the epoch is not lost. A deleted object would let the next claimant start at epoch</p>
+<ol><li>A restore that still finds LTX under <code>cells/<cell>/ltx/</code> would then see a</li></ol>
+<p>gap. celld therefore refuses to claim a cell whose record is missing while LTX exists. The shell writes <code>celld ownership record lost</code> to standard error and holds the refusal for 10 seconds (<code>LOST_RECORD_RECHECK_MS</code>) without a bucket request.</p>
+<p>The acquire is a conditional write:</p>
+<pre><code class="language-rust">// crates/celld/ownership_store.rs:949-966
+pub async fn cas_owner(
+    &amp;self,
+    cell: &amp;str,
+    guard: CasGuard,
+    epoch: u64,
+) -&gt; anyhow::Result&lt;CasOutcome&gt; {
+    let key = format!(&quot;cells/{cell}/own.json&quot;);
+    let body = serde_json::to_vec(&amp;OwnerWire {
+        node: &amp;self.node,
+        epoch,
+    })?;
+    let etag = match &amp;guard {
+        CasGuard::Absent =&gt; None,
+        CasGuard::Match(etag) =&gt; Some(etag.as_str()),
+    };
+    match self.bucket.put_cas(&amp;key, body, etag).await? {
+        Some(_) =&gt; Ok(CasOutcome::Applied),
+        None =&gt; Ok(CasOutcome::Rejected),
+    }
+}
+</code></pre>
+<p><code>CasGuard::Absent</code> means "create this object only if it does not exist". The store enforces it with a conditional PUT that fails when the object exists. <code>CasGuard::Match</code> means "replace only this version". Both guards make the acquire atomic against every other node, because the object store compares the version, not the content.</p>
+<h2>Acquisition: four cases and one counter</h2>
+<p>A request for a cell that this node does not serve starts an ownership read. The core takes one of four branches on the record state: absent, this node, released, or a foreign node. A foreign node branch then splits on that owner's lease and log.</p>
+<table><tr><th>Record state</th><th>Guard</th><th>New epoch</th><th>Takeover</th><th>Next step</th></tr><tr><td>Absent, no LTX</td><td><code>Absent</code></td><td>1</td><td>No</td><td>Claim as a fresh cell</td></tr><tr><td>Absent, LTX exists</td><td>none</td><td>none</td><td>none</td><td>Refuse the claim as a lost record; hold for 10 seconds</td></tr><tr><td>Names this node</td><td><code>Match</code></td><td><code>epoch + 1</code></td><td>No</td><td>Claim, then restore</td></tr><tr><td>Released (empty node)</td><td><code>Match</code></td><td><code>epoch + 1</code></td><td>Yes</td><td>Claim, then restore</td></tr><tr><td>Names another node, lease live and same protocol</td><td>none</td><td>none</td><td>none</td><td>Route the request to that node</td></tr><tr><td>Names another node, lease live but protocol differs</td><td>none</td><td>none</td><td>none</td><td>Fail with <code>PeerIncompatible</code></td></tr><tr><td>Names another node, lease expired and log absent or sealed</td><td><code>Match</code></td><td><code>epoch + 1</code></td><td>Yes</td><td>Claim, then restore</td></tr><tr><td>Names another node, lease expired and log open or recovering</td><td>none</td><td>none</td><td>none</td><td>Recover the node log, then claim at <code>epoch + 1</code></td></tr></table>
+<p>The released branch is the one that keeps the epoch alive:</p>
+<pre><code class="language-rust">// crates/logic/lib.rs:4134-4152 (abridged)
+Ok(Some(record)) if record.node.is_none() =&gt; {
+    let Some(epoch) = self.next_writer_epoch(&amp;id, &amp;mut cell, record.epoch, effects)
+    else {
+        self.cells.insert(id, cell);
+        return;
+    };
+    self.place_unowned(
+        &amp;id,
+        &amp;mut cell,
+        Claim {
+            guard: CasGuard::Match(record.etag),
+            epoch,
+            takeover: true,
+            prior: None,
+            reconciles,
+        },
+        effects,
+    );
+}
+</code></pre>
+<p>The epoch increases on every acquisition, including a return to the same node. The reason is the log, not bookkeeping. A new epoch is a new directory under <code>cells/<cell>/ltx/</code>, so the node never appends to a chain that its previous process wrote. If the previous process left a torn or stale segment, the new chain starts clean.</p>
+<p>A restore reads a chain of epoch prefixes, newest first, down to an epoch that opened with a whole-database snapshot. A paged epoch continues its predecessor from a cut: the last transaction identifier and the page count at that point. A predecessor that does not end exactly at that cut is not part of the chain. A new epoch directory on every acquisition therefore keeps a torn or stale segment out of the new chain.</p>
+<p>The self row in the table is a re-acquisition, not a local resume. A node that already owns the cell takes the next epoch and restores from the bucket. The clean-reload resume is a separate path. A process that restarts under the same name and replaces a still-live lease with a matching generation keeps its local database and LTX metadata. It continues the same epoch without a claim, and it does not run after a takeover.</p>
+<p>The increment is checked:</p>
+<pre><code class="language-rust">// crates/logic/lib.rs:1864-1877 (abridged)
+fn next_writer_epoch(
+    &amp;mut self,
+    id: &amp;str,
+    cell: &amp;mut Cell,
+    previous: Epoch,
+    effects: &amp;mut Vec&lt;Effect&gt;,
+) -&gt; Option&lt;Epoch&gt; {
+    match previous.checked_add(1) {
+        Some(epoch) =&gt; Some(epoch),
+        None =&gt; {
+            set_phase(&amp;mut self.occupied, cell, Phase::Inactive);
+            self.finish_requests(id, cell, Err(RequestError::ResolveFailed), effects);
+            None
+        }
+    }
+}
+</code></pre>
+<p>An epoch that cannot increase fails the requests instead of wrapping. A wrapped epoch would reuse an old directory name and mix two chains.</p>
+<div class="mermaid">
+flowchart TD
+    R[&quot;Read own.json&quot;] --&gt; A{&quot;Object exists?&quot;}
+    A --&gt;|&quot;no&quot;| MISS[&quot;Check for LTX under cells/&amp;lt;cell&amp;gt;/ltx/&quot;]
+    MISS --&gt;|&quot;LTX exists&quot;| LOST[&quot;Refuse the claim as a lost record.&lt;br/&gt;Hold for 10 seconds&quot;]
+    LOST --&gt;|&quot;next request after 10 seconds&quot;| R
+    MISS --&gt;|&quot;no LTX&quot;| C1[&quot;Claim epoch 1&lt;br/&gt;guard = Absent&quot;]
+    A --&gt;|&quot;yes&quot;| B{&quot;Node field&quot;}
+    B --&gt;|&quot;empty (released)&quot;| C2[&quot;Claim epoch + 1&lt;br/&gt;guard = Match&lt;br/&gt;takeover&quot;]
+    B --&gt;|&quot;this node&quot;| C3[&quot;Claim epoch + 1&lt;br/&gt;guard = Match&lt;br/&gt;self re-acquire&quot;]
+    B --&gt;|&quot;another node&quot;| L[&quot;Read nodes/&amp;lt;node&amp;gt;.json&quot;]
+    L --&gt; L1{&quot;Lease live and&lt;br/&gt;same protocol?&quot;}
+    L1 --&gt;|&quot;live, other protocol&quot;| INC[&quot;Fail the request:&lt;br/&gt;PeerIncompatible&quot;]
+    L1 --&gt;|&quot;live, same protocol&quot;| ROUTE[&quot;Route the request to the owner&quot;]
+    L1 --&gt;|&quot;dead or missing&quot;| LOG{&quot;Log absent or&lt;br/&gt;sealed?&quot;}
+    LOG --&gt;|&quot;no&quot;| REC[&quot;Recover the node log&quot;]
+    REC --&gt; C4[&quot;Claim epoch + 1&lt;br/&gt;guard = Match&lt;br/&gt;takeover&quot;]
+    LOG --&gt;|&quot;yes&quot;| C4
+    C1 --&gt; RESTORE[&quot;Restore and activate&quot;]
+    C2 --&gt; RESTORE
+    C3 --&gt; RESTORE
+    C4 --&gt; RESTORE
+
+</div>
+<h2>Takeover: the node-log interlock</h2>
+<p>A takeover is an acquire over a cell whose recorded owner is not live. In fleet durability mode, the owner acknowledges a write when one or two followers fsync it. That is a fleet proof, and it does not wait for the bucket upload. The followers hold the acknowledged tail in the session's node log. A new owner that claims first and recovers later would fix a bucket state that excludes those writes. The claim must therefore wait for recovery:</p>
+<pre><code class="language-rust">// crates/logic/lib.rs:4463-4497 (abridged)
+// The takeover interlock, decided HERE on the lease the
+// core just read (lease-fold): a dead owner whose folded
+// log state is not sealed may hold acked writes only on
+// its followers, and claiming before recovery fixes a
+// bucket state that excludes them.
+let unrecovered = lease.as_ref().is_some_and(|lease| {
+    !matches!(
+        lease.record.log_state,
+        None | Some(crate::log_tier::LogState::Sealed)
+    )
+});
+if unrecovered {
+    let owner = record.node.clone().unwrap_or_default();
+    let next = self.cell_op(id);
+    set_phase(
+        &amp;mut self.occupied,
+        cell,
+        Phase::RecoveringOwnerLog {
+            op: next,
+            owner: record,
+        },
+    );
+    effects.push(Effect::RecoverNodeLog {
+        op: next,
+        cell: id.to_string(),
+        owner,
+    });
+    return;
+}
+</code></pre>
+<p>The two accepted states have different meanings. <code>None</code> means the session never opened a node log, so it never acknowledged past the bucket. <code>Sealed</code> means recovery already completed. The <code>LogState</code> enum has three values: <code>Open</code>, <code>Recovering</code>, and <code>Sealed</code>. <code>Open</code> and <code>Recovering</code> block the claim. The folded state is the node log record moved into the node lease record, so one lease read carries it.</p>
+<p>Recovery can fail, and the failure is bounded:</p>
+<pre><code class="language-rust">// crates/logic/lib.rs:4569-4572
+cell.owner_log_recovery_attempts =
+    cell.owner_log_recovery_attempts.saturating_add(1);
+if cell.owner_log_recovery_attempts &gt;= self.config.owner_log_recovery_attempts {
+</code></pre>
+<p>After the cap, the cell enters a waiting phase with a backoff and then re-reads ownership. A persistent failure does not spin. The documented causes are a follower that answers with an error, a restarted follower that cannot certify a range, and a mixed-version tail that a newer release cannot decode. A follower certifies a range when its seal and tail responses describe the same retained range, and the tail proves that every retained sequence in that range is readable. A mixed-version tail is an older node's entries-only tail, and it proves neither completeness nor loss. <code>docs/guarantees.md</code> lists these limits under "The takeover recovery gate".</p>
+<p>Recovery reads the dead owner's followers' retained segments and bundles. It uploads them into the per-cell prefixes under the dead owner's epoch, <code>cells/<cell>/ltx/e<epoch>/</code>, and writes <code>sealed</code> into the folded log record. Only then does the acquire run.</p>
+<p>Recovery runs before the successor claims. The successor then claims <code>epoch + 1</code> and restores a chain that includes the recovered prefix. A write that the old owner makes after the successor's cut is not acknowledged: the takeover gate seals the prior session before the restore, and a paged successor clips the chain at the cut.</p>
+<h2>Planned handoff: release, then adopt</h2>
+<p>A drain and a rebalance both move a cell without a dead owner. The order is fixed: release first, adopt second.</p>
+<div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant D as Donor
+    participant B as Bucket
+    participant F as Fleet leases
+    participant S as Successor
+    D-&gt;&gt;B: CAS own.json to {&quot;node&quot;:&quot;&quot;, epoch N}
+    B--&gt;&gt;D: applied
+    D-&gt;&gt;F: read capacity sample
+    F--&gt;&gt;D: peers with room
+    D-&gt;&gt;S: signed handoff request (cell, released epoch N)
+    S-&gt;&gt;B: read own.json, claim epoch N+1
+    B--&gt;&gt;S: applied
+    S--&gt;&gt;D: acknowledgement (node, addr, epoch N+1, protocol, published)
+    D-&gt;&gt;D: answer parked requests with the successor route
+
+</div>
+<p>The release is conditional on the exact record that the donor wrote:</p>
+<pre><code class="language-rust">// crates/celld/ownership_store.rs:934-947 (abridged)
+pub async fn release_owner(&amp;self, cell: &amp;str, epoch: u64) -&gt; anyhow::Result&lt;CasOutcome&gt; {
+    let Some(current) = self.read_owner(cell).await? else {
+        return Ok(CasOutcome::Rejected);
+    };
+    if current.node.as_deref() != Some(self.node.as_str()) || current.epoch != epoch {
+        return Ok(CasOutcome::Rejected);
+    }
+    let key = format!(&quot;cells/{cell}/own.json&quot;);
+    let body = serde_json::to_vec(&amp;OwnerWire { node: &quot;&quot;, epoch })?;
+    match self.bucket.put_cas(&amp;key, body, Some(&amp;current.etag)).await? {
+        Some(_) =&gt; Ok(CasOutcome::Applied),
+        None =&gt; Ok(CasOutcome::Rejected),
+    }
+}
+</code></pre>
+<p>A rejection is an ordinary outcome, not an error. Another acquisition may have happened between the read and the write. A donor that paused long enough for its lease to expire is a dead owner to the fleet, so a peer can take the cell over. A restarted process with the same node name can also replace the record. In either case the cell belongs to someone else, and blanking the record would remove a live claim.</p>
+<p>The donor accepts an adoption only when it proves four facts: the successor is another node, the successor's address is not empty, the successor's epoch is greater than the released epoch, and the successor speaks the same protocol version:</p>
+<pre><code class="language-rust">// crates/logic/lib.rs:5025-5031 (abridged)
+Ok(adopted)
+    if adopted.node != self.node
+        &amp;&amp; !adopted.addr.is_empty()
+        &amp;&amp; adopted.epoch &gt; released_epoch
+        &amp;&amp; adopted.peer_protocol == self.config.peer_protocol =&gt;
+</code></pre>
+<p>The epoch condition is the proof that the successor actually acquired after the release. A successor that repeats the released epoch did not acquire anything, and the donor keeps the cell unowned rather than route to it.</p>
+<p>The donor signs the handoff request with the fleet peer-authentication key, which is a shared hash-based message authentication code (HMAC) key. The request is the instruction to claim ownership, so its signature is what stops a host outside the fleet from issuing that instruction. The successor's acknowledgement is not separately signed. The donor checks the acknowledgement's protocol version header, and it trusts the internal peer network to carry an honest reply.</p>
+<h2>Rebalancing: moving cells while the fleet runs</h2>
+<p>The rebalancer is a planner plus an executor. The planner is the pure function <code>celld_logic::rebalance::surplus</code>. Every node runs it on the interval, but only the densest node gets a count. The executor is the donor node's shell code behind <code>Message::Rebalance</code>: it quiesces each cell, releases it, and asks a receiver to adopt. A receiver's shell accepts or refuses the handoff. Every move still goes through the release compare-and-swap and the signed request.</p>
+<p>The planner runs on an interval of 5,000 milliseconds by default (<code>CELLD_REBALANCE_INTERVAL_MS</code>). It reads one fleet sample, computes each node's target from its placement weight, and asks one question: how many cells may this node give away now?</p>
+<pre><code class="language-rust">// crates/logic/rebalance.rs:129-151 (abridged)
+pub fn surplus(
+    peers: &amp;[CapacityPeer],
+    self_node: &amp;str,
+    now_ms: u64,
+    max_age_ms: u64,
+    since_ms: u64,
+    batch: usize,
+) -&gt; Option&lt;usize&gt; {
+    let fleet = Fleet::observe(peers, self_node, now_ms, max_age_ms, since_ms)?;
+    let donor = fleet
+        .members
+        .iter()
+        .max_by(|left, right| left.denser(right))?;
+    if donor.peer.node != self_node {
+        return None;
+    }
+    let surplus = donor.owned.saturating_sub(fleet.target(donor));
+    let room: u128 = fleet
+        .members
+        .iter()
+        .filter(|member| member.receives_from(self_node))
+        .map(|member| fleet.room(member))
+        .sum();
+    let count = surplus.min(room).min(batch as u128);
+    (count &gt; 0).then_some(count as usize)
+}
+</code></pre>
+<p>Density is owned cells divided by weight, compared without division:</p>
+<pre><code class="language-rust">// crates/logic/rebalance.rs:36-41
+fn denser(&amp;self, other: &amp;Self) -&gt; Ordering {
+    (self.owned * other.weight)
+        .cmp(&amp;(other.owned * self.weight))
+        .then_with(|| other.peer.node.cmp(&amp;self.peer.node))
+}
+</code></pre>
+<p>A receiver fills only to a deadband two percent below its target:</p>
+<pre><code class="language-rust">// crates/logic/rebalance.rs:25-27
+const DEADBAND_PERCENT: u128 = 2;
+</code></pre>
+<p>The asymmetry is deliberate. A donor drains to exactly its target, so several donors cannot leave the fleet short by one deadband each. A receiver stops below its target, so a stale count that overshoots by one batch does not make the receiver the next donor and send the cells straight back.</p>
+<p>The planner refuses to plan from a mixed or stale view. Every live lease must be fresh, must advertise the paced handoff, and must not be paused. The paced handoff flag is a lease field. It says that the process accepts an ownership-only handoff request and acknowledges it after it claims the next epoch. A live peer that does not advertise the flag may be an older node, so the planner moves nothing while that lease is live:</p>
+<pre><code class="language-rust">// crates/logic/rebalance.rs:70-86 (abridged)
+fn observe(
+    peers: &amp;&#x27;a [CapacityPeer],
+    self_node: &amp;str,
+    now_ms: u64,
+    max_age_ms: u64,
+    since_ms: u64,
+) -&gt; Option&lt;Self&gt; {
+    ...
+    for peer in peers.iter().filter(|peer| peer.expires_ms &gt; now_ms) {
+        let fresh =
+            peer.sampled_ms &gt; since_ms &amp;&amp; now_ms.saturating_sub(peer.sampled_ms) &lt;= max_age_ms;
+        if !fresh || !peer.paced_handoff || peer.rebalance_paused {
+            return None;
+        }
+        ...
+    }
+}
+</code></pre>
+<p><code>since_ms</code> is the instant at which the donor's last batch could have reached every lease. Without it, the planner could mix counts from before a batch with counts from after it, compute a smaller total, and move cells that come back.</p>
+<p><code>pressured</code> is true when a memory-pressure latch is engaged. A latch engages when a memory ceiling is crossed, and it releases only below the 80 percent low watermark. <code>memory_headroom</code> has three values. <code>Some(true)</code> means every configured memory measurement is at or below its low watermark. <code>Some(false)</code> means at least one is above. <code>None</code> means the peer record predates the field. The predicate below excludes a peer that is pressured or whose <code>memory_headroom</code> is <code>Some(false)</code>. It does not exclude a peer whose value is <code>None</code>.</p>
+<p>One predicate decides whether a peer can receive a cell, and the planner and the executor both call it:</p>
+<pre><code class="language-rust">// crates/logic/types.rs:258-261
+pub fn reports_adoption_capacity(&amp;self) -&gt; bool {
+    !self.pressured &amp;&amp; self.memory_headroom != Some(false)
+}
+</code></pre>
+<p>A split rule here breaks in a specific way. Suppose the planner counts a saturated node as a receiver, the donor releases the cell, and the receiver then refuses the handoff because its <code>reports_adoption_capacity</code> predicate is false. The donor's executor skips that receiver and the handoff fails. The cell is now unowned, and its epoch is retained, because the release runs before the successor acquire.</p>
+<p>The executor allows at most 32 cells in flight across the node's move pipeline at the default settings (<code>CELLD_REBALANCE_BATCH_CELLS</code>). The loop plans a new batch while cells from an earlier batch are still in flight. It subtracts the in-flight count from 32 and plans only the remaining room. A single cell whose proof cannot finish therefore takes one slot but does not stop planning: the donor plans around it with the rest of the batch. When all 32 slots are in use, the loop waits.</p>
+<h2>Drain: leaving without losing a cell</h2>
+<p>A drain is a rebalance with a deadline. The node stops accepting new cells, gives its cells away, and exits. Three things make a drain safer than an unplanned death:</p>
+<ol><li>The node releases each cell through the compare-and-swap, so a successor can</li></ol>
+<p>   claim it immediately.</p>
+<ol><li>The node routes parked requests to the successor after the adoption, so a</li></ol>
+<p>   client does not see a failure for a cell that moved cleanly.</p>
+<ol><li>A drain token asks donors to take turns, so one cluster restart does not make</li></ol>
+<p>   every node hand off at once.</p>
+<p>A parked request is a request that arrived while the cell was quiescing for the handoff. It waits in the cell's request set. Adoption answers it with the successor route. A failed drain handoff fails it; a failed rebalance move re-reads ownership.</p>
+<p>The token is advisory. A donor that cannot claim it within a bounded wait proceeds unserialized, and a dead holder's claim lapses by its time to live. Readiness stays closed while the token or the fleet capacity is unsettled, so the orchestrator's rollout deadline bounds the wait.</p>
+<p>The token's purpose is visible in the failure it prevents: if ten nodes all release their cells at once, the survivors must claim thousands of cells in a burst, and the restore bound fails before the ownership bound does.</p>
+<p>The restore bound and the ownership bound are the two capacity checks in the readiness gate. The restore bound limits each live node's <code>restoring</code> count, which counts cold routes that have not finished, to its pre-drain baseline plus <code>max_activations</code>. The ownership bound limits incumbent ownership skew: the busiest incumbent may exceed the mean by at most one equal successor share. The code checks restoration before ownership skew, so a fleet that breaches both reports <code>Restoration</code> first.</p>
+<h2>What the client sees</h2>
+<p>A request that arrives at a node that does not own the cell is forwarded to the owner. The node keeps the route in a cache. The cache entry carries the owner's lease deadline, and the ingress checks that deadline on each new request, so a route to a dead owner stops being used at the deadline even before a new owner appears.</p>
+<p>Two outcomes are safe to retry:</p>
+<ul><li>The peer answered <code>NotOwner</code>. Nothing ran.</li><li>The connection was never established. No bytes reached the owner.</li></ul>
+<p>Every other outcome is ambiguous: a timeout after the request was written, a truncated body, or a decode error. The owner may have run the request and lost the reply. The dispatcher refuses those:</p>
+<pre><code class="language-rust">// crates/logic/routing.rs:55-64
+pub fn redispatch(&amp;mut self, attempt: Attempt) -&gt; bool {
+    match attempt {
+        Attempt::Ambiguous =&gt; false,
+        Attempt::NotOwner if self.retried_not_owner =&gt; false,
+        Attempt::NotOwner =&gt; {
+            self.retried_not_owner = true;
+            true
+        }
+        Attempt::NeverConnected if self.retried_never_connected =&gt; false,
+        Attempt::NeverConnected =&gt; {
+            self.retried_never_connected = true;
+            true
+        }
+    }
+}
+</code></pre>
+<p>This is where the ownership design meets the client contract. A retry after an ambiguous failure could run a write twice, and the cell would have no way to tell the two runs apart. The client receives the error instead, and the application decides whether its own operation is idempotent.</p>
+<h2>What can go wrong</h2>
+<table><tr><th>Failure</th><th>What the system does</th><th>What an operator sees</th></tr><tr><td>A node loses its lease</td><td>It stops serving its cells and fails incomplete requests</td><td><code>SELF-FENCE:</code> on standard error, exit code 3</td></tr><tr><td>A node's lease record is replaced</td><td>It fences with <code>NodeLeaseMismatch</code></td><td><code>SELF-FENCE:</code> and an event name</td></tr><tr><td>A node restarts under one name</td><td>The new generation writes a fresh lease; the old generation is fenced by the ETag</td><td>The old process exits with code 3 if it still runs</td></tr><tr><td>The owner dies with an open node log</td><td>A successor recovers the log, then claims at <code>epoch + 1</code></td><td><code>recovering_owner_log</code> in the cell state</td></tr><tr><td>Recovery cannot finish</td><td>The cell waits, backs off, and retries up to the configured cap</td><td><code>waiting_owner_log_recovery</code></td></tr><tr><td>A release loses the race to another acquisition</td><td>The release returns <code>Rejected</code>; nothing is blanked</td><td>No error; the cell belongs to the new owner</td></tr><tr><td>A handoff successor repeats the released epoch</td><td>The donor treats the adoption as failed</td><td><code>handoff_failed</code> in activity counts</td></tr><tr><td>The ownership record is lost</td><td>The node refuses the cell and holds the refusal for 10 seconds</td><td><code>celld ownership record lost</code></td></tr><tr><td>A forward fails ambiguously</td><td>The client receives an error; no retry</td><td>The error names the peer and the route</td></tr><tr><td>The fleet view is mixed</td><td>The planner moves nothing</td><td>No batch; balancing resumes when every lease agrees</td></tr></table>
+<p>The first row is the deepest. A process that cannot prove its lease still runs code, and that code can still write to its local database. The fence does not prevent the write; it prevents the <em>acknowledgement</em>. The output gate is the core's single choke point for every reply. It refuses a reply without a proof. A proof needs either a live lease for a bucket read or a sealed prior session for a fleet acknowledgement. A paused node that keeps running therefore fails its clients. It can lose an unacknowledged write, but it cannot lose an acknowledged write.</p>
+<h2>The Aha</h2>
+<p>The common design for distributed ownership is a consensus group. A lease is granted by a majority, and every decision needs a quorum. celld uses one bucket object instead, and the reason works only because of three separate properties.</p>
+<p>First, the object store gives a conditional write. That is a compare-and-swap, which is the only primitive a consensus group adds for this purpose. Second, the ownership record changes only on an acquire or a release, not on every request, so the bucket is not in the request path. Third, a node can always tell whether it may still act, because the answer is either its own copied lease deadline or the object version it last wrote.</p>
+<p>The cost is a window: between the instant a node's real authority ends and the instant it notices, the node may act without authority. celld does not try to close that window. It makes the window harmless. The node's writes go into an epoch prefix that the successor's paged chain clips at the cut. A snapshot successor can expose an unacknowledged late tail, and the contract allows that because the write was never acknowledged. Its replies are held by the output gate. Its routes expire at the published deadline. The old owner can be wrong about its authority, and the system stays correct because the <em>effects</em> of that authority are gated on facts that the old owner cannot forge.</p>
+<p>This is why the design is not "lease-based consensus". It is "fence the effects, not the actor". That framing explains the two records, the epoch, the interlock, and the exit code 3: each one is a place where an actor's belief is allowed to be stale, and an effect is not.</p>
+<h2>Where to read next</h2>
+<ul><li><a href="05-cell-storage-and-durability.html">Cell storage and durability</a> describes the</li></ul>
+<p>  epoch prefix and the durability proof in detail.</p>
+<ul><li><a href="03-the-worker-runtime.html">The Worker runtime</a> describes the output gate that</li></ul>
+<p>  holds replies.</p>
+<ul><li><a href="07-the-services.html">The services</a> describes the fleet sampler, the rebalance</li></ul>
+<p>  loop, and the drain coordinator.</p>
+<ul><li><a href="08-deployment-and-operations.html">Deployment and operations</a> lists the lease,</li></ul>
+<p>  drain, and rebalance settings.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

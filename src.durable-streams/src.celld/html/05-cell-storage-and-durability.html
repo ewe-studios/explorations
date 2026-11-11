@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cell storage and durability -- src.celld</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue('--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        toolbar.appendChild(mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); }));
+        toolbar.appendChild(mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); }));
+        toolbar.appendChild(mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); }));
+        toolbar.appendChild(mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); }));
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.celld/docs</span>
+    <div class="nav-actions">
+      <a href="02-system-architecture.html" class="nav-breadcrumb">System architecture</a><a href="03-the-worker-runtime.html" class="nav-breadcrumb">The Worker runtime</a><a href="04-durable-objects.html" class="nav-breadcrumb">Durable objects</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="04-durable-objects.html" class="nav-btn" title="Previous: Durable objects">← prev</a>
+      <a href="06-ownership-failure-and-rebalancing.html" class="nav-btn nav-btn-next" title="Next: Ownership, failure, and rebalancing">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Cell storage and durability</h1>
+<p>A cell's durable state is one SQLite database. On the owner node, that database is a file. In the bucket, the same state is a chain of Lite Transaction (LTX) segments. The chain has a base: a snapshot, which is one segment that carries every page of the database at one transaction. The base can sit in any epoch of the chain, not only the earliest epoch that the bucket holds. A cell can also restore from its chain of captured level 0 segments without a level-9 handoff snapshot; that chain starts with the first captured snapshot at transaction 1. Each ownership epoch has its own prefix, and the chain crosses epochs. The epoch is the fence: a node that lost ownership can keep writing, but the next restore clips those writes at the cut, the last transaction identifier that a span covers. The word table below defines these terms.</p>
+<p>This document follows one write from the application call to the durability proof. It also follows one restore from a cold process back to a usable database. It covers the local file, the internal tables, the write-ahead log (WAL), the segment format, the bucket layout, the two durability modes, paging, compaction, and garbage collection.</p>
+<p>Sources: <code>crates/celld/storage.rs</code>, <code>crates/ltx/</code>, and <code>docs/guarantees.md</code> at commit <code>8702f6d186c77698dbfb30cf29e3b1922a88f008</code>, version 0.6.3.</p>
+<h2>The words this document uses</h2>
+<table><tr><th>Word</th><th>Meaning here</th></tr><tr><td>Bucket</td><td>One object store bucket. It holds the ownership records, the cell logs, and the node records.</td></tr><tr><td>Cell</td><td>One Durable Object instance. A cell owns one SQLite database.</td></tr><tr><td>Durable Object</td><td>A Cloudflare platform object with one identity and one SQLite database. celld runs each Durable Object as a cell.</td></tr><tr><td>Cell scope</td><td>The string <code><class>:<identifier></code> that names a cell. Every path in this document writes <code><cell></code> for this scope.</td></tr><tr><td>Facet</td><td>A child Durable Object with its own database file and its own replication stream. Its keys sit under the root as <code>cells/<root>/facets/<hash>/</code>, with one <code>facets/<hash></code> pair for each name in the facet path. <code><hash></code> is a 32-character hexadecimal hash of that name.</td></tr><tr><td>Stream</td><td>The bucket key prefix <code>cells/<scope>/</code> for one cell.</td></tr><tr><td>Write-ahead log (WAL)</td><td>SQLite's append-only file of committed pages that are not yet copied into the main database file.</td></tr><tr><td>Page</td><td>The fixed-size unit of a SQLite database file, normally 4,096 bytes.</td></tr><tr><td>Frame</td><td>The stored bytes of one changed page inside a segment: the page number, the page bytes, and a checksum.</td></tr><tr><td>Segment</td><td>One LTX object. It holds frames for a run of transactions and a page index that maps each page number to its newest frame.</td></tr><tr><td>Lite Transaction (LTX)</td><td>The replication format that celld takes from Litestream. One LTX object is one segment.</td></tr><tr><td>Litestream</td><td>The open-source SQLite replication tool whose LTX format and restore plan celld reuses.</td></tr><tr><td>Level</td><td>The directory number that classifies a segment. Level 0 holds captured transactions, level 1 holds the output of celld's compaction, levels 2 to 8 exist for Litestream compatibility, and level 9 holds handoff snapshots.</td></tr><tr><td>Snapshot</td><td>An LTX object whose header minimum transaction identifier is 1. It carries every page of the database at its maximum identifier. A handoff snapshot is a level-9 snapshot that celld writes when it evicts a cell. The first capture of a new database is also a snapshot.</td></tr><tr><td>Span</td><td>The files from one epoch that a restore keeps after it clips them at the newer span's first transaction identifier. Its first identifier is the lowest it serves; its cut is the highest.</td></tr><tr><td>Base</td><td>The oldest span of a restore chain, not the oldest epoch in the bucket; the chain can leave earlier epochs unread. It opens with a snapshot at transaction 1, so a chain reads no transaction before it.</td></tr><tr><td>Cut</td><td>The last transaction identifier that a span covers. The span above it must start at the cut plus one.</td></tr><tr><td>Target</td><td>The transaction identifier at which a restore stops. A target of 0 means the newest transaction.</td></tr><tr><td>Position (LTX position)</td><td>A pair: a transaction identifier (<code>txid</code>) and a rolling checksum of the database after that transaction.</td></tr><tr><td>Transaction identifier (txid)</td><td>A counter that increases by one for each captured transaction.</td></tr><tr><td>Committed-write position</td><td>The cell's local change counter: <code>total_changes + data_version + schema_cookie</code>. The output gate uses it to tell a write from a read.</td></tr><tr><td>Output gate</td><td>The rule that holds a reply until a durability proof covers every write that the reply can reveal.</td></tr><tr><td>Durability proof</td><td>Evidence that a committed-write position is on durable storage. The bucket mode reads the bucket; the fleet mode uses follower acknowledgements.</td></tr><tr><td>Epoch</td><td>The ownership epoch in <code>cells/<cell>/own.json</code>. It is a positive integer that increases on each acquisition and names the log prefix.</td></tr><tr><td>Chain</td><td>The ordered list of epochs, and the segments inside them, that one restore reads.</td></tr><tr><td>Follower</td><td>Another node that holds a copy of the owner's recent writes and confirms them with <code>fsync</code>.</td></tr><tr><td>Ensemble</td><td>The owner and its followers, considered together.</td></tr><tr><td>Node log</td><td>The fleet replication log of one node session. It holds the level 0 segments that the node captured but has not yet copied into per-cell prefixes. Its state is the <code>log</code> object in <code>nodes/<node>.json</code>, which folds the log state into the record; its bucket form is the retained bundle set under <code>log/<session>/bundle/</code>.</td></tr><tr><td>Session</td><td>One process lifetime of one node, named by the node and the generation of its lease record, as <code><node>/<generation></code>. Its bundles live under <code>log/<node>/<generation>/</code>, so <code>log/<session>/bundle/</code> means <code>log/<node>/<generation>/bundle/</code>. The generation increases when a new session starts.</td></tr><tr><td>Bundle (retained bundle)</td><td>One object that carries the level 0 segments of many cells. The extension is <code>.ltxb</code>. A retained bundle has at least one row that the per-cell prefixes do not cover.</td></tr><tr><td>Tiering path</td><td>The path that writes level 0 segments into node bundles first and drains them into the per-cell prefixes later. It runs when a fleet shipper and its bundle sink are active.</td></tr><tr><td>Drain (bundle drain)</td><td>The copy of a retained bundled segment into its per-cell prefix at a drain point, such as compaction or eviction.</td></tr><tr><td>Lease</td><td>The node's own record at <code>nodes/<node>.json</code>, with an expiry and a generation. Each node publishes its own lease; no peer grants it. The default lifetime is 10,000 milliseconds, renewed after one third of that lifetime. It is separate from the cell ownership record.</td></tr><tr><td>Activation</td><td>The start of a cell on a node. A cell is resident when the node holds local state for it. A cold activation has no resident state on that node and restores from the bucket.</td></tr><tr><td>Handoff</td><td>The release of a resident cell to a successor, with a durability proof and a restore artifact. A resident cell has local state on the node. The restore artifact is the snapshot or chain that the successor restores from. To evict a cell is to give it up in a handoff.</td></tr><tr><td>Eviction barrier</td><td>The durability gate that must pass before a node gives up a resident cell. Eviction is the local release of a cell after that gate.</td></tr><tr><td>Window of loss</td><td>The period between the latest commit and the latest backup, in which a crash can lose an acknowledged write.</td></tr><tr><td>Compaction</td><td>The merge of several contiguous level 0 segments into one level 1 segment.</td></tr><tr><td>Paging</td><td>A restore mode that leaves the database sparse and reads each page from the segments when the database first touches it.</td></tr><tr><td>Paged epoch</td><td>An epoch that opens with a zero-page continuation marker instead of a snapshot. Its restore continues into the epoch below it.</td></tr><tr><td>Paged format</td><td>Bucket format 2. Bucket format is the layout version that a node advertises in its lease. Format 1 opens every epoch with a snapshot; format 2 can open with a continuation marker. A node that reads format 2 can restore a paged epoch. A node that reads only format 1 cannot.</td></tr><tr><td>Conditional create</td><td>A bucket write that succeeds only when the object does not exist.</td></tr><tr><td>Durability ticket</td><td>A number that orders a proof request against the capture loop. A write waits for a sync that started after its ticket.</td></tr><tr><td>Garbage collection (GC)</td><td>The deletion of epoch prefixes that no restore reads.</td></tr><tr><td><code>fsync</code></td><td>The system call that forces written bytes to the storage device.</td></tr></table>
+<h2>The local file</h2>
+<p>A cell's database is a file under the data directory. The path contains the cell scope and the ownership epoch: <code><data_dir>/<cell>/ltx/e<epoch>/db.sqlite</code>. The epoch in the path is deliberate. A new epoch opens a new file, so no connection of a previous epoch can write into the database of the current one. A cell runtime with no bucket and no fleet has no remote epoch namespace, which is a shared mapping from an epoch number to a bucket prefix. One example is a local run without a bucket. Such a runtime keeps one file at <code>e1</code> across ownership changes. No second node can open that local file, so the file needs no new epoch to fence a second writer. The database uses the WAL journal mode:</p>
+<pre><code class="language-rust">// crates/celld/storage.rs:372-382 (abridged)
+pub fn schema(c: &amp;Connection) -&gt; anyhow::Result&lt;()&gt; {
+    // OFF while schema() runs, then NORMAL for the steady state. schema()
+    // writes only pragmas and celld&#x27;s own tables, never user data, so a
+    // crash mid-schema loses nothing a re-open does not rebuild.
+    c.pragma_update(None, &quot;synchronous&quot;, &quot;OFF&quot;)?;
+    c.pragma_update(None, &quot;journal_mode&quot;, &quot;WAL&quot;)?;
+    ...
+}
+</code></pre>
+<p>The source gives the reason for <code>OFF</code> in one comment. Switching a fresh database to WAL is durable, so SQLite forces an <code>fsync</code> under every synchronous level except <code>OFF</code>. The file system journal serializes that single <code>fsync</code>. The source's workload record (<code>engine/pathological-load.md</code>) reports that cold-cell creation reached about 1,000 cells per second at idle processor load. It reports that warm cells served about 22,000 requests per second. Both numbers are throughput, but they count different work. A cold creation pays the one <code>fsync</code>; a warm request does not. The record presents the cold rate as the cost of that <code>fsync</code>; it does not subtract the rate from the warm rate.</p>
+<p>The steady state is different:</p>
+<pre><code class="language-rust">// crates/celld/storage.rs:448-455 (abridged)
+// NORMAL, not the FULL default: with WAL, commits then skip the
+// per-commit WAL fsync (measured 1.4ms -&gt; 19us per put on cloud
+// disks; the fsync was the entire single-cell write budget).
+// Process crashes lose nothing. An OS/power crash may lose the
+// last commits locally — celld&#x27;s durability boundary for node
+// loss is LTX replication either way.
+c.pragma_update(None, &quot;synchronous&quot;, &quot;NORMAL&quot;)?;
+</code></pre>
+<p>A write at <code>NORMAL</code> reaches the operating system before the commit returns. A process crash therefore loses nothing, because the operating system still holds the bytes. A power loss can lose the last commits, because the operating system may hold them in its page cache. This is why the local file is not the record. The record is the replicated log, and the output gate closes the window of loss.</p>
+<p>The database holds four internal tables. They use the <code>_cf_</code> prefix, which is the platform's own prefix, so an application table cannot collide with them:</p>
+<pre><code class="language-sql">-- crates/celld/storage.rs:409-430 (abridged)
+CREATE TABLE IF NOT EXISTS _cf_KV
+  (scope TEXT, k TEXT, v TEXT, PRIMARY KEY(scope,k));
+CREATE TABLE IF NOT EXISTS _cf_ALARM
+  (scope TEXT PRIMARY KEY, at_ms INTEGER, retry INTEGER DEFAULT 0,
+   counted_retry INTEGER NOT NULL DEFAULT 0,
+   generation INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS _cf_METADATA
+  (scope TEXT PRIMARY KEY, actor_name TEXT);
+CREATE TABLE IF NOT EXISTS _cf_FACETS
+  (scope TEXT NOT NULL, path TEXT NOT NULL, image BLOB NOT NULL,
+   PRIMARY KEY(scope,path)) WITHOUT ROWID;
+</code></pre>
+<p>The roles are narrow. <code>_cf_KV</code> holds the key-value storage. <code>_cf_ALARM</code> holds the one alarm deadline and its retry counters. <code>_cf_METADATA</code> holds the actor name that the platform reports for diagnostics. <code>_cf_FACETS</code> holds the saved images of child facets.</p>
+<p>Three tables had other names before 2026-08-06: <code>kv</code>, <code>alarms</code>, and <code>cell_metadata</code>. A user table can collide with those names, and a library that drops every table except the <code>_cf_*</code> set deletes them (denoland/celld#122). <code>schema()</code> renames each one at open time, before the <code>CREATE</code> statements, and only when the old name exists and the new name does not:</p>
+<pre><code class="language-rust">// crates/celld/storage.rs:390-406 (abridged)
+for (legacy, current) in [
+    (&quot;kv&quot;, &quot;_cf_KV&quot;),
+    (&quot;alarms&quot;, &quot;_cf_ALARM&quot;),
+    (&quot;cell_metadata&quot;, &quot;_cf_METADATA&quot;),
+] {
+    if exists(legacy)? &amp;&amp; !exists(current)? {
+        c.execute_batch(&amp;format!(&quot;ALTER TABLE {legacy} RENAME TO {current}&quot;))?;
+    }
+}
+</code></pre>
+<p>The rename changes only the schema catalog and moves no row. <code>_cf_FACETS</code> had no earlier name; it uses the platform prefix from its introduction.</p>
+<p>The <code>scope</code> column appears in every table. A facet has its own database file and its own replication stream, so it does not normally put rows in its root's file. An old facet from before facet streams kept its database as an image, a full SQLite file, in a row of its root's <code>_cf_FACETS</code>. On the first open of that facet, celld imports the image into the facet's own file. Each run of a facet has its own row scope. A run is one opening of the facet inside its root's activation. A continuation is a resumed open of an earlier instance. A replacement is the run that follows an aborted one, which is an opening that stopped before it completed. At open, celld moves every row in <code>_cf_KV</code>, <code>_cf_ALARM</code>, and <code>_cf_METADATA</code> to the new run's scope. The scope is the one passed to the open, so the move goes from the earlier run's scope to the new scope. <code>_cf_FACETS</code> is not moved because it holds the saved images of child facets. A continuation from an aborted run still holds the old scope, so it cannot read the moved rows.</p>
+<h2>What a commit is</h2>
+<p>SQLite reports a commit through three counters: the number of completed row changes, the data version, and the schema cookie. celld combines them into one number:</p>
+<pre><code class="language-rust">// crates/celld/storage.rs:1300-1302
+fn fingerprint(scope: &amp;str, connection: &amp;Connection) -&gt; u64 {
+    total_changes(connection) + data_version(connection) + schema_cookie(scope, connection)
+}
+</code></pre>
+<p>The sum is the cell's <strong>committed-write position</strong>. <code>total_changes</code> counts this connection's row changes. <code>data_version</code> changes when another connection commits to the file. <code>schema_cookie</code> changes when a schema statement runs. Each counter only increases, so the sum never decreases. The output gate samples it before and after a handler. A position that did not change means the handler did no write. A position that changed means the handler did a write, and the reply must wait for a proof at that position.</p>
+<p>This position is not the LTX position. It is a local counter with no relation to the transaction identifier in the log. The two numbers live in different spaces, and no arithmetic converts one to the other. celld bridges them with a <strong>durability ticket</strong>, not with a comparison of the numbers.</p>
+<p>The sequence is:</p>
+<ol><li>The handler commits.</li><li>The runtime samples the committed-write position and asks the capture loop</li></ol>
+<p>   for a ticket. The ticket is one more than the count of tickets taken before    it.</p>
+<ol><li>The capture loop reads the current ticket count at the start of a pass. It</li></ol>
+<p>   captures and uploads every level 0 segment up to the database position at    that moment, then records that ticket count as the highest covered ticket.</p>
+<ol><li>The write waits until the covered ticket is at least its own ticket.</li><li>The runtime reports the position that it sampled in step 2.</li></ol>
+<p>To ask for a ticket is one atomic increment of <code>req_seq</code>. The database position is the replicated transaction identifier that <code>db.sync</code> reports. A pass that starts after the ticket must capture the write, because the write committed before the ticket was taken. The ticket order is the proof; the position is carried through only so the core can compare it with the barrier:</p>
+<pre><code class="language-rust">// crates/celld/ltx_repl.rs:2983-3006 (abridged)
+pub async fn await_durable(
+    &amp;self,
+    cell: &amp;str,
+    epoch: u64,
+    position: u64,
+) -&gt; anyhow::Result&lt;(u64, celld_logic::ProofSource)&gt; {
+    let Some(handle) = self.cells.lock().unwrap()
+        .get(&amp;(cell.to_string(), epoch)).cloned() else {
+        anyhow::bail!(&quot;ltx cell not resident: {cell} epoch {epoch}&quot;);
+    };
+    let ticket = handle.req_seq.fetch_add(1, Ordering::SeqCst) + 1;
+    let source = self
+        .wait_for_durability_ticket(&amp;handle, cell, epoch, ticket)
+        .await?;
+    Ok((position, source))
+}
+</code></pre>
+<p>The core then applies its own rule to the returned position:</p>
+<pre><code class="language-rust">// crates/logic/output_gate.rs:283-305 (abridged)
+pub(crate) fn durable_reached(
+    &amp;mut self,
+    op: OpId,
+    result: Result&lt;u64, Failure&gt;,
+    source: ProofSource,
+    effects: &amp;mut Vec&lt;Effect&gt;,
+) {
+    let Some(gate) = self.barriers.get(&amp;op) else {
+        return;
+    };
+    let proven = matches!(result, Ok(durable) if durable &gt;= gate.position);
+    // A bucket proof reveals nothing until an ownership read confirms the
+    // record still names this node at this epoch.
+    if proven &amp;&amp; source == ProofSource::Bucket {
+        let (cell, epoch) = (gate.cell.clone(), gate.epoch);
+        effects.push(Effect::VerifyOwnership { op, cell, epoch });
+        return;
+    }
+    self.settle_gate(op, proven, effects);
+}
+</code></pre>
+<p>Two comparisons use <code>>=</code>, and they answer different questions.</p>
+<p>The first comparison is the ticket wait in <code>await_durable</code>. The capture loop reads the ticket count at the start of a pass and records that value as the highest covered ticket. A pass that starts after ticket N covers ticket N and every ticket below it, because those writes committed before the pass began. A waiting write releases when <code>covered >= ticket</code>, where <code>ticket</code> is its own ticket. That is how one proof settles several barriers.</p>
+<p>The second comparison is <code>durable >= gate.position</code> in <code>durable_reached</code>. It is a coverage check. A proof must name a position at least as high as the barrier's position; a shorter proof from a lagging or lying replica fails the write. The core opens the barrier with the position that the handler sampled after the commit. The current <code>await_durable</code> returns that same position, so the values are equal on that path. A proof source that returns a later position also passes, because a later commit has a position at least as high as an earlier one. The check does not select which barrier to settle; the ticket walk does that. The barrier stores the cell and the epoch, shown above as <code>gate.cell</code> and <code>gate.epoch</code>, so a proof from a previous epoch cannot release a reply in the current one.</p>
+<p>When the proof comes from the bucket, the code above does not release the reply. It pushes <code>Effect::VerifyOwnership</code> and returns. The actor's effect handler reads <code>cells/<cell>/own.json</code> through <code>ownership.read_owner</code>. It checks that the record still names this node at this epoch, then sends <code>OwnershipVerified</code>. The core's <code>ownership_verified</code> calls <code>settle_gate</code>, which releases or fails the reply. The early return is a wait for that ownership read, not a completed release.</p>
+<p>A write cursor breaks the rule in a dangerous way:</p>
+<pre><code class="language-rust">// crates/celld/storage.rs:1312-1318
+fn ensure_no_unfinished_write_cursor(connection: &amp;Connection) -&gt; anyhow::Result&lt;()&gt; {
+    anyhow::ensure!(
+        !connection.is_autocommit() || !has_uncommitted_write(connection),
+        &quot;cannot publish storage with an unfinished SQL write cursor; \
+         consume its rows before output or storage.sync()&quot;
+    );
+    Ok(())
+}
+</code></pre>
+<p>The test asks SQLite for the transaction state of the <code>main</code> database:</p>
+<pre><code class="language-rust">// crates/celld/storage.rs:1254-1261
+fn has_uncommitted_write(connection: &amp;Connection) -&gt; bool {
+    unsafe {
+        rusqlite::ffi::sqlite3_txn_state(connection.handle(), c&quot;main&quot;.as_ptr())
+            == rusqlite::ffi::SQLITE_TXN_WRITE
+    }
+}
+</code></pre>
+<p>A Structured Query Language (SQL) statement with <code>RETURNING</code> runs its write during the first step but keeps the implicit transaction open until the cursor is exhausted. The rows and the change counter both appear before the commit. A proof at that counter value cannot contain the uncommitted write. A reply released then would be unsafe, because a crash would restore the value that the client was told was deleted. celld therefore refuses to release the reply while a write cursor is unfinished.</p>
+<h2>From WAL frames to a segment</h2>
+<p>The capture loop reads committed WAL frames and writes them as an LTX segment. A segment has four parts:</p>
+<ol><li>A 100-byte header: the format version, flags, the page size, the database</li></ol>
+<p>   page count at the commit, the first transaction identifier, the last    transaction identifier, the commit time, the pre-apply checksum, the WAL    offset and size, and the writer's node identifier.</p>
+<ol><li>One frame for each changed page: the page number, the page bytes after LZ4</li></ol>
+<p>   (Lempel-Ziv 4) frame compression for capture, and a per-frame checksum.</p>
+<ol><li>A page index that maps each page number to the frame that holds its newest</li></ol>
+<p>   copy.</p>
+<ol><li>A 16-byte trailer with the post-apply checksum and a CRC-64-ISO checksum (a</li></ol>
+<p>   64-bit cyclic redundancy check with the International Organization for    Standardization (ISO) polynomial) of the file bytes.    The post-apply field is zero when the file disables checksum tracking.</p>
+<p>The page count and the commit time describe the last transaction in the run. The header validation has three branches, and the branch decides which header fields must be present:</p>
+<pre><code class="language-rust">// crates/ltx/src/ltx.rs:210-228 (abridged)
+if self.is_snapshot() {
+    if self.pre_apply_checksum != 0 {
+        return Err(corrupt(&quot;pre-apply checksum must be zero on snapshots&quot;));
+    }
+} else if self.no_checksum() {
+    if self.pre_apply_checksum != 0 {
+        return Err(corrupt(&quot;pre-apply checksum not allowed&quot;));
+    }
+} else {
+    if self.pre_apply_checksum == 0 {
+        return Err(corrupt(&quot;pre-apply checksum required on non-snapshot files&quot;));
+    }
+    if self.pre_apply_checksum &amp; CHECKSUM_FLAG == 0 {
+        return Err(corrupt(&quot;invalid pre-apply checksum&quot;));
+    }
+}
+</code></pre>
+<p><code>is_snapshot()</code> tests the transaction identifier. <code>no_checksum()</code> tests the <code>HEADER_FLAG_NO_CHECKSUM</code> flag. The two properties are independent, and one file can have both. A snapshot has a pre-apply checksum of zero. A file with the no-checksum flag carries zero in its pre-apply header field and zero in its post-apply trailer field. A file with neither property must carry the previous file's post-apply checksum as its pre-apply checksum. The previous file is the one that carries the transaction immediately before it in the writer's order. A file that follows a no-checksum file must also disable checksums: its required pre-apply value would be that file's zero post-apply value, and the third branch rejects zero. A handoff snapshot can restart the checksum chain for a writer that enables checksums, because it carries a nonzero rolling post-apply checksum.</p>
+<p>A handoff snapshot has no no-checksum flag, so it carries a rolling post-apply checksum over all its pages. The first captured snapshot has the no-checksum flag, so its post-apply field is zero. celld sets the no-checksum flag on every captured level 0 file and on its level 1 compaction output. The pre-apply chain therefore does not order a cell's own captured or compacted files. The order comes from the transaction identifiers and the cut rule. The pre-apply rule still protects a file from another implementation that uses the chain.</p>
+<p>Damage detection does not depend on that chain. Every file, in every mode, ends with the file checksum in its trailer, and the decoder verifies it before any page enters the database. A handoff snapshot also carries a rolling post-apply checksum over all its pages; the decoder rebuilds that value and compares it. A torn upload therefore fails its file checksum, and a mixed set of writers fails the transaction range or the cut rule, even when every file disables header checksums.</p>
+<p>The position after a segment is a pair:</p>
+<pre><code class="language-rust">// crates/ltx/src/lib.rs:243-252
+pub struct Pos {
+    /// Transaction ID at this position.
+    pub txid: TXID,
+    /// Rolling CRC checksum of the database state after applying the
+    /// transaction at `txid`.
+    pub post_apply_checksum: Checksum,
+}
+</code></pre>
+<p>For a file that disables checksums, <code>post_apply_checksum</code> is zero. The field is meaningful only for a file that enables checksum tracking.</p>
+<p>The transaction identifier orders segments. For a file with checksum tracking, the checksum also proves that a restore applied the same bytes in the same order. Inside one file, each frame carries its own checksum. The three checks answer different questions: the frame checksum covers one page, the file checksum in the trailer covers one object, and the header pre-apply value covers the order between objects for implementations that enable it.</p>
+<p>The local file name carries the level and the transaction range:</p>
+<pre><code class="language-rust">// crates/ltx/src/lib.rs:551-554
+pub fn ltx_file_path(root: &amp;str, level: u32, min_txid: TXID, max_txid: TXID) -&gt; String {
+    let filename = format!(&quot;{}-{}.ltx&quot;, min_txid, max_txid);
+    path_join(&amp;[&amp;ltx_level_dir(root, level), &amp;filename])
+}
+</code></pre>
+<p>Both identifiers are written as 16-digit lowercase hexadecimal. The capture loop writes one level 0 file for each transaction, so a local captured file has equal minimum and maximum identifiers. The cell's upload pass can merge the contiguous local run that it captured in one pass into one level 0 object; that object covers the whole range. The loop below is the simple path; the cell's <code>sync_cell</code> path stages the captured rows and merges them when they are contiguous. Compaction output also covers a range, and its two identifiers differ.</p>
+<p>The upload loop walks one transaction at a time:</p>
+<pre><code class="language-rust">// crates/ltx/src/replica.rs:274-283 (abridged)
+loop {
+    let tx_id = TXID(self.pos().txid.0 + 1);
+    if tx_id &gt; dpos.txid {
+        break;
+    }
+    self.upload_ltx_file(0, tx_id, tx_id).await?;
+    self.set_pos(Pos::new(tx_id, 0));
+}
+</code></pre>
+<p><code>dpos</code> is the database's current replicated position, read from the local writer. It carries the transaction identifier and the post-apply checksum. The loop stops when the next transaction is beyond the transaction identifier. An <strong>upload gap</strong> is a difference between the local position and the replica position: a segment that is written locally but not yet uploaded. The output gate does not release a reply while an upload gap covers the reply's write.</p>
+<p><code>set_pos(Pos::new(tx_id, 0))</code> sets the checksum field to zero because this cursor has one job in the upload loop: it selects the next transaction to upload. The cursor is not the ordering proof and not the checksum proof. The order comes from the transaction identifiers and the cut rule. The header pre-apply chain applies only to a writer that enables it; celld's own captured and compacted files disable it. The cursor is also separate from the durability ticket that the output gate waits on. The cursor says which segment the next upload reads. The ticket says which committed writes a completed upload covers.</p>
+<h2>The bucket layout</h2>
+<p>The objects of one cell sit under one prefix. The file names inside a level are the minimum and maximum transaction identifier, in 16-digit lowercase hexadecimal:</p>
+<pre><code class="language-">cells/&lt;cell&gt;/own.json                       the ownership record: node and epoch
+cells/&lt;cell&gt;/ltx/e&lt;epoch&gt;/0/&lt;min&gt;-&lt;max&gt;.ltx captured segments for this epoch
+cells/&lt;cell&gt;/ltx/e&lt;epoch&gt;/1/&lt;min&gt;-&lt;max&gt;.ltx compacted segments
+cells/&lt;cell&gt;/ltx/e&lt;epoch&gt;/9/&lt;min&gt;-&lt;max&gt;.ltx snapshots
+cells/&lt;cell&gt;/ltx/retired.json               the epoch GC mark {retired_below}
+nodes/&lt;node&gt;.json                           the lease and the node-log record
+log/&lt;session&gt;/bundle/e&lt;epoch&gt;-&lt;seq&gt;.ltxb    one bundle; &lt;epoch&gt; is the node-log epoch
+</code></pre>
+<p>The <code>e<epoch></code> in a bundle path is the node-log epoch of the shipper, not a cell ownership epoch. Each row in the bundle carries the cell's ownership epoch, so one bundle can hold rows from many cells at different ownership epochs. The node-log epoch only rises, and the sequence number is monotonic for the session, so the pair orders the bundles in capture order (<code>crates/celld/node_log.rs:2396-2402</code>).</p>
+<p>Level 9 is where celld writes a handoff snapshot. The restore plan has two parts. First, it picks the newest level-9 file that the target allows. A nonzero target rejects a file whose maximum identifier is above it. Second, it fills the rest from levels 0 to 8 by the longest contiguous run of transaction identifiers. If no level-9 file is allowed, the plan starts at transaction 0 and takes a file that begins at transaction 1. Transaction 0 is an empty starting point, not an object. A candidate must begin at most one above the current maximum, so a file at 1 is the only file that can begin the chain. The header test is separate from the plan's preference: <code>is_snapshot()</code> tests only the minimum transaction identifier. A value of 1 means the file declares a full image of the database. The level decides where celld writes a handoff snapshot and which object the plan prefers as its anchor; the level is not part of the header test. The first capture of a new database runs in snapshot mode, so it collects every page, not only the changed pages. It has minimum 1 and is a full image. A chain whose newest epochs wrote no handoff snapshot therefore still has a base:</p>
+<pre><code class="language-rust">// crates/ltx/src/ltx.rs:126-129
+/// True if this header begins a complete database snapshot (MinTXID == 1).
+pub fn is_snapshot(&amp;self) -&gt; bool {
+    self.min_txid == TXID(1)
+}
+</code></pre>
+<p>A handoff is the release of a resident cell to a successor. A cell writes a handoff snapshot at level 9 when it hands off the cell and the database fits the snapshot budget. The budget is 8 mebibytes for each second of the durability deadline. The durability deadline is the time limit for one durability proof. <code>CELLD_LTX_DURABILITY_TIMEOUT_SECS</code> sets the deadline, and its default is 10 seconds, so the default budget is 80 mebibytes. A paged activation writes no handoff snapshot, because its local file is sparse and a snapshot built from it would publish holes as data. A database that is larger than the budget, or whose earlier snapshot attempt failed or exceeded the budget, hands off through its level 0 chain instead (<code>crates/celld/ltx_repl.rs:1320-1321</code>). Without this bound, a 120-megabyte cell built its image, timed out, and retried without end on a test fleet (<code>crates/celld/ltx_repl.rs:1041-1043</code>).</p>
+<p>The epoch directory is the fence, but the fence is a rule on the writer and the restore, not a check in the object store. A node tries to write only under the epoch that its ownership record names. A node that lost ownership can still write into its old directory. It may not have learned of the loss, and the object store does not check the ownership record. A restore reads the chain that starts at the newest epoch and walks backwards. For each lower epoch, it keeps only the files whose maximum transaction identifier is below the start of the span above. It then accepts that epoch only when the largest remaining identifier is exactly one less than that start. Any write that a stale owner made after the cut is removed from the chain, so only the history up to the cut joins. A lower prefix whose clipped range ends elsewhere is skipped, because a missing transaction identifier range would make the restore incomplete.</p>
+<div class="mermaid">
+flowchart TB
+    subgraph B[&quot;Bucket&quot;]
+        OWN[&quot;cells/Order:42/own.json&lt;br/&gt;node = n1, epoch = 9&quot;]
+        E9M[&quot;cells/Order:42/ltx/e9/0/00000000000000c9-00000000000000c9.ltx&lt;br/&gt;zero-page continuation marker at the cut plus one&quot;]
+        E7[&quot;cells/Order:42/ltx/e7/9/0000000000000001-00000000000000c8.ltx&lt;br/&gt;handoff snapshot, transactions 1..200&quot;]
+        E5[&quot;cells/Order:42/ltx/e5/0/...&lt;br/&gt;superseded; outside the chain below the base&quot;]
+        RET[&quot;cells/Order:42/ltx/retired.json&lt;br/&gt;{retired_below: 7}&quot;]
+        LOG[&quot;log/n1/g1/bundle/e2-00000001.ltxb&lt;br/&gt;node-log epoch 2; rows name cell epochs&quot;]
+    end
+    N1[&quot;Node n1&lt;br/&gt;current owner&quot;] --&gt;|&quot;unconditional PUT&quot;| E9M
+    N2[&quot;Node n2&lt;br/&gt;stale owner&quot;] --&gt;|&quot;its late writes land here&quot;| E5
+    W[&quot;Restore of a new owner&quot;] --&gt;|&quot;GET own.json&quot;| OWN
+    W --&gt;|&quot;LIST then read&quot;| E9M
+    W --&gt;|&quot;continues into the epoch below&quot;| E7
+    W -.-&gt;|&quot;never&quot;| E5
+    LOG -.-&gt;|&quot;drained, or gathered by recovery before the restore&quot;| W
+    RET -.-&gt;|&quot;read by GC, not restore&quot;| W
+
+</div>
+<p>The example uses the paged format. Epoch 9 opened with a marker at transaction 201, which is the cut, 200, plus one. The marker has no pages. The restore of the chain reads the marker, sees that the span below must end at 200, and takes the handoff snapshot in epoch 7 as its base. Epoch 5 is below the base and outside the chain, so the retired mark names 7, not 5.</p>
+<p>The nesting has one cost: a restore must list the epoch directories to find the chain. That is one LIST request for the epoch level, then one LIST request for each level from 0 through 9 in every epoch that it visits. An epoch that the cut test later skips pays for its ten level lists before it is rejected, because the code lists the levels before it checks the cut. A cell with ten visited epochs can therefore cost about a hundred LIST requests.</p>
+<h2>The two durability modes</h2>
+<p>celld has two ways to prove a write durable. The operator selects one with <code>CELLD_DURABILITY</code>; the default is <code>fleet</code>.</p>
+<h3>Bucket mode</h3>
+<p>In bucket mode, the proof is an upload plus a read of the ownership record:</p>
+<div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant H as Handler
+    participant D as SQLite
+    participant C as Capture loop
+    participant B as Bucket
+    participant G as Output gate
+    H-&gt;&gt;D: COMMIT
+    D--&gt;&gt;H: commit returns, committed-write position 41
+    H-&gt;&gt;C: take durability ticket for local position 41
+    C-&gt;&gt;D: capture the WAL frames committed before the ticket
+    C-&gt;&gt;B: PUT cells/Order:42/ltx/e9/0/...00ca-...00ca.ltx
+    B--&gt;&gt;C: stored
+    C--&gt;&gt;G: covered ticket reached the request, position 41
+    G-&gt;&gt;B: actor GETs cells/Order:42/own.json
+    B--&gt;&gt;G: node n1, epoch 9
+    G-&gt;&gt;H: release the reply
+
+</div>
+<p>The example continues the chain in the bucket-layout diagram. Epoch 9 restored at transaction 200 and continued at the marker at transaction 201. The commit shown here is transaction 202, which is <code>0xca</code> in hexadecimal. The position 41 is the local committed-write counter. It is not a transaction identifier, and the two numbers have no relation.</p>
+<p>The ownership record is an object in the same bucket, not a separate store. The upload and the ownership read are Hypertext Transfer Protocol (HTTP) requests on that bucket.</p>
+<p>The ownership read is not optional. The upload proves that the bytes reached the bucket. It does not prove that this node still owns the cell. A node that was fenced before the upload can write into an old prefix, and that prefix is not part of the chain that a new owner will read. The read of <code>own.json</code> confirms that the record still names this node at this epoch. A fenced node finds a different name in the record and refuses the reply.</p>
+<p>The read is a bucket request per reply. That is the cost of bucket mode: one extra round trip for each acknowledged write.</p>
+<h3>Fleet mode</h3>
+<p>In fleet mode, the proof is a set of follower acknowledgements:</p>
+<pre><code class="language-">Owner --write--&gt; Follower A --fsync--&gt; ACK
+Owner --write--&gt; Follower B --fsync--&gt; ACK
+Owner releases after every follower in its current set has acknowledged.
+</code></pre>
+<p>The owner sends each write to one or two other nodes, its followers. A follower writes the bytes and calls <code>fsync</code>, and only then acknowledges. The owner releases the reply when every follower in the set that it sent the write to has acknowledged. The set holds at most two followers, and the owner never counts itself. The set shrinks when a follower dies or leaves, and a write waits only for the members that remain. The ensemble keeps acknowledging while at least one follower remains. When the last follower dies or becomes unreachable, the owner has no ensemble member to confirm a write, and that write waits for a bucket proof instead. A node with one follower recruits a second one when another node becomes available; until then, a write that is not yet in the bucket exists on the owner and that one follower.</p>
+<p>A fleet proof needs no ownership read. The ensemble arbitrated it: a takeover seals the reachable members of the ensemble before it restores, so a stale owner cannot collect the acknowledgements that it needs. A sealed follower refuses new appends for that session, so it cannot acknowledge the stale owner's writes. An unreachable member blocks recovery instead of granting a proof.</p>
+<p>Fleet mode is the default. It needs two running nodes before any node can complete a fleet proof, because a node never counts itself as a follower. A one-node fleet that asks for fleet posture does not get it. The node stays correct: it falls back to a bucket proof for that write, at the cost of latency.</p>
+<p>A node recruits up to two followers. A larger fleet therefore holds up to three copies of an acknowledged write: the owner and two followers.</p>
+<p>The acknowledgement rule is the same in both modes. A response leaves only when a proof covers every write that the response can reveal. A read-only response also waits when the cell has an uncovered committed write, because the read can reveal that write. An error response also waits, because a thrown message can quote a value that the handler read.</p>
+<p>The bucket is not always the acknowledged copy. In fleet mode, an acknowledged write can exist only on the owner and its followers until the upload catches up. The node log is what makes that safe: a successor recovers the log before it claims the cell.</p>
+<h2>Restore: from a cold process to a usable database</h2>
+<p>A restore starts from the newest ownership record. It reads the epoch, lists the epoch prefixes, and builds a chain. The chain walk has one rule:</p>
+<pre><code class="language-rust">// crates/ltx/src/client/epochs.rs:39-78 (abridged)
+/// Walks `epochs` (ascending) down from the newest until an epoch that
+/// opens with a snapshot, listing every level of each visited epoch. The
+/// link below a continued epoch is the epoch whose objects, clipped to
+/// the txids before the continuation&#x27;s first, end exactly at the cut; an
+/// epoch below that ends elsewhere is skipped.
+pub async fn build(mut epochs: Vec&lt;(u64, C)&gt;) -&gt; Result&lt;Self&gt; {
+    let mut spans: Vec&lt;Span&lt;C&gt;&gt; = Vec::new();
+    while let Some((epoch, client)) = epochs.pop() {
+        let mut levels = list_levels(&amp;client).await?;
+        if let Some(above) = spans.last() {
+            for files in &amp;mut levels {
+                files.retain(|f| f.max_txid &lt; above.lo);
+            }
+            let ends = levels.iter().flatten().map(|f| f.max_txid).max();
+            if ends != Some(TXID(above.lo.0 - 1)) {
+                continue;
+            }
+        }
+        let Some(lo) = levels.iter().flatten().map(|f| f.min_txid).min() else {
+            continue;
+        };
+        spans.push(Span { epoch, client, lo, levels });
+        if lo == TXID(1) {
+            break;
+        }
+    }
+    // ...
+}
+</code></pre>
+<p>The rule is strict. A <strong>span</strong> is one epoch's files that the restore keeps. Its <strong>cut</strong> is its highest kept transaction identifier. An epoch that continues a newer one must end exactly one transaction before the newer epoch starts. The code tests this as <code>ends == above.lo - 1</code>, where <code>above.lo</code> is the newer span's first identifier. An epoch that ends elsewhere is not part of the chain, because a missing transaction identifier range would make the restore incomplete. A fenced owner can write a whole snapshot into an intermediate epoch after it lost ownership. That snapshot is complete, but its transaction range is older than the cut, and taking it as the base would lose the writes between it and the cut. The rule skips it.</p>
+<p>The vector holds every epoch in ascending order, and <code>pop()</code> takes the newest first. The walk stops when an epoch's lowest transaction identifier is 1. That identifier means the span opens with a full image, so no epoch below it can add a transaction that the restore needs. A paged epoch opens with a marker at the cut plus one, so its lowest identifier is greater than 1 and the walk continues into the epoch below it. If no epoch reaches 1, the walk ends with no base, and the restore fails with <code>TxNotAvailable</code>.</p>
+<div class="mermaid">
+flowchart LR
+    E9[&quot;epoch 9&lt;br/&gt;marker at transaction 10&quot;] --&gt;|&quot;must end at 9&quot;| E8[&quot;epoch 8&lt;br/&gt;segments 5..9&quot;]
+    E8 --&gt;|&quot;must end at 4&quot;| E7[&quot;epoch 7&lt;br/&gt;snapshot at 1..4&quot;]
+    E6[&quot;epoch 6&lt;br/&gt;outside the chain, below the base&quot;] -.-&gt;|&quot;never visited&quot;| E7
+    E7 --&gt; BASE[&quot;Base: full image at transaction 4&quot;]
+    BASE --&gt; R[&quot;Apply transactions 5..9 over the base&quot;]
+
+</div>
+<p>Inside one epoch, the restore does not apply levels in a fixed order. The plan orders files by transaction range, not by level number: the anchor first, then each file that extends the run, oldest to newest. The <strong>target</strong> is the transaction identifier at which the restore stops. A target of 0 means the newest transaction; it is a sentinel, so the plan skips the maximum-identifier check. celld always passes 0. The library also accepts a nonzero target, so a caller can restore the state at an earlier point in time.</p>
+<p>The selection rule has two steps. First, the plan takes the newest level-9 file that the target allows. A nonzero target rejects a file whose maximum identifier is above it. If no such file exists, it starts at transaction 0 and takes a file that begins at transaction 1. Second, it repeatedly picks a file from levels 0 to 8 that extends the longest contiguous run of transaction identifiers. A candidate that reaches a higher maximum identifier wins. A tie goes to the lower minimum identifier, then the higher level, then the earlier creation time. A file whose maximum identifier is above the target is rejected. If no chain reaches the target, the restore fails with <code>TxNotAvailable</code>. A latest restore also fails when the tail has a missing range, with a non-contiguous file error.</p>
+<p>The <code>infos</code> vector holds the anchor and each file chosen so far. The plan loop starts from the highest identifier already in the plan, which is 0 when the plan has no anchor; <code>slice_max_txid</code> returns 0 for an empty vector.</p>
+<pre><code class="language-rust">// crates/ltx/src/replica.rs:718-723 (abridged)
+// Collect candidates across all compaction levels and pick the next file
+// from any level that extends the longest contiguous TXID range
+// (replica.go:1454-1515).
+let max_level = SNAPSHOT_LEVEL - 1;
+let start_txid = slice_max_txid(&amp;infos);
+let mut current_max = start_txid;
+</code></pre>
+<p>A frame checksum, a file checksum, or a header pre-apply mismatch stops the restore before the frame enters the database. The checksum checks prove that the bytes match the bytes that the writer captured. The cut rule proves that the chain is continuous. The two kinds of check answer different questions, and a chain needs both.</p>
+<h3>Paging</h3>
+<p>A large database takes a long time to download. celld can instead open a sparse local file and read each page from the segments when SQLite first touches it. The mechanism is a custom SQLite virtual file system (VFS) that faults a page into the local file on first read. A page map pins one restore cut and answers, for each page, which object holds the newest copy:</p>
+<pre><code class="language-rust">// crates/ltx/src/paged.rs:116-135
+/// Where one page&#x27;s frame lives: the object that holds it and the byte range of
+/// its frame within that object.
+#[derive(Debug, Clone)]
+pub struct PageLocator {
+    pub info: FileInfo,
+    pub offset: u64,
+    pub size: u64,
+}
+
+/// An immutable per-activation view of a restore cut: which object serves each
+/// page, plus the page size and the database&#x27;s page count at the cut. Built
+/// once from a plan and never updated in place, so a faulted page always comes
+/// from the pinned cut even as newer objects land.
+#[derive(Debug)]
+pub struct PageMap {
+    pub page_size: u32,
+    pub commit: u32,
+    pub pages: HashMap&lt;u32, PageLocator&gt;,
+}
+</code></pre>
+<p>The <code>commit</code> field is the database's page count at the cut, not a commit identifier. The virtual file system sizes the local file to <code>page_size * commit</code>. The build fetches each object's page index with a range read, without downloading the frames, and inserts the entries in plan order so a newer object overrides an older one. The plan order is the order in which the restore applies the chain: the anchor snapshot first, then each file that extends the range, oldest to newest. A later insertion therefore names a newer object, and it overrides an earlier one for the same page. A page that the map does not hold returns <code>None</code>. The virtual file system reads a page above the commit, or the lock page, as zeros from the sparse file. A page at or below the commit that the chain does not contain is a missing page inside the cut, and the read returns <code>SQLITE_IOERR_READ</code>.</p>
+<p>A chain smaller than <code>CELLD_LTX_PAGED_MIN_MB</code> is downloaded whole; the default is 256 megabytes. Paging adds bookkeeping and a fault per page, so it pays only when the download work is much larger than the time and memory budget of a cold start. Paged restore is on by default. <code>CELLD_LTX_PAGED=0</code> turns it off for one node.</p>
+<p>A paging activation also changes what the new epoch writes. Instead of opening with a whole-database snapshot, a <strong>paged epoch</strong> opens with a zero-page <strong>continuation marker</strong> at the cut plus one. Its local database starts as a sparse file over the chain that it paged in, and later captures add the pages that the cell changes. The marker gives the epoch a listed object at its first transaction, so the cut rule can link it to the epoch below. The marker also fixes the epoch's lowest transaction identifier at the cut plus one. The clip uses that coordinate, so a stale snapshot in a lower epoch cannot move the chain's start. An eviction is the local release of a resident cell. The eviction barrier is the durability gate that must pass before the node gives up the cell, and it passes when a proof covers every write before the handoff. The marker prevents two failures: an empty epoch could not pass that barrier, and a stale owner's late snapshot in a lower epoch would otherwise outrank the chain (<code>crates/celld/ltx_repl.rs:2489-2494</code>).</p>
+<p>This format is bucket format 2. A reader that reads only format 1 finds no snapshot in a paged epoch and cannot restore the cell: it has no rule to follow the continuation marker into the lower epoch, so its chain stops there without a base (<code>crates/logic/format.rs</code> lines 14 to 24). A node therefore waits until every live lease advertises format 2 before it writes a paged epoch:</p>
+<pre><code class="language-rust">// crates/logic/format.rs:20-40 (abridged)
+pub const BUCKET_FORMAT: u16 = 2;
+const FIELDLESS_FORMAT: u16 = 1;
+
+pub fn fleet_reads(peers: &amp;[CapacityPeer], now_ms: u64, format: u16) -&gt; bool {
+    let mut live = peers.iter().filter(|peer| peer.expires_ms &gt; now_ms).peekable();
+    live.peek().is_some()
+        &amp;&amp; live.all(|peer| peer.bucket_format.unwrap_or(FIELDLESS_FORMAT) &gt;= format)
+}
+</code></pre>
+<p>The <code>format</code> field of a lease carries the newest format that its node reads. A lease is the node's own record at <code>nodes/<node>.json</code>: it holds an expiry, a generation, and this format number, and no peer grants it. An expired lease does not count, so a crashed node keeps the gate closed only until its lease expires. A fleet with no live lease does not pass the gate either, because a node that has not seen the fleet does not know who is in it. The list includes the node's own lease, because the sample lists every live member including the refresher. A single node with a live lease therefore passes the gate and can write a paged epoch.</p>
+<p>The background fill reads at <code>CELLD_LTX_HYDRATE_MBPS</code>, whose default is 16 megabytes per second, and it runs one paged cell at a time on each node. The fill copies the remaining pages from the chain into the sparse local file. A query that touches a page the fill has not reached faults it from the page map on demand. Epoch garbage collection waits for the fill to complete, because a later page fault would otherwise read an object that the collector had deleted. A paged cell sets <code>pinned_reads</code> for the chain that it built at activation while its fill is incomplete. That flag is the condition in the GC plan. A paged cell therefore reads no chain up front beyond the page indexes, and it does not know the whole database until the fill completes.</p>
+<h2>Bundles and the node log</h2>
+<p>A cell uploads each segment directly to its per-cell prefix when the durability path has no active fleet shipper or no active bundle sink. The fleet shipper is the node-log component that streams captured segments to followers. The bundle sink is the component that writes those segments into bundle objects. The tiering path runs when the active fleet shipper has a bundle sink. It first combines segments from many cells into one node bundle at <code>log/<session>/bundle/e<epoch>-<seq>.ltxb</code>, and drains each segment into its per-cell prefix later. One object then carries the writes of many cells, which reduces the number of bucket PUTs for a burst of small cells. The <code>e<epoch></code> in the key is the node-log epoch of the shipper, not a cell ownership epoch. The node-log epoch is a counter in the session's log state that only rises; it scopes recovery's gather.</p>
+<p>A bundle is a container, not a new format. It holds the raw level 0 bytes of each segment, then a footer of rows, then the footer length, then a four-byte magic <code>CLB1</code>. A row is the cell name, the cell ownership epoch, the transaction identifier, the offset, and the length. Un-bundling is arithmetic, and the inner bytes are exactly what the direct writer would have uploaded.</p>
+<p>A <strong>retained bundle</strong> is a bundle that recovery still needs, because at least one of its rows has no covering object in a per-cell prefix. A drain point is a moment when the uploader must copy a bundled segment into its per-cell prefix, such as a compaction round or a cell eviction. A bundle is deleted only when the per-cell prefixes cover every row. One uncovered row keeps the whole bundle.</p>
+<p>The phrase <strong>node log</strong> names three related things. First, it is the stream of captured level 0 segments that a node sends to its followers. Second, it is the retained bundle set under <code>log/<session>/bundle/</code>. Third, it is the record in <code>nodes/<node>.json</code> that tracks the stream's state. That record holds the <code>log</code> object, and it lives in the node's lease record, not under <code>log/</code>.</p>
+<p>A session is one process lifetime of one node. Its identity is the pair <code><node>/<generation></code>, where the generation is the number in that node's lease record. A replaced record is a session that was recovered and then superseded. A node replaces it when it starts a new generation, so a reader that finds a different generation knows that the session changed. Before a node takes its first acknowledgement that a follower proof covers, it publishes the <code>log</code> object in that lease record. The write goes through the node's lease chain, which has one writer per process.</p>
+<p>A <strong>cold activation</strong> is the start of a cell on a node with no resident state for that cell. It learns the prior node from <code>own.json</code>, then reads that node's record at <code>nodes/<prior-node>.json</code> before it reads the cell prefix <code>cells/<cell>/</code>:</p>
+<ul><li>An absent record proves that the session never acknowledged past the bucket.</li><li>A sealed record proves that recovery completed.</li><li>An open or recovering record forces recovery before the restore.</li></ul>
+<p>The record has three states. <strong>Open</strong> means the owner may still add entries. <strong>Recovering</strong> means one node has taken the record to gather its entries. <strong>Sealed</strong> means the gather is complete and no follower accepts more entries for that session. Recovery writes recovering with a compare-and-swap, so two recovering nodes cannot both win, then <strong>seals</strong> the reachable followers. To seal a follower is to tell it to stop accepting appends for that session and to report the entries it retained. The recovering node uploads those retained segments into the per-cell prefixes and marks the record sealed. A cell can stop while the node session stays open, so the next activation gathers the acknowledged tail: the entries that followers hold but the per-cell prefixes do not.</p>
+<p>Recovery has limits, and <code>docs/guarantees.md</code> lists them. A follower's HTTP error does not prove that its data is absent, so persistent errors can block recovery. To certify a range is to report every entry in it. A batch is one committed block of follower entries. A restarted follower cannot certify a range with a damaged batch, which is a batch that fails its integrity check, or with a missing transaction identifier range. A mixed-version fleet can stall on a tail that exists only on followers until the upgrade completes. These limits are documented because an operator must know when a restore can wait.</p>
+<h2>Compaction and levels</h2>
+<p>A local capture writes one segment for each transaction. A cell that syncs often accumulates many small objects. Compaction merges a contiguous run of level 0 segments into one level 1 segment:</p>
+<pre><code class="language-rust">// crates/celld/ltx_repl.rs:4358
+let worker = compactor.compact_with_progress(1);
+</code></pre>
+<p>The destination level is the argument. celld always passes <code>1</code>, so the source is always level 0:</p>
+<pre><code class="language-rust">// crates/ltx/src/replica_compactor.rs:130-132
+let seek = TXID(next.max(self.base.0));
+let source_level = destination_level - 1;
+let mut available = self
+    .client
+    .ltx_files_bounded(source_level, seek, self.max_files)
+    .await?;
+</code></pre>
+<p><code>next</code> is one above the highest destination identifier, <code>self.base</code> is the last compacted identifier, and <code>seek</code> is where the input listing starts.</p>
+<p>The library also accepts destination levels 1 to 8 (<code>(1..SNAPSHOT_LEVEL)</code>), and the reader recognises segments at those levels. celld uses that range only to read files that another writer produced; it never writes above level 1.</p>
+<p>The compactor does not record the new position in a bucket manifest, which is a metadata object that lists the files. The bucket listing is the source of truth, and a restore discovers the merged file by its transaction range.</p>
+<p>The pages that appear in several input segments appear once in the output. A page that a later segment overwrote keeps only its newest bytes. The output is one segment whose minimum transaction identifier is the first input's and whose maximum is the last input's. The restore plan treats the merged file as a candidate in the same way as a level 0 segment: it extends the contiguous run of transaction identifiers.</p>
+<h3>Two page encodings</h3>
+<p>Compaction does not write the same bytes as capture:</p>
+<pre><code class="language-rust">// crates/ltx/src/compactor.rs:50-52
+pub fn new(writer: W, readers: Vec&lt;R&gt;) -&gt; Self {
+    Self {
+        encoder: Encoder::new_block(writer),
+</code></pre>
+<p><code>Encoder::new_block</code> selects <code>PageEncoding::SizedBlock</code>; <code>Encoder::new_legacy</code> selects <code>PageEncoding::LegacyFrame</code> (<code>crates/ltx/src/codec.rs:176-182</code>). The legacy frame stores each compressed page inside an LZ4 frame. The sized block stores the compressed page after a page header with <code>PAGE_HEADER_FLAG_SIZE</code> and a four-byte big-endian length (<code>crates/ltx/src/codec.rs:261-273</code>). Both files end with a page index and a trailer.</p>
+<p>Capture uses the legacy encoder through <code>ltx::encode_file</code> (<code>crates/ltx/src/db.rs:1577</code>). Handoff snapshots use it too (<code>crates/ltx/src/db.rs:2141</code>). Only compaction output uses the sized block, which is the format that LTX version 0.5.2 introduced. LTX version 0.5.2 is a release of the LTX file format; bucket format 2 is a separate layout version. The compacted header sets <code>HEADER_FLAG_NO_CHECKSUM</code> (<code>crates/ltx/src/replica_compactor.rs:245</code>), the same flag that capture sets.</p>
+<p>A reader before version 0.5.2 understands only the legacy frame. It can open every level 0 file and cannot open a level 1 file. The caution follows from that: after a cell publishes its first level 1 file, an old node cannot take that cell over. The plan prefers the higher level when two files cover the same range, so the old reader selects the level 1 file that it cannot decode. A mixed fleet must set <code>CELLD_LTX_COMPACTION=0</code> until every node can read the sized-block format (<code>crates/celld/ltx_repl.rs:4532-4536</code>). Paging has an automatic version of the same rule; compaction does not, so the operator performs it.</p>
+<h3>When a round starts</h3>
+<p>A round starts when the un-compacted level 0 run reaches at least 256 transaction identifiers (<code>CELLD_LTX_COMPACTION_MIN_TXIDS</code>) or 32 megabytes (<code>CELLD_LTX_COMPACTION_MIN_MB</code>):</p>
+<pre><code class="language-rust">// crates/celld/ltx_repl.rs:4219-4225
+let due_by_txids = durable_txid
+    .saturating_sub(compaction.compacted_txid.load(Ordering::SeqCst))
+    &gt;= compaction.min_txids;
+let due_by_bytes = compaction.pending_bytes.load(Ordering::SeqCst) &gt;= compaction.min_bytes;
+if due_by_txids || due_by_bytes {
+    enqueue_compaction(handle, &quot;threshold&quot;);
+}
+</code></pre>
+<p><code>durable_txid</code> is the highest durable transaction identifier, <code>compacted_txid</code> is the highest already compacted, and <code>pending_bytes</code> is the size of the uncompacted run.</p>
+<p>One round reads at most 256 files (<code>COMPACTION_MAX_FILES</code>) and 64 mebibytes (<code>COMPACTION_MAX_INPUT_BYTES</code>). When one input file is larger than that byte limit, the round compacts that file alone (<code>crates/ltx/src/replica_compactor.rs:166-175</code>). The node runs at most two rounds at a time (<code>CELLD_LTX_COMPACTIONS</code>). The merge runs on a blocking thread, because a restart runs rounds back to back and the merge must not hold a runtime worker (<code>crates/ltx/src/replica_compactor.rs:237-245</code>).</p>
+<h2>Garbage collection</h2>
+<p>An epoch stays in the bucket until a restore no longer needs it. When <code>CELLD_LTX_RETENTION_SECS</code> is positive, the owner deletes the prefixes that no restore reads. A zero or unset value turns deletion off.</p>
+<p>The decision is a pure function:</p>
+<pre><code class="language-rust">// crates/logic/epoch_gc.rs:61-89 (abridged)
+pub fn plan(
+    own_epoch: Epoch,
+    chain: &amp;[Epoch],
+    listed: &amp;[ListedEpoch],
+    recorded: Option&lt;Epoch&gt;,
+    pinned_reads: bool,
+    now_ms: u64,
+    grace_ms: u64,
+) -&gt; Option&lt;Plan&gt; {
+    if pinned_reads || chain.last() != Some(&amp;own_epoch) {
+        return None;
+    }
+    let base = *chain.first()?;
+    if recorded.is_some_and(|mark| mark &gt; base) {
+        return None;
+    }
+    let delete = listed
+        .iter()
+        .filter(|l| l.epoch &lt; base &amp;&amp; l.epoch + 1 &lt; own_epoch)
+        .filter(|l| now_ms.saturating_sub(l.newest_ms) &gt;= grace_ms)
+        .map(|l| l.epoch)
+        .collect();
+    ...
+}
+</code></pre>
+<p>The conditions are cumulative:</p>
+<ol><li>This cell is not a paged cell that is still reading its activation chain.</li><li>The newest span of the chain is this node's own epoch. The chain was built</li></ol>
+<p>   from the listing, so that epoch's opening object is in the listing. Under    list-after-write consistency, a successor's later listing includes it too,    so the successor finds this span in its chain. The opening object is the    epoch's first object: a snapshot at transaction 1, or a paged epoch's    continuation marker.</p>
+<ol><li>The recorded mark does not name a base above this one. A higher mark means</li></ol>
+<p>   an earlier owner saw a newer base, and this view is stale.</p>
+<ol><li>The ownership record still names this node at this epoch. The caller reads</li></ol>
+<p>   <code>own.json</code> after the chain walk and before the delete. That order, not a    conditional write, is the fence. If ownership moves after the read, the    successor's base is at or above the recorded base, the <code>retired_below</code> mark,    so the delete removes only epochs below that base.</p>
+<ol><li>The epoch is below the base, is not this epoch, is not the epoch before it,</li></ol>
+<p>   and its newest object is at least the grace period old. The grace period is    the value of <code>CELLD_LTX_RETENTION_SECS</code>, converted from seconds to    milliseconds.</p>
+<p>The previous-epoch rule is a margin against a lagging listing, not a safety argument. The grace period only keeps an epoch that holds a recent object. Neither rule makes the delete safe; the base does. The delete set never includes the base itself, only epochs below it. A skewed clock can change how long the grace lasts, but it cannot make an epoch below the base needed, because no chain reads below its base. A later restore can find a base at a higher epoch, but never at a lower epoch, because a chain never reads below a span that begins at transaction 1.</p>
+<p>After the checks, the owner writes <code>cells/<cell>/ltx/retired.json</code> with <code>{"retired_below": <base>}</code>, then deletes the prefixes below it. A late delete is safe because an epoch below the base never rejoins a chain. The mark also lets bundle garbage collection and node-log recovery treat rows below the base as covered.</p>
+<p>Garbage collection needs list-after-write consistency. A listing after a write must include the written object. Amazon S3, Cloudflare R2, Google Cloud Storage, and Azure Blob Storage provide it. A multi-region Tigris bucket provides it only in the region of the write. A collector in another region can read a listing that misses the epoch's opening object. Its chain then starts at a later file in that epoch, so the plan treats the epoch as the base and deletes the older epochs that the true base still needs. celld therefore does not support epoch garbage collection on a multi-region Tigris bucket when the fleet spans regions.</p>
+<h2>What can go wrong</h2>
+<table><tr><th>Failure</th><th>What the system does</th><th>What an operator sees</th></tr><tr><td>The process dies after a commit, before any proof</td><td>The reply does not leave, because no proof covers the write</td><td>The client sees a failed or closed connection</td></tr><tr><td>The bucket rejects a conditional create</td><td>The startup storage test, the check of bucket writes and reads, fails, so the node does not start</td><td>The error names the store</td></tr><tr><td>The ownership record is lost</td><td>The node refuses the cell and holds the refusal for 10 seconds, a fixed interval that is not the lease lifetime</td><td><code>celld ownership record lost</code> on standard error</td></tr><tr><td>The node loses its lease</td><td>After a failed renewal, the node self-fences: it stops serving and exits with code 3</td><td>A line starting with <code>SELF-FENCE:</code></td></tr><tr><td>A segment fails its checksum</td><td>The restore stops</td><td>The startup error names the segment</td></tr><tr><td>No epoch reaches transaction 1</td><td>The restore fails with <code>TxNotAvailable</code></td><td>The activation reports a restore failure</td></tr><tr><td>A page read fails during a paged restore</td><td>The page fetch returns <code>SQLITE_IOERR_READ</code> without a retry; so does a page at or below the commit that the chain does not contain</td><td>The handler sees an input/output error; other pages stay readable</td></tr><tr><td>A write cursor is unfinished at output</td><td>The release is refused</td><td>The handler receives an error that names <code>storage.sync()</code></td></tr><tr><td>A bundle is only partly drained</td><td>The bundle is kept until every segment is covered</td><td>No visible effect; the bundle remains</td></tr></table>
+<p>The first row is the central promise. A commit that the client does not see answered cannot be observed by the client, so a crash cannot turn an acknowledged write into a missing one. The client may retry, and the retry may duplicate an effect; the platform makes the <em>acknowledgement</em> safe, not the application operation. That is why each write interface documents its retry behaviour and why the application must be idempotent where it can be.</p>
+<h2>The Aha</h2>
+<p>The common design for a durable object keeps a local database and takes an occasional backup. The backup is a copy. The difference between the latest commit and the latest backup is a window of loss: the period in which a crash can lose an acknowledged write. celld removes that window by making the replicated log the record and the database file a local cache.</p>
+<p>Once the log is the record, three consequences follow, and each one shapes the code. First, a reply must wait for the log, not for the local file, which is why the output gate exists. Second, a log needs a prefix that exactly one successor will select, which is why the epoch names the prefix and why the chain requires an exact cut. Third, a restore must choose one chain, because two epoch prefixes can both contain bytes that verify. The checksum proves the bytes; the cut proves the order. Neither one alone chooses the chain.</p>
+<p>The database file is still useful: it is the fast local copy, and a warm cell reads it with no bucket request for the data. But no correct path treats it as the record. The record is the log, the epoch selects it, and the gate proves it.</p>
+<h2>Where to read next</h2>
+<ul><li><a href="03-the-worker-runtime.html">The Worker runtime</a> describes the output gate in</li></ul>
+<p>  detail.</p>
+<ul><li><a href="04-durable-objects.html">Durable objects</a> describes the storage application</li></ul>
+<p>  programming interface that sits above this layer.</p>
+<ul><li><a href="06-ownership-failure-and-rebalancing.html">Ownership, failure, and rebalancing</a></li></ul>
+<p>  describes the lease, the epoch, and the takeover.</p>
+<ul><li><a href="08-deployment-and-operations.html">Deployment and operations</a> lists the</li></ul>
+<p>  durability settings and the storage test.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

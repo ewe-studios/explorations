@@ -1,0 +1,1568 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The Worker runtime -- src.celld</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue('--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        toolbar.appendChild(mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); }));
+        toolbar.appendChild(mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); }));
+        toolbar.appendChild(mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); }));
+        toolbar.appendChild(mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); }));
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.celld/docs</span>
+    <div class="nav-actions">
+      <a href="00-overview.html" class="nav-breadcrumb">Overview: one owner for each cell, one bucket for the fleet</a><a href="01-repository-map.html" class="nav-breadcrumb">Repository map</a><a href="02-system-architecture.html" class="nav-breadcrumb">System architecture</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="02-system-architecture.html" class="nav-btn" title="Previous: System architecture">← prev</a>
+      <a href="04-durable-objects.html" class="nav-btn nav-btn-next" title="Next: Durable objects">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<p><a href="02-system-architecture.html">The system architecture</a> shows the runtime manager as one box in the process. This document opens that box. It explains what an isolate is, what one turn does, who decides where a cell runs, how a cell becomes a JavaScript object, how memory is bounded, and how the output gate works. The output gate is the mechanism that holds a response until a durability proof covers every write that the response can reveal. It appears in detail near the end of this document.</p>
+<p>The runtime has one job. It must run application JavaScript. It must not let JavaScript decide anything about durability, ownership, or placement. The decision core is the pure Rust crate that makes those decisions. It performs no input or output. The shell performs the decisions.</p>
+<p>Three Rust crates make up the system. The names in the source and the names of the directories are not the same, so this document states the mapping once. The decision core is the <code>celld-logic</code> crate, in the <code>crates/logic</code> directory, and Rust code imports it as <code>celld_logic::</code>. The shell is the <code>celld</code> crate, in <code>crates/celld</code>. The replication library is the <code>celld-ltx</code> crate, in <code>crates/ltx</code>. A source reference in this document gives the full path from the repository root, such as <code>crates/logic/isolate.rs</code>, which is a file in the decision core.</p>
+<p>The runtime manager is the part of the shell that follows the decision core. It owns V8, the isolate pools, the timers, and the storage handles. In the repository it is not one file: <code>crates/celld/runtime.rs</code>, <code>crates/celld/pool.rs</code>, and <code>crates/celld/js.rs</code> divide the work. This document names the file each mechanism lives in as it goes.</p>
+<h2>The words this document uses</h2>
+<table><tr><th>Word</th><th>Meaning in celld</th></tr><tr><td>Worker</td><td>One deployed JavaScript program. It has a name, a source, bindings, and compatibility flags.</td></tr><tr><td>Script</td><td>One JavaScript module graph that the runtime loads. A deployment has one primary script and zero or more service scripts.</td></tr><tr><td>Durable Object (DO)</td><td>The application class that keeps state between events. A Durable Object is identified by a class name and an identifier. Platform prose also uses "Durable Object" for one instance of the class. This document says "cell" when it means the instance.</td></tr><tr><td>Cell</td><td>One live Durable Object instance, named <code><Class>:<identifier></code>. The cell is the unit of ownership, storage, and durability.</td></tr><tr><td>Cell scope</td><td>The string that names one cell, in the form <code><Class>:<identifier></code>. Every table that holds cell state uses this string as its key.</td></tr><tr><td>Epoch</td><td>A counter that numbers each ownership tenure of a cell. A tenure is one node's holding of a cell. A new owner starts a new epoch, with a new storage prefix and a fresh copy of state.</td></tr><tr><td>Generation</td><td>One deployment: one primary script, its service scripts, their modules, bindings, compatibility flags, and isolate pools.</td></tr><tr><td>Isolate</td><td>One V8 engine instance. V8 is the JavaScript engine that celld embeds. An isolate owns one JavaScript heap.</td></tr><tr><td>Realm</td><td>One JavaScript global environment. A realm holds the module scope, the global object, and the <code>fetch</code> entry.</td></tr><tr><td>Heap</td><td>The JavaScript memory of one isolate.</td></tr><tr><td>Pool</td><td>A set of isolates that share one placement policy and one set of limits.</td></tr><tr><td>Slot</td><td>One position in a pool that holds one isolate. The pool-local index names that position. A process-wide heap identity names the heap in the retirement records, so a reused position still has a unique identity.</td></tr><tr><td>Placement</td><td>The decision that selects an isolate and a slot for a cell.</td></tr><tr><td>Turn</td><td>One synchronous entry into an isolate.</td></tr><tr><td>Lane</td><td>One queue of turn requests. A lane is either the stateless lane or the lane of one cell. The lane gives the turn permission to run.</td></tr><tr><td>Binding</td><td>A value that the runtime injects into the <code>env</code> object of a Worker, such as an object bucket, a database, a queue, or another Worker.</td></tr><tr><td>Host operation</td><td>A Rust function that the runtime exposes to JavaScript as a function parameter. The harness calls it by a fixed name, such as <code>__storage_get</code>.</td></tr><tr><td>Effect</td><td>One instruction from the decision core to the shell. Examples are "run this turn", "wait for this durability proof", and "release this cell".</td></tr><tr><td>Compatibility flag</td><td>A named switch that changes JavaScript behaviour to match a dated platform behaviour, not only a feature that is on or off.</td></tr><tr><td>Event</td><td>One delivered call into a cell: a Hypertext Transfer Protocol (HTTP) request, a scheduled alarm event, a WebSocket message (WebSocket is a long-lived two-way connection), a Remote Procedure Call (RPC), or a nested Worker call.</td></tr><tr><td>Alarm</td><td>One durable deadline that belongs to a cell. When the deadline passes, the cell receives an <code>alarm</code> event.</td></tr><tr><td>Facet</td><td>A child Durable Object that runs inside the cell that created it, which is its root cell. A facet has its own SQLite database and no ownership record of its own.</td></tr><tr><td>Ownership</td><td>The decision core's record that this node serves a cell at an epoch.</td></tr><tr><td>Harness</td><td>The JavaScript code that builds the Durable Object object model on top of host operations. It is a concatenation of <code>harness.js</code> and the service files that it includes.</td></tr><tr><td>Prelude</td><td>The JavaScript files that install Web Platform Application Programming Interfaces (APIs) before the harness runs.</td></tr><tr><td>Bytecode</td><td>The compiled form of a script that V8 can execute without parsing the source again.</td></tr><tr><td>Actor</td><td>The serial task in the shell that applies the effects the decision core emits, in order.</td></tr><tr><td>JavaScript actor</td><td>The per-scope abort record that the harness keeps in <code>__brokenActors</code>. It is not the shell actor.</td></tr><tr><td>Stub</td><td>A JavaScript handle that sends calls to a cell.</td></tr><tr><td>Driver</td><td>The loop that runs the turns of one event and waits for the next wake reason, which is the value that tells it why the wait ended.</td></tr><tr><td>Ticket</td><td>The unit of permission that the output gate gives to one output, or to one piece of a streamed output.</td></tr><tr><td>Barrier</td><td>A per-cell record that holds a position. A durability proof must reach that position before the gate can release the barrier's tickets.</td></tr><tr><td>Proof</td><td>Evidence that a set of writes survives a failure.</td></tr><tr><td>Affiliation</td><td>One admitted stateless request's claim on a pool slot and its heap. It raises the slot's request count until it drops. A cell takes a <code>Residency</code> instead.</td></tr><tr><td>Pin</td><td>To keep a request attached to one isolate until its promise settles.</td></tr><tr><td>Input gate</td><td>The per-cell order that admits one event at a time. It can be held across an <code>await</code>, because a critical section (a block that must not interleave with another event) stays closed while its callback waits.</td></tr><tr><td>Output gate</td><td>The per-cell rule that holds every output that can reveal cell state until the writes it can reveal are proven durable.</td></tr><tr><td>Sans-IO</td><td>Modelled as pure logic, without input or output. A sans-IO module returns decisions, and its caller performs them.</td></tr><tr><td>Workerd</td><td>The Cloudflare runtime that celld copies behaviour from. A comment that cites Workerd names the behaviour that celld matches.</td></tr><tr><td>Core</td><td>The decision core, the <code>celld-logic</code> crate. It is pure Rust. It performs no input or output.</td></tr><tr><td>Shell</td><td>The effect adapter, the <code>celld</code> crate. It owns V8, Tokio (the asynchronous Rust runtime), sockets, timers, and storage.</td></tr><tr><td>Replicator</td><td>The shell component that sends Lite Transaction (LTX) segments to followers and to the bucket. A follower is a peer node that stores another node's segments on local disk.</td></tr></table>
+<p>The most important correction to the common mental model is this one. <strong>One isolate has one realm, not one realm per cell.</strong> The realm is created once, when the isolate is built. Every cell of that script uses it. Cells are separated by a table in the harness, keyed by the cell scope.</p>
+<pre><code class="language-rust">// crates/celld/js.rs:2194-2213 (abridged)
+pub struct WorkerIsolate {
+    isolate: v8::SharedIsolate,
+    runtime_state: Arc&lt;ActorRuntimeState&gt;,
+    /// The one realm this isolate has: its context, and the entry `fetch`
+    /// that lives in it.
+    ///
+    /// It was a `HashMap` keyed by cell, on the premise that a cell needs a
+    /// realm of its own. It does not, and nothing ever put a second one in.
+    /// The harness already keys instances by scope (`__cell.instances`), and
+    /// Durable Objects **share** a context per script rather than getting one
+    /// each — a context per cell would also duplicate the compiled module per
+    /// cell, which is most of what sharing an isolate saves.
+    realm: Realm,
+    original_heap_limit: usize,
+    compat: Compat,
+</code></pre>
+<p>Three fields in that struct need a word each. <code>v8::SharedIsolate</code> is the V8 isolate handle that several turns can enter in sequence without moving the engine. <code>runtime_state</code> is the per-isolate state that the Rust host operations read during a turn, such as the pending puts of each cell. <code>compat</code> holds the compatibility flags of the deployment. The comment says that the realm field "was a <code>HashMap</code> keyed by cell". The removed map was a map of realms: the first design gave every cell a realm of its own, and nothing ever put a second realm in that map.</p>
+<p>A realm is exactly two handles in the runtime.</p>
+<pre><code class="language-rust">// crates/celld/js.rs:2232-2235
+struct Realm {
+    context: v8::Global&lt;v8::Context&gt;,
+    fetch: v8::Global&lt;v8::Function&gt;,
+}
+</code></pre>
+<p>A handle is a V8 reference that stays valid between turns. A <code>Local</code> handle is valid only while one V8 scope is active. A <code>Global</code> handle is pinned, so the context and the <code>fetch</code> function stay alive after the turn that created them returns. Each turn converts the two globals back into locals with <code>v8::Local::new</code>. That conversion is legal only while the isolate is locked. The pool takes the isolate lock for the whole turn. Each <code>Worker</code> method that touches JavaScript enters the realm with <code>v8::ContextScope</code> while that lock is held. The lock and the realm therefore travel together: the lock is held for the whole synchronous turn, and the realm is entered inside it.</p>
+<h2>The shape</h2>
+<div class="mermaid">
+flowchart TB
+    subgraph G[&quot;One generation&quot;]
+        subgraph S1[&quot;Script: shop&quot;]
+            R1[&quot;Plain request&quot;]
+            SP1[&quot;Stateless pool for shop&quot;]
+            I0[&quot;Isolate D&lt;br/&gt;one realm&quot;]
+            P1[&quot;Cell pool for shop&lt;br/&gt;limits and placement&quot;]
+            I1[&quot;Isolate A&lt;br/&gt;one realm&quot;]
+            I2[&quot;Isolate B&lt;br/&gt;one realm&quot;]
+            A1[&quot;__cell.instances[&#x27;Order:42&#x27;]&quot;]
+            A2[&quot;__cell.instances[&#x27;Cart:7&#x27;]&quot;]
+            B1[&quot;__cell.instances[&#x27;Order:91&#x27;]&quot;]
+        end
+        subgraph S2[&quot;Script: ledger&quot;]
+            P2[&quot;Cell pool for ledger&lt;br/&gt;limits and placement&quot;]
+            I3[&quot;Isolate C&lt;br/&gt;one realm&quot;]
+            C1[&quot;__cell.instances[&#x27;Account:9&#x27;]&quot;]
+        end
+    end
+    R1 --&gt; SP1
+    SP1 --&gt; I0
+    P1 --&gt; I1
+    P1 --&gt; I2
+    I1 --&gt; A1
+    I1 --&gt; A2
+    I2 --&gt; B1
+    P2 --&gt; I3
+    I3 --&gt; C1
+
+</div>
+<p>The labels map to the types as follows. <code>Isolate A</code> to <code>Isolate D</code> are <code>WorkerIsolate</code> values inside a <code>Slot</code>. <code>Cell pool for shop</code> and <code>Cell pool for ledger</code> are <code>Pool</code> values, and each pool is keyed by its script name. The <code>__cell.instances[...]</code> boxes are entries in one JavaScript table, not separate realms.</p>
+<p>Three rules follow from the diagram.</p>
+<ol><li>A pool belongs to one script. Cells of different scripts never share an</li></ol>
+<p>   isolate. Cells of one script share a pool.</p>
+<ol><li>A pool holds isolates, not cells. An isolate holds one realm and a table</li></ol>
+<p>   of cell instances. Up to 32 cells can live in one isolate    (<code>MAX_CELLS_PER_ISOLATE</code> in <code>crates/celld/runtime.rs:456</code>).</p>
+<ol><li>A stateless request does not own an isolate or a realm. It holds a claim</li></ol>
+<p>   on the isolate that ran its first turn. That claim keeps its suspended    promise alive. The diagram shows the stateless pool of the <code>shop</code> script    for this rule.</p>
+<p>The <code>Generation</code> struct records the pools.</p>
+<pre><code class="language-rust">// crates/celld/generation.rs:281-293 (abridged)
+pub struct Generation {
+    pub(crate) id: GenerationId,
+    pub(crate) version: String,
+    pub(crate) prefix: String,
+    pub(crate) script_name: String,
+    pub(crate) stateless: crate::runtime::StatelessRuntime,
+    pub(crate) services: HashMap&lt;String, crate::runtime::StatelessRuntime&gt;,
+    pub(crate) cell_configs: HashMap&lt;String, Arc&lt;WorkerConfig&gt;&gt;,
+    pub(crate) cell_isolates: HashMap&lt;String, Arc&lt;crate::pool::Pool&gt;&gt;,
+    pub(crate) default_do_class: Option&lt;Arc&lt;str&gt;&gt;,
+    pub(crate) assets: HashMap&lt;String, AssetResolver&gt;,
+    pub(crate) containers: Vec&lt;container::ContainerSpec&gt;,
+    pub(crate) fence_image: Option&lt;String&gt;,
+}
+</code></pre>
+<p>The fields divide the runtime into groups. <code>id</code> names this generation inside the process. <code>version</code> is the deployment version string, and <code>prefix</code> is the bucket prefix of the deployment. <code>script_name</code> is the primary script, which is the script of the Worker entrypoint. <code>stateless</code> is the pool that runs that script: the entrypoint and every plain request. <code>services</code> holds one such pool for each script reached through a service binding. <code>cell_configs</code> holds one configuration for each Durable Object class. <code>cell_isolates</code> holds one cell pool for each script name. <code>default_do_class</code> names the class that the runtime uses when a cell scope has no class prefix. <code>assets</code> resolves static files, <code>containers</code> lists container specifications, and <code>fence_image</code> names the <code>celld-fence</code> container image that a node runs to stop a previous owner's container. The last field is described in <a href="07-the-services.html">The services</a>.</p>
+<p>The cell pools are built from <code>cell_configs</code>, which has one entry per class. The <code>collect</code> call keeps one pool for each script name, so several classes of one script collapse to one pool. A dropped pool is not wasted work: <code>cell_pool</code> only builds empty structures, and a pool holds no isolate until the first turn.</p>
+<pre><code class="language-rust">// crates/celld/generation.rs:605-614
+let stateless = service_pools[&amp;primary_script].clone();
+let cell_isolates: HashMap&lt;String, Arc&lt;crate::pool::Pool&gt;&gt; = cell_configs
+    .values()
+    .map(|config| {
+        (
+            config.script_name.clone(),
+            crate::runtime::cell_pool(config.clone()),
+        )
+    })
+    .collect();
+</code></pre>
+<p><code>primary_script</code> and <code>service_pools</code> come from the loop above this snippet: the first script of the deployment is the primary script, and <code>service_pools</code> holds the stateless pool that each script built.</p>
+<p>The field comment above <code>cell_isolates</code> says that it is "the same <code>Pool</code> the stateless path admits into". The constructor shown here does not do that. It calls <code>cell_pool</code>, and <code>cell_pool</code> builds a new <code>Pool</code>. The two pools load the same script with the same configuration, and they use the same numeric limits, because both call <code>pool_limits()</code>. They do not share slots, counters, or queues. This document follows the constructor, because the constructor is the code that runs.</p>
+<p>The separate pool is deliberate, not an oversight. A cell pool never admits a plain request, so its <code>max_requests</code> and <code>max_stateless</code> limits are never consulted: cell growth passes <code>None</code> for the cap. A cell pool also starts empty, has no warm call, and uses <code>reap_empty</code> after an eviction instead of the paced 30-second reap. Both mechanisms appear under <a href="#retirement-and-freeing">Retirement and freeing</a>. The stateless pool keeps a warm isolate and retires at most one isolate per pass. One pool cannot do both jobs.</p>
+<h2>A turn, not a thread</h2>
+<p>An isolate is not a thread. The JavaScript (JS) that it runs is not bound to one. The runtime has one multi-threaded Tokio runtime, the asynchronous Rust runtime. That runtime owns every socket and every timer. Any Tokio worker can enter any isolate.</p>
+<pre><code class="language-rust">// crates/logic/isolate.rs:1-8
+//! The isolate pool, reified sans-IO.
+//!
+//! celld runs JS on a set of isolates that grow and shrink with demand. An
+//! isolate is not bound to a thread: `v8::Locker` installs the entering
+//! thread&#x27;s per-isolate state, so any worker can take an isolate and run a
+//! turn in it. What an isolate *is* bound to is the JS state it holds, and
+//! that is what every decision here is about.
+</code></pre>
+<p>"Sans-IO" means that the module models the decisions without input or output. It returns a decision, and its caller performs the input or output. The <code>v8::Locker</code> is V8's per-isolate lock. It installs the entering thread's per-isolate state, so a thread that holds the lock can use the isolate's handles.</p>
+<p>A turn is one synchronous entry into the isolate. The entry function takes a closure that is synchronous by type. This makes it impossible to hold the isolate across an <code>await</code>.</p>
+<pre><code class="language-rust">// crates/celld/pool.rs:228-236
+    /// Enter the isolate for one turn and run `f` inside it.
+    ///
+    /// Only the gate is awaited; `f` is synchronous by type, so holding the
+    /// isolate across an await is unwritable rather than a rule a comment
+    /// asks callers to remember.
+    pub async fn turn&lt;T&gt;(&amp;self, f: impl FnOnce(&amp;mut js::Worker) -&gt; T) -&gt; T {
+        self.turn_in(TurnLane::Stateless, f).await
+    }
+</code></pre>
+<p>A cell turn uses a different lane. The lane name is the cell scope. In the comment above, "the gate" is the lane permit and the isolate mutex. The closure <code>f</code> is synchronous by its type, so no caller can hold the isolate across an <code>await</code>.</p>
+<pre><code class="language-rust">// crates/celld/pool.rs:238-243
+    /// Enter one cell turn through a round-robin lane for that cell. A hot
+    /// cell can retain its next place, but it cannot take the next place from
+    /// another cell that already waits on the same isolate.
+    pub async fn turn_cell&lt;T&gt;(&amp;self, scope: &amp;str, f: impl FnOnce(&amp;mut js::Worker) -&gt; T) -&gt; T {
+        self.turn_in(TurnLane::Cell(scope.to_string()), f).await
+    }
+</code></pre>
+<p>The scheduler has one lane for stateless work and one lane for each cell. That is N+1 lanes for N cells on one isolate, where N is the number of cells that currently hold state in the isolate. The scheduler belongs to one slot, so each isolate has its own ready queue. It runs a fair round robin between lanes that have waiters.</p>
+<p>"Fair" has a precise meaning here. A lane is a queue of waiters, not a single requester. A hot cell is a cell that keeps issuing turns. When a turn ends, <code>release</code> puts the lane back at the end of the ready queue if the lane still has waiters. It then wakes exactly one waiter from the lane at the front. A hot cell therefore keeps its queue of waiters, but it cannot jump ahead of a lane that already waits. The lane that was just served goes to the back, so its next turn starts only when every earlier lane has had one turn.</p>
+<p>Cancellation needs no special path. A cancelled waiter drops its receiver, which closes the sender that the scheduler holds for it. <code>release</code> reads that closed sender and skips it. If the lane still has waiters, <code>release</code> puts the lane back in the ready queue and tries the next lane. The skipped sender never consumes a turn: no waiter woke, so the scheduler must grant the turn again.</p>
+<pre><code class="language-rust">// crates/celld/pool.rs:65-68
+enum TurnLane {
+    Stateless,
+    Cell(String),
+}
+</code></pre>
+
+<pre><code class="language-rust">// crates/celld/pool.rs:87-110 (abridged)
+impl TurnScheduler {
+    async fn acquire(&amp;self, lane: TurnLane) -&gt; TurnPermit&lt;&#x27;_&gt; {
+        let receive = {
+            let mut schedule = self.schedule.lock().expect(&quot;turn scheduler poisoned&quot;);
+            if schedule.current.is_none() {
+                schedule.current = Some(lane);
+                None
+            } else {
+                let (send, receive) = tokio::sync::oneshot::channel();
+                if !schedule.waiting.contains_key(&amp;lane) &amp;&amp; schedule.current.as_ref() != Some(&amp;lane)
+                {
+                    schedule.ready.push_back(lane.clone());
+                }
+                schedule.waiting.entry(lane).or_default().push_back(send);
+                Some(receive)
+            }
+        };
+        if let Some(receive) = receive {
+            // Cancellation leaves a closed sender in this lane. `release`
+            // skips it, so a dropped waiter cannot strand the active token.
+            let _ = receive.await;
+        }
+        TurnPermit(self)
+    }
+</code></pre>
+<p>The release is the other half of the fairness rule.</p>
+<pre><code class="language-rust">// crates/celld/pool.rs:112-145 (abridged)
+fn release(&amp;self) {
+    let mut schedule = self.schedule.lock().expect(&quot;turn scheduler poisoned&quot;);
+    let current = schedule.current.take().expect(&quot;a released turn has a lane&quot;);
+    if schedule
+        .waiting
+        .get(&amp;current)
+        .is_some_and(|waiters| !waiters.is_empty())
+    {
+        schedule.ready.push_back(current);
+    }
+    while let Some(lane) = schedule.ready.pop_front() {
+        let (send, keep_lane) = {
+            let waiters = schedule.waiting.get_mut(&amp;lane).expect(&quot;a ready lane waits&quot;);
+            (waiters.pop_front().unwrap(), !waiters.is_empty())
+        };
+        if !keep_lane {
+            schedule.waiting.remove(&amp;lane);
+        }
+        if send.send(()).is_ok() {
+            schedule.current = Some(lane);
+            return;
+        }
+        // A cancelled waiter left a closed sender. Skip it and keep the lane.
+        if keep_lane {
+            schedule.ready.push_back(lane);
+        }
+    }
+}
+</code></pre>
+<p>The permit is the token that proves that a lane was granted. It is not <code>Copy</code>, and it releases the lane when it drops.</p>
+<pre><code class="language-rust">// crates/celld/pool.rs:85, 147-151
+struct TurnPermit&lt;&#x27;a&gt;(&amp;&#x27;a TurnScheduler);
+
+impl Drop for TurnPermit&lt;&#x27;_&gt; {
+    fn drop(&amp;mut self) {
+        self.0.release();
+    }
+}
+</code></pre>
+<p>The invariant in <code>release</code> is <code>expect("a released turn has a lane")</code>. A permit exists only after <code>acquire</code> made its lane current, and only the holder of the permit can call <code>release</code>, so the expectation holds.</p>
+<p>The turn also holds the isolate's asynchronous lock. The lane permit decides the order of turns on the normal path, so the mutex is free when a turn takes it. The mutex is not redundant. <code>free_retired</code> uses a <code>try_lock</code> on the same mutex to prove that no turn holds the isolate before it drops the heap, and the mutex is what makes the V8 <code>Locker</code> beneath it uncontended: a thread holds the mutex before it takes the V8 lock.</p>
+<pre><code class="language-rust">// crates/celld/pool.rs:245-268 (abridged)
+    async fn turn_in&lt;T&gt;(&amp;self, lane: TurnLane, f: impl FnOnce(&amp;mut js::Worker) -&gt; T) -&gt; T {
+        struct Counted&lt;&#x27;a&gt;(&amp;&#x27;a Slot);
+        impl Drop for Counted&lt;&#x27;_&gt; {
+            fn drop(&amp;mut self) {
+                self.0.turns.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
+        self.turns.fetch_add(1, Ordering::Relaxed);
+        let _turn = Counted(self);
+        let _scheduled = self.turn_scheduler.acquire(lane.clone()).await;
+        let mut worker = self.worker.lock().await;
+        let worker = match worker.as_mut() {
+            Some(worker) =&gt; worker,
+            None =&gt; panic!(&quot;entered isolate {} after it was freed&quot;, self.id),
+        };
+        let previous = CURRENT_SLOT.replace(Some(self.me.clone()));
+        let result = f(worker);
+        CURRENT_SLOT.set(previous);
+        result
+    }
+</code></pre>
+<p>A slot has three identities. <code>id</code> is the index inside its own pool. Two pools can use the same number. <code>heap_id</code> is the process-wide identity that the node Actor and pressure policy report. <code>me</code> is a weak reference from the slot to itself.</p>
+<p><code>CURRENT_SLOT</code> is a thread-local weak reference. A thread-local is storage private to one operating-system thread. A weak reference does not keep its target alive. The slot builds <code>me</code> with <code>Arc::new_cyclic</code>, because a slot cannot hold a strong reference to itself without never being freed. During a turn, <code>CURRENT_SLOT</code> holds the running slot. A host operation inside the turn can therefore find the slot that owns the isolate and upgrade the weak reference to a strong one. This is how a facet, or a nested call, reaches the heap that is running it. The code saves the previous value and puts it back. If a turn in another slot starts on the same thread, the inner turn restores the outer slot before it returns.</p>
+<p>The restore runs only on normal return. A panic skips it. The build sets <code>panic = "abort"</code> (<code>Cargo.toml:13</code>), so a panic ends the process and no later turn reads the stale value.</p>
+<p>Between turns, a request holds no isolate. It holds only its affiliation, which is a memory claim and not a processor claim. A memory claim keeps the heap alive and counts as one request on the slot. It does not reserve a number of bytes and it does not reserve a turn. A processor claim reserves the right to run. The affiliation gives the first. The turn lane gives the second, for one turn at a time. A handler that waits for a network reply stops nothing else in the isolate.</p>
+<div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant A as Driver of request A
+    participant B as Driver of request B
+    participant S as Isolate of the slot
+    A-&gt;&gt;S: turn 1: handler starts and calls fetch()
+    S--&gt;&gt;A: turn ends, promise suspended
+    Note over S: the affiliation of A keeps the heap alive
+    B-&gt;&gt;S: turn 2: a different request runs
+    S--&gt;&gt;B: turn ends, promise suspended
+    Note over S: no turn holds the isolate
+    A-&gt;&gt;S: turn 3: the reply arrives, the handler continues
+    S--&gt;&gt;A: turn ends, the response can leave
+
+</div>
+<p>The arrow "turn ends, promise suspended" means two things. The isolate lock is free again, so another turn can run. The heap stays alive because request A still holds its affiliation. This interleaving is the reason the design uses turns. It gives one heap to many requests without one blocked handler blocking the heap. It also means the JavaScript concurrency model is cooperative, as it is in other Worker platforms.</p>
+<h2>Three quantities and two claims</h2>
+<p>The pool reports four fields for each isolate. Three are quantities. The fourth is a state flag. Each one drives a different decision.</p>
+<pre><code class="language-rust">// crates/logic/isolate.rs:53-74 (abridged)
+/// What the shell observes about one isolate.
+pub struct IsolateLoad {
+    /// Turns in flight: waiting for this isolate plus the one running in it.
+    /// Released across an await, so this is CPU demand rather than total
+    /// outstanding work.
+    pub turns: usize,
+    /// Requests whose JS state lives here, running or awaiting. Each one
+    /// pins a promise and its closures in this isolate&#x27;s heap.
+    pub requests: usize,
+    /// Cells hosted here: realms this isolate holds, one per cell.
+    ///
+    /// The third quantity, and unlike the other two it does not come back on
+    /// its own. A request ends; a cell stays until it is evicted or handed
+    /// to another node.
+    pub cells: usize,
+    /// The shell has stopped affiliating new work and is draining this
+    /// isolate.
+    pub retiring: bool,
+}
+</code></pre>
+<p>The <code>cells</code> comment reads "realms this isolate holds, one per cell". That wording is loose, and it contradicts the realm rule above. The runtime holds one realm for the isolate, not one for each cell. The field counts cells that hold state in this isolate. Each such cell costs one entry in the instance table and one open database in SQLite, the embedded database engine that accepts Structured Query Language (SQL) statements. A cell stays until it is evicted or handed to another node. The field does not count JavaScript contexts, because there is only one context.</p>
+<p><code>turns</code> also needs a precise reading. The counter goes up before the turn waits on its lane, so it counts the turn that runs and the turns that queue for the isolate. The pool uses it as a measure of central processing unit (CPU) demand. A handler that waits for a network reply has already given its turn back, so its wait does not raise <code>turns</code>. The number of unfinished requests can therefore be larger than <code>turns</code>. <code>requests</code> counts that larger set: every request whose JavaScript state must stay in the heap, running or waiting, because each such request pins a promise and its closures.</p>
+<p>A stateless request takes an <code>Affiliation</code>. It lasts for the life of the request. The affiliation is what admission counts, and what keeps the heap alive while a promise is suspended in it.</p>
+<p>A cell takes a <code>Residency</code>. It lasts until the cell is evicted or moves to another node. The two types exist because the two claims have different lifetimes. A request that finishes gives its memory back. A cell does not give its memory back until something removes it.</p>
+<pre><code class="language-rust">// crates/celld/pool.rs:458-483
+/// A request&#x27;s claim on the isolate that ran its first turn.
+pub struct Affiliation(Arc&lt;Slot&gt;);
+
+impl Drop for Affiliation {
+    fn drop(&amp;mut self) {
+        self.0.requests.fetch_sub(1, Ordering::Relaxed);
+        // Exactly one admission waiter per freed slot: `notify_one` hands
+        // the capacity to a single parked request, where waking them all
+        // would stampede `admit` on every release.
+        self.0.freed.notify_one();
+        // The last request out of a retiring isolate is what lets it free.
+        // Freeing here would drop a V8 isolate inside whatever turn dropped
+        // this affiliation, so the pool&#x27;s maintenance task does it.
+        if self.0.is_retiring() {
+            if let Some(reclaim) = &amp;self.0.reclaim {
+                reclaim.notify_one();
+            }
+        }
+    }
+}
+</code></pre>
+<p>The drop is the whole of the release. It decrements the count, wakes one admission waiter, and rings the reclaim bell when the isolate is retiring. It does not free the heap, because a drop can run inside another turn.</p>
+<p><code>self.0.freed</code> is the pool's admission bell. The pool clones it into every slot, so a drop can ring it without a reference to the pool. It is the same <code>Notify</code> that <code>admit_or_wait</code> waits on. The comment "exactly one admission waiter per freed slot" means one waiter per freed request capacity: one request left the slot's <code>requests</code> count, so one parked admission may take its place. Waking all waiters would make every one of them read the same free capacity and race for it.</p>
+<p>The slot keeps two cell counters. The residency keeps one bit that says whether it reached adoption. <code>cells</code> goes up when the pool reserves the slot, before any storage is open. <code>adopted_cells</code> goes up when the cell's storage opens successfully. Consider two reservations, X and Y. X reserves first and Y reserves second, but Y opens its database first. With one counter that only adoption raises, Y's drop would make the count reach zero while X still holds its reservation and has not yet adopted. With two counters, <code>adopted_cells</code> reaches zero only after both adoptions finish, so the heap collection boundary waits for the slower reservation. <code>max_cells</code> is the per-isolate cell cap that the pool passed at reservation. Adoption uses it for its boundary check and calls <code>settle_heap</code> when the adopted count reaches the cap. The drop does not read it. The drop of a residency uses its bit to decide whether it must decrement <code>adopted_cells</code>; it always decrements <code>cells</code>.</p>
+<pre><code class="language-rust">// crates/celld/pool.rs:485-537 (abridged)
+/// A cell&#x27;s claim on the isolate that holds its realm.
+///
+/// The counterpart of [`Affiliation`], and the difference between them is
+/// the whole reason both exist: an affiliation lasts one request, a
+/// residency lasts until the cell is evicted or moves node.
+pub struct Residency {
+    slot: Arc&lt;Slot&gt;,
+    max_cells: usize,
+    adopted: bool,
+}
+
+impl Drop for Residency {
+    fn drop(&amp;mut self) {
+        if self.adopted {
+            self.slot.adopted_cells.fetch_sub(1, Ordering::Relaxed);
+        }
+        self.slot.cells.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+</code></pre>
+<p>Adoption runs one turn. The steps are ordered, and the code shows where each step happens.</p>
+<pre><code class="language-rust">// crates/celld/pool.rs:505-525 (abridged)
+pub(crate) async fn adopt(
+    mut self,
+    cell: &amp;str,
+    storage: js::CellStorage&lt;&#x27;_&gt;,
+) -&gt; Result&lt;(Self, celld_logic::wake::AlarmSnapshot)&gt; {
+    anyhow::ensure!(!self.adopted, &quot;cell residency already adopted&quot;);
+    let slot = self.slot.clone();
+    let alarm = slot
+        .turn(|worker| -&gt; Result&lt;celld_logic::wake::AlarmSnapshot&gt; {
+            let alarm = worker.own_cell(cell, Some(storage))?;
+            // There is no await between adoption and accounting. Cancellation
+            // before this turn drops only the reservation; afterward, the
+            // residency owns both counters, including on an error unwind.
+            self.adopted = true;
+            let adopted = slot.adopted_cells.fetch_add(1, Ordering::Relaxed) + 1;
+            debug_assert!(adopted &lt;= self.max_cells);
+            if adopted == self.max_cells {
+                worker.settle_heap();
+            }
+            Ok(alarm)
+        })
+        .await?;
+    Ok((self, alarm))
+}
+</code></pre>
+<p>The numbered steps follow. <code>house</code> is the <code>Residency</code> constructor on the slot: it raises <code>cells</code>, takes the per-isolate cell cap, and returns a reservation with <code>adopted = false</code>.</p>
+<ol><li><code>house</code> increments <code>cells</code> before this call and returns a residency with</li></ol>
+<p>   <code>adopted = false</code>.</p>
+<ol><li>The turn runs <code>worker.own_cell</code>. That call opens the cell's SQLite database</li></ol>
+<p>   and clears everything the isolate still holds for an earlier residency of    the same scope. It does not build the JavaScript instance; that happens    lazily on the first event.</p>
+<ol><li>The same turn sets <code>adopted = true</code> and increments <code>adopted_cells</code>. No</li></ol>
+<p>   <code>await</code> separates step 2 from step 3, so no cancellation can land between    them.</p>
+<ol><li>When <code>adopted_cells</code> reaches <code>max_cells</code>, the turn calls <code>settle_heap</code>, which</li></ol>
+<p>   runs a heap collection.</p>
+<ol><li>If the future is dropped before the turn runs, the drop sees</li></ol>
+<p>   <code>adopted = false</code> and decrements only <code>cells</code>. If <code>own_cell</code> returns an    error, the <code>?</code> leaves before <code>adopted = true</code> is set, so the same drop path    runs.</p>
+<h2>Who decides placement</h2>
+<p>Six names carry this section. Two name decisions, three name core types, and one names a shell type.</p>
+<p>The decisions are:</p>
+<ul><li><strong>Admission</strong> — accept a stateless request, or refuse it.</li><li><strong>Placement</strong> — choose the isolate that runs the request or hosts the cell.</li></ul>
+<p>The types are:</p>
+<ul><li><code>PoolLoad</code> — the snapshot that every decision reads: the load of every</li></ul>
+<p>  isolate in <strong>one pool</strong>, plus one set of limits. A pool belongs to one   script, so <code>PoolLoad</code> never spans two scripts. The node has one pool per   script, and each pool admits and places on its own.</p>
+<ul><li><code>Placement</code> — either <code>Existing(id)</code> or <code>Grow</code>.</li><li><code>Refusal</code> — either <code>NodeFull</code>, which means the node-wide request ceiling is</li></ul>
+<p>  reached, or <code>NodePressured</code>, which means the node is shedding memory.</p>
+<ul><li><code>Residency</code> — the shell type that records the claim that one isolate holds</li></ul>
+<p>  one cell.</p>
+<p>Two shell types wrap those core types. <code>AdmitError</code> is either <code>Refused(Refusal)</code> or <code>Build(error)</code>, where <code>Build</code> carries an isolate that could not be constructed at all. <code>Residency</code> is the value that <code>house</code> returns: a slot, the per-isolate cell ceiling, and an <code>adopted</code> flag that turns true after the guest takes the cell.</p>
+<p>Admission and placement are one decision. The runtime cannot admit a request and then find no place for it, because one function answers both questions against one snapshot. A build failure is a different outcome. <code>Build</code> means that the isolate could not be constructed at all, so no affiliation was handed out and the request is refused before it runs.</p>
+<pre><code class="language-rust">// crates/logic/isolate.rs:182-203
+pub fn admit(load: &amp;PoolLoad, shedding: bool) -&gt; Result&lt;Placement, Refusal&gt; {
+    if let Some(max) = load.limits.max_requests {
+        let held: usize = load.isolates.iter().map(|l| l.requests).sum();
+        if held &gt;= max {
+            return Err(if shedding {
+                Refusal::NodePressured
+            } else {
+                Refusal::NodeFull
+            });
+        }
+    }
+    Ok(if shedding {
+        place_without_growing(load)
+    } else {
+        place(load)
+    })
+}
+</code></pre>
+<p>The <code>shedding</code> argument separates the two refusals. It is true when the node is over a memory ceiling. In that state a full pool answers <code>NodePressured</code> instead of <code>NodeFull</code>, and placement uses <code>place_without_growing</code>. The node gives resources back; it does not take more work.</p>
+<p>A stateless request goes to the isolate with the fewest turns in flight. The pool grows when that isolate already has two turns in flight or more, and the pool is below its live-isolate ceiling. <code>CELLD_MAX_STATELESS_ISOLATES</code> sets that ceiling. The default is the number of processor cores that the process may use (<code>std::thread::available_parallelism</code>), and the value is four when the system refuses to answer.</p>
+<p><code>grow_at = 2</code> is a constant in <code>crates/celld/runtime.rs</code>, not an environment setting. The same block holds <code>shrink_under = 1</code> and <code>MAX_CELLS_PER_ISOLATE = 32</code>. The comment in the source says why: the two turn thresholds form one hysteresis policy, and two independent settings would let an operator break it.</p>
+<pre><code class="language-rust">// crates/logic/isolate.rs:229-247 (abridged)
+pub fn place(load: &amp;PoolLoad) -&gt; Placement {
+    match load.live().min_by_key(|(_, l)| l.turns) {
+        // No isolate, or every one of them is draining.
+        None =&gt; Placement::Grow,
+        Some((id, l)) =&gt; {
+            if l.turns &gt;= load.limits.grow_at &amp;&amp; load.live_count() &lt; load.limits.max_stateless {
+                Placement::Grow
+            } else {
+                // At the ceiling the pool queues. Refusing work is
+                // admission&#x27;s job: see `worker::may_admit`.
+                Placement::Existing(id)
+            }
+        }
+    }
+}
+</code></pre>
+<p>The comment names <code>worker::may_admit</code>. No such function exists in the tree, so read the sentence as intent rather than as a reference. The refusal belongs to <code>isolate::admit</code>, and the queuing path is <code>Pool::admit_or_wait</code>, described below.</p>
+<p>Do not confuse that queue with the turn lane. The turn lane queues <em>turns</em> on an isolate that already accepted a request. <code>admit_or_wait</code> queues <em>requests</em> before any isolate accepts them. The first bound is the isolate's fairness; the second bound is the node's memory.</p>
+<p>Under memory pressure, the pool stops growing while an isolate exists to use. The one case that still grows is a pool with no live isolate. The <code>None</code> arm must grow there, because no isolate exists to run the request; the rule is "do not build another heap", not "refuse to serve". This matches the selector comment: it "will not build an isolate while one exists to use".</p>
+<pre><code class="language-rust">// crates/logic/isolate.rs:206-216
+/// [`place`], except that it will not build an isolate while one exists to
+/// use. The node is over a memory ceiling; another heap is the last thing it
+/// needs.
+fn place_without_growing(load: &amp;PoolLoad) -&gt; Placement {
+    match load.live().min_by_key(|(_, l)| l.turns) {
+        Some((id, _)) =&gt; Placement::Existing(id),
+        None =&gt; Placement::Grow,
+    }
+}
+</code></pre>
+<p>A cell goes to the fullest isolate that still has room. This packing rule looks backwards. The reason is eviction. A heap comes back only when an isolate has no cell left to hold. If placement spread new cells onto the emptiest isolate, eviction would empty one heap and placement would refill it. The heap would never reach zero cells, and retirement would never free it. Packing keeps the number of partly filled heaps small, so each heap that retirement chooses is likely to empty.</p>
+<p>The tie-break <code>(l.cells, Reverse(id))</code> puts a new cell on the isolate with the smaller slot index when the cell counts are equal. <code>Reverse</code> inverts the comparison of the identifier, so the largest key belongs to the smallest index. A grown slot is appended to the pool vector, so a smaller index normally means an older isolate. A reused index is the exception, because <code>grow</code> reuses the position of a freed slot. The tie-break only decides where a new cell goes, so an approximate age is enough.</p>
+<p>A worked example makes the direction clear. Isolates A (<code>id = 0</code>), B (<code>id = 1</code>), and C (<code>id = 2</code>) hold 31, 32, and 31 cells, with <code>max_cells = 32</code>. The filter removes B. The remaining keys are <code>(31, Reverse(0))</code> and <code>(31, Reverse(2))</code>. <code>max_by_key</code> compares <code>Reverse(0)</code> with <code>Reverse(2)</code>; the inverted order makes <code>Reverse(0)</code> the larger key. The new cell therefore goes to A, the oldest isolate with room.</p>
+<pre><code class="language-rust">// crates/logic/isolate.rs:264-296 (abridged)
+/// There is no separate cell-isolate ceiling. The node-wide resident and RSS
+/// limits decide whether this node can host another cell. Once ownership has
+/// admitted the cell, placement always provides enough isolates to preserve
+/// the per-isolate limit.
+pub fn place_cell(load: &amp;PoolLoad) -&gt; Placement {
+    match load
+        .live()
+        .filter(|(_, l)| l.cells &lt; load.limits.max_cells)
+        .max_by_key(|(id, l)| (l.cells, std::cmp::Reverse(*id)))
+    {
+        // No isolate, or every one of them is draining.
+        None =&gt; Placement::Grow,
+        Some((id, _)) =&gt; Placement::Existing(id),
+    }
+}
+</code></pre>
+<p>The pool wraps these decisions. Stateless growth is capped at <code>max_stateless</code>, and the cap is checked again under <code>slots.write()</code>. The second check is necessary because admission reads a snapshot that it does not hold. Every request that saw the same pre-growth snapshot would otherwise decide to grow. Under load, a cap of two produced sixteen isolates, and the breach grew with offered concurrency. The re-check makes a late grow return an existing slot instead, and the worker that this call built is dropped on return. The isolate is built before the lock is taken, because loading a script runs JavaScript and can take milliseconds. Holding the pool lock across that work would stall every other placement on the node.</p>
+<p><code>resolve</code> is the small gear between a decision and a slot. For <code>Placement::Existing(id)</code> it returns the slot. For <code>Placement::Grow</code> it calls <code>grow(cap)</code>. In <code>admit_locked</code>, the <code>?</code> after <code>admit</code> converts a <code>Refusal</code> into an <code>AdmitError</code> through <code>impl From<Refusal> for AdmitError</code>. The <code>.map_err</code> after <code>resolve</code> converts a failed build into <code>AdmitError::Build</code>.</p>
+<p>Cell growth passes no cap, because ownership has already agreed that this node serves the cell and node memory is bounded before placement. <code>house</code> cannot fail, so <code>place_cell</code> returns a residency for every successful <code>resolve</code>. A cell start can still fail earlier, in <code>resolve</code>, if the isolate cannot be built.</p>
+<pre><code class="language-rust">// crates/celld/pool.rs:688-693
+    fn admit_locked(&amp;self, shedding: bool) -&gt; Result&lt;Affiliation, AdmitError&gt; {
+        let placement = celld_logic::isolate::admit(&amp;self.load(), shedding)?;
+        self.resolve(placement, Some(self.limits.max_stateless))
+            .map(|slot| slot.affiliate())
+            .map_err(AdmitError::Build)
+    }
+</code></pre>
+
+<pre><code class="language-rust">// crates/celld/pool.rs:730-744 (abridged)
+    pub fn place_cell(&amp;self) -&gt; Result&lt;Residency&gt; {
+        let _maintenance = self.maintenance.write().expect(&quot;pool poisoned&quot;);
+        let placement = celld_logic::isolate::place_cell(&amp;self.load());
+        // Cell isolates have no arbitrary total cap. The resident-cell and
+        // RSS limits bound node memory before placement. The lock keeps this
+        // reservation exact and prevents maintenance from retiring the slot.
+        Ok(self.resolve(placement, None)?.house(self.limits.max_cells))
+    }
+</code></pre>
+<p>The middle gear between "admit" and "refuse" is a bounded wait.</p>
+<pre><code class="language-rust">// crates/celld/pool.rs:695-735 (abridged)
+    /// [`admit`](Self::admit), except a request that finds the node full
+    /// waits — bounded — for a slot instead of being refused at once.
+    ///
+    /// The wait is the middle gear between &quot;admit&quot; and &quot;refuse&quot;. At
+    /// overload the parse-and-503 path costs about half a served request,
+    /// so a node refusing 200k times a second spends its cores saying no.
+    /// A parked waiter costs nothing until an `Affiliation` drop hands it
+    /// the slot.
+    pub async fn admit_or_wait(&amp;self, shedding: bool) -&gt; Result&lt;Affiliation, AdmitError&gt; {
+        let deadline_ms =
+            crate::asyncrt::mono_ms().saturating_add(self.admission_wait.as_millis() as u64);
+        loop {
+            let freed = self.freed.notified();
+            match self.admit(shedding) {
+                Err(AdmitError::Refused(Refusal::NodeFull)) =&gt; {
+                    tokio::pin!(freed);
+                    crate::asyncrt::select_biased! {
+                        &quot;a slot freed in the same instant as the deadline goes to the caller&quot;;
+                        _ = &amp;mut freed =&gt; {},
+                        _ = crate::asyncrt::sleep_until(deadline_ms) =&gt; {
+                            return Err(AdmitError::Refused(Refusal::NodeFull));
+                        }
+                    }
+                }
+                other =&gt; return other,
+            }
+        }
+    }
+</code></pre>
+<p>Four details make the wait correct. First, only <code>NodeFull</code> parks. A <code>NodePressured</code> refusal returns at once, because pressure means give resources back, not hold callers. Second, the deadline is computed once, before the loop, so a wake that loses the race for the freed slot cannot extend the wait. Third, the notify future is armed before the admission check, so a slot that frees between the failed check and the park cannot produce a lost wakeup. A <code>Notified</code> future records its notification in itself when it is created, so the wait that starts later still sees a notification that arrived in between. Fourth, <code>select_biased!</code> prefers a freed slot when a slot and the deadline are ready in the same instant, because a slot that freed exactly as the deadline expired is a slot the caller can use.</p>
+<p><code>select_biased!</code> is a celld macro, not a Tokio macro. The runtime's own <code>select!</code> is fair and rejects <code>biased;</code> at compile time. <code>select_biased!</code> therefore requires a non-empty reason string as its first token, and it always takes the first ready branch. The macro accepts only a string literal in that position, so a caller cannot leave the reason out.</p>
+<p><code>mono_ms()</code> returns monotonic milliseconds since the execution domain started. An execution domain is the asynchronous runtime instance that owns the timers and tasks. The deadline is an absolute value in that clock, so it does not move when the wall clock moves. <code>saturating_add</code> prevents a wrap at the top of the <code>u64</code> range.</p>
+<p><code>CELLD_ADMISSION_WAIT_MS</code> sets the wait. The default is 1000 milliseconds. Zero restores refuse-at-once behaviour. Without the wait, a node refusing 200,000 times a second spends its cores on parse and refusal. A parked waiter costs nothing until an affiliation drop hands it a slot.</p>
+<pre><code class="language-rust">// crates/celld/engine_api.rs:862-877
+/// How long a stateless request may wait for a free `max_requests` slot
+/// before it is refused. Zero restores the old refuse-at-once behaviour.
+/// The default is one second: long enough that a saturated node converts
+/// its refusal storm into kernel-buffer queueing, short enough that a
+/// caller learns the truth before it matters.
+pub fn admission_wait() -&gt; std::time::Duration {
+    // Not `env_usize`, which filters zero out — zero is meaningful here.
+    let ms = crate::env_vars::with_default(&quot;CELLD_ADMISSION_WAIT_MS&quot;, 1000u64)
+        .expect(&quot;validated CELLD_ADMISSION_WAIT_MS&quot;);
+    std::time::Duration::from_millis(ms)
+}
+</code></pre>
+<p>The limits are one policy, not independent settings.</p>
+<pre><code class="language-rust">// crates/celld/runtime.rs:453-478
+pub fn pool_limits() -&gt; celld_logic::isolate::PoolLimits {
+    const GROW_AT: usize = 2;
+    const SHRINK_UNDER: usize = 1;
+    const MAX_CELLS_PER_ISOLATE: usize = 32;
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    celld_logic::isolate::PoolLimits {
+        // These thresholds form one hysteresis policy, so they are constants
+        // rather than two independently configurable values.
+        grow_at: GROW_AT,
+        shrink_under: SHRINK_UNDER,
+        max_stateless: env_usize(&quot;CELLD_MAX_STATELESS_ISOLATES&quot;).unwrap_or(cores),
+        max_requests: env_usize(&quot;CELLD_MAX_REQUESTS&quot;),
+        // This is an engine blast-radius policy. The resident-cell and RSS
+        // limits are the operator controls for node memory.
+        max_cells: MAX_CELLS_PER_ISOLATE,
+    }
+}
+</code></pre>
+<table><tr><th>Decision</th><th>Quantity balanced</th><th>Trigger</th><th>Can refuse</th></tr><tr><td>Stateless admission</td><td><code>requests</code>, node-wide</td><td><code>CELLD_MAX_REQUESTS</code> reached</td><td>Yes, 503</td></tr><tr><td>Stateless waiting</td><td><code>requests</code>, node-wide</td><td>a request leaves the pool, bounded by the admission wait</td><td>Yes, after the wait</td></tr><tr><td>Stateless placement</td><td><code>turns</code></td><td>least loaded isolate</td><td>No</td></tr><tr><td>Stateless growth</td><td><code>turns</code> and live isolates</td><td><code>grow_at</code> = 2 and below the ceiling</td><td>No</td></tr><tr><td>Cell placement</td><td><code>cells</code></td><td>fullest isolate below 32</td><td>No</td></tr><tr><td>Cell growth</td><td><code>cells</code></td><td>every isolate at 32</td><td>No</td></tr><tr><td>Retirement</td><td><code>requests</code></td><td>pool can absorb the turns</td><td>No</td></tr><tr><td>Heap free</td><td><code>turns</code>, <code>requests</code>, <code>cells</code></td><td>all zero and the isolate is retiring</td><td>No</td></tr></table>
+<p>Two warnings follow from the table.</p>
+<p>First, <code>max_stateless</code> is a cap on <strong>live isolates in one stateless pool</strong>, not a cap on stateless requests and not a node-wide cap. The primary script and each service-binding script have their own pool, so each has its own copy of the cap. A cell host lives in a cell pool, not in a stateless pool, so it does not count against this cap. Within a cell pool, the only growth cap is the per-isolate cell limit of 32. A stateless request that arrives when the node-wide <code>requests</code> limit is reached waits in <code>admit_or_wait</code> for a request to leave the pool. When every isolate is above <code>grow_at</code> but the node is below its limits, the request queues for the least loaded isolate instead; it does not grow the pool.</p>
+<p>Second, cell placement has no total cap. The node-wide resident-cell limit and the resident set size (RSS) memory limit decide whether a node can host another cell. The resident set size is the amount of physical memory that the process currently holds. Placement is called only after ownership has agreed that this node serves the cell, so it always finds or builds a home, unless the isolate build itself fails.</p>
+<h2>Retirement and reclaiming heaps</h2>
+<p>The pool only grows unless something gives heaps back. Three paths give them back. Ordinary retirement shrinks an idle stateless pool. Generation retirement removes every heap of a superseded deployment. Condemnation removes an isolate whose guest can no longer run. The first two are policies. The third is a failure response.</p>
+<p>The maintenance task is the thing that carries out ordinary retirement and condemnation. <code>Worker::start</code> spawns one task for the pool. That task calls <code>reap</code> every 30 seconds and also waits on the pool's reclaim bell. When the bell rings, the task calls <code>free_drained</code> immediately instead of waiting for the next 30-second tick. If an admission or a cell start holds the pool guard, the task retries after 10 milliseconds; the constant <code>RECLAIM_RETRY</code> sets that delay (<code>crates/celld/runtime.rs:45</code>). The task holds only a weak reference to the pool, so it ends when the pool is dropped.</p>
+<p>Ordinary retirement selects at most one isolate per pass. It never selects an isolate that holds a cell.</p>
+<pre><code class="language-rust">// crates/logic/isolate.rs:311-351 (abridged)
+/// **An isolate hosting a cell is never a candidate.** Retiring rests on the
+/// victim emptying itself, and requests do that because they answer. A cell
+/// does not: it stays until it is evicted or handed to another node, neither
+/// of which retirement can cause. Choosing one would mark it retiring
+/// forever — refused new work, never drained, never freed — which is a
+/// smaller pool and a leak at the same time.
+pub fn retire(load: &amp;PoolLoad) -&gt; Option&lt;IsolateId&gt; {
+    let live = load.live().count();
+    if live == 0 {
+        return None;
+    }
+
+    let turns: usize = load.live().map(|(_, l)| l.turns).sum();
+    let remaining = live - 1;
+    if turns &gt; remaining.saturating_mul(load.limits.shrink_under) {
+        return None;
+    }
+
+    load.live()
+        .filter(|(_, l)| l.cells == 0)
+        .min_by_key(|(id, l)| (l.requests, std::cmp::Reverse(*id)))
+        .map(|(id, _)| id)
+}
+</code></pre>
+<p>The victim is the isolate with the fewest requests. When two isolates have the same count, the newest isolate loses, so a pool that grew for a burst gives back what the burst added. "Newest" here means the larger slot index, which is normally the slot that <code>grow</code> appended last. A reused index can break that order, but the choice is only a tie-break among isolates with equal load.</p>
+<p>A retirement is worth starting only when the remaining pool can absorb the current turns. That is the hysteresis band. Growth starts at two turns in flight. Retirement starts only when the remaining pool has one turn per isolate or less on average, which the code writes as <code>turns <= (live - 1) * shrink_under</code>. With <code>shrink_under</code> equal to one, the band between growth and retirement prevents a pool from growing and shrinking on the same load.</p>
+<p>A heap is freed only when it is provably empty. No turn, no affiliation, and no cell.</p>
+<pre><code class="language-rust">// crates/logic/isolate.rs:330-332
+pub fn may_free(load: &amp;IsolateLoad) -&gt; bool {
+    load.retiring &amp;&amp; load.turns == 0 &amp;&amp; load.requests == 0 &amp;&amp; load.cells == 0
+}
+</code></pre>
+<p>The <code>cells</code> term is not redundant. Ordinary retirement never selects a housed isolate, but a generation-wide retirement marks every isolate, housed or not. Freeing a housed isolate would drop every resident cell in it.</p>
+<pre><code class="language-rust">// crates/celld/pool.rs:806-822 (abridged)
+    /// Retire every isolate, housed or not: the pool belongs to a superseded
+    /// application generation and must take no new work. Stateless slots
+    /// free as their affiliations drop; a slot hosting cells frees once the
+    /// last of them has moved to a newer generation, which `may_free`
+    /// enforces by refusing a housed isolate.
+    pub fn retire_all(&amp;self) {
+        let _maintenance = self.maintenance.write().expect(&quot;pool poisoned&quot;);
+        self.retired.store(true, Ordering::Relaxed);
+        for slot in self.slots.read().expect(&quot;pool poisoned&quot;).iter() {
+            if !slot.retiring.swap(true, Ordering::Relaxed) {
+                tracing::info!(isolate = %slot.heap_id, slot = slot.id, &quot;isolate retiring&quot;);
+            }
+        }
+        self.free_retired();
+    }
+</code></pre>
+<p>Two smaller functions carry that pass. <code>retire_one</code> asks <code>retire</code> for one victim and marks it as retiring. <code>free_retired</code> then walks every slot, asks <code>may_free</code>, and takes the worker only when <code>try_lock</code> succeeds. <code>try_lock</code> is correct here rather than blocking: a held lock means a turn is running, so the isolate is not drained and this pass has nothing to do. Taking the worker drops it, and the drop frees the V8 heap. The slot stays in the vector with no worker, and <code>grow</code> reuses that index.</p>
+<p>Cell pools use a different maintenance pass. They retire and free every empty isolate after an eviction, which is the removal of a cell from this node by the ownership layer. An empty cell heap has no warm request capacity worth keeping.</p>
+<pre><code class="language-rust">// crates/celld/pool.rs:793-804 (abridged)
+    /// Retire every empty isolate. Cell pools use this after eviction because
+    /// an empty cell heap carries no warm request capacity worth preserving.
+    pub fn reap_empty(&amp;self) {
+        let Ok(_maintenance) = self.maintenance.try_write() else {
+            tracing::debug!(
+                event = &quot;isolate_reap_skipped&quot;,
+                &quot;a cell start holds the pool; empty isolates wait for the next pass&quot;
+            );
+            return;
+        };
+        while self.retire_one() {}
+        self.free_retired();
+    }
+</code></pre>
+<p>The third path is for a broken isolate. The guest is the JavaScript program that runs in the isolate. If the guest can no longer run, the runtime condemns the isolate.</p>
+<pre><code class="language-rust">// crates/celld/pool.rs:433-452 (abridged)
+    pub(crate) fn condemn(&amp;self, reason: &amp;str) -&gt; bool {
+        let Some(reclaim) = &amp;self.reclaim else {
+            return false;
+        };
+        if !self.retiring.swap(true, Ordering::Relaxed) {
+            tracing::warn!(isolate = %self.heap_id, slot = self.id, reason, &quot;isolate condemned&quot;);
+        }
+        reclaim.notify_one();
+</code></pre>
+<p>A condemned isolate stops taking new work. The next placement grows a fresh isolate instead. Without this path, a dead isolate would fail each request in about one millisecond, so it would carry the fewest turns, and <code>place</code> would send it almost every request. The source comment records the concrete failure: on a four-isolate node, the periodic pass retired the three healthy isolates first, one per 30-second pass, so one fatal Python error failed that node's traffic for 94 seconds. celld also runs Python Workers, and this document covers the JavaScript path; the Python guest uses the same pool and the same heap limits. The bell exists to prevent that. It frees the heap as soon as the isolate drains, not at the next periodic pass, because a guest that fails on every start would otherwise hold one dead heap for each failure until the next tick, and a Python heap is tens of megabytes.</p>
+<p>A cell pool has no maintenance task on the bell. A condemned cell isolate still takes no new cell, and it frees when its cells leave. Python Workers cannot declare cells, so this case belongs to stateless pools in practice.</p>
+<h2>Building an isolate</h2>
+<p>A <strong>bootstrap file</strong> is a JavaScript source file that the celld binary embeds at build time. It is not part of any deployment. The prelude, the harness, and the six post-harness files are bootstrap files.</p>
+<p>A new isolate pays for execution, not for compilation. The prelude files and the harness compile once per process and are cached as bytecode. The cache is a process-wide table keyed by the name of each fixed bootstrap file, such as <code>harness.js</code> or <code>url.js</code>. Those names are the same for every Worker, so the word "script" in the cache comment means one of these bootstrap files, not an application Worker. A new isolate consumes the cache and executes it.</p>
+<p>The quoted phrase "every cell wake pays a fresh isolate" describes the cold case. A wake that finds a free place in an existing isolate calls <code>place_cell</code>, which returns <code>Existing</code>, and the pool builds nothing. A fresh isolate is built only when every live isolate already holds 32 cells, or when the cell pool has no isolate at all. The cache matters because that cold case is the expensive one.</p>
+<pre><code class="language-rust">// crates/celld/js/bootstrap.rs:11-23 (abridged)
+/// Per-process compiled-bytecode cache for the fixed bootstrap scripts.
+/// Every cell wake pays a fresh isolate, and without this each one re-parses
+/// and re-compiles the same ~23k lines of prelude + harness — the single
+/// largest slice of cold-wake latency. The first isolate compiles eagerly and
+/// publishes the cache; every later isolate consumes it and only executes.
+///
+/// Keyed by script name alone. Each script compiles as a function whose
+/// parameter list is `op_names()`, and V8&#x27;s cache check does not cover that
+/// list, so a cache is only valid while the list is the same for every
+/// isolate of the process. `op_names()` is fixed at build time; an op that
+/// varies per worker would have to enter the key.
+type BootstrapCache = std::collections::HashMap&lt;&amp;&#x27;static str, std::sync::Arc&lt;Vec&lt;u8&gt;&gt;&gt;;
+</code></pre>
+<p>The comment counts about 23,000 lines of prelude and harness. The bootstrap source is compiled into the binary. There is no network fetch at cold start.</p>
+<pre><code class="language-rust">// crates/celld/js/bootstrap.rs:25-30
+macro_rules! static_source {
+    ($name:ident, $file:literal) =&gt; {
+        static $name: v8::OneByteConst =
+            v8::String::create_external_onebyte_const(include_bytes!($file));
+    };
+}
+</code></pre>
+<p>The macro embeds each file with <code>include_bytes!</code>, so the bytes become a static array in the binary. <code>create_external_onebyte_const</code> then makes a V8 string that reads those bytes in place, with no copy at run time.</p>
+<p>Fourteen bootstrap files use this macro. Eight are the prelude, which installs before the harness: text encoding; Uniform Resource Locator (URL) and URL search parameters; <code>atob</code> and <code>btoa</code>, the two base64 text encoders (<code>atob</code> decodes text to binary, <code>btoa</code> encodes binary to text); headers; streams; writable streams; and text-encoding streams. Six install after the harness, because they build on its event target, its <code>fetch</code>, and its timers: message channels; event sources; the cache; sockets; the Hypertext Markup Language (HTML) rewriter; and crypto. The harness itself is a separate concatenation of <code>harness.js</code> and <code>services/kv.js</code>, where KV means key-value.</p>
+<p>The compile path has three cases.</p>
+<ol><li><strong>Cache hit.</strong> The table holds bytecode for this bootstrap file. V8</li></ol>
+<p>   consumes that bytecode with <code>ConsumeCodeCache</code>.</p>
+<ol><li><strong>Cache name, no entry.</strong> This is the first compile in this process. V8</li></ol>
+<p>   compiles with <code>EagerCompile</code>, and the runtime publishes the result into    the table. Eager compilation is necessary here: a lazy cache would push    the compile cost of each function body into the first request that calls    it, which is the cost that warming exists to remove.</p>
+<ol><li><strong>No cache name.</strong> This is a builtin module, not a bootstrap file. V8</li></ol>
+<p>   keeps its lazy compilation with <code>NoCompileOptions</code>, because most of a    builtin module is never called.</p>
+<pre><code class="language-rust">// crates/celld/js/bootstrap.rs:162-207 (abridged)
+pub(super) fn run_internal_script&lt;&#x27;s&gt;(
+    scope: &amp;mut v8::PinScope&lt;&#x27;s, &#x27;_&gt;,
+    cache: Option&lt;&amp;&#x27;static str&gt;,
+    code: v8::Local&lt;&#x27;s, v8::String&gt;,
+    arguments: &amp;InternalArguments&lt;&#x27;s&gt;,
+) -&gt; Result&lt;v8::Local&lt;&#x27;s, v8::Value&gt;&gt; {
+    let name = cache.unwrap_or(&quot;lazy script&quot;);
+    let cached = cache.and_then(|name| bootstrap_code_cache().lock().unwrap().get(name).cloned());
+    let function = match cached {
+        Some(bytes) =&gt; {
+            let data = v8::script_compiler::CachedData::new(&amp;bytes);
+            let mut source = v8::script_compiler::Source::new_with_cached_data(code, None, data);
+            let function = v8::script_compiler::compile_function(
+                scope, &amp;mut source, &amp;arguments.names, &amp;[],
+                CompileOptions::ConsumeCodeCache, NoCacheReason::NoReason,
+            )
+            .ok_or_else(|| anyhow!(&quot;bootstrap compile {name}&quot;))?;
+            function
+        }
+        // Eager for a cached bootstrap script: a lazily-compiled cache would
+        // push function-body compile cost back into every consumer&#x27;s first
+        // request. A lazy script keeps V8&#x27;s lazy compile.
+        None =&gt; {
+            let mut source = v8::script_compiler::Source::new(code, None);
+            let options = match cache {
+                Some(_) =&gt; CompileOptions::EagerCompile,
+                None =&gt; CompileOptions::NoCompileOptions,
+            };
+            // ... compile_function with `options`, then publish the cache
+        }
+    };
+</code></pre>
+<p>The first compile publishes its bytecode after V8 produces it.</p>
+<pre><code class="language-rust">// crates/celld/js/bootstrap.rs:211-216
+if let Some((name, data)) = cache.zip(function.create_code_cache()) {
+    bootstrap_code_cache()
+        .lock()
+        .unwrap()
+        .insert(name, std::sync::Arc::new(data.to_vec()));
+}
+</code></pre>
+<p>The cache key is the bootstrap file name. It is safe because the compiled function's parameter list is <code>op_names()</code>, and <code>op_names()</code> is fixed when the binary is built. <code>op_names()</code> returns one name for each host operation. The internal arguments then compile each bootstrap file as a function whose parameters are <code>__celld</code> followed by one binding for each operation, in table order. V8's cache check does not cover the parameter list, so a cache stays valid only while that list is the same for every isolate in the process. If an operation could differ per Worker, the operation name would have to become part of the key.</p>
+<p>Parameters are used instead of globals for three reasons. A bundle cannot name <code>__do_call</code> and address a cell it holds no stub for, because the operation is not a global. A loaded Worker, which is a Worker that the application creates at run time through the Worker Loader, with <code>globalOutbound: null</code> cannot reach the host at all except through the capabilities in its <code>env</code>. <code>globalOutbound</code> is the setting that controls the global <code>fetch</code> of a script, and a null value removes that function. A parameter is also a binding that user code cannot replace.</p>
+<p>Built-in modules are lazy in a different sense. A builtin is installed as a property on the global object with a getter. The module compiles the first time something reads that property. A Worker that never touches <code>node:zlib</code> never compiles it. Builtins are ECMAScript (ES) modules: JavaScript modules with <code>import</code> and <code>export</code> syntax, compiled only on first use.</p>
+<pre><code class="language-rust">// crates/celld/js/modules.rs:1-9
+//! ES module resolution and compilation.
+//!
+//! A specifier is either a builtin, whose source this module holds, or an
+//! import of another worker, which resolves through the loader. Most builtins
+//! are lazy: a module compiles the first time something reads its global, so
+//! a worker that never touches `node:zlib` never compiles it.
+</code></pre>
+<p>A deployment supplies the main module and any sibling modules. The loader accepts three module kinds. A text module is UTF-8 content, where UTF-8 means Unicode Transformation Format, 8-bit: an encoding that stores each character in one to four bytes. A sibling ES module is JavaScript source in a second file. A Wasm module is WebAssembly: a binary instruction format that the runtime compiles to machine code. Wrangler is the Cloudflare command-line deployment tool whose configuration format celld accepts, and the Worker Loader is the binding that loads Worker code at run time. The module bytes arrive from the deployment graph, so the loader never fetches source from the network.</p>
+<pre><code class="language-rust">// crates/celld/engine_api.rs:271-282
+pub enum ModuleSource {
+    /// UTF-8 content served as `export default &quot;&lt;content&gt;&quot;` (wrangler&#x27;s Text
+    /// rule), registered under the given specifier verbatim.
+    Text(String),
+    /// JS source compiled as a sibling ES module (Worker Loader multi-module
+    /// bundles), registered under both `name` and `./name`.
+    EsModule(String),
+    /// Wasm bytes served as a module whose default export is the compiled
+    /// `WebAssembly.Module` (Wrangler&#x27;s `CompiledWasm` rule), registered
+    /// under both `name` and `./name`.
+    Wasm(bytes::Bytes),
+}
+</code></pre>
+<p>Text modules are registered with the JavaScript Object Notation (JSON) string form. JSON is a text format for values. Registration through JSON escapes the content correctly, so a quote or a newline in the file cannot break the module source.</p>
+<p>The worker configuration carries the bindings and the compatibility flags.</p>
+<pre><code class="language-rust">// crates/celld/engine_api.rs:300-315
+pub struct WorkerConfigOptions {
+    pub src: String,
+    pub script_name: String,
+    pub do_classes: Vec&lt;String&gt;,
+    pub bindings: Vec&lt;(String, String)&gt;,
+    pub r2_bindings: Vec&lt;(String, String)&gt;,
+    pub d1_bindings: Vec&lt;(String, String)&gt;,
+    pub kv_bindings: Vec&lt;(String, String)&gt;,
+    pub queue_bindings: Vec&lt;QueueBinding&gt;,
+    pub queue_consumers: Vec&lt;protocol::QueueConsumerConfig&gt;,
+    pub workflow_bindings: Vec&lt;WorkflowBinding&gt;,
+    pub vars: Vec&lt;(String, String)&gt;,
+    pub node: String,
+    pub modules: Vec&lt;(String, ModuleSource)&gt;,
+    pub compat: Compat,
+}
+</code></pre>
+<p>The fields group by purpose. <code>src</code> is the source of the main module, and <code>script_name</code> is the name that the deployment uses for it. <code>modules</code> holds the sibling modules. <code>bindings</code> holds plain text bindings. <code>r2_bindings</code> holds object storage bindings, where R2 is the object storage service that the platform exposes. <code>d1_bindings</code> holds SQLite database bindings, where D1 is the hosted database service that is backed by SQLite. <code>kv_bindings</code> holds key-value bindings; KV means key-value. <code>queue_bindings</code> lets a Worker send to a queue, and <code>queue_consumers</code> tells the runtime how to deliver a queue to this Worker. <code>workflow_bindings</code> binds a Workflow service. <code>vars</code> holds plain variables that appear in <code>env</code>.</p>
+<p><code>WorkerConfigOptions</code> does not carry the main module name. The builder that builds the worker configuration sets <code>main_module_name</code> separately with <code>with_main_module_name</code> (<code>crates/celld/js.rs:2106-2107</code>), and the loader compiles and registers the main module under that name (<code>:5865</code>).</p>
+<p>Three fields are easy to misread.</p>
+<ul><li><code>do_classes</code> is the list of Durable Object classes that the module exports.</li></ul>
+<p>  The loader reads each class from the module namespace and registers it in   <code>__cell.classes</code>. A class that the module does not export fails the load.</p>
+<ul><li><code>node</code> is this node's identity. <code>inject_routing(scope, node)</code> uses it to</li></ul>
+<p>  tell the harness which cells are local. It is not the Node.js   compatibility setting.</p>
+<ul><li><code>compat</code> changes JavaScript behaviour, not only feature availability. A</li></ul>
+<p>  compatibility flag can change what a method deletes, how a binary frame is   typed, or whether a message is parsed as JSON.</p>
+<p>Compatibility flags include <code>delete_all_deletes_alarm</code>, <code>js_rpc</code>, <code>fetcher_get_put_delete</code>, <code>sqlite_vec</code>, <code>websocket_standard_binary_type</code>, and <code>queue_json_messages</code>, among others. Each flag corresponds to a documented platform difference. <code>delete_all_deletes_alarm</code> makes <code>storage.deleteAll()</code> remove the alarm as well as the stored keys. <code>js_rpc</code> allows RPC on a class that does not extend <code>DurableObject</code>. <code>fetcher_get_put_delete</code> enables those three methods on a fetcher. <code>sqlite_vec</code> enables the SQLite vector extension. <code>websocket_standard_binary_type</code> selects the binary frame type. <code>queue_json_messages</code> delivers a queue message as parsed JSON.</p>
+<p>The JavaScript spelling is not the configuration spelling. The configuration field is <code>js_rpc</code>, in snake case. The harness exposes the same flag as <code>__cell.compat.jsRpc</code>, in camel case, because JavaScript code reads it. The other flags follow the same pattern: <code>fetcher_get_put_delete</code> becomes <code>fetcherGetPutDelete</code>, and <code>queue_json_messages</code> becomes <code>queueJsonMessages</code>.</p>
+<p>The <strong>deployment graph</strong> is the set of bucket objects that one deployment writes: the manifest, the module blobs, the deployment pointer, the named pointers, and the queue attachments. <code>DeploymentGraph::load</code> reads those objects and turns them into <code>WorkerConfigOptions</code>, so the module bytes reach the isolate from a local read and never from the network.</p>
+<div class="mermaid">
+flowchart LR
+    B[(&quot;Bucket: deployment objects&quot;)] --&gt; G[&quot;DeploymentGraph::load&quot;]
+    G --&gt; W[&quot;WorkerConfigOptions&quot;]
+    W --&gt; I[&quot;New V8 isolate&quot;]
+    I --&gt; C{&quot;Bytecode cache hit&lt;br/&gt;for this bootstrap file?&quot;}
+    C --&gt;|hit| X[&quot;Consume cached bytecode,&lt;br/&gt;then execute prelude and harness&quot;]
+    C --&gt;|miss| K[&quot;Compile eagerly, publish cache&quot;]
+    K --&gt; X
+    X --&gt; N[&quot;Install bindings, routing, flags&quot;]
+    N --&gt; M[&quot;Instantiate and evaluate main module&quot;]
+    M --&gt; R[&quot;DO classes exported during evaluation,&lt;br/&gt;recorded in __cell.classes&quot;]
+
+</div>
+<p>The load order is fixed, and the snippet gives each step in order.</p>
+<ol><li>Create the context.</li><li>Install the host operations as function parameters (<code>install_ops</code>).</li><li>Install the prelude, then the harness with its six post-harness files,</li></ol>
+<p>   then the lazy globals.</p>
+<ol><li>Inject the compatibility globals and the storage compatibility globals.</li></ol>
+<p>   This step must come before the main module, because a bundle can read    <code>Cloudflare.compatibilityFlags</code> at module scope.</p>
+<ol><li>Compile the main module.</li><li>Register the builtin stubs, the text modules, the Wasm modules, and the</li></ol>
+<p>   loader modules. Registration comes after compilation because a module's    imports are resolved during instantiation, not during compilation.</p>
+<ol><li>Instantiate and evaluate the module.</li></ol>
+<p>Only after step 7 can a cell instance exist.</p>
+<pre><code class="language-rust">// crates/celld/js.rs:5849-5874 (abridged)
+        let (context, fetch) = {
+            v8::scope!(let hs, &amp;mut isolate);
+            let context = v8::Context::new(hs, Default::default());
+            let cs = &amp;mut v8::ContextScope::new(hs, context);
+            // ...
+            let arguments = install_ops(scope);
+            install_prelude(scope, &amp;arguments)?; // Web Platform APIs
+            install_harness(scope, &amp;arguments)?; // DO object model + minimal Response
+            install_lazy_globals(scope)?;
+            // A global, so it must exist before the module evaluates: bundles
+            // read Cloudflare.compatibilityFlags at module scope.
+            inject_compatibility_flags(scope, compat)?;
+            inject_storage_compatibility(scope, compat)?;
+
+            let module = match compile_module(scope, &amp;config.main_module_name, src) {
+                Some(m) =&gt; m,
+                None =&gt; return Err(anyhow!(&quot;compile: {}&quot;, exc!(scope))),
+            };
+            register_stubs(scope, &amp;config); // cloudflare:*/node:* + text modules
+            register_wasm_modules(scope, &amp;config.modules);
+            register_loader_modules(scope, &amp;config, module);
+            // ... instantiate and evaluate
+</code></pre>
+<p>Each stateless pool builds its first isolate at startup, not on the first request. That covers the primary script and every service-binding script, because each one starts its own <code>Worker</code>. A cell pool builds no isolate at startup. Two reasons drive the eager build. A node whose script does not load must fail at boot, not on every request. And the compile cost must not land on the first client.</p>
+<pre><code class="language-rust">// crates/celld/runtime.rs:2724-2743 (abridged)
+    pub fn start(
+        config: Arc&lt;WorkerConfig&gt;,
+        node: Arc&lt;str&gt;,
+        region: Arc&lt;str&gt;,
+    ) -&gt; anyhow::Result&lt;Self&gt; {
+        let build = {
+            let config = config.clone();
+            move || Worker::load_config(config.clone())
+        };
+        let isolates = Arc::new(crate::pool::Pool::new(
+            pool_limits(),
+            admission_wait(),
+            Box::new(build),
+        ));
+        // Eagerly, so a script that does not load fails here rather than on
+        // every request, and so the first request does not pay for compiling
+        // it. Growth past this one stays lazy.
+        isolates.warm().context(&quot;stateless Worker failed to load&quot;)?;
+</code></pre>
+<p><code>warm</code> builds one slot. It is not the only isolate. It is the only eager one. A cell pool has no warm call, because a cell pool starts empty and grows when the first cell arrives.</p>
+<h2>How a cell becomes an object</h2>
+<p>A cell is a scope string of the form <code>Class:identifier</code>. The harness keeps one instance for each scope. The first event that needs the scope builds the instance and keeps it in a table.</p>
+<p><code>__cell</code> is the namespace object that the harness uses for the whole isolate. Every cell of the script shares it. Its main members are <code>instances</code>, the table of live cell objects; <code>classes</code>, the Durable Object classes that the main module exports; <code>env</code>, the bindings object that handlers receive; <code>compat</code>, the compatibility flags in camel case; <code>doExports</code>, a boolean for each class that says whether it extends <code>DurableObject</code>; <code>facetConfigs</code>, the identity and properties of each facet; <code>idNames</code>, the stored name of each cell; and <code>containers</code>, the classes that declare a container.</p>
+<pre><code class="language-js">// crates/celld/js/harness.js:2870-2887
+function _instance(scope) {
+  let inst = __cell.instances[scope];
+  if (!inst) {
+    const className = scope.split(&quot;:&quot;)[0];
+    const cls = __cell.classes[className];
+    if (!cls) throw new Error(&quot;no DO class &quot; + className);
+    const state = new DurableObjectState(scope);
+    inst = new cls(state, __cell.env);
+    Object.defineProperty(inst, &quot;__celldState&quot;, { value: state });
+    // Workerd worker-rpc.c++ getTargetInfo(): RPC needs `extends
+    // DurableObject` unless the js_rpc compat flag is on. Decided
+    // once here; dispatch reads a boolean.
+    state._rpcOk = __cell.compat.jsRpc ||
+      __cell.doExports[className] === true;
+    __cell.instances[scope] = inst;
+  }
+  return inst;
+}
+</code></pre>
+<p>The table is keyed by the full scope, not by the class and identifier separately. Two cells of different classes in the same isolate therefore cannot collide. Two isolates never hold the same cell, because ownership assigns each cell to one node and the pool assigns it to one slot.</p>
+<p>Two hidden links make reset safe. <code>__celldState</code> is a non-enumerable property on the instance that points back to its <code>DurableObjectState</code>; the reset code compares it with the state that failed, so it deletes only its own instance. <code>state._rpcOk</code> is decided once, at construction. Remote procedure calls are allowed when the <code>js_rpc</code> flag is on, or when the class extends <code>DurableObject</code>; the dispatch path reads a boolean and does not repeat the check.</p>
+<p>The state object is the application-visible half of the cell. It owns storage, the cell identifier, the facet table, and the container handle when the class declares one. <code>__cell.idNames[scope]</code> holds the name when the identifier came from <code>idFromName(name)</code> and the name is at most 1024 bytes. A longer name is dropped, so <code>ctx.id.name</code> is <code>undefined</code>, but the full name still seeds the routing hash (<code>crates/celld/js/harness.js:5162-5169</code>).</p>
+<pre><code class="language-js">// crates/celld/js/harness.js:2582-2603 (abridged)
+class DurableObjectState {
+  constructor(scope) {
+    this._scope = scope;
+    this._aborted = false;
+    this.storage = new DurableObjectStorage(scope, this);
+    this.facets = new DurableObjectFacets(this);
+    this._gate = Promise.resolve();
+    this._blockDepth = 0;
+    const facet = __cell.facetConfigs[scope];
+    this._facetDepth = facet?.depth ?? 0;
+    const separator = scope.indexOf(&quot;:&quot;);
+    const className = separator &lt; 0 ? scope : scope.slice(0, separator);
+    this.id = facet === undefined
+      ? new DurableObjectId(
+        className, separator &lt; 0 ? scope : scope.slice(separator + 1),
+        __cell.idNames[scope])
+      : typeof facet.id === &quot;string&quot; ? facet.id : new DurableObjectId(...facet.id);
+    this.props = facet?.props;
+    // A class outside `containers` has no `ctx.container`, which is what
+    // the `@cloudflare/containers` constructor checks.
+    if (__cell.containers[className]) this.container = new Container(scope);
+  }
+</code></pre>
+<p>The fields of the state object divide the cell's public surface. <code>_scope</code> is the cell scope. <code>_aborted</code> becomes true when a failed critical section resets the object. <code>storage</code> is the <code>DurableObjectStorage</code> facade. <code>facets</code> manages child facets. <code>_gate</code> is the promise that <code>_ready()</code> awaits, so a constructor block finishes before the first event runs. <code>_ready()</code> is a harness method that returns <code>_gate</code>, and the event path awaits it before it calls a handler (<code>crates/celld/js/harness.js:2797</code>). <code>_blockDepth</code> counts nested <code>blockConcurrencyWhile</code> calls. <code>_facetDepth</code> records how deep a facet sits below its root. <code>id</code> is the <code>DurableObjectId</code>. <code>props</code> is the facet's property bag. <code>container</code> exists only when the class is listed in <code>__cell.containers</code>.</p>
+<p>Opening the cell is a separate step, and it happens before the instance is built. <code>own_cell</code> opens the cell's SQLite database and restores the persisted identifier name. It also clears everything that the isolate still holds for an earlier residency of the same scope, so no state can span two epochs. The instance itself is built lazily by <code>_instance</code> when the first event arrives.</p>
+<pre><code class="language-rust">// crates/celld/js.rs:6123-6149 (abridged)
+    /// Take a cell into this isolate or give it back.
+    ///
+    /// Taking it opens the cell&#x27;s SQLite -- which the isolate owns, not the
+    /// caller -- and restores the persisted id name. Giving it back releases
+    /// what the isolate holds for the residency and closes the database, so
+    /// state cannot span two epochs.
+    pub fn own_cell(
+        &amp;mut self,
+        cell: &amp;str,
+        storage: Option&lt;CellStorage&lt;&#x27;_&gt;&gt;,
+    ) -&gt; Result&lt;celld_logic::wake::AlarmSnapshot&gt; {
+        let compat = self.inner.as_ref().expect(&quot;live worker isolate&quot;).compat;
+        let (mut locker, _cells) = self.lock();
+        v8::scope!(let hs, &amp;mut *locker);
+        let realm = self.realm(hs);
+        let context = realm.context;
+        let cs = &amp;mut v8::ContextScope::new(hs, context);
+        let tc = std::pin::pin!(v8::TryCatch::new(cs));
+        let alarm = adopt_cell(&amp;mut tc.init(), cell, storage, compat)?;
+        Ok(observe_alarm(cell, alarm))
+    }
+</code></pre>
+<p>The give-back side is <code>__cell.release</code>. It removes everything that belongs to the residency rather than to the isolate, so a new instance inherits nothing from an earlier epoch.</p>
+<p>Two details of <code>own_cell</code> need a name. <code>self.inner</code> is the <code>WorkerIsolate</code> inside the outer <code>Worker</code> (<code>crates/celld/js.rs:2190-2192</code>). <code>self.lock()</code> returns the V8 <code>Locker</code> and an <code>Installed</code> guard; the guard is the <code>_cells</code> binding in the snippet, and it makes the isolate's cells reachable while the lock is held (<code>:2266-2268</code>).</p>
+<pre><code class="language-js">// crates/celld/js/harness.js:3956-3970 (abridged)
+const __cellRelease = (scope) =&gt; {
+  __cell.instances[scope]?.ctx?.facets?._release();
+  delete __cell.instances[scope];
+  delete __cell.idNames[scope];
+  delete __cell.facetConfigs[scope];
+  __brokenActors.delete(scope);
+  __cellBlocks.delete(scope);
+  // ... release stub entries and revive handles
+};
+</code></pre>
+<p><code>__cellBlocks</code> is the per-scope block record that <code>blockConcurrencyWhile</code> keeps. The release deletes it, so a new epoch starts with no open block.</p>
+<p>Storage is asynchronous in JavaScript and synchronous underneath. Each method converts the JavaScript value, calls a Rust function, and returns a promise. The Rust function reads or writes the cell's SQLite database directly. There is no separate storage server and no network hop for a local read.</p>
+<pre><code class="language-js">// crates/celld/js/harness.js:1601-1626 (abridged)
+async get(k) {
+  this._assertTransactionActive(&quot;get&quot;);
+  if (!this._transactionControl) await Promise.resolve();
+  if (!this._flushPendingPuts()) return;
+  const key = Array.isArray(k) ? JSON.stringify(k) : String(k);
+  return __readStoredValue(this._scope, key, () =&gt; __storage_get(...));
+}
+async put(k, val) {
+  __storage_queue_put(this._scope, k, val);
+  await Promise.resolve();
+  this._flushPendingPuts();
+}
+</code></pre>
+<p>The two methods show the asynchronous bridge. <code>get</code> reads through a host operation and converts the stored bytes back to a JavaScript value. <code>put</code> does not write at once: it appends to a pending buffer, yields one microtask, and then flushes the buffer to SQLite. The microtask boundary is what lets an earlier put finish first. It also makes the write reach SQLite before the caller can roll back a transaction, and the input gate admits no other event in between, so a later rollback cannot overtake the write.</p>
+<p><code>_flushPendingPuts</code> returns <code>false</code> when the transaction already ended, either because an admitted put resumed after its boundary or because the cell aborted. In that case the call returns at once and does not flush a later scope. <code>__readStoredValue</code> is the harness helper that converts the stored bytes: a plain value becomes a value, and a stored map becomes a <code>Map</code>.</p>
+<p>A facet is a child cell of a root cell, not a child realm. It has its own object identifier and its own SQLite database, which sits under the root's storage path. It has no ownership of its own: it moves with its root and never appears in the ownership record or in placement. A facet of the script's own class runs in the isolate that holds its root, so the root and the facet share one realm. <code>own_embedded_cell</code> opens the facet database and records the facet in <code>__cell.facetConfigs</code> with its identifier, properties, and depth. <code>__cell.release</code> releases the facets when the root leaves, because nothing else would close them. A facet of a class from another script runs in that script's isolate instead, which is why the facet path carries the root's storage identity with it.</p>
+<h2>The driver loop</h2>
+<p>One task drives one request. The task enters the isolate for each turn. Between turns it waits on the request's own operations, the client's cancellation, the handler budget, a gated reply, or a cross-entry gate change.</p>
+<pre><code class="language-rust">// crates/celld/runtime.rs:2249-2270 (abridged)
+async fn drive_worker(
+    slot: &amp;crate::pool::Slot,
+    job: crate::WorkerJob,
+    trace: Option&lt;crate::telemetry::TraceContext&gt;,
+    budget: Duration,
+    mut after_turn: impl FnMut(&amp;js::InFlight),
+    on_finish: impl FnOnce(&amp;js::InFlight),
+) {
+    let mut ops = Ops::new();
+
+    let (begun, started) = slot.turn(|worker| worker.turn_begin(job, trace)).await;
+    // Nothing is in flight; the reply already carries the error.
+    let Some(mut entry) = begun else {
+        drop(started);
+        return;
+    };
+    if entry.keeps_native_ops() {
+        adopt(&amp;mut ops, started);
+    } else {
+        drop(started);
+        abort_ops(&amp;mut ops, &amp;mut entry);
+    }
+</code></pre>
+<p>The first turn returns two values. <code>begun</code> is the entry, or <code>None</code> when the turn produced only an error reply. <code>started</code> is the operations that the first turn began. If the entry keeps native operations, the driver adopts them. If it does not, the driver drops and aborts them before the next event runs. <code>after_turn</code> runs after every turn, including the first, while the driver continues. <code>on_finish</code> runs once when the entry finishes, just before the driver reports the result.</p>
+<p><code>adopt</code> converts each started operation into a future and puts that future in <code>Ops</code>, the set that the wait polls. <code>abort_ops</code> clears <code>Ops</code> and calls <code>entry.abandon()</code>. Abandon cancels the native futures and removes their JavaScript resolvers together, so a failed handler cannot leave a resolver that would resume it after the event has closed.</p>
+<p>The wait is one function. It is the only place that waits for the request's own outstanding work. Entering an isolate also waits, but that wait is for the turn lane, not for an event. Every other step either holds the isolate or does arithmetic.</p>
+<pre><code class="language-rust">// crates/celld/runtime.rs:2330-2356 (abridged)
+enum Wake {
+    /// One of its own ops finished.
+    Op(u64, Result&lt;asyncrt::OpOut, String&gt;),
+    /// The detached output-gate waiter sent, or abandoned, the final reply.
+    GatedReply(Result&lt;js::GatedReplyCompletion, tokio::sync::oneshot::error::RecvError&gt;),
+    /// The handler has answered, so cancel its detached reply gate.
+    CancelGatedReply,
+    /// A cross-entry claim changed, or subscribing closed a retirement gap.
+    CrossEntryGateChanged,
+    /// Its client hung up, or shutdown forced the complete event to retire.
+    Cancelled { shutdown: bool },
+    /// It ran past the handler budget without answering.
+    Expired,
+    /// Nothing outstanding could ever move it.
+    Idle,
+    /// A nested Worker entrypoint is pending without native work.
+    PendingEventIdle,
+    /// Nothing of its own is outstanding, but another event of the same cell
+    /// still could settle it. Look in and see.
+    Poll,
+}
+</code></pre>
+<p>Each variant names one reason to run again. <code>Op</code> means that a native operation settled. <code>GatedReply</code> means that the detached output-gate waiter returned the final reply. <code>CancelGatedReply</code> means that the handler has answered, so the detached gate is no longer needed. <code>CrossEntryGateChanged</code> means that another event changed the gate state. <code>Cancelled</code> means that the client disconnected, or that a shutdown retired the event. <code>Expired</code> means that the handler budget ran out. <code>Idle</code> means that nothing that this event owns can ever move it. <code>PendingEventIdle</code> means that a nested Worker entrypoint is pending without native work. <code>Poll</code> means that nothing of this event is outstanding, but another event of the same cell could still settle it, so the driver looks in and checks.</p>
+<p>The loop consumes each wake, then decides whether to keep the native operations of the turn. The loop ends when the entry reports that it has finished.</p>
+<pre><code class="language-rust">// crates/celld/runtime.rs:2273-2325 (abridged)
+while !entry.finished() {
+    let started = match wake_with_cross_entry_gate(&amp;mut ops, &amp;mut entry, budget).await {
+        Wake::Op(op, result) =&gt; {
+            slot.turn(|worker| worker.turn_deliver(&amp;mut entry, op, result)).await
+        }
+        Wake::GatedReply(completion) =&gt; {
+            entry.finish_gated_reply(completion);
+            Vec::new()
+        }
+        Wake::CancelGatedReply =&gt; {
+            entry.cancel_gated_reply();
+            Vec::new()
+        }
+        Wake::CrossEntryGateChanged =&gt; {
+            entry.finish_cross_entry_gates();
+            Vec::new()
+        }
+        Wake::Cancelled { shutdown } =&gt; {
+            let started = slot.turn(|worker| {
+                if shutdown {
+                    worker.turn_cancel_for_shutdown(&amp;mut entry)
+                } else {
+                    worker.turn_cancel(&amp;mut entry)
+                }
+            }).await;
+            entry.cancel_gated_reply();
+            started
+        }
+        Wake::Expired =&gt; {
+            entry.time_out(budget);
+            Vec::new()
+        }
+        Wake::Idle =&gt; {
+            entry.stuck();
+            Vec::new()
+        }
+        Wake::PendingEventIdle =&gt; {
+            slot.turn(|worker| worker.turn_cancel_pending_events(&amp;mut entry)).await
+        }
+        Wake::Poll =&gt; slot.turn(|worker| worker.turn_poll(&amp;mut entry)).await,
+    };
+    if entry.keeps_native_ops() {
+        adopt(&amp;mut ops, started);
+    } else {
+        drop(started);
+        abort_ops(&amp;mut ops, &amp;mut entry);
+    }
+    after_turn(&amp;entry);
+}
+</code></pre>
+<p>Three kinds of arm appear in the loop. <code>Op</code>, <code>Cancelled</code>, <code>PendingEventIdle</code>, and <code>Poll</code> enter the isolate for another turn, and that turn may start new native operations. <code>GatedReply</code>, <code>CancelGatedReply</code>, and <code>CrossEntryGateChanged</code> only move gate state, so they start no work and their <code>started</code> list is empty. <code>Expired</code> and <code>Idle</code> finish the entry in a failed state; a later <code>after_turn</code> reports it. After every arm, the driver keeps the new operations only when the entry says that it can carry them, and otherwise it aborts them. The same conversion applies to the first turn, which is why the start of the function runs it once before the loop. The handler budget is checked by the wait, so the loop itself does no clock arithmetic.</p>
+<p>The wait is wrapped, not duplicated. <code>wake_with_cross_entry_gate</code> prepares a subscription to cross-entry gate changes, calls <code>wake</code>, and converts a state change into <code>Wake::CrossEntryGateChanged</code>.</p>
+<pre><code class="language-rust">// crates/celld/runtime.rs:2367-2383
+async fn wake_with_cross_entry_gate(
+    ops: &amp;mut Ops,
+    entry: &amp;mut js::InFlight,
+    budget: Duration,
+) -&gt; Wake {
+    let wait = entry.prepare_cross_entry_gate_wait();
+    match wait
+        .wait(wake(ops, entry, budget), |wake| matches!(wake, Wake::Idle))
+        .await
+    {
+        js::input_gate_lifecycle::WaitOutcome::StateChanged =&gt; Wake::CrossEntryGateChanged,
+        js::input_gate_lifecycle::WaitOutcome::Ordinary(wake) =&gt; wake,
+    }
+}
+</code></pre>
+<p>The handler budget is 300 seconds by default. The environment variable is <code>CELLD_HANDLER_BUDGET_S</code>. A zero or negative value is rejected at startup.</p>
+<pre><code class="language-rust">// crates/celld/engine_api.rs:879-887
+pub fn handler_budget() -&gt; std::time::Duration {
+    static BUDGET: OnceLock&lt;std::time::Duration&gt; = OnceLock::new();
+    *BUDGET.get_or_init(|| {
+        std::time::Duration::from_secs(
+            crate::env_vars::positive_or(&quot;CELLD_HANDLER_BUDGET_S&quot;, 300)
+                .expect(&quot;validated CELLD_HANDLER_BUDGET_S&quot;),
+        )
+    })
+}
+</code></pre>
+<p><code>Expired</code> is produced in one case: the capped wait expires, and the cap is equal to the remaining handler budget. When the entry is cancellable, the wait is capped at <code>CANCELLATION_TICK</code>, which is 10 milliseconds. After each cap, the driver reads the cancellation flag and loops without spending budget. A cancellation is therefore observed within about 10 milliseconds of a wait boundary. It never interrupts a running synchronous turn, because the closure must return before the driver can read the flag.</p>
+<p>The budget covers the handler, not the whole request. When the handler settles, the reply gate and <code>waitUntil</code> work stop being charged to it. A <code>waitUntil</code> promise is registered with <code>__registerWaitUntil</code>.</p>
+<pre><code class="language-js">// crates/celld/js/harness.js:10986-10992
+const __registerWaitUntil = __celld.__registerWaitUntil = (promise) =&gt; {
+  const tracked = Promise.resolve(promise).catch((error) =&gt; {
+    console.error(&quot;waitUntil rejected&quot;, error);
+  });
+  __wait_until(tracked);
+};
+</code></pre>
+<p><code>__registerWaitUntil</code> is the application-facing function. <code>__wait_until</code> is the host operation that registers the tracked promise with the driver, so the event stays alive until the promise settles. The <code>catch</code> prevents an unhandled rejection from failing the process; the rejection is logged and does not change the response.</p>
+<h2>The input gate</h2>
+<p>A Durable Object must not run two events at the same time. The input gate enforces this, and it is per cell. The gate lives in the decision core as <code>celld_logic::gate::InputGate</code>; the harness calls into it through host operations. A turn lane schedules CPU time. The input gate orders events. The two are related but not the same. A lane permit is held for one turn. The input gate can be held across an <code>await</code>, because a critical section remains closed while its callback waits.</p>
+<pre><code class="language-js">// crates/celld/js/harness.js:2607-2611
+  blockConcurrencyWhile(f) {
+    // The native context binds the gate and its operations to one driver.
+    // Its async continuations keep that driver even inside a foreign turn.
+    return __with_input_gate_context(() =&gt; this._blockConcurrencyWhile(f));
+  }
+</code></pre>
+<p><code>__with_input_gate_context</code> is a host operation. It runs the callback with an input-gate context. The context is a pair: the event that started the block, and the driver that runs that event. The pair travels with the callback's asynchronous continuations. A continuation can later run inside another event's turn, but it still releases the gate on behalf of the origin event. A nested block inherits its driver. A new block uses the event that is driving the current turn. The gate shuts in the calling turn, before the promise is awaited, so no event can enter between the call and the close. This is what lets another event run a microtask checkpoint without stealing the block. A microtask checkpoint is the V8 step that drains the queue of promise reactions (<code>tc.perform_microtask_checkpoint()</code>, <code>crates/celld/js.rs:4408</code>).</p>
+<p>A transaction uses the gate. Without it, a second event could read uncommitted rows, or join the open transaction on the same connection, or lose a write at a rollback. The harness comment records this bug as issue 714. The failure chain is concrete. A nested block starts a transaction and does not await it. The outer block returns, and the gate opens. Another event writes into the still-open transaction. The transaction then rolls back, and the write that celld had already acknowledged disappears. The outer block now drains every nested block before it releases the gate, so the hold lasts as long as any block under it.</p>
+<pre><code class="language-js">// crates/celld/js/harness.js:1915-1922 (abridged)
+    // Workerd runs the callback under blockConcurrencyWhile: the input gate
+    // shuts, so no other event starts in the object while the transaction is
+    // open. Without it another event&#x27;s reads saw uncommitted rows, its
+    // writes joined the open transaction on the same connection, and a
+    // rollback discarded a write celld had already acknowledged (#714).
+</code></pre>
+<p>A critical section can outlive its event. The gate then has a claim that belongs to an event which has already answered. The lifecycle for this claim has two states.</p>
+<pre><code class="language-rust">// crates/celld/js/input_gate_lifecycle.rs:29-44 (abridged)
+/// Whether this event can still originate work that another event runs.
+/// Retirement is terminal: a stale promise reaction cannot add a new claim
+/// after the event has closed its resources.
+enum CrossEntryGateLifecycle {
+    Accepting {
+        active: usize,
+    },
+    /// A lifecycle cancellation retired the event while claims still existed.
+    /// The claims retain only the allocation until their owners drop them;
+    /// they cannot keep the event or its resources active after shutdown.
+    Retired {
+        outstanding: usize,
+    },
+}
+</code></pre>
+<p>The driver subscribes before it rechecks retirement. If the order were reversed, a claim that starts and ends during the check would be missed, and the event would wait with no source of progress.</p>
+<p>A failed critical section resets the object. The harness discards the instance, cancels pending storage writes, and lets the next event build a new one. The reset is the price of an exception that leaves the object's memory in an unknown state.</p>
+<pre><code class="language-js">// crates/celld/js/harness.js:2763-2776
+  _resetAfterConcurrencyFailure(error) {
+    if (this._aborted) return;
+    this._aborted = true;
+    __storage_cancel_pending_puts(this._scope);
+    const instance = __cell.instances[this._scope];
+    if (instance &amp;&amp; instance.__celldState === this)
+      delete __cell.instances[this._scope];
+    // Under a stub-mediated caller (this scope is not the current
+    // event) the failure breaks the actor, as Workerd joins it
+    // into the on-abort promise; a direct event keeps reset-only
+    // semantics -- its caller sees the rejection itself.
+    if (__currentActorScope() !== this._scope)
+      __actorBreak(this._scope, error);
+  }
+</code></pre>
+<p>Three host operations do the work. <code>__storage_cancel_pending_puts</code> drops the queued puts that have not reached SQLite, so a failed transaction cannot flush after the reset. <code>__currentActorScope()</code> returns the scope of the event that is running now. <code>__actorBreak(scope, error)</code> marks the actor for that scope as broken and aborts every stub that targets it. The branch matters: a direct event keeps reset-only semantics, because its caller sees the rejection. A stub-mediated caller needs the actor break, because no caller is present to observe the failure.</p>
+<p>The instance check matters. If another event has already replaced the instance, this reset must not delete the replacement.</p>
+<p>The harness also imposes a 30-second limit on one <code>blockConcurrencyWhile</code> call. A call that exceeds it is cancelled and the object is reset. The timeout prevents a stuck critical section from holding the input gate forever.</p>
+<pre><code class="language-js">// crates/celld/js/harness.js:2734-2762 (abridged)
+const timerId = __timer_alloc();
+let settled = false;
+const timeout = __op_timer(timerId, 30_000).then(() =&gt; {
+  if (!settled) {
+    throw new Error(
+      &quot;A call to blockConcurrencyWhile() in a Durable Object waited for &quot; +
+      &quot;too long. The call was canceled and the Durable Object was reset.&quot;);
+  }
+});
+return Promise.race([Promise.resolve(result), timeout]).then(
+  (value) =&gt; {
+    settled = true;
+    __timer_cancel(timerId);
+    this._blockDepth--;
+    return value;
+  },
+  (error) =&gt; {
+    settled = true;
+    __timer_cancel(timerId);
+    this._blockDepth--;
+    this._resetAfterConcurrencyFailure(error);
+    throw error;
+  },
+);
+</code></pre>
+<p>The limit is per block, not per event. A nested block gets its own timer, so a drain of nested blocks is bounded by the last one that started. <code>settled</code> prevents the timer from raising an error after the callback has already returned. The timer is cancelled on both success and failure, so a completed block leaves no timer behind.</p>
+<h2>The output gate</h2>
+<p>Every route that can reveal cell state passes one function. The routes are enumerated in the decision core, not in the runtime.</p>
+<p>Four words carry the rest of this section. An <strong>output</strong> is any value that can leave the process and reveal cell state. The <code>Channel</code> enum below gives the full list: a response body, a <code>fetch</code> request, a WebSocket frame, a service call, a cell call, an object-storage operation, a raw socket write, a queue delivery, a <code>storage.sync()</code> reply, or an error message that quotes state. A <strong>position</strong> is the number that the storage layer reports for a commit. It orders writes and proofs. A <strong>barrier</strong> is a core record that holds one or more outputs until a durability proof reaches the barrier's position. A <strong>proof</strong> is the storage layer's statement that a position is durable.</p>
+<pre><code class="language-rust">// crates/logic/types.rs:417-450 (abridged)
+pub enum Channel {
+    /// The answer to the cell event itself: an HTTP response, a cell RPC
+    /// reply, or a peer-served reply. A response whose body streams takes one
+    /// ticket for its head and one more for each chunk.
+    Response,
+    /// `fetch()` from a handler to a third party.
+    Fetch,
+    /// A frame from a `webSocketMessage` handler, captured by the host and
+    /// released from the cell&#x27;s barrier queue.
+    WsHibernatable,
+    /// A frame on a socket the isolate opened and polls itself.
+    WsSelf,
+    /// A service-binding call, `env.NAME.fetch()` or its RPC form.
+    Service,
+    /// A call to another cell: its `fetch` or one of its RPC methods.
+    CellRpc,
+    /// An operation that changes an application R2 bucket.
+    R2,
+    /// A connection, write, TLS upgrade, or shutdown on a raw TCP socket.
+    Tcp,
+    /// A leased Queue batch leaving its broker for a consumer Worker.
+    Queue,
+    /// The promise `storage.sync()` returns to the handler.
+    Sync,
+}
+</code></pre>
+<p>The variants name the egress routes. <code>Response</code> is the answer to the event itself: an HTTP response, where HTTP means Hypertext Transfer Protocol, or a cell remote procedure call (RPC) reply. <code>Fetch</code> is an outbound HTTP request from a handler. <code>WsHibernatable</code> and <code>WsSelf</code> are WebSocket (Ws) frames; <code>WsHibernatable</code> is captured by the host, and <code>WsSelf</code> belongs to a socket that the isolate polls. <code>Service</code> is a call through a service binding. <code>CellRpc</code> is a call to another cell. <code>R2</code> is an operation on an object-storage bucket. <code>Tcp</code> is a raw Transmission Control Protocol socket operation, including a Transport Layer Security (TLS) upgrade. <code>Queue</code> is a leased queue batch that leaves its broker for a consumer. <code>Sync</code> is the promise that <code>storage.sync()</code> returns to the handler; the promise settles after the shell confirms that the pending writes are durable, so a handler can wait for durability before it answers.</p>
+<p>Alarms are deliberately not a channel. An alarm settles inside the core, without a shell output: the core records the alarm result itself, so a channel variant could not carry it. An alarm still opens a barrier in the same per-cell map. A read-only output that trails the newest barrier therefore waits behind an alarm's unproven write exactly as it waits behind a request's.</p>
+<p>The rule is one sentence. Nothing that reveals a cell's state may leave the process while that cell has a write it cannot prove durable.</p>
+<p>The implementation has one choke point because the earlier design had three. A core reader gate, a shell WebSocket queue, and an in-handler position check each had a different view of the outstanding writes. One channel could miss a write that another mechanism knew about.</p>
+<pre><code class="language-rust">// crates/logic/output_gate.rs:92-136 (abridged)
+    pub(crate) fn output(
+        &amp;mut self,
+        request: RequestId,
+        channel: Channel,
+        position: Option&lt;u64&gt;,
+        observed: Option&lt;u64&gt;,
+        epoch: Option&lt;Epoch&gt;,
+        effects: &amp;mut Vec&lt;Effect&gt;,
+    ) {
+        let held = Held { request, channel };
+        // Authority is checked here, not only at request start: a handler can
+        // start under a live node lease and reach its output after that lease
+        // expired.
+        if !self.node_authoritative() {
+            effects.push(Effect::Release {
+                request,
+                channel,
+                result: Err(RequestError::NodeFenced),
+            });
+            return;
+        }
+        if let Some(sampled) = epoch {
+            if self
+                .resident_cell(request)
+                .is_none_or(|(_, current)| current != sampled)
+            {
+                effects.push(Effect::Release {
+                    request,
+                    channel,
+                    result: Err(RequestError::DurabilityUnproven),
+                });
+                return;
+            }
+        }
+        match (position, observed) {
+            (Some(position), _) =&gt; self.open_write_barrier(held, position, effects),
+            (None, Some(observed)) =&gt; match self.resident_cell(request) {
+                Some((cell, epoch)) if self.proven_covers(&amp;cell, epoch, observed) =&gt; {
+                    self.trail_open_barrier(held, effects)
+                }
+                Some((cell, epoch)) =&gt; self.hold_observed(held, cell, epoch, observed, effects),
+                None =&gt; effects.push(Effect::Release {
+                    request,
+                    channel,
+                    result: Err(RequestError::DurabilityUnproven),
+                }),
+            },
+            (None, None) =&gt; self.trail_open_barrier(held, effects),
+        }
+    }
+</code></pre>
+<p>The names in that function are the whole mechanism. <code>Held</code> is the shell identity of one withheld output: its request and its channel. The channel is part of the key, so a request that holds a response and a WebSocket frame has two separate waiters. <code>node_authoritative()</code> asks the decision core whether this node still holds a live lease. <code>resident_cell(request)</code> returns the cell and epoch on which the request is active. <code>open_write_barrier</code> inserts a barrier under a new operation identifier and emits <code>AwaitDurable</code>. <code>proven_covers</code> checks that a verified proof exists at the same epoch and at a position at or above the observation. <code>trail_open_barrier</code> attaches the output to the newest barrier on the cell, or releases it at once when no barrier exists. <code>hold_observed</code> either joins a barrier that already covers the observation or opens a barrier at the observed position.</p>
+<p>The function does not branch on the channel. It stores the channel and applies the same rule to every route. Per-channel code lives in the runtime and is limited to how an effect is held and how it is released.</p>
+<p>The three arguments describe three different facts.</p>
+<ul><li><code>position</code> is the committed position of a write that this output reveals.</li></ul>
+<p>  A <code>Some</code> position opens a barrier and waits for a proof at that position.</p>
+<ul><li><code>observed</code> is the newest committed position that a read-only output saw.</li></ul>
+<p>  A read-only output can reveal a commit that has no proof yet, because the   writer takes its ticket only when it answers.</p>
+<ul><li><code>epoch</code> is the ownership epoch that the output sampled. If the cell is no</li></ul>
+<p>  longer resident at that epoch, the output fails rather than acknowledges a   discarded write.</p>
+<p>A read-only output with <code>observed</code> does one of three things. If a verified proof already covers the observation, it trails the newest barrier on its cell, and it releases at once when no barrier is open. If a barrier on the cell at the same epoch already covers the observation, it joins that barrier as a follower. Otherwise it opens a barrier at the observed position. The proof then belongs to the reader. The writer's later ticket still opens its own barrier, but a proof that reaches the reader's observed position also reaches every earlier position, including the writer's committed position, so one durable fact settles both.</p>
+<p>A writer opens a barrier at its committed position. The runtime asks the storage layer to prove that position durable. A reader that observed a commit that no barrier covers opens its own barrier at the observed position; a barrier that a writer opens later at a higher position covers the reader only if its proof reaches the observation.</p>
+<div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant H as Handler
+    participant S as SQLite
+    participant C as Decision core
+    participant R as Replicator
+    participant B as Bucket
+    H-&gt;&gt;S: BEGIN, write, COMMIT
+    S--&gt;&gt;H: committed at position 41
+    H-&gt;&gt;C: output(Response, position=41)
+    C-&gt;&gt;C: open barrier at 41
+    C-&gt;&gt;R: AwaitDurable(cell, epoch, 41)
+    R-&gt;&gt;B: PUT Lite Transaction segment&lt;br/&gt;cells/{cell}/ltx/e{epoch}/
+    B--&gt;&gt;R: stored
+    R--&gt;&gt;C: durable at 41
+    C-&gt;&gt;R: VerifyOwnership(cell, epoch)
+    R-&gt;&gt;B: GET cells/{cell}/own.json
+    B--&gt;&gt;R: this node, this epoch
+    R--&gt;&gt;C: ownership verified
+    C-&gt;&gt;H: Release(Response)
+
+</div>
+<p>The ownership read after a bucket proof is not optional. The storage layer replicates the cell's SQLite database as a series of Lite Transaction (LTX) segments. The prefix <code>e7/</code> is shorthand for <code>cells/<cell>/ltx/e7/</code>, the segment prefix for epoch 7. A segment under that prefix is not durable if the prefix is orphaned, which means that the node that wrote it no longer holds the cell. The bucket cannot refuse a stale writer, because a write to an object store has no knowledge of ownership. The read confirms that <code>cells/<cell>/own.json</code>, the ownership record, still names this node at this epoch. Without that confirmation, a writer that had already lost the cell could acknowledge a write that the new owner never restores.</p>
+<p>A fleet proof takes a different path. A fleet is the set of nodes that share one bucket. The ensemble is the set of nodes that hold replicas of the cell. The ensemble orders and acknowledges the write. A takeover seals a member, which means that the member stops accepting the old owner's writes, before it restores state. A stale owner therefore cannot collect the acknowledgements it needs, and the ensemble fails closed. The gate settles without the extra ownership read, because the ensemble has already refused the stale writer.</p>
+<pre><code class="language-rust">// crates/logic/output_gate.rs:283-310 (abridged)
+    pub(crate) fn durable_reached(
+        &amp;mut self,
+        op: OpId,
+        result: Result&lt;u64, Failure&gt;,
+        source: ProofSource,
+        effects: &amp;mut Vec&lt;Effect&gt;,
+    ) {
+        let Some(gate) = self.barriers.get(&amp;op) else {
+            return;
+        };
+        let proven = matches!(result, Ok(durable) if durable &gt;= gate.position);
+        // A bucket proof reveals nothing until an ownership read confirms the
+        // record still names this node at this epoch. A fleet proof needs no
+        // read — the ensemble arbitrated it.
+        if proven &amp;&amp; source == ProofSource::Bucket {
+            let (cell, epoch) = (gate.cell.clone(), gate.epoch);
+            effects.push(Effect::VerifyOwnership { op, cell, epoch });
+            return;
+        }
+        self.settle_gate(op, proven, effects);
+    }
+</code></pre>
+<p>A shorter proof fails the write. A lagging or lying replicator must not produce an acknowledgement. An error fails the write. A completion for a barrier that has already drained is ignored. The core pairs every check with an operation identifier, so a result for an older attempt cannot settle a newer gate. This is the versioned-operation discipline that the core uses everywhere. <code>proven</code> is true only when the proof's position is at or above the barrier's position. A bucket proof does not settle the gate directly: <code>durable_reached</code> emits <code>VerifyOwnership</code>, and the gate settles only when <code>ownership_verified</code> reports that the record still matches. A fleet proof skips that step and settles at once.</p>
+<p>A failed proof releases the held output with an error, unpins the request, and resets the cell. The client never sees a success for a write that a crash can discard.</p>
+<p>The per-cell map has three cleanup paths, and each one keeps its promise. <code>reset_cell</code> removes every barrier for that cell at that epoch and fails their owners and followers with <code>DurabilityUnproven</code>; a barrier at another epoch is left alone. A node fence fails every barrier on every cell with <code>NodeFenced</code>, because the node has lost its authority to answer for any of them. A generation swap refuses to run while any barrier is open on a cell, so a heap cannot be replaced under a held output. These paths are why one shared map is safe: an entry is removed only by its proof, by a reset of its own cell and epoch, or by a node-wide fence.</p>
+<p>A ticket is the unit of permission. The shell type is <code>GateTicket</code>.</p>
+<pre><code class="language-rust">// crates/celld/actor.rs:1926-1936 (abridged)
+pub struct GateTicket {
+    pub channel: Channel,
+    pub position: Option&lt;u64&gt;,
+    pub observed: Option&lt;u64&gt;,
+    pub epoch: Option&lt;u64&gt;,
+}
+</code></pre>
+<p>The shell builds a ticket with <code>answer_ticket</code>, which reads the write position and the observed position from the answer. A successful answer always takes a ticket. A handler error raised inside a turn also takes one, because an error message can quote cell state as a body can. An error raised outside a turn, such as a budget overrun, took no position sample and reveals nothing, so it takes no ticket.</p>
+<p>Each output takes one ticket. A response whose body streams takes one ticket for the head and one ticket for each chunk. The producer is one pump: one task that writes the stream in order, waits for each chunk's ticket, and only then asks for the next chunk. This prevents a held chunk from overtaking a released one. When the core settles a barrier, it emits <code>Effect::Release</code>. That effect is the ticket's release; the shell may then send the output.</p>
+<p><strong>Aha:</strong> The correctness boundary of the runtime is not the V8 isolate. The isolate is only a resource unit: it holds memory, and the pool grows and shrinks it. The correctness boundary is the pair of (turn, ticket). One turn at a time per lane keeps a cell's JavaScript state consistent. One ticket per egress keeps every byte that leaves the process behind either a proof or an error. Neither guarantee needs one isolate per cell, and celld does not pay for one. It does not even need one realm per cell. Sharing one realm across the cells of one script is safe for three reasons. The instance table is keyed by the full scope, so two cells cannot resolve to the same object. The lane keeps every turn of one cell in order, and the isolate's asynchronous lock is held for the whole synchronous turn, so two cells never execute JavaScript at the same instant. And the input gate stops two events of one cell from running together, even across an <code>await</code>.</p>
+<p>The shared realm does mean that module-scope variables are shared by every cell of the script, just as a Worker shares module globals across requests. celld does not isolate module state per cell, and it does not claim to. An application that stores cell-specific state in a module variable would see the same interference on any platform that reuses one JavaScript context for the script. The cell's own state belongs in its instance and its storage.</p>
+<h2>Memory and its limits</h2>
+<p>Each isolate has a heap limit. The default is 128 mebibytes (MiB). One mebibyte is 1024 × 1024 bytes. The operator can change the limit with <code>CELLD_V8_HEAP_LIMIT_MB</code>. The name says megabytes, but the value is multiplied by 1024 × 1024, so the unit is mebibytes.</p>
+<pre><code class="language-rust">// crates/celld/js.rs:2352-2370
+const DEFAULT_V8_HEAP_LIMIT_BYTES: usize = 128 * 1024 * 1024;
+const V8_HEAP_EMERGENCY_BYTES: usize = 16 * 1024 * 1024;
+
+/// Share of the heap limit past which an isolate takes on no more retained
+/// state.
+const HEAP_ADMISSION_SHARE: f64 = 0.9;
+
+/// Share of the heap limit under which a condemned isolate is condemned no
+/// more.
+const HEAP_RECOVERY_SHARE: f64 = 0.75;
+
+/// The least time between forced garbage collections while an isolate
+/// recovers.
+const HEAP_GC_NUDGE_INTERVAL: Duration = Duration::from_secs(1);
+</code></pre>
+<p>The two shares make a band. At or above 90 percent, a healthy isolate takes no more retained state. A condemned isolate takes nothing at any size until its heap falls below 75 percent, and then recovery clears the flag. While the heap stays at or above 75 percent, recovery can force one garbage collection each second, and the isolate stays condemned. The source comment on <code>HEAP_RECOVERY_SHARE</code> says "a condemned isolate is condemned no more" below that share, which means the isolate is no longer condemned. The band stops a heap that sits near the limit from refusing, recovering, and refusing again on every turn.</p>
+<p>V8 calls the near-limit callback when the heap approaches the limit. The callback must return a larger limit. If it does not, V8 aborts the whole process. The runtime returns the larger of two values: the current limit plus 16 MiB, or two times the original limit. One callback is enough because the doubled limit covers one allocation as large as the original limit. For example, a cons string is a V8 string that is stored as two joined parts. Flattening a 128 MiB cons string asks V8 for a single 128 MiB block. The extension is temporary. Recovery removes it, and dropping the isolate releases the whole heap.</p>
+<pre><code class="language-rust">// crates/celld/js.rs:2852-2874 (abridged)
+extern &quot;C&quot; fn near_heap_limit(
+    data: *mut std::ffi::c_void,
+    current_heap_limit: usize,
+    _initial_heap_limit: usize,
+) -&gt; usize {
+    let state = unsafe { &amp;*(data as *const HeapLimitState) };
+    state.excessively_exceeded.store(true, Ordering::Relaxed);
+    // V8 fatally aborts the process if a near-limit callback does not extend
+    // the limit. This reserve lets JS observe condemnation and unwind.
+    //
+    // The extension must also cover one allocation as large as the limit
+    // itself: flattening a 128 MiB cons string asks V8 for a single 128 MiB
+    // block, and V8 re-invokes this callback across last-resort GC rounds
+    // only unreliably ... Doubling the original limit makes the first
+    // invocation sufficient on its own.
+    current_heap_limit
+        .saturating_add(V8_HEAP_EMERGENCY_BYTES)
+        .max(state.limit.saturating_mul(2))
+}
+</code></pre>
+<p>A condemned isolate refuses new retained state. The check is the host operation <code>__heap_over_admission_share</code>. A condemned isolate refuses everything, whatever the heap now reads, because the <code>excessively_exceeded</code> flag stays set until recovery clears it. A healthy isolate refuses when its heap is at or above 90 percent of the limit.</p>
+<pre><code class="language-rust">// crates/celld/js.rs:10105-10122 (abridged)
+/// Whether this isolate is too close to its heap limit to retain more state.
+fn op_heap_over_admission_share(
+    scope: &amp;mut v8::PinScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue&lt;v8::Value&gt;,
+) {
+    let state = scope.get_slot::&lt;Arc&lt;HeapLimitState&gt;&gt;().cloned();
+    let over = match state {
+        // A condemned isolate admits nothing, whatever the heap now reads.
+        Some(state)
+            if state.excessively_exceeded.load(Ordering::Relaxed)
+                || admission_refusal_forced(&amp;state) =&gt;
+        {
+            true
+        }
+        Some(state) =&gt; heap_share(scope, state.limit) &gt;= HEAP_ADMISSION_SHARE,
+        None =&gt; false,
+    };
+    rv.set(v8::Boolean::new(scope, over).into());
+}
+</code></pre>
+<p>The clearest refusal is <code>acceptWebSocket</code>, which asks the cell to keep a WebSocket connection in its heap. The isolate does not allocate the retained object. It throws an error to JavaScript instead, and names the environment variable that sets the limit.</p>
+<pre><code class="language-js">// crates/celld/js/harness.js:2809-2815
+acceptWebSocket(ws, tags = []) {
+  if (__heap_over_admission_share())
+    throw new Error(
+      &quot;the isolate is near its V8 heap limit, so it refused a &quot; +
+      &quot;WebSocket (see CELLD_V8_HEAP_LIMIT_MB)&quot;);
+</code></pre>
+<p>Recovery runs between turns, not inside one, so a handler never sees the isolate recover halfway through its work. If the heap still reads at or above 75 percent of the limit, the isolate asks V8 for one <code>low_memory_notification</code> and reads the heap again. That forced collection can run at most once per second. When the heap is below 75 percent, the condemnation flag is cleared. The original limit is restored by removing the near-limit callback with the original limit and then adding it again, which re-arms the guard. Removing the callback without re-adding it would leave the isolate without a near-limit guard for the next episode.</p>
+<p>The per-isolate cell ceiling of 32 is a blast-radius control. A heap that holds too many cells is one out-of-memory failure that takes every cell in it down at once. The node-wide resident-cell and memory limits are the operator controls for total memory. The isolate ceiling is not a second copy of those limits. It bounds how many cells fail together.</p>
+<h2>When a turn goes wrong</h2>
+<p>A Worker declares its CPU limit as <code>limits.cpu_ms</code> in the script configuration. The runtime stores that value in <code>resource_limits</code>, and <code>initial_cpu_budget</code> turns it into the duration that the watchdog reads (<code>crates/celld/js.rs:2251-2256</code>). A script without the field has no CPU watchdog.</p>
+<table><tr><th>Failure</th><th>What the runtime does</th><th>What the client sees</th></tr><tr><td>Handler budget elapses while the driver waits</td><td><code>Wake::Expired</code>, handler timed out</td><td>HTTP status 500 (Internal Server Error) class</td></tr><tr><td>One synchronous turn runs past the budget</td><td>The turn finishes; the overrun is charged when it returns</td><td>HTTP status 500 class when the turn returns</td></tr><tr><td>The Worker declares a CPU limit and exceeds it</td><td>The CPU watchdog calls <code>terminate_execution</code></td><td>Error for that execution</td></tr><tr><td>Client disconnects</td><td><code>Wake::Cancelled</code> at the next wait boundary; a running turn finishes first</td><td>No response, connection closed</td></tr><tr><td>Critical section throws</td><td>Object reset, next event builds a new instance</td><td>Error from the handler</td></tr><tr><td><code>blockConcurrencyWhile</code> exceeds 30 s</td><td>Call cancelled, object reset</td><td>Error from the call</td></tr><tr><td>Heap near the limit</td><td>Condemned isolate refuses new retained state</td><td>Error on the refused call</td></tr><tr><td>Ownership lost before output</td><td><code>NodeFenced</code> at the output gate</td><td>HTTP status 503 (Service Unavailable) class, no false acknowledgement</td></tr><tr><td>Durability unproven</td><td><code>DurabilityUnproven</code>, cell reset</td><td>Error, never a success</td></tr><tr><td>Worker task dies</td><td>Join error reported to the caller</td><td>HTTP status 500 class</td></tr></table>
+<p>The rows for ownership loss and unproven durability are the ones that protect the application. A runtime failure may lose work. It must not report success for work that a crash can discard.</p>
+<p>A cancellation cannot stop a synchronous turn. The turn runs until the closure returns, or until the optional CPU watchdog stops it. Cancellation takes effect between turns, when the driver reads the flag. The handler budget also takes effect at wait boundaries; it does not pre-empt a running turn. A watchdog is a separate monitor thread that reads one limit and acts when the limit passes. The CPU watchdog reads the central processing unit (CPU) time of the thread that runs the turn. When the declared CPU limit passes, the watchdog records an <code>ExecutionTermination</code> and calls <code>terminate_execution</code> on the isolate. V8 then stops the running execution and returns control. The runtime clears the termination flag and reports an error to the caller, and the isolate stays in the pool. The CPU watchdog is the only mechanism that can stop a long synchronous turn, and it exists only when the Worker declares a CPU limit.</p>
+<h2>What this runtime buys</h2>
+<p>celld does not use one isolate per cell. It does not use one realm per cell. It uses one realm per isolate and packs up to 32 cells into one isolate. It does not bind an isolate to a thread. It enters any isolate from any Tokio worker for one synchronous turn. It does not keep a heap because it is warm. It retires the heap when the pool can do without it.</p>
+<p>These choices reduce the cost of a cell. A cell costs one entry in a table, one SQLite database, and the objects that the application creates. It does not cost a process or a realm. A suspended request costs a promise, not a thread. A burst costs more heaps only while it lasts.</p>
+<p>The price is that the runtime must be careful about four shared things: the heap, the turn scheduler, the instance table, and the per-cell barrier map. A leak in any one of them is a failure that crosses cells. The design pays for that care with small units of code that only perform decisions made elsewhere.</p>
+<h2>Where to read next</h2>
+<ul><li><a href="04-durable-objects.html">Durable Objects</a> explains the cell model that the</li></ul>
+<p>  runtime hosts: identifiers, storage, alarms, WebSockets, and facets.</p>
+<ul><li><a href="05-cell-storage-and-durability.html">Cell storage and durability</a> explains</li></ul>
+<p>  what the output gate waits for: SQLite, Lite Transaction segments, and   proofs.</p>
+<ul><li><a href="02-system-architecture.html">System architecture</a> explains the listeners and</li></ul>
+<p>  the actor that call into this runtime.</p>
+<ul><li><a href="12-work-placement-and-sharding.html">Work placement and sharding</a> compares</li></ul>
+<p>  celld placement with the Resonate server.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

@@ -4,16 +4,18 @@ title: Durable Streams and Durable Promises
 
 # Durable streams and durable promises
 
-This page is the shared index for three explorations. One explores Electric and
+This page is the shared index for four explorations. One explores Electric and
 its Durable Streams protocol. One explores Resonate and its durable promises.
-One explores TanStack DB, the reactive client store that consumes synced data.
-The page also answers the question that joins them: how does each system defer
-work, which one is better at what, and how can they work together.
+One explores celld, a self-hosted Cloudflare Workers platform. One explores
+TanStack DB, the reactive client store that consumes synced data. The page also
+answers the question that joins them: how does each system defer work, which one
+is better at what, and how can they work together.
 
 | Exploration | What it covers | Start here |
 |-------------|----------------|------------|
 | [Electric and Durable Streams](src.electric/html/README.html) | The Electric Sync engine, the agents platform, the Durable Streams protocol, and every package in both repositories | [Overview](src.electric/html/00-overview.html), then [how the runtime sets up a stream](src.electric/html/04-how-the-runtime-sets-up-a-stream.html) |
 | [Resonate](src.resonate/html/README.html) | The formal specification, the Rust server core, the Postgres and Zig servers, five Software Development Kits (SDKs), and the durable promise protocol | [Overview](src.resonate/html/00-overview.html), then [durable promises and tasks](src.resonate/html/03-durable-promises-and-tasks.html) |
+| [celld](src.celld/html/README.html) | A self-hosted Workers runtime: the fleet, the cell, the bucket, Durable Objects, every service, ownership, security, and limits | [Overview](src.celld/html/00-overview.html), then [Resonate S3 and celld](src.celld/html/11-resonate-s3-and-celld.html) |
 | [TanStack DB](tanstackdb/html/README.html) | Collections, live queries, optimistic mutations, sync adapters, and framework bindings | [README](tanstackdb/html/README.html) |
 
 ## The short answer
@@ -29,6 +31,12 @@ waits for whom. It can wake a worker when a dependency settles.
 
 The two systems are therefore not competitors. They are two different answers to
 one question: **where does the durable memory of a distributed program live?**
+
+celld is not a third answer to that question. It is a platform that implements
+Cloudflare Workers. Its durable memory is one SQLite database per cell, backed by
+a transaction log in the same kind of bucket that Resonate uses for documents.
+The [celld exploration](src.celld/html/README.html) compares the two storage
+models directly.
 
 | Question | Durable Streams answer | Resonate answer |
 |----------|------------------------|-----------------|
@@ -565,6 +573,26 @@ The rules of the architecture are:
 | [The Rust SDK](src.resonate/html/19-the-rust-sdk.html) | The function macro, promise naming, retries, and replay |
 | [Documents, rows, and partitions](src.resonate/html/21-documents-rows-and-partitions.html) | Blob and S3 documents, SQLite rows, ScyllaDB partitions, and Neo4j nodes |
 
+### celld
+
+| Document | What it covers |
+|----------|----------------|
+| [README](src.celld/html/README.html) | The thesis, the reading order, and the object layout |
+| [Overview](src.celld/html/00-overview.html) | The node, the fleet, the cell, the deployment, and the two promises |
+| [Repository map](src.celld/html/01-repository-map.html) | Every crate, module, package, and document |
+| [System architecture](src.celld/html/02-system-architecture.html) | Listeners, routing, deployment, and the control plane |
+| [The Worker runtime](src.celld/html/03-the-worker-runtime.html) | V8 isolates, bundles, events, bindings, gates, and limits |
+| [Durable Objects](src.celld/html/04-durable-objects.html) | Identity, lifecycle, storage API, alarms, WebSockets, and facets |
+| [Cell storage and durability](src.celld/html/05-cell-storage-and-durability.html) | SQLite, the transaction log, epochs, proofs, restore, and garbage collection |
+| [Ownership, failure, and rebalancing](src.celld/html/06-ownership-failure-and-rebalancing.html) | Leases, fencing, takeover, self-fencing, pressure, and rebalancing |
+| [The services](src.celld/html/07-the-services.html) | Key-Value, Queues, D1, R2, Workflows, Cron Triggers, static assets, containers, and sandboxes |
+| [Deployment and operations](src.celld/html/08-deployment-and-operations.html) | The Wrangler subset, deploy, the command line interface, telemetry, and tests |
+| [Security and tenancy](src.celld/html/09-security-and-tenancy.html) | The fleet trust model, peer authentication, the operator API, and isolation |
+| [Limitations and compatibility](src.celld/html/10-limitations-and-compatibility.html) | Cloudflare gaps, hard limits, and operational risks |
+| [Resonate S3 and celld](src.celld/html/11-resonate-s3-and-celld.html) | Two models for durable state in a bucket, point by point |
+| [Work placement and sharding](src.celld/html/12-work-placement-and-sharding.html) | How Resonate distributes tasks and how celld places cells |
+| [Glossary](src.celld/html/13-glossary.html) | Every term, spelled out |
+
 ### TanStack DB
 
 | Document | What it covers |
@@ -630,6 +658,7 @@ Two documents restate each system as numbered laws. Each law is a Behavior-Drive
 - Resonate S3 server: `/Users/darkvoid/GitSources/src.resonatehq/resonate/impl/server/s3/`.
 - Resonate SDKs: `/Users/darkvoid/GitSources/src.resonatehq/resonate/impl/sdk/`.
 - Resonate Rust SDK: `/Users/darkvoid/GitSources/src.resonatehq/resonate-sdk-rs/`.
+- celld: `/Users/darkvoid/GitSources/src.s3/celld/`, commit `8702f6d186c77698dbfb30cf29e3b1922a88f008`, version 0.6.3.
 
 ## How to build this site
 
