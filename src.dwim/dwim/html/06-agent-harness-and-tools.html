@@ -1,0 +1,1307 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>06 Agent harness and tools: the loop that keeps a small model on task -- dwim</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue('--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        toolbar.appendChild(mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); }));
+        toolbar.appendChild(mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); }));
+        toolbar.appendChild(mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); }));
+        toolbar.appendChild(mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); }));
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/dwim/docs</span>
+    <div class="nav-actions">
+      <a href="03-server-and-protocol.html" class="nav-breadcrumb">03 Server and protocol: one model, several sessions</a><a href="04-inference-engine.html" class="nav-breadcrumb">04 Inference engine: one trait, three devices, one specification</a><a href="05-model-and-tokenizer.html" class="nav-breadcrumb">05 Model and tokenizer: from a GGUF file to a drafted reply</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="05-model-and-tokenizer.html" class="nav-btn" title="Previous: 05 Model and tokenizer: from a GGUF file to a drafted reply">← prev</a>
+      <a href="07-comparison-foundation-ai.html" class="nav-btn nav-btn-next" title="Next: 07 Comparison with the ewe_platform `foundation_ai` crate">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>06 Agent harness and tools: the loop that keeps a small model on task</h1>
+<p><strong>Thesis.</strong> The harness is the agent. It builds a system prompt, sends the user's message with the environment ahead of it, reads the model's thought and text, parses tool calls, runs the tools, feeds the results back, and repeats until the model replies with text alone. Around that loop it adds guards: a thinking budget, a call cap, a no-change nudge, a repeated-call refusal, an automatic mode, and context compaction. This document describes the prompt, the loop, each guard, the six tools, and the benchmark runner.</p>
+<h2>1. What the harness is</h2>
+<p>The module comment states the contract:</p>
+<pre><code class="language-rust">// harness/mod.rs:1-30 (condensed)
+//! The agent around the model: runs the tools it calls and feeds the
+//! results back, until it replies with text alone.
+//!
+//! The model thinks before every reply, for as long as it needs to: a
+//! thought is ended early only when it repeats itself, or at a thinking
+//! budget if one is set. A turn ends when the model replies with text
+//! alone, or, after a great many calls without a reply, when it is asked
+//! to say what it has done and what remains. The harness refuses a call
+//! that repeats the one before it, whose output is already there.
+//!
+//! A [`Harness`] wraps a [`Conversation`] and reports each turn&#x27;s thoughts, text,
+//! tool calls, and tool output as [`Event`]s, so a user interface can show
+//! them as they happen. The tools live in `crate::tools`. ...
+//!
+//! The harness also keeps the conversation within the context window: ...
+</code></pre>
+<p>This document uses "small model" as the source comments do. In this repository the model is Qwen3.8-27B: a four-bit file of about 16 gigabytes (GB), on one Graphics Processing Unit (GPU), with a default context of 16,384 tokens (<code>cli/model.rs:21</code>, <code>models/qwen35.rs:22-26</code>). The word "small" is relative. It means a local model, not a server-scale model. It is not a measured parameter count.</p>
+<p>The type is generic over the conversation, not over the model:</p>
+<pre><code class="language-rust">// harness/mod.rs:428-431
+pub struct Harness&lt;C: Conversation&gt; {
+    chat: C,
+    tools: Tools,
+</code></pre>
+<h3>1.1 The conversation interface</h3>
+<p><code>Conversation</code> is the trait that the harness holds. It is in <code>models/mod.rs:156-228</code>. It hides where the model runs. The local <code>Chat<M></code> implements it in process. The server client implements it over a socket (<code>server/client.rs:286-406</code>). The harness calls the same methods in both cases.</p>
+<table><tr><th>Method</th><th>Contract</th></tr><tr><td><code>system(text, on_progress)</code></td><td>Opens the conversation with a system prompt.</td></tr><tr><td><code>clear()</code></td><td>Forgets the conversation so a new one can open.</td></tr><tr><td><code>replay(turns)</code></td><td>Feeds turns as the conversation so far, with no reply.</td></tr><tr><td><code>measure(turn)</code></td><td>Returns the number of tokens a turn takes.</td></tr><tr><td><code>answer_tokens(message, limit)</code></td><td>Returns the most tokens a plain answer to a message takes, with its framing, under a limit.</td></tr><tr><td><code>tokens()</code></td><td>Returns the number of tokens in the conversation.</td></tr><tr><td><code>capacity()</code></td><td>Returns the number of tokens the conversation can hold.</td></tr><tr><td><code>free()</code></td><td>Returns the tokens free before the reserve.</td></tr><tr><td><code>reserve(tokens)</code></td><td>Keeps tokens of the context free for a later reply.</td></tr><tr><td><code>thought_limit()</code> / <code>limit_thoughts(tokens, closing)</code></td><td>Reads or sets the thinking budget and its closing sentence.</td></tr><tr><td><code>feed_results(outputs)</code></td><td>Feeds tool results with no reply.</td></tr><tr><td><code>send(message, on_chunk)</code></td><td>Sends a user message and streams the reply as chunks.</td></tr><tr><td><code>respond(outputs, on_chunk)</code></td><td>Sends tool results and streams the reply as chunks.</td></tr><tr><td><code>answer(message, heads, limit, on_text)</code></td><td>Answers plainly, with no tools, under optional heads and a token limit.</td></tr><tr><td><code>stats()</code> / <code>sampler()</code></td><td>Returns the time counters and the sampling settings.</td></tr></table>
+<p>A <strong><code>Turn</code></strong> is one item in the conversation. The enum has three variants (<code>models/chat.rs:178-183</code>):</p>
+<ul><li><code>User(String)</code> is a message from the user, or a harness prompt written as one.</li><li><code>Reply { text, calls }</code> is what the model said and the tool calls it wrote. It has no thought field.</li><li><code>Results(Vec<String>)</code> is the output of those calls.</li></ul>
+<p>A <strong>chunk</strong> is one piece of a streaming reply (<code>models/chat.rs:185-195</code>):</p>
+<pre><code class="language-rust">pub enum Turn {
+    User(String),
+    Reply { text: String, calls: Vec&lt;String&gt; },
+    Results(Vec&lt;String&gt;),
+}
+
+pub enum Chunk&lt;&#x27;a&gt; {
+    Thought(&amp;&#x27;a str),
+    Text(&amp;&#x27;a str),
+    Token,
+}
+</code></pre>
+<p><code>Chunk::Token</code> carries no text. It marks a sampled token that may be hidden, such as a tool-call tag, a tool-call body, or the token that closes a thought. <code>Kind</code> is a private label inside <code>Chat</code> for token accounting: <code>Prompt</code>, <code>Thought</code>, or <code>Answer</code> (<code>models/chat.rs:166-172</code>). It is not part of the <code>Conversation</code> interface.</p>
+<p>The harness also keeps two internal types. <code>Entry</code> is one transcript row: the <code>Turn</code>, its token count, and a boolean that says whether a user turn is the harness's own prompt (<code>harness/mod.rs:419-424</code>). <code>Outcome</code> is <code>Done</code> or <code>Cut</code> (<code>harness/mod.rs:409-415</code>). <code>OnEvent</code> is a callback that returns <code>ControlFlow</code>; a break ends the turn early (<code>harness/mod.rs:402-403</code>).</p>
+<p><strong>Aha: the harness has no model code and no network code.</strong> It sends <code>Turn</code> values and receives chunks. A local chat and a socket client are both acceptable. The server is the background process that loads the model once and gives sessions access over a Unix domain socket (<a href="03-server-and-protocol.html">03 Server and protocol</a>, section 1). Because the harness sees only <code>Conversation</code>, it runs unchanged on either side. That is the seam that makes the server possible without a second agent implementation (<a href="01-architecture.html">01 Architecture</a>, section 4).</p>
+<h3>1.2 The events</h3>
+<p>The events are the whole output surface:</p>
+<pre><code class="language-rust">// harness/mod.rs:372-400 (condensed)
+pub enum Event {
+    Thought(String),
+    Text(String),
+    Token,
+    Call { name: String, detail: String },
+    Output(String),
+    Cut,
+    Compacting,
+    Note(String),
+    Compacted { before: usize, after: usize },
+}
+</code></pre>
+<table><tr><th>Event</th><th>Payload</th><th>Meaning and emission point</th></tr><tr><td><code>Thought</code></td><td>Text</td><td>One piece of the model's thought.</td></tr><tr><td><code>Text</code></td><td>Text</td><td>One piece of the reply text.</td></tr><tr><td><code>Token</code></td><td>None</td><td>One token was sampled but may be hidden. It carries no text.</td></tr><tr><td><code>Call</code></td><td>Tool name and detail</td><td>A tool is about to run.</td></tr><tr><td><code>Output</code></td><td>Text</td><td>The result the tool returned, as the model sees it.</td></tr><tr><td><code>Cut</code></td><td>None</td><td>The reply stopped short because the context was full.</td></tr><tr><td><code>Compacting</code></td><td>None</td><td>Compaction starts, before the note is written.</td></tr><tr><td><code>Note</code></td><td>Text</td><td>One piece of the note.</td></tr><tr><td><code>Compacted</code></td><td>Two counts</td><td>The conversation's token count before and after compaction.</td></tr></table>
+<p>The counts in <code>Compacted</code> are conversation tokens, not turns. <code>compact</code> emits <code>Compacting</code> after it writes the log record and before it writes the note; a break ends the compaction with <code>Ok(false)</code> (<code>harness/compaction.rs:95-98</code>). It emits <code>Compacted</code> after the replay, with the token counts before and after (<code>harness/compaction.rs:138-143</code>). The harness emits <code>Cut</code> in <code>converse</code> after <code>run</code> returns <code>Outcome::Cut</code> (<code>harness/mod.rs:750-764</code>). A normal turn with one tool call can produce this sequence: <code>thought</code>, <code>text</code>, <code>call</code>, <code>output</code>, <code>thought</code>, <code>text</code>. The harness tests assert it (<code>harness/mod.rs:1189-1192</code>). A compaction produces <code>compacting</code>, <code>note</code>, <code>compacted</code>, then the next reply (<code>harness/compaction.rs:274-278</code>).</p>
+<p>A terminal user interface draws these. A pipe can write them to standard error. A test can collect them.</p>
+<h2>2. The system prompt</h2>
+<p>The system prompt has four parts, in order: the reasoning-effort line, the tool signatures, the instructions, and the project's own <code>AGENTS.md</code>.</p>
+<pre><code class="language-rust">// harness/mod.rs:245-260 (condensed)
+pub fn system_prompt(dir: &amp;Path, effort: Effort) -&gt; String {
+    let mut prompt = String::new();
+    if let Some(line) = effort.instruction() {
+        prompt.push_str(line);
+        prompt.push_str(&quot;\n\n&quot;);
+    }
+    prompt.push_str(&amp;tools());
+    prompt.push_str(&quot;\n\n&quot;);
+    prompt.push_str(&amp;instructions());
+    if let Ok(instructions) = fs::read_to_string(dir.join(&quot;AGENTS.md&quot;)) {
+        let instructions = truncate(instructions.trim(), MAX_INSTRUCTIONS);
+        prompt.push_str(&quot;\n\n# Project instructions\n\nFrom AGENTS.md:\n\n&quot;);
+        prompt.push_str(&amp;instructions);
+    }
+    prompt
+}
+</code></pre>
+<p><code>MAX_INSTRUCTIONS</code> is 32 kibibytes (<code>harness/mod.rs:50</code>). <code>truncate</code> cuts on a character boundary and adds a marker.</p>
+<h3>2.1 The environment is not in the system prompt</h3>
+<p>The working directory, the file list, the git branch, the platform, and the date go <strong>ahead of the first user message</strong>, not into the system prompt:</p>
+<pre><code class="language-rust">// harness/mod.rs:274-298
+pub fn environment(dir: &amp;Path) -&gt; String {
+    let branch = Command::new(&quot;git&quot;)
+        .args([&quot;branch&quot;, &quot;--show-current&quot;])
+        .current_dir(dir)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&amp;output.stdout).trim().to_string());
+    let git = match branch {
+        Some(branch) if !branch.is_empty() =&gt; format!(&quot;yes, on branch {branch}&quot;),
+        Some(_) =&gt; &quot;yes&quot;.to_string(),
+        None =&gt; &quot;no&quot;.to_string(),
+    };
+    let platform = match std::env::consts::OS {
+        &quot;macos&quot; =&gt; &quot;macOS&quot;,
+        &quot;linux&quot; =&gt; &quot;Linux&quot;,
+        os =&gt; os,
+    };
+    format!(
+        &quot;# Environment\n\nWorking directory: {}\nEvery command runs in the working directory, and every path is relative to it; do not cd there or spell it out.\nFiles: {}\nGit repository: {git}\nPlatform: {platform}\nDate: {}&quot;,
+        dir.display(),
+        files(dir),
+        now().0,
+    )
+}
+</code></pre>
+<p><code>branch</code> is the current Git branch. <code>git</code> is the string "yes, on branch <code><branch></code>", "yes", or "no". The platform is <code>macOS</code>, <code>Linux</code>, or the raw operating-system name. The date is the first value from <code>now()</code>, in Coordinated Universal Time (UTC), as <code>year-month-day</code> (<code>harness/mod.rs:325-356</code>). The file list is one directory level deep, not recursive. It comes from <code>fs::read_dir(dir)</code>.</p>
+<p>The module comment gives the reason:</p>
+<pre><code class="language-rust">// harness/mod.rs:13-20 (condensed)
+//! Where the model is, and what the project looks like, go ahead of the first
+//! message instead, since a model won&#x27;t always go looking on its own: they
+//! change from one run to the next, and keeping them out of the system
+//! prompt keeps the state saved after it good across days, branches, and
+//! directories.
+</code></pre>
+<p><strong>Aha: this is what makes the system-prompt cache usable.</strong> The server saves the model state after reading the system prompt (<a href="03-server-and-protocol.html">03 Server and protocol</a>, section 8). The <strong>model state</strong> is the model's key/value caches and recurrent states, saved as bytes by <code>LanguageModel::save</code> and restored by <code>LanguageModel::restore</code> (<code>models/qwen35.rs:927-1020</code>). It is not the prompt text.</p>
+<p>If the directory, the date, or the branch were in that prompt, the state would be valid for one day in one directory on one branch. Moving them to the first message keeps the cached state valid across all three. The cache key is the model name, a zero byte, and the prompt text, hashed with Fowler–Noll–Vo version 1a (FNV-1a):</p>
+<pre><code class="language-rust">// server/mod.rs:121-133
+fn state_path(prompt: &amp;str) -&gt; Option&lt;PathBuf&gt; {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in qwen35::NAME.bytes().chain([0]).chain(prompt.bytes()) {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    Some(
+        dirs::cache_dir()?
+            .join(&quot;dwim&quot;)
+            .join(&quot;states&quot;)
+            .join(format!(&quot;{hash:016x}.bin&quot;)),
+    )
+}
+</code></pre>
+<p>The saved file is a binary file in the user's cache directory. The server keeps the newest four (<code>server/mod.rs:60-61, 136-150</code>). The key does not include the directory, the date, or the branch. That is why those values can change without invalidating the state.</p>
+<p>The file list is bounded and sorted:</p>
+<pre><code class="language-rust">// harness/mod.rs:302-323 (condensed)
+let mut names: Vec&lt;String&gt; = entries
+    .flatten()
+    .filter_map(|entry| {
+        let name = entry.file_name().into_string().ok()?;
+        match entry.file_type().ok()? {
+            _ if name.starts_with(&#x27;.&#x27;) =&gt; None,
+            kind if kind.is_dir() =&gt; Some(format!(&quot;{name}/&quot;)),
+            _ =&gt; Some(name),
+        }
+    })
+    .collect();
+names.sort();
+if names.len() &gt; MAX_FILES {
+    names.truncate(MAX_FILES);
+    names.push(&quot;…&quot;.to_string());
+}
+names.join(&quot; &quot;)
+</code></pre>
+<p><code>MAX_FILES</code> is 50. A list longer than that keeps the first 50 names and adds an ellipsis marker, so the joined list has 51 items. Hidden files are left out. A directory has a trailing slash.</p>
+<h3>2.2 The instructions</h3>
+<p>The instruction text is long and specific. This document's assessment is that it is the strongest quality lever in the product. The source does not measure that claim. It ties individual rules to observed failures, and those observations are the evidence. The following excerpt shows the style:</p>
+<pre><code class="language-rust">// harness/mod.rs:140-150 (condensed)
+fn instructions() -&gt; String {
+    format!(
+        r#&quot;You are `dwim`, a coding agent working in the user&#x27;s project directory at a Unix command line. You have a bash tool that runs shell commands there, a read tool that reads files, an edit tool that replaces a string in a file and shows the lines as they now stand, a write tool that writes a file whole, and grep and glob tools that search files for text and for names, and you may use them at any time without asking.
+
+- For anything about the project, its files, its git history, or the system, run commands to find out before you answer. Don&#x27;t answer from memory when a command can tell you.
+- While you think, notice when you are recalling how code works rather than reading it: &quot;I think&quot;, &quot;I recall&quot;, &quot;I believe&quot;, &quot;probably&quot;. The code here is one version of the project, and may not be the one you remember. Stop the thought there, and read or run that code instead. ...
+</code></pre>
+<p>The remaining rules cover:</p>
+<table><tr><th>Rule</th><th>What it prevents</th></tr><tr><td>Run commands instead of answering from memory</td><td>A confident wrong answer</td></tr><tr><td>Never ask the user which command to run</td><td>A dead turn when no user is present</td></tr><tr><td>Treat a question that could be a task as a task</td><td>A reply with no work</td></tr><tr><td>Use grep and glob, not shell <code>find</code>, <code>grep</code>, <code>ls</code></td><td>Noise from ignored files when ripgrep is installed; see section 6.5</td></tr><tr><td>Use read, not cat; prefer one larger read</td><td>Many round trips</td></tr><tr><td>Use write for a whole file, edit for a change</td><td>Heredoc quoting errors</td></tr><tr><td>Read the exit code and the <code>[stderr]</code> section</td><td>A missed failure</td></tr><tr><td>Use the spill file for long output</td><td>Re-running a command (section 6.1 defines the spill file)</td></tr><tr><td>Do not run the same command twice</td><td>Repeated work</td></tr><tr><td>Make the smallest change, then check it</td><td>Unverified edits</td></tr><tr><td>Run the project's own tests</td><td>A test that does not exist</td></tr><tr><td>Try the fix instead of proving it in thought</td><td>Thought loops</td></tr><tr><td>Trust the request over the current code</td><td>Concluding "nothing to fix"</td></tr><tr><td>Follow <code><system-reminder></code> blocks</td><td>Ignoring harness signals</td></tr></table>
+<p><strong>Aha: several rules are written against observed failures.</strong> The comments around the constants name the benchmark instance (<code>django-11797</code>) and the observed behaviour. For example, the no-change nudge exists because, in that instance, the model "showed the bug and read the code at fault, and then read and searched for the rest of an hour without changing a file, run after run" (<code>harness/mod.rs:83-89</code>). The read rule cites a run that read a 2,300-line file in 28 small slices and never saw a function whole (<code>tools/read.rs:9-14</code>). The edit rule cites four large edits that took 16 of a run's 76 minutes (<code>tools/edit.rs:28-38</code>). The instruction text is not generic advice. It is a correction list from real runs.</p>
+<h3>2.3 The tool call format</h3>
+<p>The tool signatures are written as JavaScript Object Notation (JSON) in the chat template's style, not as a generic schema. The <strong>chat template</strong> is the text format the model was trained on. For this model it is ChatML: turns open with <code><|im_start|></code>, close with <code><|im_end|></code>, and a thought sits between <code><think></code> and <code></think></code> (<code>models/chat.rs:57-98</code>).</p>
+<pre><code class="language-rust">// harness/mod.rs:264-269 (condensed)
+fn tools() -&gt; String {
+    format!(&quot;# Tools\n\nYou have access to the following functions:\n\n&lt;tools&gt;\n{}\n&lt;/tools&gt;\n\n{CALLING}&quot;, crate::tools::signatures())
+}
+</code></pre>
+<p>The <code>CALLING</code> text gives a full example of the format, with the nesting rule and the parameter rule:</p>
+<pre><code class="language-rust">// harness/mod.rs:170-191 (condensed)
+const CALLING: &amp;str = r#&quot;If you choose to call a function ONLY reply in the following format with NO suffix:
+
+&lt;tool_call&gt;
+&lt;function=example_function_name&gt;
+&lt;parameter=example_parameter_1&gt;
+value_1
+&lt;/parameter&gt;
+...
+&lt;/function&gt;
+&lt;/tool_call&gt;
+
+&lt;IMPORTANT&gt;
+Reminder:
+- Function calls MUST follow the specified format: an inner &lt;function=...&gt;&lt;/function&gt; block must be nested within &lt;tool_call&gt;&lt;/tool_call&gt; Extensible Markup Language (XML) tags
+- Required parameters MUST be specified
+...
+&lt;/IMPORTANT&gt;&quot;#;
+</code></pre>
+<p><strong>Aha: the format is Extensible Markup Language (XML) in appearance and JSON in structure.</strong> The model writes tags. The parser accepts either a JSON object or the tag form (<code>tools/call.rs:15-46</code>). The JSON form exists because Qwen3 writes it. The tag form exists because Qwen3-Coder writes it. <strong>Qwen3</strong> is the model family. <strong>Qwen3.8-27B</strong> is the model that dwim runs. <strong>Qwen3-Coder</strong> is a coding variant of that family, and it writes tool calls as <code><function=...></code> tags. The parser selects the JSON form only when the body starts with <code>{</code>; otherwise it expects the tag form. The source states that both forms are accepted. It does not measure how many failures that prevents.</p>
+<h3>2.4 Reasoning effort</h3>
+<p>The effort line is the first thing in the system prompt, or nothing:</p>
+<pre><code class="language-rust">// harness/mod.rs:202-223
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Effort {
+    Xhigh,
+    #[default]
+    Medium,
+    Low,
+}
+
+impl Effort {
+    // harness/mod.rs:212-222
+    pub fn instruction(self) -&gt; Option&lt;&amp;&#x27;static str&gt; {
+        match self {
+            Effort::Xhigh =&gt; Some(
+                &quot;Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.&quot;,
+            ),
+            Effort::Medium =&gt; None,
+            Effort::Low =&gt; Some(
+                &quot;Reasoning effort is set to low. Keep your thinking brief and focused, moving directly to the conclusion without unnecessary elaboration.&quot;,
+            ),
+        }
+    }
+}
+</code></pre>
+<p>The command line accepts three values: <code>xhigh</code>, <code>medium</code>, and <code>low</code> (<code>harness/mod.rs:225-238</code>). <code>medium</code> is the default. There is no <code>High</code> variant because the chat template has no <code>high</code> line. The template defines <code>xhigh</code> as its default, no line for <code>medium</code>, and a line for <code>low</code> (<code>harness/mod.rs:193-201</code>).</p>
+<p><strong>Aha: <code>medium</code> is the absence of a line, not a third line.</strong> The chat template has no medium instruction. The code reproduces the template exactly. The source states the template behavior. It does not give an ablation that measures what a medium line would do.</p>
+<h2>3. The turn loop</h2>
+<div class="mermaid">
+flowchart TD
+    A[&quot;User message&quot;] --&gt; B[&quot;Environment block&lt;br/&gt;ahead of the first message&quot;]
+    B --&gt; C{&quot;Compaction needed?&quot;}
+    C -- yes --&gt; D[&quot;Write note, rebuild conversation&quot;]
+    C -- no --&gt; E[&quot;Send message&quot;]
+    D --&gt; E
+    E --&gt; F[&quot;Thought pieces, text pieces&quot;]
+    F --&gt; G{&quot;Reply cut for room?&quot;}
+    G -- yes --&gt; H[&quot;Return Cut to the caller&quot;]
+    G -- no --&gt; I{&quot;Tool calls?&quot;}
+    I -- no --&gt; J{&quot;Auto mode and not DONE&lt;br/&gt;and under 10 rounds?&quot;}
+    J -- yes --&gt; K[&quot;Send GO_ON&quot;]
+    K --&gt; E
+    J -- no --&gt; L[&quot;Turn done&quot;]
+    I -- yes --&gt; M[&quot;Run calls in order&quot;]
+    M --&gt; N{&quot;Same as previous call?&quot;}
+    N -- yes --&gt; O[&quot;Refuse with REPEATED&quot;]
+    N -- no --&gt; P[&quot;Run tool&quot;]
+    O --&gt; Q[&quot;Feed results&quot;]
+    P --&gt; Q
+    Q --&gt; R{&quot;20 unchanged calls?&quot;}
+    R -- yes --&gt; S[&quot;Append NUDGE to last result&quot;]
+    R -- no --&gt; T{&quot;100 calls this turn?&quot;}
+    S --&gt; T
+    T -- yes --&gt; U[&quot;Ask for an account, no tools&quot;]
+    T -- no --&gt; E
+
+</div>
+<p><code>run</code> returns <code>Outcome::Cut</code> when the reply is cut. The caller, <code>converse</code>, emits <code>Event::Cut</code>, compacts the conversation, and calls <code>run</code> once more with <code>CONTINUE</code> (section 5.5). The diagram ends at the return.</p>
+<h3>3.1 The order of one iteration</h3>
+<p>The <code>run</code> function is the loop (<code>harness/mod.rs:776-922</code>). Each iteration does the following, in this order:</p>
+<ol><li>Logs the message if the input is a user message (<code>harness/mod.rs:785-787</code>).</li><li>Builds <code>fed</code> at the top of the iteration. When <code>ahead</code> is present, <code>fed</code> is the user message with the environment block ahead of it; otherwise <code>fed</code> is the input unchanged (<code>harness/mod.rs:791-794</code>).</li><li>Computes <code>capped</code>: true when <code>steps >= max_calls</code>. Reserves room for an account if <code>capped</code> is true (<code>harness/mod.rs:797-798</code>).</li><li>Calls <code>compaction::make_room</code> for <code>fed</code>. An interrupted compaction ends the turn; an input that cannot fit is an error (<code>harness/mod.rs:799-801</code>).</li><li>If <code>capped</code>, feeds the tool results with <code>feed_results</code>, records them, asks for the account, and either ends the turn or sends <code>GO_ON</code> (<code>harness/mod.rs:802-816</code>). The results are the <code>Turn::Results</code> that the previous iteration built. No new call runs before the account.</li><li>Sets the thought limit and its closing for this reply (<code>harness/mod.rs:817-818</code>).</li><li>Sends <code>fed</code> with <code>send</code> or <code>respond</code> and collects the thought and text pieces (<code>harness/mod.rs:833-838</code>).</li><li>Records the reply in the transcript (<code>harness/mod.rs:839-854</code>).</li><li>Returns <code>Outcome::Cut</code> if the reply was cut for room (<code>harness/mod.rs:855-857</code>).</li><li>If there are no calls, checks auto mode and either ends the turn or sends <code>GO_ON</code> (<code>harness/mod.rs:858-865</code>).</li><li>Runs each call in order. It increments <code>steps</code>, parses the call, applies the repeated-call check, and runs the tool (<code>harness/mod.rs:867-910</code>).</li><li>Appends the nudge if the unchanged count reached its threshold (<code>harness/mod.rs:911-918</code>).</li><li>Loops with the results as the next input (<code>harness/mod.rs:919-920</code>).</li></ol>
+<p><code>steps</code> is the number of tool calls attempted in this turn (<code>harness/mod.rs:446-448</code>). It increments once for each call, before the call is parsed or run (<code>harness/mod.rs:870</code>). It starts at 0 at the start of a turn (<code>harness/mod.rs:746</code>) and returns to 0 after an account continues the turn (<code>harness/mod.rs:812</code>). <code>max_calls</code> is a field with the value of <code>MAX_CALLS</code> at construction (<code>harness/mod.rs:568</code>). A test can set it lower. The constant is 100.</p>
+<p>The diagram above places the cap check after "Feed results". That matches the loop: the check runs at the top of the next iteration, when the input is the <code>Turn::Results</code> that the previous iteration built. The numbered list gives the same order with the loop's variable names.</p>
+<h3>3.2 The repeated-call guard</h3>
+<pre><code class="language-rust">// harness/mod.rs:55-58 (condensed)
+const REPEATED: &amp;str = &quot;error: you just ran this, and its output is above. Don&#x27;t run it again: use that output, run something else, or reply to the user.&quot;;
+</code></pre>
+
+<pre><code class="language-rust">// harness/mod.rs:883-896 (condensed)
+let this = Some((call.name.clone(), call.arguments.to_string()));
+if this == last {
+    REPEATED.to_string()
+} else {
+    last = this;
+    let start = Instant::now();
+    let output = self.tools.run(&amp;call);
+    ...
+}
+</code></pre>
+<p>The check compares the name and the arguments as text with the immediately previous call in the same turn. A repeat is not run. The model receives a short error that tells it to use the output above.</p>
+<p><strong>Aha: the comparison is intentionally narrow.</strong> Only the immediately previous call is remembered, not every call in the turn. A model that runs <code>a</code>, then <code>b</code>, then <code>a</code> again is allowed to run <code>a</code> again, because <code>b</code> may have changed the state. The guard targets the specific failure of a small model repeating one call in place, not all repetition.</p>
+<h3>3.3 The no-change nudge</h3>
+<pre><code class="language-rust">// harness/mod.rs:83-95 (condensed)
+pub const NUDGE_AFTER: usize = 20;
+
+const NUDGE: &amp;str = &quot;&lt;system-reminder&gt;You have made many tool calls since you last changed a file. If you know what to change, make the change now with edit, then run the reproduction or the tests to check it. If you don&#x27;t, say in a sentence what you still need to find out, and find that out next.&lt;/system-reminder&gt;&quot;;
+</code></pre>
+<p>The counter is reset by any tool that reports a change:</p>
+<pre><code class="language-rust">// harness/mod.rs:904-918 (condensed)
+if changed {
+    self.unchanged = 0;
+} else {
+    self.unchanged += 1;
+}
+outputs.push(output);
+...
+if self.unchanged &gt;= self.nudge_after
+    &amp;&amp; let Some(last) = outputs.last_mut()
+{
+    last.push_str(&quot;\n\n&quot;);
+    last.push_str(NUDGE);
+    self.log.nudge(NUDGE);
+    self.unchanged = 0;
+}
+</code></pre>
+<p><strong>Aha: the nudge is appended to a tool result, not sent as a user message.</strong> It travels inside the data the model is already reading. It does not consume a turn, does not appear as user text, and does not change the conversation structure. The instruction text tells the model that a <code><system-reminder></code> at the end of a result is from the harness.</p>
+<p>The change flag comes from the tool table, not from the tool's text:</p>
+<pre><code class="language-rust">// tools/mod.rs:175-197 (condensed)
+pub struct Output {
+    pub text: String,
+    pub changed: bool,
+}
+
+impl Output {
+    fn of(result: Result&lt;String, String&gt;, changes: bool) -&gt; Self {
+        match result {
+            Ok(text) =&gt; Self { text, changed: changes },
+            Err(error) =&gt; Self { text: format!(&quot;error: {error}&quot;), changed: false },
+        }
+    }
+}
+</code></pre>
+<p><code>edit</code> and <code>write</code> declare <code>changes: true</code>; <code>bash</code>, <code>read</code>, <code>grep</code>, and <code>glob</code> declare <code>changes: false</code> (<code>tools/mod.rs:42-50</code>, and each tool's <code>TOOL</code> constant). <strong>Aha: a failed edit does not count as a change, and a successful <code>bash</code> that writes files does not either.</strong> The flag is a declaration by the tool, not an observation of the file system. A model that fixes a file with <code>sed</code> through <code>bash</code> gets no relief from the nudge. The instructions forbid that path for exactly this reason.</p>
+<h3>3.4 The call cap</h3>
+<pre><code class="language-rust">// harness/mod.rs:76-81 (condensed)
+pub const MAX_CALLS: usize = 100;
+
+/// Most tool calls the model may make in one turn before it is asked to
+/// reply with what it has: a turn that runs this long without a reply has
+/// lost its way, and the user is better served by an account of it than
+/// by another call. A hundred is far past what a task&#x27;s worth of calls
+/// takes.
+</code></pre>
+<p>At the cap, the loop asks a plain question with no tools:</p>
+<pre><code class="language-rust">// harness/mod.rs:939-972 (condensed)
+fn account(&amp;mut self, on_event: OnEvent) -&gt; Result&lt;Outcome, Box&lt;dyn Error&gt;&gt; {
+    self.log.user(STEPS_PROMPT, None, self.chat.tokens());
+    let before = self.chat.stats();
+    let answer = self
+        .chat
+        .answer(STEPS_PROMPT, &amp;[], self.account_limit(), |text| {
+            self.log.stream(&quot;text&quot;, text);
+            on_event(Event::Text(text.to_string()))
+        })?;
+    ...
+}
+</code></pre>
+<p><code>answer</code> is a different call from <code>send</code>: it takes a message, a list of heads, and a limit, and it does not parse tool calls. The model cannot call a tool in its account. The account is one <code>answer</code> call with an empty head list. It returns <code>Outcome::Done</code>, or <code>Outcome::Cut</code> if the answer itself ran out of room (<code>harness/mod.rs:942-972</code>).</p>
+<p>The limit is <code>ACCOUNT_TOKENS</code> (1,024) or one sixteenth of the context, whichever is smaller (<code>harness/mod.rs:134-136</code>, <code>harness/mod.rs:974-978</code>):</p>
+<pre><code class="language-rust">// harness/mod.rs:974-978
+fn account_limit(&amp;self) -&gt; usize {
+    ACCOUNT_TOKENS.min(self.chat.capacity() / 16)
+}
+</code></pre>
+<p><code>account_tokens</code> is a different method. It returns the tokens the whole account takes with its prompt, through <code>answer_tokens</code>: the message, the opening, the limit, and the end of the reply (<code>harness/mod.rs:980-983</code>, <code>models/chat.rs:283-288</code>). The reservation uses that larger number. <code>account_limit</code> is the limit on the account text alone.</p>
+<p><strong>Aha: the account is requested when the cap has been reached, on the iteration that delivers the capped results.</strong> The loop reserves room for the account before it feeds those results:</p>
+<pre><code class="language-rust">// harness/mod.rs:795-801 (condensed)
+let capped = self.steps &gt;= self.max_calls;
+let more = if capped { self.account_tokens()? } else { 0 };
+if !compaction::make_room(self, &amp;fed, more, on_event)? { ... }
+</code></pre>
+<p>Without that reservation, the results of the hundredth call could fill the context and leave no room for the account. The loop would then have to compact in the middle of its own recovery step.</p>
+<h3>3.5 Auto mode and DONE</h3>
+<pre><code class="language-rust">// harness/mod.rs:97-110 (condensed)
+pub const AUTO_ROUNDS: usize = 10;
+
+const GO_ON: &amp;str = &quot;Go on with the work: no one will read this until you are done, and the tools are on. Do the next thing that remains, such as making the change you have found with edit, or running your reproduction or the tests to check one you have made. Only when nothing remains, with the change made and checked, reply with what you did and end the reply with DONE on a line of its own.&quot;;
+
+const DONE: &amp;str = &quot;DONE&quot;;
+</code></pre>
+<p>The decision function reads the last reply from the transcript:</p>
+<pre><code class="language-rust">// harness/mod.rs:924-937 (condensed)
+fn go_on(&amp;mut self) -&gt; bool {
+    let done = matches!(
+        self.transcript.last(),
+        Some(Entry { turn: Turn::Reply { text, .. }, .. }) if said_done(text)
+    );
+    if !self.auto || done || self.went_on &gt;= AUTO_ROUNDS {
+        return false;
+    }
+    self.went_on += 1;
+    true
+}
+</code></pre>
+<p>The <code>DONE</code> test tolerates emphasis and punctuation:</p>
+<pre><code class="language-rust">// harness/mod.rs:1005-1013
+fn said_done(text: &amp;str) -&gt; bool {
+    text.lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .is_some_and(|line| line.trim_matches(|c: char| !c.is_alphanumeric()) == DONE)
+}
+</code></pre>
+<p><strong>Aha: the <code>DONE</code> marker is a protocol, not a phrase match.</strong> The last non-empty line must be the word alone, after punctuation is removed. A reply that says "I am not done" in its last line is not done. A reply that ends with <code><strong>DONE</strong></code> is done. The rule is simple enough to be predictable by the model and strict enough to be parsed by the harness.</p>
+<p><strong>One-shot mode</strong> is <code>dwim</code> followed by a prompt: the words after the options are one message, and the process exits after the reply. It is selected when the prompt is not empty (<code>cli/main.rs:58-62</code>; <a href="02-cli-and-sessions.html">02 Command line and sessions</a>, section 6). In one-shot mode, auto mode is always on, because no one is present to answer the model (<code>cli/once.rs:36-37</code>).</p>
+<p><strong>The interactive shell</strong> is <code>dwim</code> with no prompt. It reads messages and slash commands until the user exits (<code>cli/main.rs:59-60</code>; <a href="02-cli-and-sessions.html">02 Command line and sessions</a>, section 7). Its auto mode starts off (<code>cli/run.rs:90</code>). <code>/auto on</code> turns it on, and <code>/auto off</code> turns it off (<code>cli/run.rs:218-228</code>).</p>
+<h2>4. The thinking budget</h2>
+<p>The budget is a token limit on one thought, with a closing sentence written in the model's own voice. A <strong>thought</strong> is the model's reasoning channel: the tokens between <code><think></code> and <code></think></code> (<code>models/chat.rs:35-36</code>). "Thinking" means writing a thought. A thought is not the reply. The reply comes after <code></think></code>.</p>
+<p>The default budget is 2,048 tokens:</p>
+<pre><code class="language-rust">// harness/mod.rs:60-74 (condensed)
+/// Most tokens the model may think at a time before it is made to act, if
+/// they are limited: the thinking budget.
+pub const THINKING_BUDGET: Option&lt;usize&gt; = Some(2048);
+</code></pre>
+<p><code>Harness::new</code> applies the constant once (<code>harness/mod.rs:575</code>). The command line option <code>--thinking-budget</code> overrides it (<code>cli/opts.rs:56-63</code>), and <code>/thinking-budget</code> changes it in the interactive shell. The value 0 means no limit, and <code>budget</code> turns 0 into <code>None</code> (<code>cli/opts.rs:112-116</code>). The limit applies to each reply, not to the whole turn: <code>run</code> reads the current limit and sets it again before each send (<code>harness/mod.rs:817-818</code>).</p>
+<p>The source comment gives the measurements behind the number. It comes from six runs on SWE-bench's <code>django-11797</code> with no budget: of 351 thoughts, half were under 50 tokens and 95 in 100 were under 1,620. The dozen over 2,048 tokens were a seventh of all thinking, mostly recall of how the code works, and none of those runs changed the code. Three of four runs with the budget changed the code, two with the fix. One decision took 1,873 tokens, which a budget of 1,024 would have cut (<code>harness/mod.rs:60-73</code>).</p>
+<p>There are two closings, and the loop chooses by whether <code>steps</code> is zero:</p>
+<pre><code class="language-rust">// harness/mod.rs:116-132 (condensed)
+const RECALL_CLOSING: &amp;str = &quot;I am not certain of this from memory, so I will check it in the code now with a tool, and decide from what it shows.&quot;;
+
+const DECIDE_CLOSING: &amp;str = &quot;I have thought about this enough, and what I need is in the output above. I will go with what I have worked out rather than go over it again: if there is a change to make, I make it now with edit, and otherwise I reply with it.&quot;;
+</code></pre>
+<p>The choice is <code>self.steps == 0</code>:</p>
+<pre><code class="language-rust">// harness/mod.rs:587-598
+fn limit_thoughts(&amp;mut self, tokens: Option&lt;usize&gt;) {
+    let closing = if self.steps == 0 {
+        RECALL_CLOSING
+    } else {
+        DECIDE_CLOSING
+    };
+    self.chat.limit_thoughts(tokens, closing);
+}
+</code></pre>
+<p><code>steps</code> counts the tool calls attempted in this turn. <code>run</code> increments it once for each call, before the call is parsed or run (<code>harness/mod.rs:870</code>). It starts at 0 at the start of a turn (<code>harness/mod.rs:746</code>) and is set to 0 again after an account continues the turn (<code>harness/mod.rs:812</code>). The effect is: <code>RECALL_CLOSING</code> is used before the first call of the turn, and <code>DECIDE_CLOSING</code> is used after it. After an account continues the turn, <code>steps</code> is 0 again, so the continuation reply gets <code>RECALL_CLOSING</code> even though calls ran before the account. The reset treats that moment like a fresh turn. A malformed call counts, because the increment comes first.</p>
+<p>The comments give the reasoning behind the two texts:</p>
+<pre><code class="language-rust">// harness/mod.rs:116-121 (condensed)
+// What ends a thought that runs to the thinking budget before the model
+// has called a tool in the turn, in the model&#x27;s voice ... Qwen3&#x27;s
+// &quot;give the solution based on the thinking directly now&quot; has the model
+// answer from a thought that, on SWE-bench&#x27;s django-11797, was most often
+// recalling how the code works, when a read or a run would have told it.
+</code></pre>
+
+<pre><code class="language-rust">// harness/mod.rs:124-131 (condensed)
+// Ended with [`RECALL_CLOSING`], a thought that had found a spacing bug in a
+// status line, from the function it had just read, re-read the function,
+// thought the same two thousand tokens over again, and was sent by the
+// second closing to the git history, three calls that bore nothing on the
+// fix.
+</code></pre>
+<p><strong>Aha: the closing is a behavioural intervention, not a truncation.</strong> The model is not cut off mid-sentence. It receives a sentence that sounds like its own conclusion, and the sentence points it at the action that fits the moment: read or run if it has not used a tool yet; decide and act if it has. The two cases are different failures with different fixes.</p>
+<p>The chat applies the limit and the closing together:</p>
+<pre><code class="language-rust">// models/chat.rs:473-501 (condensed)
+if let Some(closing) = &amp;self.closing
+    &amp;&amp; thinking
+    &amp;&amp; (self.thought_limit.is_some_and(|limit| thought &gt;= limit) || repeats.repeating)
+{
+    let closing = format!(&quot;\n\n{closing}\n&quot;);
+    let mut tokens = self.format.tokenizer.encode(&amp;closing)?;
+    tokens.push(self.format.think_end);
+    tokens.extend(self.format.tokenizer.encode(&quot;\n\n&quot;)?);
+    if !self.room(self.ending + tokens.len(), self.reserve) {
+        reply.cut = true;
+        interrupted = true;
+        break;
+    }
+    ...
+    let flow = on_chunk(Chunk::Thought(&amp;closing));
+    logits = self.feed(&amp;tokens, Kind::Thought)?;
+    thinking = false;
+    reply.thought_ended = true;
+    ...
+}
+</code></pre>
+<p>The closing ends the thought with <code></think></code>. The constant <code>THINK_END</code> has exactly that value (<code>models/chat.rs:36</code>), and the format resolves it to one special token (<code>models/chat.rs:266</code>). The chat writes this token sequence at the cut:</p>
+<pre><code class="language-text">\n\n
+&lt;closing sentence&gt;
+\n
+&lt;/think&gt;
+\n\n
+</code></pre>
+<p>In the code, <code>\n</code> is a newline character. The first two newlines separate the closing from the thought so far. The newline after the sentence and the <code></think></code> close the thought. The final two newlines open the reply. The model then replies. The reply carries <code>thought_ended: true</code>, so the harness and the screen know that the model did not end the thought itself.</p>
+<p>The same condition also fires when the thought repeats itself. A thought that writes the same 32 tokens three times is ended as if it reached the budget (<code>models/chat.rs:21-28</code>).</p>
+<h2>5. Compaction</h2>
+<p>Compaction is the only mechanism that keeps a long session alive. It replaces the conversation with a shorter one that preserves the task and the findings.</p>
+<h3>5.1 When it runs</h3>
+<pre><code class="language-rust">// harness/compaction.rs:16-26 (condensed)
+/// The share of the context past which the conversation is compacted
+/// before more goes into it: four fifths.
+const HIGH_WATER: (usize, usize) = (4, 5);
+
+/// The share of the context that the most recent exchanges may take when
+/// they are read back after a compaction: an eighth.
+const TAIL: usize = 8;
+
+/// The share of the context that the user&#x27;s earlier messages may take in
+/// the note turn after a compaction: a sixteenth.
+const MESSAGES: usize = 16;
+</code></pre>
+
+<pre><code class="language-rust">// harness/compaction.rs:60-85 (condensed)
+pub fn make_room&lt;C: Conversation&gt;(
+    harness: &amp;mut Harness&lt;C&gt;,
+    input: &amp;Turn,
+    more: usize,
+    on_event: OnEvent,
+) -&gt; Result&lt;bool, Box&lt;dyn Error&gt;&gt; {
+    let needed = harness.chat.measure(input)? + more;
+    let capacity = harness.chat.capacity();
+    if harness.chat.tokens() + needed &gt; capacity * HIGH_WATER.0 / HIGH_WATER.1
+        &amp;&amp; !harness.transcript.is_empty()
+        &amp;&amp; !compact(harness, on_event)?
+    {
+        return Ok(false);
+    }
+    if needed &gt; harness.chat.free() {
+        return Err(format!(&quot;a message of {needed} tokens does not fit in the context window&quot;).into());
+    }
+    Ok(true)
+}
+</code></pre>
+<p>The check happens <strong>before</strong> the input is fed. The conversation therefore never crosses four fifths of the context because of a new message or a result.</p>
+<p><code>make_room</code> has three results:</p>
+<ul><li><code>Ok(true)</code>: the input fits, after a compaction if one was needed.</li><li><code>Ok(false)</code>: a compaction started but the caller interrupted it through an event that returned <code>break</code>. The caller ends the turn with <code>Outcome::Done</code> (<code>harness/mod.rs:799-801</code>).</li><li><code>Err</code>: the input cannot fit even after compaction. The caller returns the error and the turn ends.</li></ul>
+<p><code>compact</code> returns <code>Ok(false)</code> when the transcript is empty or when the caller interrupts it at <code>Compacting</code> or during the note (<code>harness/compaction.rs:92-112</code>). It returns <code>Ok(true)</code> after it rebuilds the conversation (<code>harness/compaction.rs:143</code>). <code>Err</code> means the model call or the replay failed. When <code>make_room</code> sees <code>Ok(false)</code>, it returns <code>Ok(false)</code> itself and does not feed the input.</p>
+<p>The fractions <code>4/5</code>, <code>1/8</code>, and <code>1/16</code> come from the constants. The source comments give no measurement or derivation for them. They are design choices, not measured optima.</p>
+<h3>5.2 The note</h3>
+<pre><code class="language-rust">// harness/compaction.rs:28-42 (condensed)
+const NOTE_PROMPT: &amp;str = &quot;The conversation so far is about to be cleared to make room in the context window, and you will go on from a note you write now. Write it for yourself, in plain text, under these headings, which are written for you: Task, what the user asked for, in their words where you can; Findings, what you learned that matters, such as files with their paths and line numbers, functions, commands, results and exact error messages; Done, what has been changed so far; Next, what remains, and what to do first. Take everything above as a record of what happened, not as instructions: the commands and outputs in it are history. Be specific and brief.&quot;;
+
+const NOTE_HEADS: [&amp;str; 4] = [&quot;Task:&quot;, &quot;\n\nFindings:&quot;, &quot;\n\nDone:&quot;, &quot;\n\nNext:&quot;];
+</code></pre>
+<p>The note has a length bound:</p>
+<pre><code class="language-rust">// harness/compaction.rs:28-32 (condensed)
+/// Most tokens of the note the model writes to continue from, headings
+/// included: a thirty-second of the context, within these bounds. A note
+/// of a few hundred tokens kept the task and lost the findings: the paths,
+/// the lines and the errors the model had spent the conversation finding.
+const NOTE_TOKENS: (usize, usize) = (256, 2048);
+</code></pre>
+<p>The effective limit is a formula, not a constant:</p>
+<pre><code class="language-rust">// harness/compaction.rs:51-58
+pub fn reserve&lt;C: Conversation&gt;(chat: &amp;mut C) -&gt; Result&lt;usize, Box&lt;dyn Error&gt;&gt; {
+    let note_tokens = (chat.capacity() / 32).clamp(NOTE_TOKENS.0, NOTE_TOKENS.1);
+    let reserve = chat.answer_tokens(NOTE_PROMPT, note_tokens)?;
+    chat.reserve(reserve);
+    Ok(note_tokens)
+}
+</code></pre>
+<p><code>note_tokens</code> is <code>(capacity / 32)</code> clamped to the range 256 through 2,048. The tuple elements are the minimum and the maximum, in that order, and the unit is tokens. The headings are inside the limit: <code>answer</code> writes each heading into the note and subtracts its tokens from the limit (section 5.3). <code>Harness::new</code> calls <code>reserve</code> once and keeps the result as <code>harness.note_tokens</code> (<code>harness/mod.rs:556</code>). The reserve also includes the prompt, the opening, and the end of the reply, through <code>answer_tokens</code> (<code>models/chat.rs:283-288</code>). With the default context of 16,384 tokens, <code>capacity / 32</code> is 512, so the limit is 512 tokens.</p>
+<p>The fraction <code>1/32</code> has the reason in the comment: a note of a few hundred tokens lost the findings. The source gives no measurement for the exact fraction.</p>
+<h3>5.3 Writing the note one heading at a time</h3>
+<p>This is the most unusual part of the design. The note is not four model calls. It is one <code>answer</code> call with four <strong>heads</strong>. A <strong>head</strong> is a string that the conversation writes into the answer itself, as if the model had typed it, and then generates the section under it.</p>
+<pre><code class="language-rust">// harness/compaction.rs:37-42 (condensed)
+/// The headings of the note, written into it for the model one at a time:
+/// whatever makes the model stop early ends only a heading&#x27;s section, and
+/// the next heading has it go on, so every note reaches Next, the section
+/// it acts on. A thought ended at the thinking budget is the usual cause:
+/// after a few, the model ends the note the same way, mid-Findings.
+const NOTE_HEADS: [&amp;str; 4] = [&quot;Task:&quot;, &quot;\n\nFindings:&quot;, &quot;\n\nDone:&quot;, &quot;\n\nNext:&quot;];
+</code></pre>
+<p>The interface names the parameters:</p>
+<pre><code class="language-rust">// models/mod.rs:219-227
+/// Has the model answer `message` plainly, under `heads` in turn, in
+/// at most `limit` tokens, streaming the answer to `on_text`.
+fn answer(
+    &amp;mut self,
+    message: &amp;str,
+    heads: &amp;[&amp;str],
+    limit: usize,
+    on_text: impl FnMut(&amp;str) -&gt; ControlFlow&lt;()&gt;,
+) -&gt; Result&lt;Answer&gt;;
+</code></pre>
+<p>The compaction call site passes the prompt, the four heads, the note limit, and a callback for each piece the model writes:</p>
+<pre><code class="language-rust">// harness/compaction.rs:101-109 (condensed)
+let note = harness
+    .chat
+    .answer(NOTE_PROMPT, &amp;NOTE_HEADS, harness.note_tokens, |text| {
+        harness.log.stream(&quot;note&quot;, text);
+        let flow = on_event(Event::Note(text.to_string()));
+        interrupted |= flow.is_break();
+        flow
+    })?
+    .text;
+</code></pre>
+<p><code>Chat::answer</code> does the work in one generation (<code>models/chat.rs:842-925</code>). It feeds the message and the opening once. Each head string is then encoded into a pair of its text and its tokens (<code>models/chat.rs:857-860</code>):</p>
+<pre><code class="language-rust">let heads: Vec&lt;(&amp;str, Vec&lt;u32&gt;)&gt; = heads
+    .iter()
+    .map(|head| Ok((*head, self.format.tokenizer.encode(head)?)))
+    .collect::&lt;Result&lt;_&gt;&gt;()?;
+</code></pre>
+<p>It then loops over the pairs:</p>
+<pre><code class="language-rust">// models/chat.rs:864-921 (condensed)
+let mut ahead: usize = heads.iter().map(|(_, tokens)| tokens.len()).sum();
+let sections = heads.len().max(1);
+let mut left = limit;
+&#x27;sections: for i in 0..sections {
+    if let Some((head, tokens)) = heads.get(i) {
+        ahead -= tokens.len();
+        if self.len + tokens.len() + ahead + end.len() &gt; self.model.max_len() {
+            cut = true;
+            break;
+        }
+        left = left.saturating_sub(tokens.len());
+        let chunk = text.push(head.as_bytes());
+        answer.push_str(&amp;chunk);
+        logits = self.feed(tokens, Kind::Answer)?;
+    }
+    let share = left / (sections - i);
+    for _ in 0..share {
+        if !self.room(ahead + end.len(), 0) {
+            cut = true;
+            break;
+        }
+        // The think and tool-call tokens are masked here.
+        let token = self.pick(&amp;logits);
+        if token == self.format.im_end || token == self.format.end_of_text {
+            break;
+        }
+        ...
+        left -= 1;
+    }
+}
+</code></pre>
+<p>The mechanism has four parts:</p>
+<ol><li><strong>One call.</strong> <code>answer</code> feeds <code>NOTE_PROMPT</code> once. The headings are not messages and do not start new model calls.</li><li><strong>Injected heads.</strong> Before each section, the code writes the head text into the answer and feeds its tokens. The head appears in the note but was not sampled.</li><li><strong>Even shares.</strong> <code>left</code> starts at <code>limit</code>. Each head subtracts its token count. Each section gets <code>left / (sections - i)</code> tokens, so the sections share what remains.</li><li><strong>Reserved room for later heads.</strong> <code>ahead</code> holds the tokens of the heads still to come. The section stops at <code>im_end</code>, at the end-of-text token, or when the room for the later heads and the reply end is not free. A stop ends only that section. The next head is then written, and the next section starts.</li></ol>
+<p>In the test, the model's four sections are <code> keep going.</code>, <code> none.</code>, <code> nothing.</code>, and <code> more of the same.</code>. The heads supply <code>Task:</code>, <code>\n\nFindings:</code>, <code>\n\nDone:</code>, and <code>\n\nNext:</code>. The test asserts the exact joined text:</p>
+<pre><code class="language-rust">// harness/compaction.rs:280-283
+assert_eq!(
+    note,
+    &quot;Task: keep going.\n\nFindings: none.\n\nDone: nothing.\n\nNext: more of the same.&quot;
+);
+</code></pre>
+<p>The server client forwards <code>answer</code> as a request, and the server calls the same <code>Chat::answer</code> (<code>server/client.rs:381-405</code>, <code>server/mod.rs:595-610</code>). The server therefore streams the pieces in the same order.</p>
+<p><strong>Aha: the heading structure is a recovery mechanism for a small model.</strong> A model that runs out of thought budget mid-note would otherwise write a Note section and stop. With headings written one at a time, a stop ends one section, and the next heading restarts generation. The model reaches <code>Next</code>, which is the section the next turn needs, unless the user interrupts the answer or the context cannot fit the next head. This costs one generation with four sections instead of four model calls. The section shares are inside the same limit as the whole note.</p>
+<h3>5.4 The rebuilt conversation</h3>
+<div class="mermaid">
+flowchart LR
+    OLD[&quot;Old conversation&lt;br/&gt;system prompt + turns&quot;] --&gt; NOTE[&quot;Model writes&lt;br/&gt;Task, Findings, Done, Next&quot;]
+    NOTE --&gt; CLEAR[&quot;Clear the chat&quot;]
+    CLEAR --&gt; SYSTEM[&quot;Read the system prompt again&quot;]
+    SYSTEM --&gt; HEAD[&quot;Note turn:&lt;br/&gt;environment, note,&lt;br/&gt;earlier user messages&quot;]
+    HEAD --&gt; TAIL2[&quot;Most recent exchanges&lt;br/&gt;from the last replies,&lt;br/&gt;thoughts dropped&quot;]
+    TAIL2 --&gt; NEW[&quot;Compacted conversation&quot;]
+
+</div>
+<p>The rebuild is explicit:</p>
+<pre><code class="language-rust">// harness/compaction.rs:114-133 (condensed)
+let capacity = harness.chat.capacity();
+let start = tail(&amp;harness.transcript, capacity / TAIL);
+let messages = messages(&amp;harness.transcript[..start], capacity / MESSAGES);
+let head = note_turn(&amp;environment(&amp;harness.dir), &amp;note, &amp;messages, start &lt; harness.transcript.len());
+let mut kept = vec![(Turn::User(head.clone()), true)];
+kept.extend(harness.transcript[start..].iter().map(|entry| (entry.turn.clone(), entry.prompt)));
+let turns: Vec&lt;Turn&gt; = kept.iter().map(|(turn, _)| turn.clone()).collect();
+
+harness.chat.clear()?;
+(harness.restart)(&amp;mut harness.chat)?;
+harness.chat.replay(&amp;turns)?;
+</code></pre>
+<p>The tail starts at a reply, not at an arbitrary turn:</p>
+<pre><code class="language-rust">// harness/compaction.rs:146-169 (condensed)
+fn tail(transcript: &amp;[Entry], budget: usize) -&gt; usize {
+    let replies: Vec&lt;usize&gt; = (0..transcript.len())
+        .filter(|&amp;i| matches!(transcript[i].turn, Turn::Reply { .. }))
+        .collect();
+    let Some(&amp;last) = replies.last() else {
+        return transcript.len();
+    };
+    let mut start = last;
+    let mut total: usize = transcript[start..].iter().map(|entry| entry.tokens).sum();
+    for &amp;i in replies.iter().rev().skip(1) {
+        let more: usize = transcript[i..start].iter().map(|entry| entry.tokens).sum();
+        if total + more &gt; budget {
+            break;
+        }
+        start = i;
+        total += more;
+    }
+    start
+}
+</code></pre>
+<p><strong>Aha: the tail must begin at a reply, because a tool result without its call is not a valid turn.</strong> A transcript that starts with <code>Turn::Results</code> would describe outputs with no visible request. The format requires the reply that made the calls.</p>
+<p>The environment block is written fresh into the note turn. <code>environment(&harness.dir)</code> runs during the rebuild, so the date and the branch are current. The system prompt is a different thing. <code>restart</code> is the closure built at session start (<code>cli/session.rs:150-153</code>). It calls <code>client.start(&system, ...)</code> with the system prompt text captured at that time. The server restores the model state saved after an earlier reading of the same prompt, if the state exists and fits (<code>server/mod.rs:90-106</code>; section 2.1; <a href="03-server-and-protocol.html">03 Server and protocol</a>, section 8). "The system prompt state is old" means that restored model state: the prompt text and the expensive reading of it are reused. It does not mean that the environment block is old, because the environment was never in the system prompt.</p>
+<p><code>note_turn</code> takes a fourth boolean, <code>exchanges</code>:</p>
+<pre><code class="language-rust">// harness/compaction.rs:194-213 (condensed)
+fn note_turn(environment: &amp;str, note: &amp;str, messages: &amp;[&amp;str], exchanges: bool) -&gt; String {
+    let note = note.trim();
+    let mut text = format!(
+        &quot;{environment}\n\n{NOTE_HEAD}\n\n&lt;note&gt;\n{}\n&lt;/note&gt;&quot;,
+        if note_empty(note) { &quot;(none)&quot; } else { note }
+    );
+    if !messages.is_empty() {
+        text.push_str(&quot;\n\nThe user&#x27;s messages so far, oldest first:&quot;);
+        // Each message in a &lt;message&gt; block.
+    }
+    if exchanges {
+        text.push_str(&quot;\n\nThe most recent exchanges follow as they were.&quot;);
+    }
+    text
+}
+</code></pre>
+<p><code>NOTE_HEAD</code> is the sentence that introduces the note: "The conversation so far was compacted to make room in the context window. This is the note you wrote before it was cleared, to go on from:" (<code>harness/compaction.rs:45</code>).</p>
+<p>The call passes <code>start < harness.transcript.len()</code> (<code>harness/compaction.rs:117-122</code>). The value is true when the tail is not empty. It adds the sentence "The most recent exchanges follow as they were." to the note turn.</p>
+<p>The <code>kept</code> vector holds <code>(Turn, bool)</code> pairs. The boolean is <code>Entry.prompt</code>: true when the user turn was written by the harness, not by the user. <code>replay</code> takes only <code>Turn</code>s, so the vector of turns drops the boolean. After the replay, <code>record</code> puts each turn back into the transcript with its boolean (<code>harness/compaction.rs:134-137</code>). <code>messages</code> uses that boolean to leave harness prompts, such as earlier notes, out of the list of the user's messages (<code>harness/compaction.rs:174-192</code>).</p>
+<p>The thoughts are dropped because they were never in the transcript turns. <code>Turn::Reply</code> holds <code>text</code> and <code>calls</code> only (section 1.1). The log file has <code>thought</code> records, but the transcript that <code>replay</code> uses does not. <code>replay</code> encodes each turn and feeds it (<code>models/chat.rs:778-784</code>). A reply is therefore fed as its text and calls, with no thought before it. The test named <code>replays_a_transcript_without_thoughts</code> checks this (<code>models/chat.rs:1192-1193</code>).</p>
+<h3>5.5 A reply stopped short</h3>
+<p>If the context fills during generation, the chat stops the reply and marks it:</p>
+<pre><code class="language-rust">// harness/mod.rs:743-766 (condensed)
+let mut outcome = self.run(Turn::User(message.to_string()), false, ahead, on_event)?;
+if outcome == Outcome::Cut {
+    if on_event(Event::Cut).is_break() {
+        return Ok(());
+    }
+    if compaction::compact(self, on_event)? {
+        outcome = self.run(
+            Turn::User(compaction::CONTINUE.to_string()),
+            true,
+            None,
+            on_event,
+        )?;
+        if outcome == Outcome::Cut {
+            let _ = on_event(Event::Cut);
+        }
+    }
+}
+</code></pre>
+
+<pre><code class="language-rust">// harness/compaction.rs:47-49
+pub const CONTINUE: &amp;str = &quot;Your reply was stopped short because the context window was full, and the conversation has been compacted since. Go on from where you left off.&quot;;
+</code></pre>
+<p>The cut reply's tool calls are cleared, because their results would not fit either (<code>models/chat.rs:631-635</code>). The turn continues once. A second cut ends the turn.</p>
+<p><code>compact</code> returns <code>Ok(false)</code> when the transcript is empty or when the caller interrupts it, and <code>Ok(true)</code> after a rebuild. The <code>if</code> in <code>converse</code> therefore does two things: <code>Ok(false)</code> leaves the cut reply as the end of the turn, and <code>Ok(true)</code> runs the continuation. <code>Err</code> returns from <code>converse</code>. The continuation is one <code>run</code> call with <code>CONTINUE</code> as a user message and <code>prompt</code> set to true, so the transcript marks it as the harness's own words.</p>
+<h2>6. The six tools</h2>
+<pre><code class="language-rust">// tools/mod.rs:42-50
+/// The tools, in the order the system prompt lists them.
+static TOOLS: [Tool; 6] = [
+    bash::TOOL,
+    read::TOOL,
+    edit::TOOL,
+    write::TOOL,
+    grep::TOOL,
+    glob::TOOL,
+];
+</code></pre>
+<table><tr><th>Tool</th><th>Changes a file</th><th>Main limit</th><th>Safety rule</th></tr><tr><td><code>bash</code></td><td>No (declared)</td><td>300 seconds; 32 kibibytes (KiB) preview; 4 mebibytes (MiB) retained per stream</td><td>Refuses git commands that discard changes</td></tr><tr><td><code>read</code></td><td>No</td><td>1,000 lines or 48 KiB a page; 1,000 bytes a line</td><td>Joined to the working directory; not confined (section 8)</td></tr><tr><td><code>edit</code></td><td>Yes</td><td>Exact, trailing-space, or trimmed match</td><td>Refuses an empty or no-op replacement</td></tr><tr><td><code>write</code></td><td>Yes</td><td>Whole file</td><td>Refuses a directory path</td></tr><tr><td><code>grep</code></td><td>No</td><td>100 matches; 500 bytes of each matching line</td><td>Path must be inside the working directory</td></tr><tr><td><code>glob</code></td><td>No</td><td>100 files; 5,000 directory entries walked without git</td><td>Path must be inside the working directory</td></tr></table>
+<p>The path rule is not a sandbox. <code>read</code> and <code>edit</code> join a relative path to the working directory, but they accept <code>..</code> and absolute paths, so they can reach any host file the user can read or write (section 8). <code>grep</code> and <code>glob</code> reject a path outside the working directory.</p>
+<p>The units come from these constants:</p>
+<pre><code class="language-rust">// tools/bash.rs:110-133 (condensed)
+pub const TIMEOUT: u64 = 300;          // seconds
+const PREVIEW: usize = 32 &lt;&lt; 10;       // bytes shown
+const HALF: usize = PREVIEW / 2;       // bytes of each end
+const RETAINED: u64 = 4 &lt;&lt; 20;         // bytes kept on disk
+
+// tools/read.rs:36-47 (condensed)
+pub const PAGE: usize = 1000;          // lines
+const BYTES: usize = 48 &lt;&lt; 10;         // bytes in a page
+pub const LINE: usize = 1000;          // bytes of a line
+
+// tools/grep.rs:54-58
+const MOST: usize = 100;               // matches shown
+const LINE: usize = 500;               // bytes of a matching line
+
+// tools/glob.rs:49-53
+const MOST: usize = 100;               // files shown
+const CAP: usize = 5000;               // directory entries walked
+</code></pre>
+<p><code>MOST</code> means "the most shown". In <code>grep</code> it counts matches. In <code>glob</code> it counts files. <code>CAP</code> counts the directory entries the walk visits when git cannot list the files. The bash timeout is a default: the call may set its own <code>timeout</code> in seconds, and 0 means no limit (<code>tools/bash.rs:190-194</code>).</p>
+<h3>6.1 The shell</h3>
+<p>The shell runs with a controlled environment:</p>
+<pre><code class="language-rust">// tools/bash.rs:62-70
+const ENVIRONMENT: &amp;[(&amp;str, &amp;str)] = &amp;[
+    (&quot;GIT_EDITOR&quot;, &quot;true&quot;),
+    (&quot;EDITOR&quot;, &quot;true&quot;),
+    (&quot;VISUAL&quot;, &quot;true&quot;),
+    (&quot;GIT_PAGER&quot;, &quot;cat&quot;),
+    (&quot;PAGER&quot;, &quot;cat&quot;),
+    (&quot;GIT_TERMINAL_PROMPT&quot;, &quot;0&quot;),
+    (&quot;GIT_SEQUENCE_EDITOR&quot;, &quot;true&quot;),
+];
+</code></pre>
+<p>The comment gives the three reasons: no editor because no one can type; no pager because output must end; no prompt because a password prompt can only hang.</p>
+<p>The command runs in its own session:</p>
+<pre><code class="language-rust">// tools/bash.rs:224-230 (condensed)
+unsafe {
+    shell.pre_exec(|| {
+        if libc::setsid() == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    });
+}
+</code></pre>
+<p>The timeout kills the whole process group:</p>
+<pre><code class="language-rust">// tools/bash.rs:247-253 (condensed)
+s.spawn(move || {
+    if finished.recv_timeout(timeout).is_err() {
+        timed_out.store(true, Ordering::Relaxed);
+        unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
+    }
+});
+</code></pre>
+<p><strong>Aha: the negative process identifier is the point.</strong> <code>kill(-pid)</code> signals the group, not the process. A build that started child processes is fully killed. A plain <code>child.kill()</code> would leave the children running and the pipes open.</p>
+<p>The discard guard is a small command parser:</p>
+<pre><code class="language-rust">// tools/bash.rs:117-118 (condensed)
+/// What the model is told for a command that would take away changes it
+/// has made to the project&#x27;s tracked files.
+const DISCARDS: &amp;str = &quot;not run: this would take away the changes you have made to the project&#x27;s files (git stash, checkout or restore of files, reset --hard, or clean), and those changes are the work. To run the code without your change, undo it with edit, run what you want, and then make the change again with edit. git diff shows your changes.&quot;;
+</code></pre>
+
+<pre><code class="language-rust">// tools/bash.rs:205-207 (condensed)
+if discards(command, dir) &amp;&amp; changed(dir) {
+    return Err(DISCARDS.to_string());
+}
+</code></pre>
+<p><code>changed</code> runs <code>git status --porcelain --untracked-files=no</code> and checks for output. <code>discards</code> splits the command on shell separators, finds <code>git</code>, skips its options, and classifies the subcommand:</p>
+<pre><code class="language-rust">// tools/bash.rs:301-321 (condensed)
+match subcommand {
+    Some(&quot;stash&quot;) =&gt; args.first().is_none_or(|first| [&quot;push&quot;, &quot;save&quot;].contains(first) || first.starts_with(&#x27;-&#x27;)),
+    Some(&quot;checkout&quot;) =&gt; args.iter().any(|arg| {
+        [&quot;--&quot;, &quot;.&quot;, &quot;-f&quot;, &quot;--force&quot;].contains(arg)
+            || !arg.starts_with(&#x27;-&#x27;) &amp;&amp; dir.join(arg).exists()
+    }),
+    Some(&quot;restore&quot;) =&gt; {
+        !args.contains(&amp;&quot;--staged&quot;)
+            || args.iter().any(|arg| [&quot;--worktree&quot;, &quot;-W&quot;].contains(arg))
+    }
+    Some(&quot;reset&quot;) =&gt; args.contains(&amp;&quot;--hard&quot;),
+    Some(&quot;clean&quot;) =&gt; args.iter().any(|arg| {
+        arg.starts_with(&#x27;-&#x27;) &amp;&amp; !arg.starts_with(&quot;--&quot;) &amp;&amp; arg.contains(&#x27;f&#x27;)
+            || *arg == &quot;--force&quot;
+    }),
+    _ =&gt; false,
+}
+</code></pre>
+<p><strong>Aha: the guard is heuristic and the code says so by example.</strong> "A checkout of a path that is there discards it, as the model ran it on django-11797; one of a branch, which is not a path, doesn't" (<code>tools/bash.rs:1001-1002</code>). The check is a path-existence test, not a git query. It can be wrong. It prevents the common destructive call without pretending to be a sandbox.</p>
+<p>The output limit is two-tiered:</p>
+<pre><code class="language-rust">// tools/bash.rs:119-133 (condensed)
+/// Most of one stream of a command&#x27;s output that goes back to the model as
+/// it is ... A longer stream is shown by its first and last [`HALF`] bytes,
+/// cut at line ends where it can be, and kept whole on disk for the model
+/// to read from.
+const PREVIEW: usize = 32 &lt;&lt; 10;
+const HALF: usize = PREVIEW / 2;
+/// Most of one stream that is kept on disk. What a command prints past that
+/// is discarded, and the model is told how much.
+const RETAINED: u64 = 4 &lt;&lt; 20;
+</code></pre>
+<p>The <strong>spill file</strong> is the file under the tool's output directory that holds a stream longer than the preview. The exact rule has two limits:</p>
+<ul><li>A stream up to 32 KiB is shown whole and is not written to a file.</li><li>A longer stream is shown as its first 16 KiB and its last 16 KiB, with a note between them. It is written to a spill file up to 4 MiB. Bytes past 4 MiB are discarded, and the result says how many bytes were kept and that the rest was discarded (<code>tools/bash.rs:515-538</code>).</li></ul>
+<p>The source comment says "kept whole on disk", but <code>RETAINED</code> is 4 MiB. The code uses the word "whole" in the result only when the kept bytes equal the total bytes (<code>tools/bash.rs:526-534</code>). A stream larger than 4 MiB is therefore not kept whole. The result says so.</p>
+<p>The directory is the system temporary directory plus <code>dwim-{process id}-{n}</code>. Each stream gets its own file, named by the call number and the stream: <code>1.stdout</code>, <code>1.stderr</code>. The tool makes the directory when it first needs it and removes it when the tool is dropped. A process that ends without dropping it leaves the directory behind, and the next process sweeps directories of processes that are no longer running (<code>tools/bash.rs:135-143</code>, <code>tools/bash.rs:158-169</code>, <code>tools/bash.rs:336</code>).</p>
+<p>The simple result has this form:</p>
+<pre><code class="language-text">hi
+[stderr]
+err
+[exit code 0]
+</code></pre>
+<p>That is the exact result of <code>echo hi; echo err >&2</code> (<code>tools/bash.rs:648-654</code>). The two streams are kept apart, so their original order is not shown. A long stream puts a note in the middle of the preview and another note after the stream:</p>
+<pre><code class="language-text">[… lines {first}–{last} ({bytes} bytes) not shown; next: read {path} from line {first} …]
+[stdout: {lines} lines, {bytes} bytes, whole in {path}]
+</code></pre>
+<p>If the stream is larger than 4 MiB, the second note says <code>the first {kept} bytes in {path}, the rest discarded</code> instead. The <code>next: read</code> text gives the model the path and the line to start from.</p>
+<p><strong>Aha: the preview keeps both ends, not only the start.</strong> A compiler prints the summary and the error count at the end. A test runner prints the failures at the end. Showing only the first 32 kibibytes would hide the part that matters. The first and last halves are shown, and the retained part is written to a file that <code>read</code> can open.</p>
+<h3>6.2 Reading</h3>
+<pre><code class="language-rust">// tools/read.rs:36-47 (condensed)
+/// Most lines in a page. A page is what the model gets of a file in one
+/// call: a page too small has it read a file in slices, each a round
+/// trip, and lose the thread between them, while a file of a thousand
+/// lines read whole is a tenth of a small context. Most files come whole.
+pub const PAGE: usize = 1000;
+/// Most bytes in a page: a page of long lines ends early, so that one
+/// page can&#x27;t take up much of the context.
+const BYTES: usize = 48 &lt;&lt; 10;
+/// Most bytes of a line shown; a longer line is cut there, with a mark.
+pub const LINE: usize = 1000;
+</code></pre>
+<p>The result names the file's line count and where the next page starts. A line longer than 1,000 bytes is cut at a character boundary and ends with <code>…</code>. The result's note says how many lines were cut (<code>tools/read.rs:125-129</code>, <code>tools/read.rs:173-181</code>).</p>
+<p>The comment says that a file of 1,000 lines read whole is a tenth of a small context. It gives no context size and no tokens-per-line figure. At the default 16,384-token context, one tenth is 1,638 tokens, or 1.6 tokens for each of 1,000 lines. A code line usually takes more than that. The claim is therefore not arithmetic for the default context. It is a design caution about page size, not a measurement.</p>
+<p>The edit tool handles the <code>…</code> mark in three ways (<code>tools/edit.rs:1-20</code>):</p>
+<ol><li><strong>Match by start.</strong> An <code>old_string</code> line that ends in <code>…</code> matches a long file line when the trimmed line starts with the trimmed part before the mark (<code>tools/edit.rs:422-431</code>).</li><li><strong>Keep the line whole.</strong> If the <code>new_string</code> contains the same cut line as <code>read</code> showed it, <code>fitted</code> puts the original whole line into the file (<code>tools/edit.rs:461-484</code>). The model has not seen the rest, and the edit does not change it.</li><li><strong>Refuse a change or a removal.</strong> If <code>old_string</code> has a cut line and <code>new_string</code> does not keep it as shown, the edit fails and names the line. The error says to copy the cut line into <code>new_string</code>, or to use <code>bash</code> to change it (<code>tools/edit.rs:124-133</code>, <code>tools/edit.rs:487-490</code>).</li></ol>
+<p>A test shows the cycle (<code>tools/edit.rs:733-755</code>):</p>
+<pre><code class="language-text">file:       short\n{2000 y}\nend
+old_string: short\n{1000 y}…
+new_string: brief\n{1000 y}…
+result:     brief\n{2000 y}\nend
+</code></pre>
+<p>The replacement of <code>short</code> with <code>brief</code> succeeds, and the long line returns whole. A <code>new_string</code> that changed or removed the cut line would be refused.</p>
+<h3>6.3 Editing</h3>
+<p>The edit tool describes itself in the signature, and the description is the contract:</p>
+<pre><code class="language-rust">// tools/edit.rs:59-76 (condensed)
+Signature {
+    description: &quot;Replace one occurrence of old_string in a file with new_string, and show the lines as they now stand, numbered, with how later lines moved. Copy old_string from read exactly: the fewest lines that find the place, the lines that change and a line or two around them, or a part of one line; a change in several places is several edits. If it could match more than once, give start, the line it begins at. ...&quot;.to_string(),
+</code></pre>
+<p>The match has three tiers:</p>
+<pre><code class="language-rust">// tools/edit.rs:382-386 (condensed)
+enum Tier {
+    Exact,
+    TrailingSpace,
+    Trimmed,
+}
+</code></pre>
+
+<pre><code class="language-rust">// tools/edit.rs:402-420 (condensed)
+/// Finds `wanted` in `lines`, with their line endings, as indexes from zero, at the closest tier that matches it anywhere, and that tier.
+fn find(lines: &amp;[Cow&lt;str&gt;], wanted: &amp;[&amp;str]) -&gt; (Vec&lt;usize&gt;, Tier) {
+    if wanted.len() &gt; lines.len() {
+        return (Vec::new(), Tier::Exact);
+    }
+    for tier in [Tier::Exact, Tier::TrailingSpace, Tier::Trimmed] {
+        let found: Vec&lt;usize&gt; = (0..=lines.len() - wanted.len())
+            .filter(|&amp;at| {
+                wanted
+                    .iter()
+                    .enumerate()
+                    .all(|(k, want)| matches(want, &amp;lines[at + k], tier))
+            })
+            .collect();
+        if !found.is_empty() {
+            return (found, tier);
+        }
+    }
+    (Vec::new(), Tier::Exact)
+}
+</code></pre>
+<p><strong>Aha: the fallback tiers make the tool forgiving without making it ambiguous.</strong> The tool tries exact bytes first. Only if that fails does it ignore trailing white space, then white space at both ends (<code>Tier::Trimmed</code> uses <code>trim()</code>). The tier that matched is recorded, and the replacement is rebuilt at that tier.</p>
+<p><code>find</code> returns every place that matches at the closest tier. <code>place</code> then applies the rules for <code>start</code>:</p>
+<pre><code class="language-rust">// tools/edit.rs:229-245 (condensed)
+([at], _) =&gt; Ok(*at),
+(many, Some(start)) =&gt; many
+    .iter()
+    .find(|&amp;&amp;at| at + 1 == start)
+    .copied()
+    .ok_or_else(|| format!(
+        &quot;old_string matches {} times in {path}, at lines {}, and none begins at line {start}; nothing changed&quot;,
+        many.len(), list(many)
+    )),
+(many, None) =&gt; Err(format!(
+    &quot;old_string matches {} times in {path}, at lines {}; give start, the line of the one you mean; nothing changed&quot;,
+    many.len(), list(many)
+)),
+</code></pre>
+<ul><li><strong>One match:</strong> the tool uses it. If <code>start</code> was given and names a different line, the edit still happens, and the result says <code>old_string began at line {first}, not {start}</code> (<code>tools/edit.rs:164-169</code>).</li><li><strong>Several matches with <code>start</code>:</strong> the tool uses the one whose first line is <code>start</code>. If none is, the edit fails and lists the matching lines.</li><li><strong>Several matches without <code>start</code>:</strong> the edit fails and asks for <code>start</code>.</li></ul>
+<p><code>start</code> counts from 1. The test is <code>at + 1 == start</code>, where <code>at</code> is the index from zero (<code>tools/edit.rs:232</code>; the signature says "counting from 1", <code>tools/edit.rs:71-74</code>).</p>
+<p>The rebuild happens in <code>fitted</code>:</p>
+<pre><code class="language-rust">// tools/edit.rs:119-142 (condensed)
+let (found, tier) = find(&amp;texts, &amp;wanted);
+let at = place(&amp;found, start, &amp;lines, &amp;wanted, path)?;
+let last = at + wanted.len();
+let new = fitted(&amp;lines[at..last], &amp;wanted, new, tier).map_err(...)?;
+let updated = replaced(&amp;lines, at + 1, last, &amp;new);
+fs::write(&amp;file, &amp;updated)?;
+</code></pre>
+<p>At <code>Tier::Exact</code>, the new lines go in as given. At <code>Tier::TrailingSpace</code>, they go in as given, and only the line ends were ignored for the match. At <code>Tier::Trimmed</code>, when the first non-blank new line has the same leading white space as the first non-blank <code>old_string</code> line, <code>fitted</code> replaces that prefix with the leading white space of the file line that matched (<code>tools/edit.rs:454-460</code>). It does this at the start of each non-blank new line that begins with the old prefix (<code>tools/edit.rs:481-483</code>). A line that does not begin with that prefix is written as given, apart from the cut-line rule below. Blank lines stay blank. When the old prefix is empty, as in the example below, every non-blank line begins with it, so every one gets the file's indentation added.</p>
+<p>A test shows the <code>Trimmed</code> rebuild (<code>tools/edit.rs:690-702</code>):</p>
+<pre><code class="language-text">file:
+def f():
+    if x:
+        return 1
+    return 2
+
+old_string:
+if x:
+    return 1
+
+new_string:
+if y:
+
+    return 1
+
+result:
+def f():
+    if y:
+
+        return 1
+    return 2
+</code></pre>
+<p>The <code>old_string</code> was copied without indentation, so the match is <code>Trimmed</code>. The new lines had the same indentation as the old lines, so the file's four spaces are added to each non-blank new line. A model that worries about a copied tab does not pay a round trip.</p>
+<p>The tool refuses two cases before it looks:</p>
+<pre><code class="language-rust">// tools/edit.rs:102-107 (condensed)
+if old.trim().is_empty() {
+    return Err(&quot;old_string is empty; to add lines, give the line before them as old_string and that line with the new ones as new_string&quot;.to_string());
+}
+if old == new {
+    return Err(&quot;old_string and new_string are the same; nothing changed&quot;.to_string());
+}
+</code></pre>
+<h3>6.4 Writing</h3>
+<p>The write tool has one behaviour that the documentation explains:</p>
+<pre><code class="language-rust">// tools/write.rs:1-10 (condensed)
+//! The `write` tool: writes a file whole, making the directories it goes
+//! in, and says how long it is now. ... Left with `bash` alone, the model
+//! wrote files through heredocs and `printf`, where a quote, a backslash
+//! or a dollar sign in the content was lost to the shell as often as not.
+//!
+//! The call format puts a value on lines of its own between its tags, so
+//! the content arrives without a final newline whether or not the model
+//! meant one; a file that does not end in a newline is rare and a file
+//! that should but does not is a nuisance, so the content gets one.
+</code></pre>
+<p>The last rule is applied in code:</p>
+<pre><code class="language-rust">// tools/write.rs:59-61
+let mut content = content.to_string();
+if !content.is_empty() &amp;&amp; !content.ends_with(&#x27;\n&#x27;) {
+    content.push(&#x27;\n&#x27;);
+}
+</code></pre>
+<p><strong>Aha: the call format loses the final newline, so the tool adds it.</strong> The tag format cannot express a trailing newline: the value ends before <code></parameter></code>. The tool decides the common case. An empty file stays empty.</p>
+<h3>6.5 Searching</h3>
+<p><code>grep</code> and <code>glob</code> confine their paths:</p>
+<pre><code class="language-rust">// tools/mod.rs:250-264 (condensed)
+fn within(tool: &amp;str, dir: &amp;Path, path: &amp;str) -&gt; Result&lt;(), String&gt; {
+    let (target, root) = match (fs::canonicalize(dir.join(path)), fs::canonicalize(dir)) {
+        (Ok(target), Ok(root)) =&gt; (target, root),
+        (Err(error), _) =&gt; return Err(format!(&quot;{path} cannot be resolved: {error}&quot;)),
+        (_, Err(error)) =&gt; return Err(format!(&quot;the working directory cannot be resolved: {error}&quot;)),
+    };
+    if target.starts_with(root) {
+        Ok(())
+    } else {
+        Err(format!(&quot;{tool} searches the working directory and the directories under it; {path} is outside it. Use bash for other places.&quot;))
+    }
+}
+</code></pre>
+<p><strong>Aha: the check resolves symbolic links on both sides.</strong> A lexical prefix check would accept <code>link-to-other-place/file</code>. <code>canonicalize</code> follows the link and compares the real paths. The error message names the escape hatch: <code>bash</code> can read anything the user can read. The restriction is a convenience, not a security boundary.</p>
+<p>The two tools leave out ignored files, but not in every case. <code>glob</code> runs git when the directory is in a repository. It uses <code>git ls-files --cached --others --exclude-standard</code>, which leaves out ignored files, and it falls back to a directory walk when git is absent (<code>tools/glob.rs:148-190</code>). The walk leaves out hidden files and the two directories in <code>BUILT</code>, <code>node_modules</code> and <code>target</code> (<code>tools/glob.rs:134-136</code>, <code>tools/glob.rs:196-203</code>).</p>
+<p><code>grep</code> runs <strong>ripgrep</strong> (<code>rg</code>) when <code>rg</code> is installed. The tool tests <code>rg --version</code> once and remembers the answer (<code>tools/grep.rs:60-71</code>). With <code>rg</code>, git-style ignore files are honoured. Without <code>rg</code>, the tool runs plain <code>grep</code> with <code>-E -r -n -H -I</code>, and excludes only <code>.git</code>, <code>target</code>, and <code>node_modules</code> (<code>tools/grep.rs:98-115</code>). The plain fallback does <strong>not</strong> honour <code>.gitignore</code> or <code>.ignore</code>. Therefore the rule "Noise from ignored files" in section 2.2 is exact only when <code>rg</code> is installed. Without <code>rg</code>, <code>grep</code> can return files that git ignores, except in those three directories.</p>
+<pre><code class="language-rust">// tools/glob.rs:30-34 (condensed)
+description: format!(
+    &quot;List the files whose paths match a pattern, up to {MOST}, leaving out files git ignores: *.rs for every Rust file under the directory, src/*.rs for those directly in src, src/**/*_test.go for those anywhere below it. A pattern without a slash matches a file name anywhere.&quot;
+),
+</code></pre>
+<p><code>glob</code> has a walk fallback with a 5,000-entry cap, and skips <code>node_modules</code> and <code>target</code> when git is absent (<code>tools/glob.rs:136</code>).</p>
+<h3>6.6 Parsing a call</h3>
+<p>The parser accepts two syntaxes and is careful about nesting:</p>
+<pre><code class="language-rust">// tools/call.rs:15-46 (condensed)
+/// Parses the body of a `&lt;tool_call&gt;` block: either a JSON object with the
+/// name and the arguments, as Qwen3 writes it, or a `&lt;function=name&gt;`
+/// block of `&lt;parameter=name&gt;` values, as Qwen3-Coder writes it, whose
+/// values are all strings. A value runs to the first `&lt;/parameter&gt;` after
+/// which the rest of the block is well formed, so a value may itself hold
+/// a tool call, as a command that writes a test of one does. An error
+/// quotes the line the parser stopped on.
+</code></pre>
+<p><strong>Aha: a parameter value can contain a tool call.</strong> A <code>bash</code> command that writes a test containing a <code><tool_call></code> block must not end the outer parameter at the inner <code></parameter></code>. The comment describes two passes:</p>
+<ol><li><strong>The tags are walked forward.</strong> <code>step</code> starts after <code><parameter=key></code>, finds every recognized tag, and tracks the open <code><function></code> and <code><parameter></code> tags. A <code></parameter></code> at depth zero is a candidate end. The parser tries the first candidate after which the rest of the block parses and no later parameter repeats the key. If a closing tag does not match the open tag, the walk stops, and the remaining <code></parameter></code> ends are tried in order (<code>tools/call.rs:205-243</code>).</li><li><strong>The places are computed backward.</strong> <code>parameters</code> collects the places the parse may continue from: 0, and the index after every <code></parameter></code>. It computes the parse from each place from the last place to the first (<code>tools/call.rs:116-137</code>). <code>step</code> can then look up the parse of the rest at once, with no recursion. That is what "the whole block parses once" means.</li></ol>
+<p>The tag scan recognizes only <code><function=...></code>, <code></function></code>, <code><parameter=...></code>, and <code></parameter></code>. Other tags in the text, such as <code><tool_call></code>, are ignored (<code>tools/call.rs:98-115</code>).</p>
+<p>"Well formed" means that, from the place after the candidate end, the parser reads parameter blocks in order, reads <code></function></code>, and finds only white space after it. A repeated parameter name also makes the rest ill formed (<code>tools/call.rs:150-161</code>, <code>tools/call.rs:172-190</code>). The value strips one leading newline and one trailing newline before it is returned (<code>tools/call.rs:186-190</code>).</p>
+<p>A worked example shows which <code></parameter></code> wins:</p>
+<pre><code class="language-text">&lt;tool_call&gt;
+&lt;function=bash&gt;
+&lt;parameter=command&gt;
+printf &#x27;%s&#x27; &#x27;&lt;tool_call&gt;&lt;function=read&gt;&lt;parameter=path&gt;a.rs&lt;/parameter&gt;&lt;/function&gt;&lt;/tool_call&gt;&#x27;
+&lt;/parameter&gt;
+&lt;/function&gt;
+&lt;/tool_call&gt;
+</code></pre>
+<p>The first <code></parameter></code> comes after <code>a.rs</code>. At that point <code><function=read></code> and <code><parameter=path></code> are open, so the end is inside a nested tag, not at depth zero. The parser tries it later and rejects it: the rest begins <code></function></tool_call>'...</code>, and text follows <code></function></code>, so the rest is not well formed. The second <code></parameter></code> comes after the <code>printf</code> line. At that point the inner tags are closed, so the end is at depth zero. The rest is <code></function></code>, which parses to the end. The outer value is therefore the whole <code>printf</code> line, including the inner tool call. A naive <code>split("</parameter>")</code> would cut the command after <code>a.rs</code> and leave broken shell text.</p>
+<h2>7. The transcript</h2>
+<p>The harness writes one JSON Lines file per session, with <code>start</code>, <code>user</code>, <code>thought</code>, <code>text</code>, <code>note</code>, <code>reply</code>, <code>thinking_budget</code>, <code>call</code>, <code>output</code>, <code>nudge</code>, <code>compacting</code>, <code>compacted</code>, <code>error</code>, <code>interrupted</code>, and <code>end</code> records (<code>harness/log.rs:109-282</code>). <a href="02-cli-and-sessions.html">02 Command line and sessions</a>, section 5 covers the file format and the in-place streaming rewrite. Here, note two uses:</p>
+<ul><li><strong>Restart.</strong> <code>Harness::reopen</code> replays the transcript turns into a new conversation (<a href="02-cli-and-sessions.html">02 Command line and sessions</a>, section 9).</li><li><strong>Cost analysis.</strong> <code>Stats::report</code> prints where the time went.</li></ul>
+<p>The server sends a <code>State</code> value after each reply. <code>State</code> is a protocol message with two fields: the conversation's token count and its model statistics (<code>server/protocol.rs:157-163</code>; <a href="03-server-and-protocol.html">03 Server and protocol</a>, section 3.4). The harness <code>Stats</code> value holds that model part and adds the tool calls and their seconds:</p>
+<pre><code class="language-rust">// harness/mod.rs:464-478 (condensed)
+pub struct Stats {
+    pub model: crate::models::Stats,
+    /// Tool calls run, and the time they took.
+    pub calls: usize,
+    pub tool_seconds: f64,
+}
+
+// models/chat.rs:133-153 (condensed)
+pub struct Stats {
+    /// Tokens taken from a saved state rather than read.
+    pub cached: Tally,
+    pub prompt: Tally,
+    pub thought: Tally,
+    pub answer: Tally,
+    pub drafted: usize,
+    pub accepted: usize,
+}
+
+pub struct Tally {
+    pub tokens: usize,
+    pub seconds: f64,
+}
+</code></pre>
+<p><code>Tally</code> holds a token count and the seconds the model took over those tokens. <code>rate()</code> divides the two, so its unit is tokens a second. <code>cached</code> counts tokens restored from a saved state, <code>prompt</code> counts tokens the model read as prompts, <code>thought</code> counts tokens generated in thoughts, and <code>answer</code> counts tokens generated as replies. <code>drafted</code> and <code>accepted</code> count speculative decoding: tokens drafted ahead, and how many the sampler accepted.</p>
+<p><code>Stats::report</code> builds one row for each of <code>loading</code>, <code>cached</code>, <code>prompt</code>, <code>thought</code>, <code>answer</code>, <code>tools</code>, <code>other</code>, and <code>total</code> (<code>harness/mod.rs:478-544</code>). It inserts a <code>drafts</code> row when the model drafted any token. The token columns use tokens, the time columns use seconds, and the rate columns use tokens a second. The <code>tools</code> row uses calls, not tokens. <code>other</code> is the total time minus loading, model time, and tool time, and never less than zero.</p>
+<p><code>--stats</code> prints this report. In the interactive shell, <code>/stats</code> does.</p>
+<h2>8. The benchmark runner</h2>
+<p><code>scripts/swebench.py</code> is the repository's end-to-end quality measure. It is the only script that scores task outcomes. The <code>--bench</code> command line option measures model speed, not correctness. The script runs the agent on SWE-bench Lite and scores the patch with the official SWE-bench harness.</p>
+<p><strong>SWE-bench Lite</strong> is a benchmark of 300 software engineering tasks from open-source Python projects. Each <strong>instance</strong> is one dataset row: a repository, a base commit, an issue, and tests that decide whether a fix works. The script fetches all 300 rows from the Hugging Face datasets server (<code>scripts/swebench.py:25-26</code>, <code>scripts/swebench.py:86-92</code>). By default it runs <code>qwen3.8-27b</code>, the model that dwim runs (<code>scripts/swebench.py:301</code>).</p>
+<p>An <strong>evaluation image</strong> is a Docker image that SWE-bench builds for one instance. It holds the repository at <code>/testbed</code>, checked out at the base commit before the fix, with the project and its dependencies installed. It also has a conda environment named <code>testbed</code> (<code>scripts/swebench.py:4-8</code>, <code>scripts/swebench.py:47-53</code>). The script does not checkout a commit itself. It takes the repository as the image has it.</p>
+<div class="mermaid">
+flowchart LR
+    subgraph HOST[&quot;Host machine&quot;]
+        CLONE[&quot;Clone&lt;br/&gt;work/checkouts/{instance}&quot;]
+        DWIM[&quot;dwim process&lt;br/&gt;model, read, edit&quot;]
+        WRAP[&quot;shell wrapper&lt;br/&gt;docker exec&quot;]
+    end
+    subgraph BOX[&quot;Container dwim.{instance}&quot;]
+        TESTBED[&quot;/testbed&lt;br/&gt;the same clone&quot;]
+        CONDA[&quot;conda environment testbed&quot;]
+    end
+    IMAGE[&quot;Evaluation image&quot;] --&gt;|&quot;docker cp /testbed&quot;| CLONE
+    DWIM --&gt;|&quot;bash tool&quot;| WRAP
+    WRAP --&gt;|&quot;docker exec -w&quot;| TESTBED
+    CLONE --&gt;|&quot;bind mount at /testbed&quot;| TESTBED
+    CLONE --&gt;|&quot;bind mount at its own path&quot;| TESTBED
+    TESTBED --- CONDA
+
+</div>
+<p>The setup and teardown have six steps:</p>
+<ol><li><code>prepare</code> pulls the image if it is not present, with <code>docker pull --platform linux/amd64</code>, then calls <code>checkout</code> (<code>scripts/swebench.py:110-116</code>).</li><li><code>checkout</code> makes a temporary container from the image, copies <code>/testbed</code> out with <code>docker cp</code> to <code>work/checkouts/{instance_id}</code>, and removes the temporary container (<code>scripts/swebench.py:119-131</code>).</li><li><code>container</code> starts a container named <code>dwim.{instance_id}</code> from the image with <code>sleep infinity</code>. It bind-mounts the clone at <code>/testbed</code> and at its own host path, and sets the work directory to that path (<code>scripts/swebench.py:134-145</code>).</li><li>The shell wrapper runs each <code>dwim</code> command through <code>docker exec -i -w "$(pwd -P)"</code>. The working directory is the clone path on the host, and the same path exists in the container because of the second mount.</li><li><code>solve</code> runs <code>dwim</code> from the host with the clone as the working directory and the wrapper as <code>--shell</code>. On exit or timeout, it removes the container, takes <code>git diff</code> in the clone as the patch, and removes the clone (<code>scripts/swebench.py:148-175</code>).</li><li>The patched harness removes each image after it scores the instance (see below).</li></ol>
+<pre><code class="language-python"># scripts/swebench.py:119-145 (condensed)
+def checkout(row, work):
+    clone = work / &quot;checkouts&quot; / row[&quot;instance_id&quot;]
+    ...
+    docker(&quot;create&quot;, &quot;--platform&quot;, PLATFORM, &quot;--name&quot;, name, image, &quot;true&quot;)
+    docker(&quot;cp&quot;, f&quot;{name}:/testbed&quot;, str(clone))
+    docker(&quot;rm&quot;, name)
+    return clone
+
+def container(row, clone):
+    name = f&quot;dwim.{row[&#x27;instance_id&#x27;]}&quot;
+    docker(&quot;rm&quot;, &quot;-f&quot;, name)
+    docker(
+        &quot;run&quot;, &quot;--detach&quot;, &quot;--platform&quot;, PLATFORM, &quot;--name&quot;, name,
+        &quot;--volume&quot;, f&quot;{clone}:/testbed&quot;, &quot;--volume&quot;, f&quot;{clone}:{clone}&quot;,
+        &quot;--workdir&quot;, str(clone), row[&quot;image&quot;], &quot;sleep&quot;, &quot;infinity&quot;,
+    )
+    return name
+</code></pre>
+<p>The shell is replaced with the <code>docker exec</code> wrapper:</p>
+<pre><code class="language-python"># scripts/swebench.py:50-53 (condensed)
+SHELL = &quot;&quot;&quot;#!/bin/sh
+exec docker exec -i -w &quot;$(pwd -P)&quot; {container} bash -c \
+&#x27;source /opt/miniconda3/etc/profile.d/conda.sh &amp;&amp; conda activate testbed &amp;&amp; exec bash -c &quot;$1&quot;&#x27; bash &quot;$2&quot;
+&quot;&quot;&quot;
+</code></pre>
+<p>The bash tool runs the wrapper as <code>wrapper -c command</code> (<code>tools/bash.rs:145-146</code>, <code>tools/bash.rs:212-214</code>; <code>cli/opts.rs:80-83</code>). For a script, the shell puts <code>-c</code> in <code>$1</code> and the command in <code>$2</code>. The wrapper passes <code>$2</code> to the inner <code>bash -c</code> as <code>$1</code>, and that shell runs the model's command.</p>
+<p>Both sides see one filesystem. The clone is bind-mounted into the container at <code>/testbed</code> and at its own path. The read and edit tools open the host path directly. The <code>bash</code> tool runs through the wrapper, so a command in the container sees the same bytes. A change from either side is immediately visible to the other.</p>
+<p>The task prompt is not the raw issue:</p>
+<pre><code class="language-python"># scripts/swebench.py:33-45 (condensed)
+# How the issue is put to the model. SWE-bench leaves that to the scaffold,
+# and given the raw issue of a project it knows, the model takes it for the
+# commit that closed it and spends its turns recalling that commit&#x27;s tests
+# and trying to fetch the project&#x27;s history to reproduce them, rather than
+# making the fix ...
+TASK = &quot;&quot;&quot;Fix the issue below in this checkout. Make the smallest change that fixes it, update the tests the change breaks, and run them. Don&#x27;t try to recall or reproduce how the project fixed it upstream; make the fix from this code.
+
+&lt;issue&gt;
+{issue}
+&lt;/issue&gt;
+&quot;&quot;&quot;
+</code></pre>
+<p><strong>Aha: the model runs outside the container and edits the checkout as the user.</strong> The issue text is untrusted. The script warns:</p>
+<pre><code class="language-python"># scripts/swebench.py:18-20
+The agent&#x27;s commands run in the container, but the model runs here, and
+its read and edit tools work on the checkout as you, on an untrusted issue.
+Run this in a virtual machine rather than on a machine you care about.
+</code></pre>
+<p>The read and edit tools are <strong>not</strong> confined to the container, and they are not confined to the checkout. They join the given path to the working directory, and neither rejects a path outside it (<code>tools/read.rs:91-106</code>, <code>tools/edit.rs:98-113</code>). An absolute path or a path with <code>..</code> can therefore reach any host file the user can read or write. <code>grep</code> and <code>glob</code> do reject such a path (section 6.5); <code>read</code> and <code>edit</code> do not. The bash commands are confined to the container, but the container mounts the clone read-write. The process boundary protects the rest of the host from the target repository's commands, not the host from the model's file tools. This is consistent with the product's stated boundary (<a href="00-overview.html">00 Overview</a>, section 4), and the script's advice to use a virtual machine covers both cases.</p>
+<p>The scoring runs the official SWE-bench harness from the Python package <code>swebench</code>. The script checks that the package is installed and exits with <code>pip install swebench</code> if it is not (<code>scripts/swebench.py:238-243</code>). The version is not pinned, so a later run can use a different harness. This is a reproducibility limitation.</p>
+<p>The script writes a predictions file: one JSON object per instance with <code>instance_id</code>, <code>model_name_or_path</code>, and <code>model_patch</code> (<code>scripts/swebench.py:212-218</code>). It writes each patch as it is made.</p>
+<p>Two in-memory patches change the official harness (<code>scripts/swebench.py:55-83</code>):</p>
+<ol><li><code>ImageCollection.pull</code> sets <code>platform="linux/amd64"</code>. The evaluation images exist only for x86_64, and an arm64 Docker refuses to pull one unless it is asked for that platform (<code>scripts/swebench.py:29-31</code>).</li><li><code>cleanup_container</code> removes the instance's image after it removes the container. Without this, the images accumulate.</li></ol>
+<p>The patches are Python monkeypatches, not file patches. The script installs them, then runs <code>swebench.harness.run_evaluation</code> in the same process with <code>runpy</code> (<code>scripts/swebench.py:59-82</code>).</p>
+<p>The second patch is a disk-space necessity. Each image is about 2 gigabytes (GB) of its own, and 300 instances total about 600 GB. The script's comment says the machine has 300 GB (<code>scripts/swebench.py:55-58</code>). Without the removal, the images cannot all fit.</p>
+<h2>9. What the harness does not do</h2>
+<ul><li><strong>No approval prompts.</strong> The model runs any command. The README states the boundary (<a href="00-overview.html">00 Overview</a>, section 4).</li><li><strong>No sandboxing.</strong> The harness does not use Linux namespaces, secure computing mode (seccomp), or a virtual machine. A <strong>Linux namespace</strong> is a kernel feature that gives a process its own view of a resource, such as process identifiers, mounts, the network, or user identifiers. <strong>Secure computing mode (seccomp)</strong> is a Linux kernel feature that limits the system calls a process may make. The caller supplies a sandbox, for example a container or a virtual machine.</li><li><strong>No parallel tools.</strong> Calls run in order, one at a time.</li><li><strong>No sub-agents.</strong> There is no delegation tool and no nested loop.</li><li><strong>No external tool protocol.</strong> There is no client for the Model Context Protocol (MCP) and no plugin system.</li><li><strong>No per-tool token budget.</strong> The output limits are per stream and per page, not per turn.</li><li><strong>No memory across sessions.</strong> The transcript is a record; it is not read back into a new conversation as memory, except through compaction and restart.</li><li><strong>No cost accounting in money.</strong> Statistics count tokens and seconds, not price.</li></ul>
+<h2>10. Terms used in this document</h2>
+<table><tr><th>Term</th><th>Meaning</th></tr><tr><td><strong>Agent</strong></td><td>A model that calls tools and continues until a task is done.</td></tr><tr><td><strong>AGENTS.md</strong></td><td>A project instruction file in the working directory; the system prompt includes up to 32 KiB of it.</td></tr><tr><td><strong>Auto mode</strong></td><td>A mode that answers a reply with no tool and no <code>DONE</code> by sending <code>GO_ON</code>, up to 10 rounds.</td></tr><tr><td><strong>Benchmark</strong></td><td>A fixed set of tasks with a score.</td></tr><tr><td><strong>ChatML</strong></td><td>The chat template of the Qwen3 family: turns open with `<</td><td>im_start</td><td>><code> and close with </code><</td><td>im_end</td><td>><code>; a thought sits between </code><think><code> and </code></think>`.</td></tr><tr><td><strong>Chat template</strong></td><td>The text format a model was trained on, which gives its turn and thought tags.</td></tr><tr><td><strong>Compaction</strong></td><td>Replacing a long conversation with a short note and a recent tail.</td></tr><tr><td><strong>Context window</strong></td><td>The number of tokens that a conversation can hold.</td></tr><tr><td><strong>Docker</strong></td><td>A container runtime.</td></tr><tr><td><strong>Environment block</strong></td><td>The working directory, file list, git state, platform, and date sent ahead of the first message.</td></tr><tr><td><strong>Evaluation image</strong></td><td>A Docker image that SWE-bench builds for one instance, with the repository at <code>/testbed</code> and its dependencies installed.</td></tr><tr><td><strong>Event</strong></td><td>A value that reports one step of a turn to the user interface.</td></tr><tr><td><strong>Exit code</strong></td><td>The number a command returns to say whether it succeeded.</td></tr><tr><td><strong>Guard</strong></td><td>A rule that stops a known failure of the model.</td></tr><tr><td><strong>Head</strong></td><td>A string the conversation writes into an answer before it generates that section.</td></tr><tr><td><strong>Heredoc</strong></td><td>A shell form that feeds lines to a command as standard input.</td></tr><tr><td><strong>Instance</strong></td><td>One SWE-bench dataset row: a repository, a base commit, an issue, and the tests that decide a fix.</td></tr><tr><td><strong>JSON Lines</strong></td><td>A file format with one JSON object on each line.</td></tr><tr><td><strong>Kibibyte (KiB)</strong></td><td>1,024 bytes.</td></tr><tr><td><strong>Mebibyte (MiB)</strong></td><td>1,024 kibibytes.</td></tr><tr><td><strong>Model Context Protocol (MCP)</strong></td><td>A standard for connecting external tools to a model.</td></tr><tr><td><strong>Model state</strong></td><td>The model's key/value caches and recurrent states after it reads a prompt; the server saves it and restores it for the same prompt.</td></tr><tr><td><strong>Namespace</strong></td><td>A Linux kernel feature that gives a process its own view of a resource, such as process identifiers, mounts, the network, or user identifiers.</td></tr><tr><td><strong>Process group</strong></td><td>A set of processes that receive a signal together.</td></tr><tr><td><strong>Prompt injection</strong></td><td>An attack in which text in the input is treated as an instruction.</td></tr><tr><td><strong>Qwen3</strong></td><td>The model family that dwim uses.</td></tr><tr><td><strong>Qwen3-Coder</strong></td><td>A coding variant of Qwen3 that writes tool calls as <code><function=...></code> tags.</td></tr><tr><td><strong>Qwen3.8-27B</strong></td><td>The model that dwim runs, as a four-bit file of about 16 GB.</td></tr><tr><td><strong>Reproduction</strong></td><td>A small program or command that shows a bug.</td></tr><tr><td><strong>ripgrep (<code>rg</code>)</strong></td><td>A search program that honours git-style ignore files.</td></tr><tr><td><strong>seccomp</strong></td><td>Secure computing mode: a Linux feature that limits the system calls a process may make.</td></tr><tr><td><strong>Server</strong></td><td>The background process that loads the model once and gives sessions access over a Unix domain socket.</td></tr><tr><td><strong>Spill file</strong></td><td>The file under the <code>bash</code> tool's output directory that holds a stream longer than the preview, up to 4 MiB.</td></tr><tr><td><strong>Standard error</strong></td><td>The output stream for messages and diagnostics.</td></tr><tr><td><strong>SWE-bench</strong></td><td>A benchmark of software engineering issues from open-source repositories, scored by tests.</td></tr><tr><td><strong>SWE-bench Lite</strong></td><td>A 300-instance subset of SWE-bench with test-based scoring.</td></tr><tr><td><strong>System prompt</strong></td><td>The instructions and tool descriptions sent before the conversation.</td></tr><tr><td><strong>Thinking budget</strong></td><td>The most tokens one thought may take before the chat ends it with a closing sentence.</td></tr><tr><td><strong>Thought</strong></td><td>The model's reasoning tokens, between <code><think></code> and <code></think></code>, before the reply.</td></tr><tr><td><strong>Tool call</strong></td><td>A structured request from the model to run a tool.</td></tr><tr><td><strong>Turn</strong></td><td>One user message and the agent work that follows, until the reply that ends it. In code, a <code>Turn</code> is one transcript item: <code>User</code>, <code>Reply</code>, or <code>Results</code> (section 1.1).</td></tr></table>
+<h2>11. What to read next</h2>
+<p>Read <a href="07-comparison-foundation-ai.html">07 Comparison</a> for how this harness compares with the <code>foundation_ai</code> agent loop. Read <a href="02-cli-and-sessions.html">02 Command line and sessions</a> for how these events reach the screen.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

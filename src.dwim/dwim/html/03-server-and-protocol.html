@@ -1,0 +1,769 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>03 Server and protocol: one model, several sessions -- dwim</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue('--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        toolbar.appendChild(mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); }));
+        toolbar.appendChild(mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); }));
+        toolbar.appendChild(mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); }));
+        toolbar.appendChild(mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); }));
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/dwim/docs</span>
+    <div class="nav-actions">
+      <a href="00-overview.html" class="nav-breadcrumb">Overview: a coding agent that owns its model</a><a href="01-architecture.html" class="nav-breadcrumb">01 Architecture: one package, two binaries, five modules</a><a href="02-cli-and-sessions.html" class="nav-breadcrumb">02 Command line and sessions: from arguments to the first token</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="02-cli-and-sessions.html" class="nav-btn" title="Previous: 02 Command line and sessions: from arguments to the first token">← prev</a>
+      <a href="04-inference-engine.html" class="nav-btn nav-btn-next" title="Next: 04 Inference engine: one trait, three devices, one specification">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>03 Server and protocol: one model, several sessions</h1>
+<p><strong>Thesis.</strong> The weights of the Qwen3.8-27B model are one GGUF file of about 16 gigabytes (GB), named <code>Qwen3.8-27B-Q4_0.gguf</code> (<code>models/qwen35.rs:21-24</code>, <code>README.md:45-54</code>). A process that loads them cannot also be a process per terminal without wasting memory. dwim therefore loads the model once, in a server process, and gives each terminal a session on that server. The boundary between them is a Unix domain socket that speaks JavaScript Object Notation (JSON), one message per line. This document describes the protocol, the server loop, the sequence pool that gives each session its own model state, and the rules that keep the sessions apart.</p>
+<p>A <strong>GGUF</strong> file is the model file format that llama.cpp defines. It holds the weights, the tokenizer, and the metadata, including the sampling settings. The model constant <code>qwen35::NAME</code> holds the string <code>qwen3.8-27b</code> (<code>models/qwen35.rs:21</code>). The file name <code>qwen35.rs</code> is historical; the constant and the weights file name are the authority.</p>
+<h2>1. Why the server exists</h2>
+<p>The server module states its own reason:</p>
+<pre><code class="language-rust">// server/mod.rs:1-18 (condensed)
+//! The model takes most of the memory a machine has, so one process loads
+//! it, and every `dwim` session is a client of that process over a Unix
+//! socket: `dwim` starts the server itself when none is running, and the
+//! server exits once it has gone a while without a session. The harness,
+//! the tools, and the terminal stay in the client; the server has the
+//! model, the sampling, and each session&#x27;s conversation with it, as a
+//! [`Chat`], and speaks the [`protocol`].
+//!
+//! The model&#x27;s weights are shared, and each session has a sequence of its
+//! own on the device: its key/value caches, its linear layers&#x27; recurrent
+//! states, and what the drafter carries over. ...
+//! Requests are served one at a time, in the order they arrive, each whole,
+//! so sessions take turns with the model at reply granularity. The ones
+//! that need no model, such as measuring a turn, are answered at once, by
+//! the thread that reads the connection.
+</code></pre>
+<p>Five facts follow from that paragraph and shape the rest of this document:</p>
+<ol><li><strong>The client keeps the agent.</strong> The harness, the tools, and the terminal are in the client process. The server has no tools and no terminal.</li><li><strong>The server keeps the conversation.</strong> Each session is a <code>Chat</code> value on the server side, with its own position in the model.</li><li><strong>The weights are shared.</strong> The server has one model value. The sessions borrow it.</li><li><strong>One request is served at a time.</strong> A request is served whole. Sessions wait for each other at reply granularity, not at token granularity.</li><li><strong>Some requests do not need the model.</strong> The reader thread answers them directly.</li></ol>
+<p>Four types carry that design:</p>
+<ul><li>A <strong>Chat</strong> is the server's value for one conversation. It holds the chat format, the sampler, the model state, and the conversation length.</li><li>A <strong>Format</strong> is the chat format: the tokenizer plus the role markers and tool tags that turn turns into tokens.</li><li>A <strong>Peer</strong> is one connection as the threads share it: a writer socket behind a lock and an interrupt flag.</li><li><strong>Shared</strong> is a session's handle on the shared model. It selects the session's sequence each time the chat uses it.</li></ul>
+<h2>2. The socket and the identity of the server</h2>
+<p>The socket path is derived from the user identifier:</p>
+<pre><code class="language-rust">// server/mod.rs:63-70
+pub fn socket_path() -&gt; PathBuf {
+    let dir = dirs::runtime_dir().unwrap_or_else(env::temp_dir);
+    // SAFETY: getuid takes nothing and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    dir.join(format!(&quot;dwim-{uid}.sock&quot;))
+}
+</code></pre>
+<p>The runtime directory is the value of the X Desktop Group (XDG) <code>XDG_RUNTIME_DIR</code> environment variable when the system sets it. When the system has no runtime directory, the temporary directory is used. On a typical Linux desktop this is <code>/run/user/{uid}</code>; on macOS the variable is usually absent, so the temporary directory is used. The name includes the numeric user identifier, so two users on one machine do not collide.</p>
+<p>The server also has a build identity, not only a version:</p>
+<pre><code class="language-rust">// server/mod.rs:72-88 (condensed)
+pub fn build() -&gt; String {
+    let version = env!(&quot;CARGO_PKG_VERSION&quot;);
+    match env::current_exe().and_then(fs::metadata) {
+        Ok(metadata) =&gt; {
+            let modified = metadata
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                .map_or(0, |elapsed| elapsed.as_secs());
+            format!(&quot;{version}-{}-{modified}&quot;, metadata.len())
+        }
+        Err(_) =&gt; version.to_string(),
+    }
+}
+</code></pre>
+<p><strong>Aha: the identity is version, file size, and modification time.</strong> Two builds of the same version are almost always different servers, because the executable size or its modification time in whole seconds differs. A rebuild that reproduces both values is not detected. The modification time fails to <code>0</code> when the file system does not supply one, so the size is then the only difference. A client that was rebuilt does not reuse a server from the old binary. When that server has no sessions, the client retires it and starts a new one; when it has sessions, the client stops with an error, because two servers would not fit in memory (<code>cli/session.rs:264-272</code>). The check removes an entire class of failure in which a new client sends a message that an old server does not know.</p>
+<h2>3. The protocol</h2>
+<p>The protocol is a set of Rust enums, serialized as JavaScript Object Notation (JSON). The module comment gives the transport rules:</p>
+<pre><code class="language-rust">// server/protocol.rs:1-5
+//! What a client and the server say to each other, over a Unix socket:
+//! JSON, one message a line. A request is answered with a response, with
+//! what the server has to say in the meantime, such as a reply&#x27;s pieces or
+//! how loading is going, streamed ahead of it. One connection holds one
+//! session, and makes one request at a time.
+</code></pre>
+<p>Each message is one line. A writer serializes the value with <code>serde_json::to_vec</code>, appends a newline, then takes the writer mutex and writes the bytes under it, so two threads cannot interleave bytes on one socket (<code>server/mod.rs:172-179</code>). Rust enums use the default external tag: a request is an object with one key, the variant name, and its fields as the value. A request to open is therefore:</p>
+<pre><code class="language-json">{&quot;Open&quot;:{&quot;temperature&quot;:null,&quot;speculate&quot;:4}}
+</code></pre>
+<p>A missing field is an error. An unknown field is ignored, because no protocol type sets <code>deny_unknown_fields</code>. A line that does not parse gets an <code>Error</code> response and the connection stays open; the server does not drop the client for one bad message. There is no protocol version number. The build string in <code>Hello</code> and <code>Welcome</code> is the version test, and the older-build test in section 10 shows that a missing field takes its default.</p>
+<h3>3.1 Requests</h3>
+<p>There are fourteen requests. Each has one answer, except <code>Interrupt</code>, which has none.</p>
+<pre><code class="language-rust">// server/protocol.rs:13-82 (condensed)
+pub enum Request {
+    Hello { build: String },
+    Retire,
+    Open { temperature: Option&lt;f32&gt;, speculate: usize },
+    Start { prompt: String },
+    System { text: String },
+    Clear,
+    Replay { turns: Vec&lt;Turn&gt; },
+    Measure { turn: Turn },
+    AnswerTokens { message: String, limit: usize },
+    FeedResults { outputs: Vec&lt;String&gt; },
+    Send { message: String, generation: Generation },
+    Respond { outputs: Vec&lt;String&gt;, generation: Generation },
+    Answer { message: String, heads: Vec&lt;String&gt;, limit: usize, generation: Generation },
+    Interrupt,
+}
+</code></pre>
+<table><tr><th>Request</th><th>Needs the model</th><th>Answer</th><th>Purpose</th></tr><tr><td><code>Hello { build }</code></td><td>No</td><td><code>Welcome</code></td><td>Ask who the server is; the client compares the build string with its own</td></tr><tr><td><code>Retire</code></td><td>No</td><td><code>Retired</code></td><td>Ask the server to give up the socket and exit when free</td></tr><tr><td><code>Open { temperature, speculate }</code></td><td>Pool only</td><td><code>Opened</code></td><td>Take a sequence and start a conversation; <code>temperature</code> overrides the file default, and <code>speculate</code> is the number of tokens the drafter produces after each pick</td></tr><tr><td><code>Start { prompt }</code></td><td>Yes</td><td><code>Started</code></td><td>Restore a saved state of the prompt, or read the prompt and save its state</td></tr><tr><td><code>System { text }</code></td><td>Yes</td><td><code>Ok</code></td><td>Read a system prompt and never use a saved state</td></tr><tr><td><code>Clear</code></td><td>Yes</td><td><code>Ok</code></td><td>Forget the conversation: length zero and a model reset</td></tr><tr><td><code>Replay { turns }</code></td><td>Yes</td><td><code>Ok</code></td><td>Feed the turns of an earlier conversation, as if they had happened</td></tr><tr><td><code>Measure { turn }</code></td><td>No</td><td><code>Count</code></td><td>Count the tokens of one turn in its chat format</td></tr><tr><td><code>AnswerTokens { message, limit }</code></td><td>No</td><td><code>Count</code></td><td>Count the most tokens an answer to <code>message</code> can take, up to <code>limit</code></td></tr><tr><td><code>FeedResults { outputs }</code></td><td>Yes</td><td><code>Ok</code></td><td>Feed tool results with no reply</td></tr><tr><td><code>Send { message, generation }</code></td><td>Yes</td><td><code>Reply</code></td><td>Send a user message and stream the reply</td></tr><tr><td><code>Respond { outputs, generation }</code></td><td>Yes</td><td><code>Reply</code></td><td>Feed tool results and stream the reply to them</td></tr><tr><td><code>Answer { message, heads, limit, generation }</code></td><td>Yes</td><td><code>Answered</code></td><td>Generate a plain answer, split under a list of headings, at most <code>limit</code> tokens</td></tr><tr><td><code>Interrupt</code></td><td>No</td><td>none</td><td>End the reply in progress</td></tr></table>
+<p>The <code>Count</code> answer for <code>Measure</code> and <code>AnswerTokens</code> is computed from the tokenizer and the chat format alone. The reader thread answers it, because it needs no device and no model state. This is why the server can answer a measure request while another session generates. Before the model loads, there is no format, and both requests return <code>not_loaded()</code>, an <code>Error</code> response that says the model is not ready (<code>server/mod.rs:441-451</code>). The test asserts the equality with a local <code>Format</code>:</p>
+<pre><code class="language-rust">// server/mod.rs:899-908 (condensed)
+let turn = Turn::Reply {
+    text: &quot;Ok.&quot;.to_string(),
+    calls: vec![&quot;&lt;function=bash&gt;\n&lt;/function&gt;&quot;.to_string()],
+};
+let format = Format::new(Tokenizer::tiny()).unwrap();
+assert_eq!(a.measure(&amp;turn).unwrap(), format.measure(&amp;turn).unwrap());
+assert_eq!(
+    a.answer_tokens(&quot;note&quot;, 100).unwrap(),
+    format.answer_tokens(&quot;note&quot;, 100).unwrap()
+);
+</code></pre>
+<h3>3.2 Responses</h3>
+<pre><code class="language-rust">// server/protocol.rs:96-124 (condensed)
+pub enum Response {
+    Welcome(Welcome),
+    Retired { sessions: usize },
+    Status(Status),
+    Opened(Opened),
+    Chunk(Piece),
+    Started { restored: bool, state: State },
+    Ok(State),
+    Count(usize),
+    Reply { reply: Reply, state: State },
+    Answered { answer: Answer, state: State },
+    Error { message: String },
+}
+</code></pre>
+<p><code>Chunk</code> and <code>Status</code> are interim messages. They arrive before the answer to the request that caused them. Every other response is final for one request.</p>
+<p>A <strong>piece</strong> is one streamed part of a reply. A <strong>chunk</strong> is the client's borrowed view of one piece: <code>Piece::chunk()</code> converts <code>Thought(text)</code> to <code>Chunk::Thought(&str)</code>, <code>Text(text)</code> to <code>Chunk::Text(&str)</code>, and <code>Token</code> to <code>Chunk::Token</code>. The connection layer speaks in <code>Response</code>, and the client layer speaks in <code>Chunk</code>; they are two views of the same stream, not two protocols (<code>server/client.rs:277-282</code>).</p>
+<p>A piece has three forms:</p>
+<pre><code class="language-rust">// server/protocol.rs:178-182
+pub enum Piece {
+    Thought(String),
+    Text(String),
+    Token,
+}
+</code></pre>
+<p><code>Token</code> carries no text. It marks that the model picked a token with no printable output, so that the client can count tokens and advance the spinner. The sampler still produced a token.</p>
+<h3>3.3 Status</h3>
+<p><code>Status</code> reports work in progress. Three of its values are never sent by a server; the client uses them for its own screen: <code>Restarting</code> while the client replaces a server of a different build, <code>Starting</code> while the client launches a server process, and <code>Opening</code> while the client waits for <code>Opened</code>.</p>
+<pre><code class="language-rust">// server/protocol.rs:185-217 (condensed)
+pub enum Status {
+    Downloading { file: String, done: u64, total: Option&lt;u64&gt; },
+    Device(String),
+    Sized(Size),
+    Weights { done: usize, total: usize },
+    Prompting { read: usize, total: usize },
+    Busy,
+    Restarting,
+    Starting,
+    Opening,
+}
+</code></pre>
+<p>The server sends <code>Downloading</code>, <code>Device</code>, <code>Sized</code>, <code>Weights</code>, <code>Prompting</code>, and <code>Busy</code>. The first four are broadcast to every connection while the model loads; <code>Downloading</code> counts bytes (<code>done</code> and <code>total</code>, both unsigned 64-bit), <code>Weights</code> counts tensors loaded out of the total, and <code>Sized</code> carries the <code>Size</code> in bytes. <code>Prompting</code> goes only to the connection whose prompt is being read, and counts tokens read out of the total. <code>Busy</code> goes to a connection whose request must wait. <code>Device</code> carries the device name as text.</p>
+<h3>3.4 State</h3>
+<p>Every answer that changes the conversation returns a <code>State</code>:</p>
+<pre><code class="language-rust">// server/protocol.rs:160-163
+pub struct State {
+    pub tokens: usize,
+    pub stats: Stats,
+}
+</code></pre>
+<p><code>tokens</code> is the length of the conversation in tokens. <code>stats</code> is where the session's time went: prompt reading, generation, cache hits, and so on.</p>
+<p><strong>Aha: the client does not track the conversation; it tracks the server's numbers.</strong> The server owns the conversation. After each answer, it sends the new length and the new statistics. The client stores <code>tokens</code>, <code>stats</code>, the sampler, the generation settings, the context capacity, the size, and the device name. It uses those values for its own space accounting. There is no second copy of the token stream on the client.</p>
+<h3>3.5 Generation</h3>
+<p>The three fields that change how a reply is generated travel with each request for a reply:</p>
+<pre><code class="language-rust">// server/protocol.rs:85-92
+pub struct Generation {
+    pub reserve: usize,
+    pub thought_limit: Option&lt;usize&gt;,
+    pub closing: Option&lt;String&gt;,
+}
+</code></pre>
+<p><code>reserve</code> is the number of context tokens kept free, so that a tool result can be fed after the reply. <code>thought_limit</code> is the thinking budget in tokens, and <code>closing</code> is the sentence written to close a thought that reached the budget. The harness always supplies both together: <code>thought_limit = Some(2048)</code> and a non-empty closing (<code>harness/mod.rs</code>).</p>
+<p>The server applies them at the start of each reply:</p>
+<pre><code class="language-rust">// server/mod.rs:620-628
+fn apply&lt;M: LanguageModel&gt;(&amp;self, chat: &amp;mut Chat&lt;M&gt;) {
+    chat.reserve(self.reserve);
+    if let Some(closing) = &amp;self.closing {
+        chat.limit_thoughts(self.thought_limit, closing);
+    }
+}
+</code></pre>
+<p><strong>Discrepancy to know: the thought limit is applied only when a closing sentence is present.</strong> A client that sends <code>thought_limit = Some(n)</code> with <code>closing = None</code> gets no thought limit. The dwim client always sets both values together (<code>harness/mod.rs</code> sets the limit and the closing text in one call), so the product is correct. A different client of the protocol must follow the same rule.</p>
+<h2>4. The server lifecycle</h2>
+<p>The server binds the socket <strong>before</strong> it loads the model. This is deliberate: sessions that connect during loading can watch the progress.</p>
+<div class="mermaid">
+stateDiagram-v2
+    [*] --&gt; Bound: bind socket
+    Bound --&gt; Loading: model::load_model
+    Loading --&gt; Loading: Status Downloading, Device, Sized, Weights
+    Loading --&gt; Failed: load error
+    Failed --&gt; [*]: Error broadcast to every peer, exit
+    Loading --&gt; Running: Server::run
+    Running --&gt; Running: requests from sessions
+    Running --&gt; Running: idle timeout but sessions open
+    Running --&gt; Retired: Retire, no sessions
+    Running --&gt; Idle: idle timeout, no sessions
+    Retired --&gt; [*]: socket removed, exit
+    Idle --&gt; [*]: socket removed, exit
+
+</div>
+<p><code>--serve</code> in the foreground shows the same steps:</p>
+<pre><code class="language-rust">// cli/serve.rs:23-49 (condensed)
+let server = Server::bind(&amp;path, hello)?;
+eprintln!(&quot;listening on {}&quot;, path.display());
+let mut stderr = Stderr::new();
+let loaded = match session::load_model(settings, sessions, |status| {
+    stderr.report(&amp;status);
+    server.status(&amp;status);
+}) {
+    Ok(loaded) =&gt; loaded,
+    Err(e) =&gt; {
+        server.fail(&amp;e.to_string());
+        return Err(e);
+    }
+};
+let format = Format::new(loaded.tokenizer)?;
+let gguf = loaded.gguf;
+let temperature = settings.temperature;
+let sampler = move |asked: Option&lt;f32&gt;| model::sampler(&amp;gguf, asked.or(temperature));
+server.run(loaded.model, format, loaded.device, loaded.size, sampler)
+</code></pre>
+<p>The <code>Hello</code> value is what the server says about itself before the model exists:</p>
+<pre><code class="language-rust">// server/mod.rs:151-159
+pub struct Hello {
+    pub model: String,
+    pub device: String,
+    pub context: Option&lt;usize&gt;,
+    pub room: usize,
+}
+</code></pre>
+<p>These are the values from the command line. <code>context</code> is <code>None</code> when the user did not choose a context length, because the server computes the length from the free device memory. <code>room</code> is the number of sessions that the server was started to serve (<code>--sessions</code>), and <code>model</code> is the model name that the server will load.</p>
+<p>The reader answers <code>Hello</code> with a <code>Welcome</code>, which is the same information plus the running identity:</p>
+<pre><code class="language-rust">// server/protocol.rs:131-143
+pub struct Welcome {
+    pub build: String,
+    pub pid: u32,
+    pub model: String,
+    pub device: String,
+    pub context: Option&lt;usize&gt;,
+    #[serde(default)]
+    pub room: usize,
+    pub sessions: usize,
+}
+</code></pre>
+<p><code>build</code> is the identity from section 2, <code>pid</code> is the process identifier, and <code>sessions</code> is the number of sessions open at that moment. The <code>#[serde(default)]</code> on <code>room</code> is what lets a client read a <code>Welcome</code> from a build that predates the field; it takes the default zero. The test in section 10 builds such a message from JSON.</p>
+<p>The handshake order on one connection is:</p>
+<ol><li>The client connects and sends <code>Hello { build }</code>.</li><li>The server answers <code>Welcome</code>. The client compares <code>build</code>, <code>model</code>, <code>device</code>, <code>room</code>, and <code>context</code> with what it asked for. A different build with no sessions causes a <code>Retire</code> and a new server; a different build with sessions is an error (<code>cli/session.rs:264-272</code>).</li><li>The client sends <code>Open { temperature, speculate }</code>. The main thread takes a sequence and answers <code>Opened</code>. <code>Opened</code> carries the device name, the memory <code>Size</code>, the context capacity, the sampling settings, and the starting <code>State</code>.</li><li>The client sends <code>Start</code> or <code>System</code> with the system prompt, then <code>Send</code> or <code>Answer</code>.</li></ol>
+<p>A connection has no session until <code>Open</code>. <code>Hello</code> and <code>Retire</code> work without one, and <code>Measure</code> and <code>AnswerTokens</code> work without one after the model loads. The client starts the server process itself when the socket is absent; the server is the same binary with <code>--serve</code>, which document 02 covers in its section 8.</p>
+<h3>4.1 A stale socket</h3>
+<p>A server that was killed without cleanup leaves its socket file. <code>bind</code> handles that case:</p>
+<pre><code class="language-rust">// server/mod.rs:226-242 (condensed)
+let listener = match UnixListener::bind(path) {
+    Ok(listener) =&gt; listener,
+    Err(e) if e.kind() == io::ErrorKind::AddrInUse =&gt; {
+        if UnixStream::connect(path).is_ok() {
+            return Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                format!(&quot;another dwim server is listening on {}&quot;, path.display()),
+            ));
+        }
+        fs::remove_file(path)?;
+        UnixListener::bind(path)?
+    }
+    Err(e) =&gt; return Err(e),
+};
+</code></pre>
+<p>The test is a connection attempt, not a file test. A file that accepts a connection is a live server. A file that refuses is stale, and is removed. Two errors are possible: <code>AddrInUse</code> when another process is listening, and any other <code>io::Error</code> when the bind fails for a different reason, such as a path that is too long or a directory that the user cannot write. The connect-and-remove sequence has a race: a server that is alive but not accepting a new connection can refuse the connect, and the code then removes a live socket and binds a second server. Existing connections stay with the first server, and new clients reach the second. The window is small, and the cost is a second copy of the model if the first server still has sessions.</p>
+<h3>4.2 Exit rules</h3>
+<p>The server exits for three reasons:</p>
+<ol><li><strong>No sessions for the idle time.</strong> The default is 600 seconds (<code>server/mod.rs:58</code>). The timeout is measured from the last received request, and it does not apply while any session is open.</li><li><strong>It was asked to retire and has no sessions.</strong> <code>Retire</code> sets a flag and removes the socket at once. The loop ends when <code>retiring</code> is true and <code>sessions</code> is zero.</li><li><strong>Its inbox channel is closed</strong>, which happens when every sender is gone. Each reader thread holds a sender clone, and the accept thread holds one. When the last one is dropped, <code>recv_timeout</code> returns <code>Disconnected</code> and the loop ends.</li></ol>
+<p>The main thread is the only thread that owns the sessions and the pool. It leaves the loop when one of those conditions holds, then drops the sessions. Dropping a session drops its <code>Shared</code> handle, which returns the sequence to the pool.</p>
+<p>The <code>Drop</code> implementation removes the socket unless <code>Retire</code> already did:</p>
+<pre><code class="language-rust">// server/mod.rs:384-390
+fn drop(&amp;mut self) {
+    if !self.inner.retiring.load(Ordering::Relaxed) {
+        let _ = fs::remove_file(&amp;self.inner.path);
+    }
+}
+</code></pre>
+<p><strong>Aha: the idle timer does not apply while a session is open.</strong> The loop continues after a timeout when sessions exist. <code>recv_timeout(self.idle)</code> returns <code>Timeout</code>, the code checks <code>sessions.is_empty()</code>, and the loop continues. A terminal left open all day keeps the model loaded and the memory used.</p>
+<h2>5. Threads in the server</h2>
+<div class="mermaid">
+flowchart LR
+    T1[&quot;Main thread&lt;br/&gt;run loop&quot;] --&gt; POOL[&quot;Pool&lt;br/&gt;one model, free sequences&quot;]
+    T2[&quot;Accept thread&quot;] --&gt; R1[&quot;Reader thread per connection&quot;]
+    R1 --&gt;|&quot;Hello, Retire, Measure,&lt;br/&gt;AnswerTokens, Interrupt&quot;| R1
+    R1 --&gt;|&quot;inbox: Request&quot;| T1
+    T1 --&gt;|&quot;Peer::write&quot;| C[&quot;Client socket&quot;]
+
+</div>
+<p>The server has no asynchronous runtime. It uses threads and one channel:</p>
+<ul><li><strong>One accept thread.</strong> It blocks on <code>listener.incoming()</code>, numbers each connection, and starts a reader thread for it.</li><li><strong>One reader thread per connection.</strong> It reads lines, answers the requests that need no model, and sends the rest to the main thread.</li><li><strong>One main thread.</strong> It runs the loop, owns the sessions and the pool, and serves requests one at a time.</li></ul>
+<p>The channel carries only two kinds of message:</p>
+<pre><code class="language-rust">// server/mod.rs:183-187
+enum Message {
+    Request(Request),
+    /// The connection is gone.
+    Closed,
+}
+</code></pre>
+<p><code>Closed</code> is how the main thread learns that a connection ended. The reader thread sends it after <code>read</code> returns, so the main thread can drop that session and return its sequence. The removal from the peer table belongs to the reader thread, not to the main thread; the snippet above is the reader's own cleanup.</p>
+<p>Both the reader thread and the main thread write to the same socket. A reader answers <code>Hello</code>, <code>Retire</code>, <code>Measure</code>, and <code>AnswerTokens</code>; the main thread streams <code>Status</code>, <code>Chunk</code>, <code>Reply</code>, and the other answers. <code>Peer::write</code> is the only writer. It serializes the whole <code>Response</code> to one vector, appends a newline, takes the writer mutex, and writes the bytes under the lock (<code>server/mod.rs:172-179</code>). This is why a broadcast status and a reply chunk can never interleave in the middle of a line.</p>
+<p>The accept loop also removes the peer from the shared table and sends <code>Closed</code>:</p>
+<pre><code class="language-rust">// server/mod.rs:402-428 (condensed)
+for (id, stream) in listener.incoming().enumerate() {
+    ...
+    inner.peers().insert(id, peer.clone());
+    thread::spawn({
+        let inner = inner.clone();
+        let inbox = inbox.clone();
+        move || {
+            read(id, reading, &amp;peer, &amp;inner, &amp;inbox);
+            inner.peers().remove(&amp;id);
+            let _ = inbox.send((id, Message::Closed));
+        }
+    });
+}
+</code></pre>
+<p>The connection number identifies the peer. It is assigned in order, starts at zero, and is not reused. The sequence identifier is a different number; it identifies the model state that the session took from the pool.</p>
+<h3>5.1 What the reader thread answers</h3>
+<pre><code class="language-rust">// server/mod.rs:447-500 (condensed)
+let response = match request {
+    Request::Hello { .. } =&gt; Response::Welcome(Welcome { ... }),
+    Request::Retire =&gt; {
+        inner.retiring.store(true, Ordering::Relaxed);
+        let _ = fs::remove_file(&amp;inner.path);
+        Response::Retired { sessions: inner.sessions.load(Ordering::Relaxed) }
+    }
+    Request::Measure { turn } =&gt; match inner.format.get() {
+        Some(format) =&gt; count(format.measure(&amp;turn)),
+        None =&gt; not_loaded(),
+    },
+    Request::AnswerTokens { message, limit } =&gt; match inner.format.get() {
+        Some(format) =&gt; count(format.answer_tokens(&amp;message, limit)),
+        None =&gt; not_loaded(),
+    },
+    Request::Interrupt =&gt; {
+        peer.interrupted.store(true, Ordering::Relaxed);
+        continue;
+    }
+    request =&gt; {
+        ...
+        inbox.send((id, Message::Request(request))).is_err()
+        ...
+    }
+};
+</code></pre>
+<p><code>Hello</code> and <code>Retire</code> must work while the model loads, or a waiting client could not even ask what the server is doing. <code>Measure</code> and <code>AnswerTokens</code> must not wait behind a long generation, because the harness uses them to plan the next step.</p>
+<h3>5.2 Busy</h3>
+<p>When the model is on another session's request, the reader thread tells the client before it queues the request:</p>
+<pre><code class="language-rust">// server/mod.rs:397-403
+fn busy_for(&amp;self, id: usize) -&gt; bool {
+    self.serving
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some_and(|serving| serving != id)
+}
+</code></pre>
+
+<pre><code class="language-rust">// server/mod.rs:482-492 (condensed)
+if matches!(request, Request::Send { .. } | Request::Respond { .. } | Request::Answer { .. }) {
+    peer.interrupted.store(false, Ordering::Relaxed);
+}
+if inner.busy_for(id) {
+    let _ = peer.write(&amp;Response::Status(Status::Busy));
+}
+if inbox.send((id, Message::Request(request))).is_err() {
+    break;
+}
+</code></pre>
+<p><code>Busy</code> is information, not a refusal. The request still goes to the inbox and waits its turn. The client shows it on the screen, so that the user knows the delay is another session's work.</p>
+<p><strong>Aha: the interrupt flag is cleared when a new reply request arrives, not when the reply ends.</strong> The flag is per connection. The reader thread sees the requests on one connection in order. It clears the flag when it reads a <code>Send</code>, <code>Respond</code>, or <code>Answer</code>, and it sets the flag when it reads an <code>Interrupt</code>. The client sends the reply request first and the <code>Interrupt</code> later, so the clear happens before the set. The main thread may then serve the <code>Send</code> after the flag is already set. The serving closure writes one chunk and checks the flag, so that reply stops after its first piece. A stale interrupt from an earlier reply cannot stop a later one, because the later reply request clears it first.</p>
+<h3>5.3 Interrupt</h3>
+<p><code>Interrupt</code> is not answered. It sets a flag that the serving thread checks on every chunk:</p>
+<pre><code class="language-rust">// server/mod.rs:537-548 (condensed)
+let stream = |piece: Piece| -&gt; ControlFlow&lt;()&gt; {
+    if peer.write(&amp;Response::Chunk(piece)).is_err() || peer.interrupted.load(Ordering::Relaxed) {
+        ControlFlow::Break(())
+    } else {
+        ControlFlow::Continue(())
+    }
+};
+</code></pre>
+<p>The generation function receives this closure. When the closure returns <code>Break</code>, generation stops as if the client had stopped reading the chunks. The request still gets its <code>Reply</code>, with the text produced so far and the tool calls completed so far.</p>
+<p>The client produces the interrupt from a <code>ControlFlow::Break</code> in its own chunk handler:</p>
+<pre><code class="language-rust">// server/client.rs:100-122 (condensed)
+self.write(request)?;
+let mut interrupted = false;
+loop {
+    let response = self.read()?;
+    match response {
+        Response::Status(_) | Response::Chunk(_) =&gt; {
+            if !interrupted &amp;&amp; on(&amp;response).is_break() {
+                interrupted = true;
+                self.write(&amp;Request::Interrupt)?;
+            }
+        }
+        Response::Error { message } =&gt; return Err(message.into()),
+        response =&gt; return Ok(response),
+    }
+}
+</code></pre>
+<p>The client asks only once. It then drops every chunk until the answer arrives.</p>
+<p>The test holds the model after 20 tokens, so the interrupt always lands inside the reply, whatever the thread schedule:</p>
+<pre><code class="language-rust">// server/mod.rs:960-995 (condensed)
+let reply = client
+    .send(&quot;go&quot;, |chunk| {
+        if let Chunk::Thought(_) = chunk { thoughts += 1; }
+        if thoughts &gt;= 3 { ControlFlow::Break(()) } else { ControlFlow::Continue(()) }
+    })
+    .unwrap();
+assert!(thoughts &lt; 100, &quot;{thoughts}&quot;);
+assert!(reply.calls.is_empty());
+let (next, _) = ask(&amp;mut client, &quot;on&quot;);
+assert_eq!(next.trim(), &quot;Next.&quot;);
+</code></pre>
+<p>The closure receives a <code>Chunk</code>, which is the client's borrowed view of a <code>Piece</code>; the connection layer would receive a <code>Response::Chunk(Piece)</code>. <code>ask</code> is a test helper that sends one message with no generation settings and returns the reply text and the new <code>State</code>. It exists so that each test line does not repeat the send-and-read loop.</p>
+<p>The reply stops after the third thought piece. The tool call that the model was about to write never arrives. The next turn works normally.</p>
+<h2>6. The sequence pool</h2>
+<p>A model that serves several conversations needs several independent states. In dwim, each state is a <strong>sequence</strong>.</p>
+<h3>6.1 What a sequence holds</h3>
+<p>A sequence is the per-session model state:</p>
+<ul><li>The key/value caches of the full-attention layers.</li><li>The convolution and recurrent states of the Gated DeltaNet layers. A <strong>convolution state</strong> is the last few inputs that the short convolution filter needs. A <strong>recurrent state</strong> is the Gated DeltaNet matrix that carries information from earlier positions.</li><li>The <strong>hidden state</strong> carried between batches: the last layer output that the next batch continues from. A <strong>batch</strong> is one call to the model with one or more tokens.</li><li>The tokens that a <strong>speculative batch</strong> is verifying. In a speculative batch, the model drafts up to eight tokens ahead, then verifies them in one forward pass. The sequence holds the drafted tokens and the hidden state that the verification needs.</li><li>A <strong>parity</strong> flag for the two convolution buffers, which says which buffer holds the newest input. A <strong>carry</strong> value for the recurrence, and a <strong>mark</strong> used to rewind a failed draft.</li></ul>
+<p>The device memory for one sequence is what <code>Size::conversation</code> reports, in bytes. <code>Size::context</code> is the maximum number of tokens, <code>Size::model</code> is the weight memory in bytes, and <code>Size::sessions</code> is the number of sequences that the server allocated.</p>
+<h3>6.2 Allocation at start</h3>
+<p>The server allocates all sequences before it serves a request:</p>
+<pre><code class="language-rust">// server/mod.rs:298-303 (condensed)
+let mut free = vec![0];
+for _ in 1..size.sessions {
+    free.push(model.add_sequence()?);
+}
+free.reverse();
+let pool = Rc::new(RefCell::new(Pool { model, free }));
+</code></pre>
+<p>The first sequence exists from model load. Each call to <code>add_sequence</code> allocates another sequence of the same maximum length. <code>size.sessions</code> is the number of sequences that the server decided to allocate. The model planner computes it from the free device memory and the <code>--sessions</code> limit (<code>cli/model.rs:144-149</code>), and the option itself is in <code>cli/session.rs</code>. The allocation happens before the server serves any request, so a failure here stops the server before a client can open a session.</p>
+<pre><code class="language-rust">// models/qwen35.rs:1285-1298
+fn add_sequence(&amp;mut self) -&gt; Result&lt;usize&gt; {
+    let id = self.parked.len() + 1;
+    let seq = Sequence::new(
+        &amp;self.config,
+        &amp;self.device,
+        id,
+        self.state.seq.max_len,
+        self.caches,
+        self.slots,
+    );
+    self.parked.insert(id, seq);
+    Ok(id)
+}
+</code></pre>
+<p>The <code>free</code> vector is reversed so that sequence zero is at the end of the vector, and <code>pop</code> takes it first. Sequence zero is the one that is already selected after loading, and selecting it costs no swap. The first session therefore gets the sequence that needs no work.</p>
+<p><strong>Aha: the pool is a stack, not a queue.</strong> <code>pop</code> takes from the end, and <code>free.reverse()</code> puts the most valuable sequence there. Without the reverse, the first session would get the sequence with the highest number, which costs a swap, and sequence zero would wait for the last session.</p>
+<h3>6.3 Take and give back</h3>
+<p>A session takes a sequence when it opens:</p>
+<pre><code class="language-rust">// server/mod.rs:680-699 (condensed)
+fn take(pool: &amp;Rc&lt;RefCell&lt;Pool&gt;&gt;) -&gt; Result&lt;Self, Box&lt;dyn Error&gt;&gt; {
+    let mut p = pool.borrow_mut();
+    let Some(id) = p.free.pop() else {
+        return Err(
+            &quot;the dwim server has no room for another session: quit one, or start the server with more --sessions&quot;
+                .into(),
+        );
+    };
+    p.model.select_sequence(id)?;
+    p.model.reset();
+    drop(p);
+    Ok(Self { id, pool: pool.clone() })
+}
+</code></pre>
+<p><code>reset</code> returns the sequence to its starting state: it zeroes the convolution and recurrent states of every linear layer, clears any speculative batch, and clears the parity, carry, and mark flags (<code>models/qwen35.rs:1263-1277</code>). It does not clear the key/value caches or set a position counter. The comment in the source gives the reason: attention reads only positions below the current one, so bytes from an earlier conversation at higher positions are never read. The conversation restarts at position zero, and each new token overwrites the cache entry at its position before attention reads it. A new session therefore never reads a previous session's text.</p>
+<p>If <code>select_sequence</code> or <code>reset</code> fails after <code>pop</code>, the identifier is lost: the function returns the error and does not push the identifier back onto <code>free</code>. The pool then has one fewer sequence for the rest of the server's life. This is an error path that the tests do not cover. It cannot happen in the normal flow, because the identifier came from the same pool and the main thread is the only user, but a future change to <code>reset</code> could make it reachable.</p>
+<p><strong>Aha: the reset is smaller than it looks, and the safety comes from the position.</strong> A full cache clear would cost a device write over the whole sequence. dwim avoids it: the new conversation writes at positions from zero, and attention only reads the positions that the conversation has written. The zeroed linear states are still required, because those states are read at every position.</p>
+<p>The session gives the sequence back when its <code>Shared</code> handle is dropped:</p>
+<pre><code class="language-rust">// server/mod.rs:712-716
+impl Drop for Shared {
+    fn drop(&amp;mut self) {
+        self.pool.borrow_mut().free.push(self.id);
+    }
+}
+</code></pre>
+<p><code>Shared</code> is dropped when the session's <code>Chat</code> is removed, which happens on <code>Message::Closed</code> or when the server exits.</p>
+<h3>6.4 Selecting a sequence copies nothing</h3>
+<p>The model keeps one sequence active and every other sequence parked:</p>
+<pre><code class="language-rust">// models/qwen35.rs:1300-1314 (condensed)
+fn select_sequence(&amp;mut self, id: usize) -&gt; Result&lt;()&gt; {
+    if self.state.seq.id == id {
+        return Ok(());
+    }
+    if !self.state.seq.verified.is_empty() {
+        return Err(&quot;a batch is being verified&quot;.into());
+    }
+    let mut seq = self.parked.remove(&amp;id).ok_or_else(|| format!(&quot;no sequence {id}&quot;))?;
+    std::mem::swap(&amp;mut self.state.seq, &amp;mut seq);
+    self.parked.insert(seq.id, seq);
+    Ok(())
+}
+</code></pre>
+<p><strong>Aha: a context switch between sessions is one pointer swap, not a copy.</strong> The sequence value owns device buffers. A <code>mem::swap</code> exchanges the handles. The data stays where the device put it. This is why the server can serve several sessions without doubling the cost of a switch.</p>
+<p>The refusal when a batch is being verified is a real rule. A reply that failed part way can leave a speculative batch uncommitted. The main loop calls <code>chat.settle()</code> after every request, which commits that batch, so the next session can select its sequence:</p>
+<pre><code class="language-rust">// server/mod.rs:358-365 (condensed)
+Some(chat) =&gt; {
+    let response = serve(chat, request, &amp;peer);
+    // A reply that failed part way may leave a batch
+    // being verified: it is committed before another
+    // session has the model.
+    chat.settle();
+    response
+}
+</code></pre>
+<h3>6.5 The session handle is a language model</h3>
+<p><code>Shared</code> implements the <code>LanguageModel</code> trait by delegating to the shared model on the session's sequence:</p>
+<pre><code class="language-rust">// server/mod.rs:718-758 (condensed)
+impl LanguageModel for Shared {
+    fn save(&amp;self, len: usize) -&gt; Option&lt;Vec&lt;u8&gt;&gt; { self.model().save(len) }
+    fn restore(&amp;mut self, state: &amp;[u8]) -&gt; crate::models::Result&lt;usize&gt; { self.model().restore(state) }
+    fn forward(&amp;mut self, tokens: &amp;[u32], pos: usize) -&gt; Vec&lt;f32&gt; { self.model().forward(tokens, pos) }
+    fn draft(&amp;mut self, token: u32, pos: usize, k: usize) -&gt; Vec&lt;u32&gt; { self.model().draft(token, pos, k) }
+    fn verify(&amp;mut self, tokens: &amp;[u32], pos: usize) -&gt; Vec&lt;f32&gt; { self.model().verify(tokens, pos) }
+    fn rewind(&amp;mut self, keep: usize) { self.model().rewind(keep) }
+    fn mark(&amp;mut self) -&gt; bool { self.model().mark() }
+    fn rewind_to_mark(&amp;mut self) -&gt; crate::models::Result&lt;()&gt; { self.model().rewind_to_mark() }
+    fn reset(&amp;mut self) { self.model().reset() }
+    fn max_len(&amp;self) -&gt; usize { self.pool.borrow().model.max_len() }
+    ...
+}
+</code></pre>
+<p>Each call selects the session's sequence first. The selection is inside the private <code>model</code> method that every delegating method calls:</p>
+<pre><code class="language-rust">// server/mod.rs:698-704
+fn model(&amp;self) -&gt; std::cell::RefMut&lt;&#x27;_, Box&lt;dyn LanguageModel&gt;&gt; {
+    let mut pool = self.pool.borrow_mut();
+    pool.model
+        .select_sequence(self.id)
+        .expect(&quot;no batch is verified across requests&quot;);
+    pool
+}
+</code></pre>
+<p>The <code>expect</code> states the invariant: the main thread calls <code>settle</code> after every request, so no speculative batch is being verified when the next request begins. A broken invariant would panic the main thread, which ends the server. This is a deliberate choice: a wrong sequence switch would be worse than a stopped server.</p>
+<p>This is why the session's <code>Chat</code> can be a normal <code>Chat<Shared></code> with no special code. <code>Chat</code> does not know that the model is shared.</p>
+<p><code>Shared</code> owns exactly one sequence, so the trait's selector has nothing to select. It accepts zero as a no-op and refuses every other identifier:</p>
+<pre><code class="language-rust">// server/mod.rs:760-770
+fn add_sequence(&amp;mut self) -&gt; crate::models::Result&lt;usize&gt; {
+    Err(&quot;a session runs one sequence&quot;.into())
+}
+
+fn select_sequence(&amp;mut self, id: usize) -&gt; crate::models::Result&lt;()&gt; {
+    if id == 0 {
+        Ok(())
+    } else {
+        Err(&quot;a session runs one sequence&quot;.into())
+    }
+}
+</code></pre>
+<p>The <code>0</code> is not a reference to the server's sequence zero. It is the only selector value that a <code>Chat<Shared></code> can ask for, because the <code>Shared</code> handle already knows its own identifier. A caller that asks for another identifier gets an error instead of a silent switch to a sequence that the session does not own.</p>
+<p><strong>Aha: this is the whole sharing mechanism.</strong> There is no reference counting, no lock on the weights, and no copy of the model. The sessions are <code>Chat</code> values over a model handle that selects a sequence. The single main thread is what makes the shared <code>Rc<RefCell<Pool>></code> safe without a mutex.</p>
+<h2>7. The flow of one session</h2>
+<div class="mermaid">
+sequenceDiagram
+    participant T as Terminal
+    participant C as Client
+    participant R as Reader thread
+    participant M as Main thread
+    participant P as Pool and model
+    T-&gt;&gt;C: first message
+    C-&gt;&gt;R: Hello
+    R--&gt;&gt;C: Welcome
+    C-&gt;&gt;R: Open
+    R-&gt;&gt;M: inbox: Open
+    M-&gt;&gt;P: take sequence
+    P--&gt;&gt;M: sequence id
+    M--&gt;&gt;C: Opened (device, size, capacity, sampling, state)
+    C-&gt;&gt;R: Start with system prompt
+    R-&gt;&gt;M: inbox: Start
+    M-&gt;&gt;P: read prompt, or restore saved state
+    P--&gt;&gt;M: tokens, stats
+    M--&gt;&gt;C: Started { restored, state }
+    C-&gt;&gt;R: Send { message, generation }
+    R--&gt;&gt;C: Status Busy (only if another session has the model)
+    R-&gt;&gt;M: inbox: Send
+    M-&gt;&gt;P: generate
+    loop each token
+        P--&gt;&gt;M: thought, text, or Token
+        M--&gt;&gt;C: Chunk
+    end
+    M--&gt;&gt;C: Reply { reply, state }
+    C--&gt;&gt;T: draw the reply
+
+</div>
+<p>The first request that needs the model waits until loading ends, because the main thread is still in <code>load_model</code>. The client sees <code>Status</code> messages for download, device, size, and weights, then its <code>Open</code> is answered.</p>
+<h2>8. Saved system prompt states</h2>
+<p>Reading a system prompt of several thousand tokens costs time proportional to its length, and the cost is paid again for every new session. The server saves the model state after reading one, and restores it the next time a session sends the same prompt:</p>
+<pre><code class="language-rust">// server/mod.rs:95-117 (condensed)
+pub fn start&lt;M: LanguageModel&gt;(
+    chat: &amp;mut Chat&lt;M&gt;,
+    prompt: &amp;str,
+    on_progress: impl FnMut(usize, usize),
+) -&gt; Result&lt;bool, Box&lt;dyn Error&gt;&gt; {
+    let path = state_path(prompt);
+    if let Some(path) = &amp;path
+        &amp;&amp; let Ok(state) = fs::read(path)
+        &amp;&amp; chat.restore(&amp;state).is_ok()
+    {
+        return Ok(true);
+    }
+    chat.system(prompt, on_progress)?;
+    if let Some(path) = path
+        &amp;&amp; let Some(state) = chat.save()
+        &amp;&amp; let Some(dir) = path.parent()
+        &amp;&amp; fs::create_dir_all(dir).is_ok()
+        &amp;&amp; fs::write(&amp;path, state).is_ok()
+    {
+        prune(dir);
+    }
+    Ok(false)
+}
+</code></pre>
+<p>The file name is a hash of the model name and the prompt text:</p>
+<pre><code class="language-rust">// server/mod.rs:121-134 (condensed)
+// FNV-1a, so that the name is the same from one build to the next.
+let mut hash: u64 = 0xcbf29ce484222325;
+for byte in qwen35::NAME.bytes().chain([0]).chain(prompt.bytes()) {
+    hash ^= byte as u64;
+    hash = hash.wrapping_mul(0x100000001b3);
+}
+Some(dirs::cache_dir()?.join(&quot;dwim&quot;).join(&quot;states&quot;).join(format!(&quot;{hash:016x}.bin&quot;)))
+</code></pre>
+<p>The hash is Fowler–Noll–Vo, version 1a (FNV-1a): a fast non-cryptographic hash that the code writes out by hand, so that the name of the state file is the same from one build to the next. <code>STATES_KEPT</code> is 4. <code>prune</code> sorts by modification time and removes all but the newest four (<code>server/mod.rs:61</code>, <code>137-150</code>).</p>
+<p><strong>Aha: the state is the model's memory, not the conversation.</strong> It holds the key/value caches and recurrent states after the system prompt. It does not hold the system prompt text, the tokenizer output, or the turns. If the model name or the prompt text changes, the hash changes and the state is not found. If the format is corrupt or from an incompatible build, <code>restore</code> fails and the prompt is read normally.</p>
+<p>The file has a fixed header, so a wrong file is rejected rather than read as numbers. The first eight bytes are the American Standard Code for Information Interchange (ASCII) string <code>dwimstat</code>. The next four bytes are the layout version, currently <code>3</code>, in little-endian order. Then come seven 64-bit numbers: the token length, the key/value cache length, the recurrent-state length, the key/value dimension, the convolution width, the recurrent width, and the drafter's hidden width. The body is the attention caches, then the convolution and recurrent states, then the drafter's hidden state when the model has a drafter (<code>models/qwen35.rs:926-975</code>).</p>
+<p><code>restore</code> checks the magic, the version, and every dimension against the loaded model. It returns a different error for a cut-short file, a file that is not a state, a state of another version, and a state of another model (<code>models/qwen35.rs:977-1020</code>). The saved state is keyed by prompt, not by device or context length. A machine with a different device that finds a state file can try to restore it. The dimension check rejects a state whose shape does not fit, and the code then reads the prompt. A state file from another device that is structurally valid but numerically wrong is not detectable here. This is a small risk, and it belongs to the cache.</p>
+<h2>9. What the server does not do</h2>
+<ul><li><strong>No authentication.</strong> Any process of the same user, and root, can connect to the socket. The path name is not a secret. The security boundary is the user account and any sandbox around it, such as a container or a separate account.</li><li><strong>No network transport.</strong> The socket is local. There is no Transmission Control Protocol port and no transport encryption.</li><li><strong>No token-level interleaving.</strong> One reply at a time. A long reply delays every other session until it ends or is interrupted.</li><li><strong>No priority or fairness rule.</strong> Requests are served in arrival order. A session that sends many requests can delay another, within the reply-at-a-time rule.</li><li><strong>No backpressure limit.</strong> A client that does not read its socket can make the reader thread block on write. The server does not measure this.</li><li><strong>No persistence of sessions.</strong> A server exit loses every conversation. The client's transcript is the only record, and it lives in the client.</li><li><strong>No per-session memory limit.</strong> The context length is fixed for every sequence when the model loads. A session that fills its context compacts: the harness replaces the old turns with a note and a tail, and sends the new conversation to the server (document 06). The server does not enforce a smaller limit for one session.</li></ul>
+<h2>10. What is verified and what is not</h2>
+<p>The server tests use a scripted model, not the real weights. They check four properties:</p>
+<ol><li><strong>Sessions take turns with their own state.</strong> Two sessions alternate, and each sees only its own tokens (<code>server/mod.rs:859-958</code>).</li><li><strong>A reply is interrupted and the session goes on.</strong> The next turn is normal (<code>server/mod.rs:960-1004</code>).</li><li><strong>An older <code>Welcome</code> is read.</strong> A missing field takes its default. The test uses this line and expects <code>room</code> to be zero (<code>server/mod.rs:1006-1012</code>):</li></ol>
+<p>   ``<code>json    {"Welcome":{"build":"0.0.10-1-2","pid":7,"model":"qwen3.8-27b","device":"gpu","context":null,"sessions":1}}    </code>``</p>
+<ol><li><strong>An idle server exits</strong> (<code>server/mod.rs:1015-1061</code>).</li></ol>
+<p>What the tests do not cover: a real model with a real sequence pool and real device memory, the <code>Busy</code> path under load, and a client that dies in the middle of a write. The first is covered indirectly by <code>difftest</code> and the real-model test (document 04).</p>
+<h2>11. Terms used in this document</h2>
+<table><tr><th>Term</th><th>Meaning</th></tr><tr><td><strong>Backpressure</strong></td><td>A rule that stops a sender when the receiver cannot keep up.</td></tr><tr><td><strong>Build identity</strong></td><td>The version, executable size, and modification time that identify a running server build.</td></tr><tr><td><strong>Channel</strong></td><td>A Rust queue that moves values between threads.</td></tr><tr><td><strong>Chat</strong></td><td>The server's value for one conversation: a chat format, a sampler, a model state, and a conversation length.</td></tr><tr><td><strong>Chat format</strong></td><td>The rules that turn messages into model tokens: role markers, endings, tool syntax.</td></tr><tr><td><strong>Client</strong></td><td>The process that holds the harness, the tools, and the terminal. It connects to the server.</td></tr><tr><td><strong>Conversation</strong></td><td>The turns of one session, and the token positions that they occupy in its sequence.</td></tr><tr><td><strong>FNV-1a</strong></td><td>Fowler–Noll–Vo hash, version 1a: a fast non-cryptographic hash function.</td></tr><tr><td><strong>Format</strong></td><td>The tokenizer plus its role markers and tool tags.</td></tr><tr><td><strong>Gated DeltaNet</strong></td><td>A linear-attention layer that carries a recurrent state instead of a growing cache.</td></tr><tr><td><strong>GGUF</strong></td><td>The model file format that llama.cpp defines; it holds weights, tokenizer, and metadata.</td></tr><tr><td><strong>GiB</strong></td><td>Gibibyte: 2 to the power 30 bytes.</td></tr><tr><td><strong>Hello</strong></td><td>The request that asks the server what it is, before any session exists.</td></tr><tr><td><strong>Interrupt</strong></td><td>A request that ends a reply early.</td></tr><tr><td><strong>JSON</strong></td><td>JavaScript Object Notation: a text format for values made of objects, arrays, strings, and numbers.</td></tr><tr><td><strong>JSON Lines</strong></td><td>A file or stream format with one JavaScript Object Notation (JSON) value on each line.</td></tr><tr><td><strong>Key/value cache</strong></td><td>The stored attention keys and values for tokens already processed.</td></tr><tr><td><strong>Materialized state</strong></td><td>See <em>sequence</em>.</td></tr><tr><td><strong>Opened</strong></td><td>The answer to <code>Open</code>: device name, memory <code>Size</code>, context capacity, sampling settings, and the starting <code>State</code>.</td></tr><tr><td><strong>Peer</strong></td><td>One connection as the server's threads share it: a writer socket behind a lock and an interrupt flag.</td></tr><tr><td><strong>Piece</strong></td><td>One streamed part of a reply: a thought, a text, or a token mark.</td></tr><tr><td><strong>Pool</strong></td><td>The set of sequence identifiers that no session has.</td></tr><tr><td><strong>Process</strong></td><td>A running program with its own memory.</td></tr><tr><td><strong>Room</strong></td><td>The number of sessions that the server was started to serve.</td></tr><tr><td><strong>Sequence</strong></td><td>One session's model state on the device: caches, recurrent states, and position.</td></tr><tr><td><strong>Session</strong></td><td>One conversation with the model, held on one connection with one sequence and one <code>Chat</code>.</td></tr><tr><td><strong>Shared</strong></td><td>A session's handle on the shared model; it selects the session's sequence on every use.</td></tr><tr><td><strong>Size</strong></td><td>The byte and count report: sessions, context, model bytes, and conversation bytes.</td></tr><tr><td><strong>Stale socket</strong></td><td>A socket file whose server is gone.</td></tr><tr><td><strong>State (model)</strong></td><td>The caches and recurrent buffers after a prefix of a conversation.</td></tr><tr><td><strong>State (protocol)</strong></td><td>The conversation token count and the session statistics.</td></tr><tr><td><strong>Status</strong></td><td>An interim progress message: loading, sizing, prompting, or busy.</td></tr><tr><td><strong>Thread</strong></td><td>A unit of execution inside a process.</td></tr><tr><td><strong>Token</strong></td><td>The unit of text that a model reads and writes.</td></tr><tr><td><strong>Unix domain socket</strong></td><td>A socket addressed by a file-system path on one machine.</td></tr><tr><td><strong>Welcome</strong></td><td>The answer to <code>Hello</code>: the build identity, process identifier, model, device, context, room, and open sessions.</td></tr></table>
+<h2>12. What to read next</h2>
+<p>Read <a href="04-inference-engine.html">04 Inference engine</a> for the device operations behind <code>select_sequence</code>, <code>forward</code>, and <code>verify</code>. Read <a href="06-agent-harness-and-tools.html">06 Agent harness and tools</a> for the client loop that sends the requests in section 3.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
