@@ -1,0 +1,836 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>18 Comparisons: Rivet, Durable Objects, Kubernetes, and durable state systems -- src.rivet</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue('--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        toolbar.appendChild(mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); }));
+        toolbar.appendChild(mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); }));
+        toolbar.appendChild(mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); }));
+        toolbar.appendChild(mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); }));
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.rivet/docs</span>
+    <div class="nav-actions">
+      <a href="15-deployment-and-self-hosting.html" class="nav-breadcrumb">15 Deployment and self-hosting</a><a href="16-tests-benchmarks-and-limits.html" class="nav-breadcrumb">16 Tests, benchmarks, and limits</a><a href="17-the-product-family.html" class="nav-breadcrumb">17 The product family</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="17-the-product-family.html" class="nav-btn" title="Previous: 17 The product family">← prev</a>
+      <a href="19-glossary.html" class="nav-btn nav-btn-next" title="Next: 19 Glossary">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>18 Comparisons: Rivet, Durable Objects, Kubernetes, and durable state systems</h1>
+<p>Rivet makes a keyed Actor, its SQLite database, and its workflow state durable. SQLite is an embedded database. It uses Structured Query Language (SQL). This document compares Rivet with six systems that also keep the state of a distributed program: Cloudflare Durable Objects, Kubernetes, Temporal, Resonate, Electric Durable Streams, and celld. The comparison asks one question. Where does the durable memory of a distributed program live, and which system pays which cost to keep it there? The answer is not a ranking. Each system makes a different part of the problem durable. Rivet makes the Actor durable. A Durable Object makes one object durable. Kubernetes keeps a workload specification and its volume durable. The controller creates replacement pods around that specification. Temporal and Resonate make a workflow history durable. Electric makes an ordered log durable. celld makes one Workers object and its bucket proof durable.</p>
+<p>The document uses the source at commit <code>4a58441c50d1ce20d8803cfb1ab7c3285a5141d6</code> (version 2.3.31) for every Rivet claim. It uses the sibling explorations in this parent directory for Resonate, Electric, and celld. It marks every other claim with its own label.</p>
+<p><strong>Aha:</strong> The deepest difference is not speed or storage size. It is the unit that survives a crash. Rivet survives as a keyed Actor and its state. A Durable Object survives as an object and its SQLite database. Kubernetes keeps the workload specification and the Persistent Volume. The controller creates a replacement pod after a failure. Temporal and Resonate survive as an event history. Electric survives as a byte log. celld survives as a cell plus its ownership epoch. The unit of survival decides the recovery path, the failure model, and the operational cost.</p>
+<h2>1. The comparison rule</h2>
+<p>Every comparison needs a rule, because a vendor page and a source file do not carry the same weight. This document uses five labels.</p>
+<table><tr><th>Label</th><th>Meaning</th><th>What the reader may conclude</th></tr><tr><td>Rivet source</td><td>A code or documentation file and line range in the Rivet repository at commit <code>4a58441c</code></td><td>The file exists at that commit and says this</td></tr><tr><td>Rivet product claim</td><td>A claim in the Rivet repository about Rivet or another product. It includes benchmark and scale claims</td><td>This is the project's claim. This document does not verify it</td></tr><tr><td>Sibling source</td><td>A file in the Resonate, Electric, or celld exploration, or the underlying source path named there</td><td>The exploration states it, and its own source citation is named</td></tr><tr><td>External document</td><td>The named public page for Cloudflare, Kubernetes, or Temporal</td><td>This document names the page and did not fetch it</td></tr><tr><td>General knowledge</td><td>General familiarity with a system, with no named source read</td><td>This document did not verify it</td></tr></table>
+<p>The citation rule has four parts.</p>
+<ol><li>A Rivet repository path is relative to the Rivet repository root. The path</li></ol>
+<p>   starts with <code>README.md</code>, <code>docs/</code>, or <code>engine/</code>.</p>
+<ol><li>A file of this exploration uses <code>./README.md</code> or <code>../spec.md</code>. A bare</li></ol>
+<p>   <code>README.md</code> means the Rivet repository README.</p>
+<ol><li>A sibling exploration file uses its full path from this file:</li></ol>
+<p>   <code>../../src.resonate/markdown/...</code>,    <code>../../src.celld/markdown/...</code>, or    <code>../../src.electric/markdown/...</code>.</p>
+<ol><li>A Cloudflare, Kubernetes, or Temporal claim uses the Rivet comparison</li></ol>
+<p>   material when that material exists. Otherwise it says "External document" or    "General knowledge".</p>
+<p>This document does not use a web search. No external document was fetched for this snapshot. No external claim was read at its source. An External document claim names a page but was not read. A General knowledge claim comes from general familiarity and was not verified. The Kubernetes numbers are the values that the Rivet README publishes. The README states that they are typical published values, not a matched benchmark. That statement is at <code>README.md:157</code>.</p>
+<p>The commit is the only authority for Rivet behavior. The internal documents under <code>docs-internal/</code> are useful maps. They can be stale. When they conflict with the code, this document follows the code. One example is storage. An internal document still describes a FoundationDB layout. FoundationDB is a distributed key-value database (General knowledge). The current code uses Amazon Simple Storage Service (S3) objects for the cold tier and the public architecture document says object storage holds the data. The code and the public document win.</p>
+<h2>2. What each system makes durable</h2>
+<p>A fair comparison starts with the unit of survival, because the unit decides everything that follows. The table gives the short answer. The sections give the mechanism. Three names appear in the table before their full explanation. Pegboard is the Rivet scheduling and placement layer. An envoy is the node process that hosts Actors on the version 2 path. UniversalDB is the transactional key-value store that holds Rivet records.</p>
+<table><tr><th>System</th><th>Durable unit</th><th>Where the unit lives</th><th>What a crash costs</th></tr><tr><td>Rivet</td><td>A keyed Actor and its state</td><td>A task in a node process, the Actor SQLite database, the UniversalDB records that hold workflow state, and a key-value space</td><td>On the version 2 path, a lost envoy makes Pegboard sleep the Actor. Its state stays. A graceful stop destroys the Actor and its data. The <code>crash_policy</code> field changes this only on the version 1 path.</td></tr><tr><td>Cloudflare Durable Objects</td><td>One named object and its SQLite database</td><td>One Cloudflare runtime object</td><td>The platform restarts the object. Its SQLite data is intact.</td></tr><tr><td>Kubernetes</td><td>One workload specification and its volumes</td><td>A controller, a container sandbox, and a Persistent Volume</td><td>The controller creates a replacement pod. Its volume follows if the storage class allows it.</td></tr><tr><td>Temporal</td><td>One workflow execution and its event history</td><td>A Temporal service database</td><td>A worker replays the history and continues.</td></tr><tr><td>Resonate</td><td>One durable promise and its task</td><td>A server storage engine, or S3 for the Resonate server written in Zig</td><td>A worker reacquires the task. The promise state is intact.</td></tr><tr><td>Electric Durable Streams</td><td>One append-only stream</td><td>A file, a SQLite database, or a segment file plus metadata</td><td>A reader resumes from its stored offset.</td></tr><tr><td>celld</td><td>One cell and its SQLite database</td><td>A cell runs inside a V8 isolate on an owner node. V8 is the JavaScript engine, and an isolate is one V8 instance. A script is one uploaded Worker code module. One script can place up to 32 cells in one isolate. The cell also has a bucket chain and an ownership record.</td><td>A new owner restores the epoch chain. The acknowledged writes are intact.</td></tr></table>
+<p>Rivet's unit is a <em>virtual Actor</em>. The Actor has an identity that is independent of the machine that runs it. The first field of the <code>Actor</code> type is the <code>actor_id</code>, and the type also holds an optional <code>key</code> and a <code>namespace_id</code>.</p>
+<pre><code class="language-rust">// engine/packages/types/src/actors.rs:7-38
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct Actor {
+	pub actor_id: Id,
+	pub name: String,
+	pub key: Option&lt;String&gt;,
+
+	pub namespace_id: Id,
+	pub datacenter: String,
+	pub runner_name_selector: String,
+	pub crash_policy: CrashPolicy,
+
+	/// Denotes when the actor was first created.
+	pub create_ts: i64,
+	/// Denotes when the actor was first made connectable. Null if never.
+	pub start_ts: Option&lt;i64&gt;,
+	/// Denotes when the actor started waiting for an allocation.
+	pub pending_allocation_ts: Option&lt;i64&gt;,
+	/// Denotes when the actor was last connectable. Null if actor is not running.
+	pub connectable_ts: Option&lt;i64&gt;,
+	/// Denotes when the actor entered a sleeping state.
+	pub sleep_ts: Option&lt;i64&gt;,
+	/// Denotes when the actor will try to allocate again. If this is set, the actor will not attempt to
+	/// allocate until the given timestamp.
+	pub reschedule_ts: Option&lt;i64&gt;,
+	/// Denotes when the actor was destroyed.
+	pub destroy_ts: Option&lt;i64&gt;,
+
+	/// Error details if the actor failed to start.
+	#[serde(skip_serializing_if = &quot;Option::is_none&quot;)]
+	#[schema(value_type = Option&lt;Object&gt;, additional_properties = true)]
+	pub error: Option&lt;crate::actor::ActorError&gt;,
+}
+</code></pre>
+<p>The table below gives the purpose of each field. The <code>actor_id</code> is the durable identifier. The <code>key</code> is the user-facing key inside a namespace. The <code>datacenter</code> and <code>runner_name_selector</code> are placement inputs, not state. The timestamps record the lifecycle. The <code>error</code> field is diagnostic, not part of the durable data.</p>
+<table><tr><th>Field</th><th>Type</th><th>Purpose</th></tr><tr><td><code>actor_id</code></td><td><code>Id</code></td><td>Durable identifier. It does not change when the Actor moves.</td></tr><tr><td><code>name</code></td><td><code>String</code></td><td>Actor type name from the registry</td></tr><tr><td><code>key</code></td><td><code>Option<String></code></td><td>User key inside the namespace. The namespace, the name, and the key select one Actor.</td></tr><tr><td><code>namespace_id</code></td><td><code>Id</code></td><td>Tenant boundary</td></tr><tr><td><code>datacenter</code></td><td><code>String</code></td><td>Placement region or data center</td></tr><tr><td><code>runner_name_selector</code></td><td><code>String</code></td><td>Node pool name. The field keeps the legacy runner name. A runner is the older host process that serves Actor commands.</td></tr><tr><td><code>crash_policy</code></td><td><code>CrashPolicy</code></td><td>Action after a crash: restart, sleep, or destroy</td></tr><tr><td><code>create_ts</code></td><td><code>i64</code></td><td>Creation time in milliseconds</td></tr><tr><td><code>start_ts</code></td><td><code>Option<i64></code></td><td>First time the Actor became connectable</td></tr><tr><td><code>pending_allocation_ts</code></td><td><code>Option<i64></code></td><td>Start of the current allocation wait</td></tr><tr><td><code>connectable_ts</code></td><td><code>Option<i64></code></td><td>Last time the Actor was reachable</td></tr><tr><td><code>sleep_ts</code></td><td><code>Option<i64></code></td><td>Time the Actor entered the sleeping state</td></tr><tr><td><code>reschedule_ts</code></td><td><code>Option<i64></code></td><td>Earliest time for the next allocation attempt</td></tr><tr><td><code>destroy_ts</code></td><td><code>Option<i64></code></td><td>Destruction time</td></tr><tr><td><code>error</code></td><td><code>Option<ActorError></code></td><td>Last start or runtime error, when present</td></tr></table>
+<p>The lookup uses the namespace, the name, and the key. It returns one <code>actor_id</code> (<code>engine/packages/guard/src/routing/pegboard_gateway/resolve_actor_query.rs:71-100</code>). The <code>actor_id</code> is the durable identifier after the lookup. A caller that already holds the <code>actor_id</code> does not need the lookup.</p>
+<p><code>CrashPolicy</code> is a small enum. The enum marks <code>Destroy</code> as the default variant (<code>engine/packages/types/src/actors.rs:40-47</code>). A caller that constructs the default value gets <code>Destroy</code>. The <code>getOrCreate</code> query is different. It supplies <code>Sleep</code> when the request names no policy (<code>engine/packages/guard/src/routing/pegboard_gateway/resolve_actor_query.rs:53</code>). The policy has a different effect on each Actor workflow.</p>
+<p>The version 1 workflow reads the policy after an ungraceful exit (<code>engine/packages/pegboard/src/workflows/actor/mod.rs:1242-1292</code>). A <code>Restart</code> policy allocates the Actor again. A <code>Sleep</code> policy marks the Actor sleeping. A <code>Destroy</code> policy removes the Actor. A graceful exit destroys the Actor whatever the policy says.</p>
+<p>The version 2 workflow does not read <code>crash_policy</code>. Its input struct has no such field (<code>engine/packages/pegboard/src/workflows/actor2/mod.rs:21-33</code>). The create operation builds that input without the policy (<code>engine/packages/pegboard/src/ops/actor/create.rs:113-121</code>). The workflow decides from the stop result instead. A graceful stop destroys. An error or a lost envoy sleeps (<code>engine/packages/pegboard/src/workflows/actor2/runtime.rs:639-663</code>). The stored policy has no effect on this path.</p>
+<p>Guard is the Rivet request router. For <code>getOrCreate</code>, it passes the policy value to the create operation. The version 2 create input has no field for it, so the value stops there. A reader must not expect it to change the version 2 stop behavior.</p>
+<p><code>Destroy</code> removes durable data on the version 2 path. The workflow writes the destroy timestamp and removes the active Actor index (<code>engine/packages/pegboard/src/workflows/actor2/mod.rs:1211-1277</code>). It then clears the Actor key-value subspace and the version 2 storage (<code>engine/packages/pegboard/src/workflows/actor2/mod.rs:1288-1311</code>). The storage clear removes the page index, the commit rows, and the delta chunks that carry page bytes (<code>engine/packages/pegboard/src/actor_sqlite.rs:38-60</code>). Depot is the Rivet per-Actor storage engine. The version 1 destroy workflow does the same work at <code>engine/packages/pegboard/src/workflows/actor/destroy.rs:103-150</code>.</p>
+<p>Neither published latency measurement runs a crash. The 6.92 ms cold start creates a new Actor. The 4.37 ms wake follows a sleep of at least 10 seconds (<code>README.md:153-154</code>). Neither measurement names a crash policy, because neither path runs the crash decision.</p>
+<pre><code class="language-rust">// engine/packages/types/src/actors.rs:40-47
+#[derive(Debug, Copy, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash, ToSchema)]
+#[serde(rename_all = &quot;snake_case&quot;)]
+pub enum CrashPolicy {
+	Restart,
+	Sleep,
+	#[default]
+	Destroy,
+}
+</code></pre>
+<p>The Actor's workflow keeps two durable records. The <code>State</code> type holds the identity, the pool, the timestamps, and the current error. It has no <code>generation</code> field. The <code>LifecycleState</code> holds the <code>generation</code>, the current <code>Transition</code>, an alarm time, and a retry backoff state.</p>
+<p><code>State</code> is workflow state. Gasoline, the Rivet durable execution engine, saves it through a <code>StateGuard</code> (<code>engine/packages/gasoline/src/workflow.rs:27-70</code>). The guard holds the state as a shared raw JavaScript Object Notation (JSON) value. A write through the guard sets a dirty flag. On drop, the guard serializes the struct back into that shared value (<code>engine/packages/gasoline/src/workflow.rs:60-64</code>). Gasoline later writes the workflow record that holds the value (<code>engine/packages/gasoline/src/db/mod.rs:333-341</code>). UniversalDB receives the record, not one field at a time. On replay, Gasoline reads the record and reconstructs <code>State</code>.</p>
+<p><code>LifecycleState</code> is loop state. A loop is a bounded repetition in one workflow. The workflow passes the state to <code>ctx.lupe().with_state(...)</code> (<code>engine/packages/pegboard/src/workflows/actor2/mod.rs:247-255</code>). <code>lupe</code> returns a loop builder, and <code>with_state</code> attaches the state to it (<code>engine/packages/gasoline/src/builder/workflow/lupe.rs:19-40</code>). Gasoline stores each loop checkpoint in a <code>LoopEvent</code> (<code>engine/packages/gasoline/src/builder/workflow/lupe.rs:64-80</code>).</p>
+<p>Gasoline keeps both records in UniversalDB. UniversalDB is the transactional key-value store. It holds workflow records and the Depot records for Actor SQLite in different key subspaces. Epoxy is the Rivet consensus layer for geo-distributed keys. It is not a store for Actor data. In this source it serves Actor key reservation only (<code>engine/packages/epoxy/README.md:37-42</code>). Its own consensus records commit in UniversalDB (<code>engine/packages/epoxy/README.md:51</code>). The Actor's SQLite database is a logical database that Depot builds from its records. It is not a third store. The workflow state is separate from the application rows. A reader must keep the two apart. The workflow state holds scheduling and lifecycle facts.</p>
+<pre><code class="language-rust">// engine/packages/pegboard/src/workflows/actor2/mod.rs:35-67
+#[derive(Deserialize, Serialize)]
+pub struct State {
+	pub actor_id: Id,
+	pub name: String,
+	pub pool_name: String,
+	pub key: Option&lt;String&gt;,
+	pub namespace_id: Id,
+
+	pub acquired_slot: bool,
+	pub envoy_last_command_idx: i64,
+	// Used as a cache
+	pub envoy_key: Option&lt;String&gt;,
+
+	pub create_ts: i64,
+	pub create_complete_ts: Option&lt;i64&gt;,
+	pub allocate_ts: Option&lt;i64&gt;,
+	/// Set only on first allocation.
+	pub start_ts: Option&lt;i64&gt;,
+	// NOTE: This is not the alarm ts, this is when the actor started sleeping. See `LifecycleState` for alarm
+	pub sleep_ts: Option&lt;i64&gt;,
+	pub connectable_ts: Option&lt;i64&gt;,
+	pub reschedule_ts: Option&lt;i64&gt;,
+	pub destroy_ts: Option&lt;i64&gt;,
+
+	/// Explains why the actor is NOT healthy, either due to failure to allocate or a failed
+	/// envoy.
+	///
+	/// # When error is cleared
+	///
+	/// - When actor is allocated
+	/// - When actor becomes connectable
+	pub error: Option&lt;ActorError&gt;,
+}
+</code></pre>
+<p>The next section compares the Rivet unit with the Cloudflare unit. The two units look similar at the surface. The differences are in placement, runtime, and limits.</p>
+<h2>3. Cloudflare Durable Objects</h2>
+<p>Cloudflare Durable Objects is a platform with one named object for each key. A Durable Object class defines the object. The platform gives each object an identifier. The object runs on the Cloudflare network. The object can use SQLite storage and a key-value storage Application Programming Interface (API). The platform can hibernate an idle object and wake it on the next request. These model facts come from the Cloudflare Durable Objects documentation at <code>https://developers.cloudflare.com/durable-objects/</code>. This document labels them external. The Rivet repository does not contain the Cloudflare implementation, so this snapshot cannot verify them.</p>
+<p>The Rivet README makes four specific claims about Durable Objects. It says Durable Objects have a 128 megabyte (MB) memory cap. It says they have a 10 gigabyte (GB) SQLite limit. It says the platform can evict them at random. It says they use a custom runtime. The same paragraph says Rivet removes each constraint. This document labels these statements as Rivet product claims. The source is <code>README.md:281-283</code>.</p>
+<pre><code class="language-markdown">&lt;!-- README.md:281-283 --&gt;
+&lt;summary&gt;&lt;b&gt;How does Rivet compare to Cloudflare Durable Objects?&lt;/b&gt;&lt;/summary&gt;
+
+Rivet is often used as an open-source alternative to Cloudflare Durable Objects that is easy to self-host and scales. It also fixes many of the constraints of Durable Objects: no 128 MB memory cap, bottomless storage instead of a 10 GB SQLite limit, Actors are not randomly evicted, and you control the runtime because Actors run on vanilla Node.js or Bun instead of a custom runtime. Rivet also adds built-in connection handling, event broadcasting, durable scheduling and cron, full Vitest support, lifecycle hooks for draining, and control over Actor upgrades. See the [Cloudflare Durable Objects comparison](https://www.rivet.dev/actors/compare/rivet-actors-vs-cloudflare-durable-objects/).
+</code></pre>
+<p>The quoted comparison line names Node.js and Bun because it answers the custom-runtime claim. The same README says "plain Node.js, Bun, or Rust" at <code>README.md:62</code>. The language-runtime row below uses the wider statement.</p>
+<p>The Rivet README also states the model on its own side. It says an Actor is a long-lived process with durable state, a SQLite database, a queue, realtime connections, and scheduling. It says an Actor lives inside a node process that the operator already runs. It does not live in its own container or Virtual Machine (VM). The source is <code>README.md:60-71</code>.</p>
+<h3>3.1 The point-by-point table</h3>
+<p>The table compares the two systems on thirteen axes. The "stronger" column gives the system that has the better property for the stated workload. A "stronger" result is not universal. The notes after the table explain the rows that need context.</p>
+<table><tr><th>Axis</th><th>Rivet Actor</th><th>Cloudflare Durable Object</th><th>Stronger</th><th>Why</th></tr><tr><td>Identity</td><td><code>actor_id</code> plus optional user key in a namespace</td><td>One object identifier per object, derived from a name or a unique value</td><td>Equal</td><td>Both give stable keyed identity. Rivet adds a readable key and a namespace.</td></tr><tr><td>Placement</td><td>Pegboard chooses a node or envoy. The operator can set the data center and the node pool.</td><td>Cloudflare chooses the location. The user does not control it.</td><td>Rivet for control. Cloudflare for global simplicity.</td><td>Rivet source: <code>engine/packages/types/src/actors.rs:13-16</code>. Cloudflare placement is external.</td></tr><tr><td>Storage</td><td>Per-Actor SQLite and key-value data. Pages replicate to control plane disks and move to a bucket.</td><td>SQLite storage with the 10 GB limit that Rivet names.</td><td>Rivet on size. Cloudflare on managed simplicity.</td><td>The 10 GB figure is a Rivet product claim at <code>README.md:283</code>. The Rivet size claim is also a product claim. The database-size row below gives the path rule.</td></tr><tr><td>Execution model</td><td>An Actor is a task in a Node.js, Bun, or Rust process. Many Actors share the process.</td><td>One object runs in a Cloudflare runtime. The platform serializes events per object.</td><td>Rivet for runtime choice and density. Cloudflare for a managed single-object concurrency model.</td><td>Rivet source: <code>README.md:64</code>. The Durable Object model is external.</td></tr><tr><td>Language runtime</td><td>Native Node.js, Bun, or Rust. The user keeps the normal package manager, debugger, and test runner.</td><td>Custom Workers runtime with V8 isolates. The code must fit the Workers API.</td><td>Rivet</td><td>Rivet source: <code>README.md:71</code> and <code>README.md:283</code>.</td></tr><tr><td>Connection handling</td><td>Built-in Hypertext Transfer Protocol (HTTP) and WebSocket routing through Guard (the Rivet request router), event broadcasting, and opt-in WebSocket hibernation. Guard parks the socket while the Actor sleeps.</td><td>WebSocket support and platform hibernation. The platform unloads an idle object.</td><td>Rivet claims more built-in behavior. Cloudflare is more managed.</td><td>Rivet claim: <code>README.md:168</code>, <code>README.md:174</code>, <code>README.md:283</code>. Cloudflare behavior is External document.</td></tr><tr><td>Scheduling</td><td>Cron, timers, and sleep are part of the Actor API. An alarm timestamp is part of the workflow state.</td><td>Alarms are part of the Durable Object API. Cron is a separate Workers feature.</td><td>Rivet for one integrated scheduler. Cloudflare for platform alarms.</td><td>Rivet source: <code>engine/packages/pegboard/src/workflows/actor2/runtime.rs:15-21</code> and <code>engine/packages/pegboard/src/workflows/actor2/mod.rs:586-603</code>. Cloudflare is external.</td></tr><tr><td>Local development</td><td>The same control plane binary runs locally. The README says local matches production.</td><td>Local emulation through the Cloudflare development tools. The production platform is not local.</td><td>Rivet</td><td>Rivet claim: <code>README.md:187</code> and <code>README.md:218</code>. Cloudflare is external.</td></tr><tr><td>Self-hosting</td><td>Apache 2.0. The user can run the control plane, the nodes, and a bucket.</td><td>No self-host. The platform is managed.</td><td>Rivet</td><td>Rivet source: <code>README.md:177</code> and <code>README.md:262</code>.</td></tr><tr><td>Memory</td><td>72.4 kilobytes (KB) is the Resident Set Size (RSS) increase for one running Actor. The shared node process is counted once. The source states no per-Actor memory cap.</td><td>128 MB memory cap, as the Rivet README claims. The source states no overhead per object.</td><td>Not comparable</td><td>The Rivet number is measured use, not a limit. The Cloudflare number is a limit and a Rivet product claim at <code>README.md:281-283</code>.</td></tr><tr><td>Scale</td><td>Billions of Actors on one control plane, as a product claim</td><td>Not stated by the source</td><td>Rivet on the claim</td><td>The basis is <code>README.md:66-71</code>. The number is a Rivet claim, not a measurement in this document.</td></tr><tr><td>Database size</td><td>The native path has no fixed size in the README. The remote SQL path has a 256 mebibyte (MiB) limit (<code>docs/actors/content/docs/limits.mdx:87</code>).</td><td>10 GB SQLite, as the Rivet README claims</td><td>Rivet on the stated limit. Neither side is verified here.</td><td>The Cloudflare figure is a Rivet product claim at <code>README.md:281-283</code>. Section 10.6 gives the path rule.</td></tr><tr><td>Eviction</td><td>Actors are not randomly evicted, as a Rivet claim</td><td>Random eviction, as the Rivet README claims</td><td>Rivet on the claim</td><td>The basis is <code>README.md:281-283</code>. The claim describes Cloudflare and is not verified here.</td></tr></table>
+<p>The identity row is the one place where the systems are close. Both use a stable name to reach a single logical object. Rivet also stores a user key. The key is optional. An Actor without a key still has an <code>actor_id</code>. A Durable Object always has an identifier.</p>
+<p>The placement row is the main architectural difference. Cloudflare runs the object where the platform decides. Rivet runs the Actor where Pegboard decides. Pegboard allocates a slot on an envoy. An envoy is a process that hosts the Actor on a node. The source has two paths. The newer path is the actor version 2 workflow and the envoy protocol. The legacy runner path also exists. The create operation checks the pool protocol version and dispatches the version 2 workflow when the pool supports it.</p>
+<p>A pool is serverful when its config kind is <code>Normal</code>. Pegboard allocates a slot on an envoy that already runs (<code>engine/packages/pegboard/src/workflows/actor2/alloc_serverful/mod.rs:13</code>). A pool is serverless when its kind is <code>Serverless</code>. Pegboard publishes the start message to the serverless provider. It then waits for an allocated signal (<code>engine/packages/pegboard/src/workflows/actor2/runtime.rs:197-250</code>, <code>engine/packages/pegboard/src/workflows/actor2/runtime.rs:413-444</code>).</p>
+<pre><code class="language-rust">// engine/packages/pegboard/src/ops/actor/create.rs:105-124
+	let actor_v2 = pool_res
+		.into_iter()
+		.next()
+		.map(|p| p.protocol_version.is_some())
+		.unwrap_or_default();
+	if actor_v2 {
+		// Dispatch actor workflow
+		let workflow_id = ctx
+			.workflow(crate::workflows::actor2::Input {
+				actor_id: input.actor_id,
+				name: input.name.clone(),
+				pool_name: input.runner_name_selector.clone(),
+				key: input.key.clone(),
+				namespace_id: input.namespace_id,
+				input: input.input.clone(),
+				from_v1: false,
+			})
+			.tag(&quot;actor_id&quot;, input.actor_id)
+			.dispatch()
+			.await?;
+</code></pre>
+<p>The code block shows the switch. A pool with a protocol version uses the actor version 2 workflow. The workflow starts the Actor through an envoy or a serverless provider. The older path still exists for pools without that version. A claim about placement must say which path it describes. This document describes the version 2 path unless it says otherwise. See <a href="04-pegboard-scheduling.html">04 Pegboard</a>.</p>
+<h3>3.2 Lifecycle and hibernation</h3>
+<p>Rivet's lifecycle has nine states. The <code>Transition</code> enum names every state. The state machine is durable. A crash does not lose the transition. Gasoline replays the workflow and continues from the stored state.</p>
+<pre><code class="language-rust">// engine/packages/pegboard/src/workflows/actor2/runtime.rs:15-76
+#[derive(Deserialize, Serialize)]
+pub struct LifecycleState {
+	pub generation: u32,
+	pub transition: Transition,
+	pub alarm_ts: Option&lt;i64&gt;,
+	pub retry_backoff_state: RetryBackoffState,
+}
+
+impl LifecycleState {
+	pub fn new() -&gt; Self {
+		LifecycleState {
+			generation: 0,
+			transition: Transition::Allocating {
+				destroy_after_start: false,
+				lost_timeout_ts: 0,
+			},
+			alarm_ts: None,
+			retry_backoff_state: RetryBackoffState::default(),
+		}
+	}
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = &quot;snake_case&quot;)]
+pub(crate) enum Transition {
+	Allocating {
+		destroy_after_start: bool,
+		/// Handles cleaning up the actor if it does not receive a certain state before the timeout (ex.
+		/// created -&gt; running event, stop intent -&gt; stop event). If the timeout is reached, the actor is
+		/// considered lost.
+		lost_timeout_ts: i64,
+	},
+	Starting {
+		destroy_after_start: bool,
+		lost_timeout_ts: i64,
+	},
+	Running {
+		envoy: EnvoyState,
+	},
+	SleepIntent {
+		envoy: EnvoyState,
+		lost_timeout_ts: i64,
+		/// If a wake was received in between an actor&#x27;s intent to sleep and actor stop.
+		rewake_after_stop: bool,
+	},
+	StopIntent {
+		envoy: EnvoyState,
+		lost_timeout_ts: i64,
+	},
+	GoingAway {
+		envoy: EnvoyState,
+		lost_timeout_ts: i64,
+	},
+	Sleeping,
+	Reallocating {
+		since_ts: i64,
+	},
+	Destroying {
+		envoy: EnvoyState,
+		lost_timeout_ts: i64,
+	},
+}
+</code></pre>
+<p>The table gives the meaning of each state and the next state on the normal path. A cause of entry can be a create flag, a workflow decision, an envoy event, a drain signal, or a timeout.</p>
+<table><tr><th>State</th><th>Meaning</th><th>Cause of entry</th><th>Normal next state</th></tr><tr><td><code>Allocating</code></td><td>The workflow waits for a slot</td><td>The workflow starts, a reallocation chooses a slot, or a serverless pool waits for its provider</td><td><code>Starting</code> when an allocated signal arrives</td></tr><tr><td><code>Starting</code></td><td>Pegboard sent the start command to the allocated runtime</td><td>An allocated signal for the current generation</td><td><code>Running</code>, or <code>Destroying</code> when <code>destroy_after_start</code> is true</td></tr><tr><td><code>Running</code></td><td>The Actor is connectable</td><td>The runtime reports <code>ActorStateRunning</code></td><td><code>SleepIntent</code>, <code>StopIntent</code>, <code>GoingAway</code>, or <code>Destroying</code></td></tr><tr><td><code>SleepIntent</code></td><td>The Actor will sleep after the stop reply</td><td>An envoy <code>ActorIntentSleep</code> event, or a <code>Sleep</code> signal</td><td><code>Sleeping</code>, or <code>Reallocating</code> when a wake arrived or the alarm has passed</td></tr><tr><td><code>StopIntent</code></td><td>The Actor will stop but not sleep</td><td>An envoy <code>ActorIntentStop</code> event</td><td><code>Destroying</code> on a graceful stop. <code>Sleeping</code> on an error or a loss.</td></tr><tr><td><code>GoingAway</code></td><td>The node is draining</td><td>A <code>GoingAway</code> signal</td><td><code>Reallocating</code>, then <code>Allocating</code> or <code>Starting</code> when allocation succeeds</td></tr><tr><td><code>Sleeping</code></td><td>The state is saved and the process is gone</td><td>A sleep decision, or <code>Reallocating</code> after the retry limit</td><td><code>Allocating</code> on a wake</td></tr><tr><td><code>Reallocating</code></td><td>The workflow tries another runtime</td><td>A failed allocation, or a drain</td><td><code>Allocating</code> or <code>Starting</code> when allocation succeeds. <code>Sleeping</code> after the retry limit.</td></tr><tr><td><code>Destroying</code></td><td>The Actor is removed</td><td>A graceful <code>StopIntent</code>, or <code>destroy_after_start</code></td><td>Terminal</td></tr></table>
+<p><code>SleepIntent</code> and <code>StopIntent</code> have different causes. An idle Actor or the sleep Application Programming Interface (API) causes <code>SleepIntent</code>. The runtime sends a sleep intent on the Actor's behalf. A stop request causes <code>StopIntent</code>. The workflow sets the transition and sends the stop command to the envoy (<code>engine/packages/pegboard/src/workflows/actor2/mod.rs:715-765</code>).</p>
+<p>The <code>handle_stopped</code> function makes the decision. It deallocates the slot first. It then reads the transition and the stop result. A graceful stop from <code>StopIntent</code> destroys the Actor. An error or a lost envoy sleeps the Actor. A <code>SleepIntent</code> with <code>rewake_after_stop</code> set reallocates the Actor. The source is <code>engine/packages/pegboard/src/workflows/actor2/runtime.rs:607-733</code>.</p>
+<p>The <code>Sleeping</code> state has no envoy. The workflow listens for a wake signal or for an alarm. The alarm path is explicit in the signal loop. A timeout produces a fake <code>Wake</code> signal. A request that arrives through Guard also wakes the Actor.</p>
+<p>The wait survives a control-plane crash. <code>listen_n_until</code> writes a sleep event with a deadline and a state before it waits (<code>engine/packages/gasoline/src/ctx/workflow.rs:925-962</code>). On replay, the workflow reads the recorded deadline and waits only for the remaining time (<code>engine/packages/gasoline/src/ctx/workflow.rs:1001-1005</code>). If the deadline has passed, the wait returns at once. A recorded signal event also replays without a new wait (<code>engine/packages/gasoline/src/ctx/workflow.rs:967-996</code>).</p>
+<pre><code class="language-rust">// engine/packages/pegboard/src/workflows/actor2/mod.rs:586-603
+		Transition::Sleeping =&gt; {
+			if let Some(alarm_ts) = state.alarm_ts {
+				// Listen for signals with timeout. if a timeout happens, it means this actor should
+				// wake up
+				let signals = ctx.listen_n_until::&lt;Main&gt;(alarm_ts, 256).await?;
+				if signals.is_empty() {
+					tracing::debug!(actor_id=?input.actor_id, &quot;actor wake&quot;);
+
+					// Fake signal
+					vec![Main::Wake(Wake {})]
+				} else {
+					signals
+				}
+			} else {
+				// Listen for signals with no timeout
+				ctx.listen_n::&lt;Main&gt;(256).await?
+			}
+		}
+</code></pre>
+<p>The sleep activity writes the state and removes the connectable marker. The <code>sleep_ts</code> key is the durable marker that the gateway lookup reads when it asks whether the Actor is sleeping. The source is <code>engine/packages/pegboard/src/ops/actor/get_for_gateway.rs:42</code>.</p>
+<pre><code class="language-rust">// engine/packages/pegboard/src/workflows/actor2/runtime.rs:961-988
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SetSleepingInput {}
+
+/// Make the actor not connectable and set as sleeping. It is not deallocated yet.
+#[activity(SetSleeping)]
+pub async fn set_sleeping(ctx: &amp;ActivityCtx, input: &amp;SetSleepingInput) -&gt; Result&lt;()&gt; {
+	let mut state = ctx.state::&lt;State&gt;()?;
+	let now = util::timestamp::now();
+
+	let actor_id = state.actor_id;
+	ctx.udb()?
+		.txn(&quot;pegboard_actor2_set_sleeping&quot;, |tx| async move {
+			let tx = tx.with_subspace(keys::subspace());
+
+			// Make not connectable
+			tx.delete(&amp;keys::actor::ConnectableKey::new(actor_id));
+			tx.write(&amp;keys::actor::SleepTsKey::new(actor_id), now)?;
+
+			Ok(())
+		})
+		.custom_instrument(tracing::info_span!(&quot;actor_set_sleeping_tx&quot;))
+		.await?;
+
+	state.sleep_ts = Some(now);
+	state.connectable_ts = None;
+
+	Ok(())
+}
+</code></pre>
+<p>The Cloudflare model also has hibernation. The difference is what remains resident. A hibernated Durable Object keeps its identity and its SQLite data. A sleeping Rivet Actor keeps its workflow state and its SQLite pages. Neither keeps a running process.</p>
+<p>Hibernation and sleeping are related, but the words are not equal. Hibernation is the Cloudflare platform action. Sleeping is the Rivet Actor state. In Rivet, hibernation also names a WebSocket behavior that is off by default. See <a href="10-realtime-and-hibernation.html">10 Realtime and hibernation</a>.</p>
+<p>The Rivet claim is that the wake takes 4.37 milliseconds (ms) at the 50th percentile (p50) and 6.80 ms at the 99th percentile (p99). The source is <code>README.md:154</code>. This is a project measurement with 1,200 samples. The README does not give a Cloudflare wake figure. This document therefore makes no numeric comparison with Cloudflare. See <a href="16-tests-benchmarks-and-limits.html">16 Tests, benchmarks, and limits</a>.</p>
+<p>Two operational definitions matter for the numbers. A cold start is a client request to a newly created keyed Actor. The client receives the first full reply. The measurement includes scheduling, storage creation, and framework startup (<code>README.md:154</code>). A wake is a client request to an Actor that slept for at least 10 seconds. The client receives the full reply (<code>README.md:154</code>). Neither definition states whether the server reads the bucket. A new Actor has no pages to fetch. A woken Actor can need a cold page from the bucket. The README does not report that case. Section 10.3 states that a bucket outage blocks cold pages.</p>
+<h3>3.3 Where each is the right choice</h3>
+<p>Cloudflare Durable Objects is the right choice when the application already runs on Cloudflare, the object fits the platform limits, and the operator does not want to run any infrastructure. The platform supplies global placement, Transport Layer Security (TLS), identity, and storage. The cost is vendor dependence, the platform runtime, and the stated limits. These are External document claims. The named external document is <code>https://developers.cloudflare.com/durable-objects/</code>. This document did not fetch it.</p>
+<p>Rivet is the right choice when the application must self-host. It also fits when the code needs the standard Node.js or Bun ecosystem. It fits when one key needs more than 10 GB on the native path. It fits when the Actors must run near data in the operator's own cloud. The cost is a control plane, a bucket, and nodes to operate. The price is also a more complex protocol. These claims come from this exploration's <code>./README.md</code> and the Rivet repository README.</p>
+<h2>4. Kubernetes</h2>
+<p>Kubernetes schedules pods. A pod is one or more containers that share a network namespace and a set of volumes. The kube-scheduler assigns the pod to a node. The kubelet on that node starts the containers. A Persistent Volume (PV) holds data across pod restarts. The storage class and the Container Storage Interface (CSI) driver decide whether a replacement pod can use the same volume on another node. These are External document claims. The named external document is <code>https://kubernetes.io/docs/concepts/workloads/pods/</code>. This document did not fetch it.</p>
+<p>Rivet schedules Actors. An Actor is not a pod. It is a task inside a node process that the operator already runs. The README says this directly: "An Actor lives inside a node process you already run, not in its own container or VM. A server that held hundreds of pods holds hundreds of thousands of Actors." The source is <code>README.md:64</code>.</p>
+<p>The Rivet README publishes a comparison table. The table is the main Rivet comparison material for Kubernetes. It is a product claim. The README also gives the method and the caveat. The first column of the quoted table holds the axis names. The README leaves that header blank.</p>
+<pre><code class="language-markdown">&lt;!-- README.md:139-148 --&gt;
+## How Actors compare to Kubernetes
+
+| | Rivet Actor | Kubernetes pod |
+|---|:---:|:---:|
+| **Cold start** | **6.92 ms** | ~6 s |
+| **Wake from hibernation** | **4.37 ms** | ~6 s (new pod) |
+| **Memory per instance** | **72.4 KB** | ~200 MB |
+| **Memory while idle** | **0 MB** (hibernates) | Always resident |
+| **Scale** | **Billions** of Actors on one control plane | ~5k nodes per cluster |
+| **Storage** | **Bottomless** SQLite, replicated and moved to your bucket | Persistent volume per pod |
+</code></pre>
+<p>The README explains the numbers below the table. The cold start is 6.92 ms at p50 and 8.11 ms at p99 over 1,500 samples. The wake is 4.37 ms at p50 and 6.80 ms at p99 over 1,200 samples. The memory figure is the increase in Resident Set Size (RSS) for one running Actor. The setup used Azure <code>eastus2</code>, three availability zones, and three control plane instances. The source is <code>README.md:150-159</code>.</p>
+<p>The README states the Kubernetes side plainly. The Kubernetes figures are "typical published values, not a matched benchmark." The ~6 seconds assumes a pre-provisioned node. The ~200 MB is a typical idle Node.js pod. The ~5,000 nodes is the limit that the Rivet README states. The README does not name a Kubernetes document for that number. The source is <code>README.md:157</code>. This document treats the number as Rivet's summary, not as a verified Kubernetes limit. A reader must not treat the table as a controlled experiment. This document does the same.</p>
+<h3>4.1 The unit, the cold start, and the memory</h3>
+<p>A pod has a container image, a runtime, a network namespace, and a volume. The scheduler must find a node with enough central processing unit (CPU), memory, and storage. The kubelet must pull the image if it is not cached. The container runtime must start the process. That chain takes seconds in the typical case. A warm node with a cached image is faster than a cold node. The README's ~6 seconds is a typical value, not a floor.</p>
+<p>An Actor has no image pull and no container boot. The node process already runs the Actor runtime. Pegboard sends a start command to the envoy. The envoy starts the Actor task and loads its state. The new Actor's empty SQLite database becomes available. The new Actor fetches no pages, because it has none. A woken Actor can have evicted pages, and it may fetch them from the bucket. The README does not report that case. The 6.92 ms p50 measurement covers the new Actor chain.</p>
+<p>The memory difference follows from the unit. A pod reserves memory for the container runtime, the base image, and the Node.js or other language runtime. An Actor shares the node process and adds its own state. The 72.4 KB is the RSS increase per Actor. It does not include the shared node process. A reader must not multiply 72.4 KB by the number of Actors and compare that number with the total memory of a pod. The right comparison is per running unit, with the shared process counted once.</p>
+<p><strong>Aha:</strong> The 72.4 KB figure is honest only when the shared process is counted once. A node with 1,000 Actors pays one Node.js process plus 1,000 state increments. A Kubernetes node with 1,000 pods pays 1,000 runtimes. The design choice is to share the runtime. The obvious alternative is one container per Actor. That alternative buys isolation and costs density.</p>
+<h3>4.2 Storage, scale, and network</h3>
+<p>A pod's volume is a Persistent Volume. The volume can be a network disk, a local disk, or a CSI-backed store. A pod is not moved. The controller deletes it and creates a replacement pod. The replacement pod can use the volume only when the storage class supports multi-attach or reattachment. A local volume cannot follow the workload. The data model is a filesystem. The application must choose a database, a file format, and a backup method.</p>
+<p>An Actor's storage is part of the Actor. Each Actor gets a SQLite database and a key-value space. The control plane replicates writes to the local disks of several instances. A background process moves pages to the bucket. The bucket is not on the write path. The README states that storage never runs out and the bucket never sits on the write path. The source is <code>README.md:68</code>. This is a product claim. The native SQLite path supports it. The WebAssembly and remote SQL path has a 256 MiB database limit, as section 10 explains.</p>
+<p>The scale difference is one control plane for billions of Actors versus about 5,000 nodes per cluster. The two numbers measure different things. The Kubernetes number is a node count. The Rivet number is an Actor count. A single Kubernetes node can host many Actors. The correct comparison is the scheduling unit and the control plane load, not the raw counts. The README uses the numbers as a density argument. The source is <code>README.md:66</code> and <code>README.md:147</code>.</p>
+<p>The network models also differ. Kubernetes gives each pod an Internet Protocol (IP) address on the pod network. A Service is a stable virtual address for a group of pods. Ingress is a Hypertext Transfer Protocol (HTTP) router that exposes a Service outside the cluster. Network policy controls traffic. The model is general purpose. It can carry any protocol.</p>
+<p>Rivet uses Guard. Guard is the Rivet request router. It receives HTTP and WebSocket traffic. It routes the request by Actor key to the envoy that hosts the Actor. A node opens an outbound connection to the control plane. The node needs no public address for Actor traffic. The model is narrow. It carries HTTP and WebSocket to keyed Actors. The benefit is that the client never learns the node address. Guard resolves the Actor identity to the current envoy on each request. The architecture page says the Actor keeps the same address when it moves (<code>docs/general/content/architecture.mdx:42</code>). That address is the stable Actor address, not the node address. The source is <code>README.md:168</code> and <code>docs/general/content/architecture.mdx:38-42</code>.</p>
+<h3>4.3 Where Kubernetes is stronger</h3>
+<p>Kubernetes is stronger on six axes. This document states them plainly, because a fair comparison must give the other side its due. Two terms in the first row need a definition. A cgroup limits and accounts for process resources. seccomp filters system calls.</p>
+<table><tr><th>Axis</th><th>Why Kubernetes is stronger</th></tr><tr><td>Isolation</td><td>A pod has a container boundary, cgroups, namespaces, seccomp profiles, and network policy. An Actor is a task in a shared process. A bug in one Actor can affect the process.</td></tr><tr><td>Ecosystem</td><td>Kubernetes has operators, Helm charts, CSI drivers, ingress controllers, service meshes, policy engines, and a large tool market. Rivet has a smaller ecosystem.</td></tr><tr><td>Graphics Processing Unit (GPU)</td><td>Kubernetes has device plugins and GPU scheduling. A pod can request a GPU. Rivet Actors run on the node's runtime; a GPU Actor needs a GPU node pool and is not a transparent per-Actor resource.</td></tr><tr><td>Mature scheduling</td><td>Kubernetes has affinity, anti-affinity, taints, tolerations, priority, preemption, topology spread, and a mature control loop. Pegboard is younger and has a narrower policy surface.</td></tr><tr><td>Open governance</td><td>Kubernetes is developed in the open and runs on many clouds. A user can avoid one vendor runtime. Rivet is also Apache 2.0, but one project controls its protocol and control plane.</td></tr><tr><td>Arbitrary workloads</td><td>A pod can run a database, a message broker, a batch job, or a machine-learning trainer. An Actor is a keyed, stateful request handler.</td></tr></table>
+<p>The isolation point is the most important. An Actor is not a security boundary in the way a container is. The README says a generated, untrusted code Actor gets its own database and filesystem. The source is <code>README.md:70</code>. That claim is a product claim. It does not say the Actor has a kernel boundary. A reader who needs a hard isolation boundary must use a container, a micro Virtual Machine, or a sandbox. The <code>agentOS</code> product gives one agent a small Linux-compatible computer (<a href="17-the-product-family.html">17 The product family</a>, lines 88-108).</p>
+<p>The GPU row is an inference from the Actor model. The source does not state a per-Actor GPU policy.</p>
+<p>The sixth axis is arbitrary workloads. A pod can run a database, a message broker, a batch job, or a machine-learning trainer. Rivet Actors are for keyed, stateful request handlers. Rivet can run on Kubernetes. The README lists Kubernetes as a control plane and node deployment target. The source is <code>README.md:187</code> and <code>README.md:226</code>. The comparison is about the scheduling unit, not about the deployment platform. A user can run Rivet Actors on Kubernetes nodes.</p>
+<h3>4.4 Where Rivet is stronger</h3>
+<p>Rivet is stronger on three axes.</p>
+<ol><li><strong>Density.</strong> 72.4 KB per Actor versus about 200 MB per idle pod. The project</li></ol>
+<p>   reports the first number. The second is a typical published value. The ratio    is about 2,800 times, or about 3.4 orders of magnitude. The shared process    explains most of it.</p>
+<ol><li><strong>State.</strong> An Actor has SQLite, key-value data, a queue, and realtime</li></ol>
+<p>   connections as part of the unit. A pod has a filesystem and must add a    database. The state is not a separate service.</p>
+<ol><li><strong>Wake latency.</strong> 4.37 ms from sleep versus about 6 seconds for a new pod.</li></ol>
+<p>   The Actor workflow keeps the state and the placement metadata. The pod must    go through the scheduler and the container runtime.</p>
+<p>The cold start and wake numbers come from the Rivet README. They are project measurements. The Kubernetes numbers are typical published values. The README says so at <code>README.md:157</code>. This document does not add a benchmark.</p>
+<p>The operational cost follows from the unit. A Kubernetes cluster needs a control plane, etcd, a Container Network Interface (CNI), a CSI driver, an ingress controller, and an autoscaler. etcd is the Kubernetes key-value store for cluster state. The Kubernetes control plane is the API server, the scheduler, and the controller manager. A Rivet deployment needs identical Rivet control plane instances, a persistent disk per instance, one bucket per cluster, and the nodes. The README says self-hosting means four things: control plane instances, a persistent disk per instance, one bucket, and the nodes. The source is <code>README.md:218</code>. When Rivet runs on Kubernetes, its components run as pods and services in the cluster. The Rivet cost is in addition to the cluster, not a replacement for it. That is an inference from the deployment model.</p>
+<p>The Rivet benchmark page adds one operational fact. It says Kubernetes does not give pods raw Non-Volatile Memory Express (NVMe), so it cannot reproduce the Rivet numbers. The source is <code>docs/general/content/benchmarking.mdx:39</code>. That is a Rivet product claim. It is also a reminder that the two systems optimize different hardware paths.</p>
+<h2>5. Temporal</h2>
+<p>Temporal is a durable execution platform. A Temporal workflow is a program with a deterministic history. A worker runs the workflow code. An activity is a step with side effects. The Temporal service stores the workflow history in a persistence database. A worker fleet polls task queues. After a crash, a worker replays the history and continues. These are general Temporal facts from <code>https://docs.temporal.io/</code>. This document labels them external. This snapshot does not contain the Temporal source or a Temporal deployment.</p>
+<p>The Rivet repository does not mention Temporal. A search of the Markdown and Rust files at this commit found no Temporal reference. This document therefore cannot make a product comparison from the Rivet side. It compares mechanisms instead. The Rivet side comes from the Gasoline source. The Temporal side is general knowledge, not verified here. This section reads the source directly to compare the mechanisms.</p>
+<h3>5.1 The Temporal shape</h3>
+<p>Temporal puts durable execution in a separate service. The service has a front end, a history service, a matching service, and an internal worker service. The history service stores the event history in a database. The matching service hands tasks to user workers. The internal worker service runs the platform's own system workflows, such as archival. The user worker fleet is separate from the service. A user runs those workers. The service runs the history and the task queues. The database is a Cassandra, PostgreSQL, or MySQL deployment. These are general facts. They are external.</p>
+<p>The separation has a clear cost. The user operates or buys a Temporal service and a database. The worker fleet scales separately. The history store grows with the number of workflow events. The service is a second distributed system beside the application.</p>
+<h3>5.2 The Gasoline shape</h3>
+<p>Gasoline is a crate inside the Rivet control plane. A crate is a Rust package or library. It is not a separate service. A workflow is an asynchronous Rust function. The workflow context holds the input, the state, the event history, and a cursor. The Gasoline worker pulls workflows from UniversalDB. A bump subscription wakes the worker when a workflow is ready. A bump subscription is a notification on the <code>gasoline.worker.bump</code> subject of <code>universalpubsub</code>, the publish-and-subscribe crate (<code>engine/packages/gasoline/src/db/mod.rs:391-421</code>). The worker polls on a timer and also wakes on that notification (<code>engine/packages/gasoline/src/worker.rs:74-90</code>). The worker runs the workflow and writes the state back.</p>
+<p>In this snapshot, Gasoline workflows are internal to the control plane. The public Actor application programming interface does not expose Gasoline. Control-plane code writes the workflows in Rust with the Gasoline macros (<code>engine/packages/gasoline-macros/src/lib.rs:20-45</code>). The Pegboard Actor workflow is one such workflow.</p>
+<p>The word <em>worker</em> has three meanings in the Temporal and Gasoline comparison. The Temporal internal worker service runs the platform's own workflows. The user worker fleet is the set of processes that run user workflow code. The Gasoline worker is a loop inside the control plane process that pulls workflows (<code>engine/packages/gasoline/src/worker.rs:74-145</code>). The matching service is not a worker. It pairs a task with a user worker. Each use below names the meaning. The Resonate section uses <em>worker</em> for the separate process that runs user task code.</p>
+<p>The <code>WorkflowData</code> type shows the durable shape. It holds the workflow identifier, the name, the input, the state, the output, and a wake-condition flag. The state and input are raw JSON values. The history is separate. It is a map from location to a list of events.</p>
+<pre><code class="language-rust">// engine/packages/gasoline/src/db/mod.rs:333-341
+#[derive(Debug)]
+pub struct WorkflowData {
+	pub workflow_id: Id,
+	pub name: String,
+	input: Box&lt;serde_json::value::RawValue&gt;,
+	state: Box&lt;serde_json::value::RawValue&gt;,
+	output: Option&lt;Box&lt;serde_json::value::RawValue&gt;&gt;,
+	pub has_wake_condition: bool,
+}
+</code></pre>
+<p>The history event enum lists every durable step. An activity, a signal send, a message send, a sub-workflow, a loop, a sleep, a removed event, a version check, a branch, and a signals event are all history records. The <code>Event</code> type carries a coordinate, a version, and the event data. A location is a list of coordinates. A coordinate is a list of indices. An index selects a step or a nested position inside its coordinate. A nested branch adds a coordinate to the location. The text form puts braces around the location, a dot between the indices of one coordinate, and a comma between coordinates. For example, <code>{1.2, 3}</code> is a location with the coordinates <code>1.2</code> and <code>3</code> (<code>engine/packages/gasoline/src/history/location.rs:4-16</code>, <code>engine/packages/gasoline/src/history/location.rs:48-60</code>, <code>engine/packages/gasoline/src/history/location.rs:129-140</code>).</p>
+<pre><code class="language-rust">// engine/packages/gasoline/src/history/event.rs:13-53
+#[derive(Debug)]
+pub struct Event {
+	/// Position within the root location.
+	pub(crate) coordinate: Coordinate,
+	pub(crate) version: usize,
+	pub(crate) data: EventData,
+}
+
+impl Event {
+	pub fn coordinate(&amp;self) -&gt; &amp;Coordinate {
+		&amp;self.coordinate
+	}
+}
+
+impl std::fmt::Display for Event {
+	fn fmt(&amp;self, f: &amp;mut std::fmt::Formatter&lt;&#x27;_&gt;) -&gt; std::fmt::Result {
+		write!(f, &quot;{} v{} @ {}&quot;, self.data, self.version, self.coordinate)
+	}
+}
+
+impl Deref for Event {
+	type Target = EventData;
+
+	fn deref(&amp;self) -&gt; &amp;Self::Target {
+		&amp;self.data
+	}
+}
+
+#[derive(Debug)]
+pub enum EventData {
+	Activity(ActivityEvent),
+	SignalSend(SignalSendEvent),
+	MessageSend(MessageSendEvent),
+	SubWorkflow(SubWorkflowEvent),
+	Loop(LoopEvent),
+	Sleep(SleepEvent),
+	Removed(RemovedEvent),
+	VersionCheck(VersionCheckEvent),
+	Branch,
+	Signals(SignalsEvent),
+}
+</code></pre>
+<p>The activity path is the key comparison point. The workflow calls <code>ctx.activity(input)</code>. The cursor compares the activity name and the version with the stored history. The call has three outcomes.</p>
+<table><tr><th>History state</th><th>What Gasoline does</th><th>Source</th></tr><tr><td>Event with output</td><td>Returns the stored output. The activity does not run again.</td><td><code>engine/packages/gasoline/src/ctx/workflow.rs:585-598</code>, <code>engine/packages/gasoline/src/history/cursor.rs:175-218</code></td></tr><tr><td>Event without output</td><td>The activity failed before. Gasoline reads <code>error_count</code>, backs off when a wake deadline is set, and reruns the activity. It compares <code>error_count + 1</code> with <code>MAX_RETRIES</code>. At the limit it returns <code>ActivityMaxFailuresReached</code>. Otherwise it returns <code>ActivityFailure</code> with the count.</td><td><code>engine/packages/gasoline/src/ctx/workflow.rs:599-650</code></td></tr><tr><td>No event</td><td>Gasoline runs the activity and writes a new event.</td><td><code>engine/packages/gasoline/src/ctx/workflow.rs:651-656</code></td></tr></table>
+<p><code>MAX_RETRIES</code> is a trait constant. It defaults to 5 (<code>engine/packages/gasoline/src/activity.rs:14-17</code>, <code>engine/packages/gasoline-macros/src/lib.rs:29-42</code>). The history record holds the error count, not the error text (<code>engine/packages/gasoline/src/history/event.rs:115-140</code>).</p>
+<pre><code class="language-rust">// engine/packages/gasoline/src/ctx/workflow.rs:562-586
+	/// Run activity. Will replay on failure.
+	#[tracing::instrument(skip_all, fields(activity_name=%I::Activity::NAME))]
+	pub async fn activity&lt;I&gt;(
+		&amp;mut self,
+		input: I,
+	) -&gt; Result&lt;&lt;&lt;I as ActivityInput&gt;::Activity as Activity&gt;::Output&gt;
+	where
+		I: ActivityInput,
+		&lt;I as ActivityInput&gt;::Activity: Activity&lt;Input = I&gt;,
+	{
+		self.check_stop()?;
+
+		let history_res = self
+			.cursor
+			.compare_activity(self.version, I::Activity::NAME)?;
+		let location = self.cursor.current_location_for(&amp;history_res);
+
+		// Activity was ran before
+		let output = if let HistoryResult::Event(activity) = history_res {
+			tracing::debug!(&quot;replaying activity&quot;);
+
+			// Activity succeeded
+			if let Some(output) = activity.parse_output()? {
+				output
+			}
+</code></pre>
+<p>The failure branch is the part that the first excerpt omits. It backs off, reruns the activity, and returns a typed error when the count reaches the limit.</p>
+<pre><code class="language-rust">// engine/packages/gasoline/src/ctx/workflow.rs:599-650 (abridged)
+		else {
+			let error_count = activity.error_count;
+
+			// Backoff
+			if let Some(wake_deadline_ts) = self.wake_deadline_ts {
+				let duration = (u64::try_from(wake_deadline_ts)?)
+					.saturating_sub(u64::try_from(rivet_util::timestamp::now())?);
+				tokio::time::sleep(Duration::from_millis(duration))
+					.instrument(tracing::debug_span!(&quot;backoff_sleep&quot;))
+					.await;
+			}
+
+			match self
+				.run_activity::&lt;I::Activity&gt;(&amp;input, &amp;location, activity.create_ts)
+				.await
+			{
+				Err(err) =&gt; {
+					let err = match err {
+						WorkflowError::ActivityFailure(name, err, _) =&gt; {
+							if error_count.saturating_add(1) &gt;= I::Activity::MAX_RETRIES {
+								WorkflowError::ActivityMaxFailuresReached(name, err)
+							} else {
+								WorkflowError::ActivityFailure(name, err, error_count)
+							}
+						}
+						_ =&gt; err,
+					};
+
+					return Err(err.into());
+				}
+				x =&gt; x?,
+			}
+		}
+</code></pre>
+<p>The determinism rule is narrower than Temporal's rule. Gasoline checks the current event. The activity name and the version must match the history. A version mismatch, a name mismatch, or a different event type returns <code>HistoryDiverged</code> (<code>engine/packages/gasoline/src/history/cursor.rs:175-218</code>). The check covers each recorded step. It does not inspect the code between steps. The workflow still replays from the cursor, so a side effect outside an activity can run again. This document infers that outcome from the replay model. Temporal states its rule for the whole workflow function. That Temporal rule is General knowledge. This document did not read the Temporal source.</p>
+<p>The Temporal and Gasoline mechanisms are similar at this level. Both record a step result and both avoid a repeat after a crash. The difference is packaging. Temporal puts the history service, the task matcher, and the database in a separate platform. Gasoline puts the history store in UniversalDB and the worker in the control plane process. The README lists Gasoline as a "Durable execution engine" in the control plane repository. The source is <code>README.md:332</code>. The self-hosting list names control plane instances, a persistent disk per instance, one bucket, and the nodes. It does not name a workflow server or a database. The source is <code>README.md:218</code>.</p>
+<h3>5.3 The comparison table</h3>
+<table><tr><th>Axis</th><th>Temporal (General knowledge)</th><th>Gasoline in Rivet (Rivet source)</th><th>Stronger</th></tr><tr><td>Deployment unit</td><td>A separate Temporal service plus a database plus a worker fleet</td><td>A crate in the control plane plus workers in the same binary (<code>engine/packages/gasoline/src/worker.rs:74-90</code>)</td><td>Rivet on operational cost</td></tr><tr><td>History store</td><td>Temporal persistence database</td><td>UniversalDB key-value records (<code>engine/packages/gasoline/src/db/mod.rs:333-341</code>)</td><td>Unverified for Temporal. Rivet side is sourced.</td></tr><tr><td>Replay</td><td>A user worker replays workflow history</td><td><code>WorkflowCtx</code> cursor replays event history (<code>engine/packages/gasoline/src/history/cursor.rs:175-218</code>)</td><td>Similar mechanism</td></tr><tr><td>Activity result</td><td>Recorded in history</td><td><code>ActivityEvent</code> with an optional raw output (<code>engine/packages/gasoline/src/history/event.rs:115-140</code>)</td><td>Similar mechanism</td></tr><tr><td>Scheduling</td><td>Matching service and task queues</td><td>Gasoline worker poll plus bump subscription (<code>engine/packages/gasoline/src/worker.rs:74-90</code>, <code>engine/packages/gasoline/src/db/mod.rs:391-420</code>)</td><td>Judgment: Temporal separates matching from history, so that layer scales alone. This document did not measure either system.</td></tr><tr><td>Language support</td><td>Many official Software Development Kits (SDKs)</td><td>Rust workflows; Actor code in Node.js, Bun, Rust (<code>README.md:326-329</code>, <code>README.md:64</code>)</td><td>Temporal on breadth. The official SDK count is General knowledge.</td></tr><tr><td>Visibility</td><td>Temporal Web user interface (UI) and history export</td><td>Rivet dashboard and OpenTelemetry (<code>README.md:171</code>, <code>README.md:203</code>)</td><td>Judgment, not a measurement. The Temporal Web UI is General knowledge.</td></tr><tr><td>Determinism</td><td>The whole workflow code must be deterministic</td><td>Each recorded activity name and version must match (<code>engine/packages/gasoline/src/history/cursor.rs:175-218</code>)</td><td>Different scope. Temporal is stronger on whole-function replay.</td></tr><tr><td>Failure model</td><td>Worker crash, history replay</td><td>Workflow crash, history replay</td><td>Similar</td></tr></table>
+<p>The strongest Temporal argument is maturity and language breadth. That is a judgment, not a measurement. This document does not measure the public history, the SDK count, or the production record of either system. The strongest Gasoline argument is that the workflow is in the same binary as the Actor control plane. There is no second service to deploy and no second database to size. The user pays for that with a smaller ecosystem and a narrower workflow language surface.</p>
+<h2>6. Resonate</h2>
+<p>Resonate is a durable execution platform built on durable promises and durable tasks. A durable promise is a named record with a state, a parameter, a value, a set of tags, and a deadline. A durable task is the executable half of the same record. A worker acquires the task with a lease and a version. The server resumes the task when the promises it waits on settle. The source for these statements is the Resonate exploration at <code>../../src.resonate/markdown/README.md:8-10</code> and <code>../../src.resonate/markdown/03-durable-promises-and-tasks.md:13-24</code>. The underlying Resonate repository is at commit <code>9c72d818</code>.</p>
+<p>Resonate is not an Actor runtime. It does not own the placement of user code. It owns the durable record and the dispatch of work to a worker. The worker is a separate process. This is the key difference from Rivet. Rivet owns the Actor, the placement, the request route, and the state. Resonate owns the promise, the task, and the wake.</p>
+<h3>6.1 The promise and the task</h3>
+<p>A durable promise has five states: pending, resolved, rejected, rejected_canceled, and rejected_timedout. A durable task also has five states: pending, acquired, suspended, halted, and fulfilled. The version is the fence. A worker that lost its lease holds an old version. Its write is refused. The source is <code>../../src.resonate/markdown/03-durable-promises-and-tasks.md:12-26</code> and <code>../../src.resonate/markdown/03-durable-promises-and-tasks.md:212-228</code>.</p>
+<p>The task transitions are these. <code>task.acquire</code> moves pending to acquired. <code>task.heartbeat</code> keeps acquired. <code>task.suspend</code> moves acquired to suspended when all awaited promises are pending. When an awaited promise settles, <code>resumeOne</code> moves the task from suspended to pending. <code>task.release</code> or a lease timeout moves acquired to pending. <code>task.halt</code> moves any non-fulfilled state to halted. <code>task.continue</code> moves halted to pending when the promise is still pending. When the task's own promise settles, the task moves from any non-fulfilled state to fulfilled. The source is <code>../../src.resonate/markdown/03-durable-promises-and-tasks.md:160-197</code> and <code>../../src.resonate/markdown/03-durable-promises-and-tasks.md:417-438</code>.</p>
+<p>The one-row model is the important design choice. A promise and its task share one identifier. The promise face holds the promise state, the parameter, the value, the tags, the timeouts, and the callbacks. The task face holds the task state, the version, the time to live, the process identifier, the lease deadline, the retry deadline, and the resume list. The tags decide the semantics. The <code>resonate:target</code> tag carries a worker address. It makes the promise runnable, and it also makes the promise awaitable. The <code>resonate:timer</code> tag makes a deadline resolve the promise instead of rejecting it. The <code>resonate:scope</code> tag with value <code>global</code> makes the promise awaitable. The source is <code>../../src.resonate/markdown/03-durable-promises-and-tasks.md:20-68</code>.</p>
+<p>This model is close to an Actor in one way. Both have a stable identity and a durable record. It is different in another way. An Actor processes commands. A promise stores a result. The Actor has a mailbox and mutable state. The promise has a state machine and a value. An Actor can serve many calls over its life. A promise usually represents one call or one step.</p>
+<h3>6.2 The server and the control plane</h3>
+<p>These are Sibling source claims. Each paragraph cites its exploration file. The Resonate server is a plugin host. A port here is a Rust trait that a plugin implements. A network port is called a socket. The four port roles are a server, a worker, a gateway, and a router. The gateway role accepts a request from a transport and sends it to the server role. The server role applies one protocol request. The worker role delivers one message to an address. The router role selects a worker for an address scheme. A route table is a shared table of HTTP routes that plugins add to (<code>../../src.resonate/markdown/01-architecture.md:18-29</code>). The composition root loads the plugins and starts them (<code>../../src.resonate/markdown/01-architecture.md:40-51</code>).</p>
+<p>The address scheme is the text before <code>://</code>, such as <code>http</code> or <code>poll</code> (<code>../../src.resonate/markdown/01-architecture.md:26</code>). A concrete request path is this. A client sends an HTTP request to the gateway port. The gateway accepts it. The shared route table sends it to the server port. The server port applies one protocol request. When the protocol needs a worker message, the server port gives the address to the outbound worker port. The outbound worker port asks the router for a worker. The router reads the scheme and returns the matching worker plugin. The worker plugin delivers the message. This is the path that the four ports describe. The source is <code>../../src.resonate/markdown/01-architecture.md:40-51</code>.</p>
+<p>The Rivet control plane is also a plugin-like host, but the comparison stops there. The Rivet control plane places Actors on envoys, routes client requests, and stores Actor state. The Resonate server does not place user code. It stores promises and tasks and delivers messages to a worker that the user runs. A Resonate worker pulls or receives a task. A Rivet Actor runs where Pegboard placed it.</p>
+<p>The Wake mechanism also differs. Resonate does not keep a callback function that it fires. It keeps a callback record on the promise. When the promise settles, the server removes that record and calls <code>resumeOne</code>. <code>resumeOne</code> moves the task from suspended to pending and sets a retry deadline. The server sweep reads the deadline and emits an execute message (<code>../../src.resonate/markdown/03-durable-promises-and-tasks.md:405-411</code>). A server sweep is the periodic loop that fires timers, expires leases, and retries tasks (<code>../../src.resonate/markdown/01-architecture.md:31</code>). The wake is a state that the server reads, not an event that it delivers. If the server dies between the callback and the dispatch, the pending state and the deadline survive. A new server reads them and dispatches.</p>
+<p>Rivet wakes an Actor through Guard and Pegboard. The request is the wake. The Actor workflow also has an alarm time for a scheduled wake. The Resonate model is a dependency graph of promises. The Rivet model is a keyed process with a queue and a state.</p>
+<h3>6.3 The point-by-point table</h3>
+<table><tr><th>Axis</th><th>Rivet Actor (Rivet source)</th><th>Resonate promise and task (Sibling source)</th><th>Stronger</th></tr><tr><td>Unit of work</td><td>A long-lived Actor with a queue and state</td><td>One promise record with an optional task face</td><td>Rivet for a process. Resonate for one call or step.</td></tr><tr><td>Identity</td><td><code>actor_id</code> plus optional user key in a namespace</td><td>Promise identifier string with an origin prefix. The origin is the text before the first colon (<code>../../src.resonate/markdown/20-deterministic-identifiers.md:9</code>).</td><td>Equal for keyed lookup</td></tr><tr><td>State store</td><td>Per-Actor SQLite and key-value data, plus workflow state in UniversalDB</td><td>One server storage engine: SQLite, PostgreSQL, MySQL, ScyllaDB, Blob, or Neo4j. Blob is an object store and Neo4j is a graph store (<code>../../src.resonate/markdown/06-storage-engines.md:7</code>).</td><td>Rivet for per-key relational state. Resonate for backend choice.</td></tr><tr><td>Scheduling</td><td>Pegboard allocates a slot on an envoy or a serverless provider</td><td>Server sweep and worker lease; delay and timer tags</td><td>Rivet for automatic placement. Resonate for cross-service dispatch.</td></tr><tr><td>Wake</td><td>HTTP or WebSocket request through Guard; alarm timestamp</td><td>When a promise settles, the task resumes; retry timeout</td><td>Different models, both valid</td></tr><tr><td>Replay</td><td>Gasoline replays event history</td><td>The SDK re-executes the function; settled promises return stored values</td><td>Similar goal, different history shape</td></tr><tr><td>Storage substrate</td><td>Control plane local disks plus one object storage bucket</td><td>One of six server storage engines, or an independent S3-only server (<code>../../src.resonate/markdown/00-overview.md:202</code>)</td><td>Resonate is more flexible. Rivet is simpler to operate.</td></tr><tr><td>Language support</td><td>TypeScript on Node.js and Bun, Rust, experimental Python and Swift clients (<code>README.md:326-329</code>)</td><td>TypeScript, Python, Go, Java, and Rust SDKs</td><td>Resonate on SDK breadth</td></tr><tr><td>Formal specification</td><td>No executable formal model</td><td>Lean 4 abstract machine and 92 properties (<code>../../src.resonate/markdown/README.md:197</code>, <code>../../src.resonate/markdown/README.md:258-264</code>)</td><td>Resonate</td></tr><tr><td>Failure unit</td><td>A lost envoy makes the Actor sleep; a graceful stop destroys its data</td><td>Task lease expires; promise state is intact</td><td>Both keep the durable state. Rivet also moves the Actor. Resonate lets a worker reacquire the task.</td></tr></table>
+<p>The S3-only server is the third independent server implementation. The first is the Rust server core. The second is the PostgreSQL server. The third is written in Zig (<code>../../src.resonate/markdown/13-the-s3-server-in-zig.md:7</code>). It stores its state only in S3 objects. It is not one of the six storage engines.</p>
+<p>The formal specification is a real Resonate strength. Lean 4 is a programming language and proof assistant. The abstract machine is Lean 4 code that takes a step and a time and returns a response and a new state. The 92 properties are claims about runs of that machine (<code>../../src.resonate/markdown/README.md:197</code>). The exploration states that the machine is executable and the servers are checked against it. The source is <code>../../src.resonate/markdown/README.md:258-264</code>. Rivet has tests and benchmarks, but this snapshot has no equivalent executable specification.</p>
+<p>The state store difference is the one that matters for a user. Rivet gives every Actor a SQLite database. The application can run SQL, transactions, and indexes inside the Actor. Resonate gives every promise one row in a shared store. The application runs its own code in a worker and reports the promise outcome. A user who needs a transaction over many keyed records will prefer the Actor. A user who needs to coordinate many services and languages will prefer Resonate.</p>
+<h2>7. Electric and the durable stream model</h2>
+<p>Electric Durable Streams is an append-only log with offsets. A stream has six properties: append-only, ordered, typed, addressable, closeable, and forkable. Typed means the stream has one content type, set at creation. Addressable means the stream is reachable at a URL. The six operations are create, append, close, read, delete, and head. A fork is a property, not one of the six operations. A fork is a new stream that shares a prefix with a source stream at a chosen offset. <code>Head</code> returns stream metadata and the current tail without a body. An offset is an opaque token. A client stores an offset and returns it to resume. The source is the Electric exploration <code>../../src.electric/markdown/03-the-durable-stream-primitive.md:11-39</code> and <code>../../src.electric/markdown/03-the-durable-stream-primitive.md:86-101</code>.</p>
+<p>The stream is the durable unit. It does not execute application code. A consumer reads the log and decides what to do. The producer appends facts. Many readers can read the same log from their own offsets. A subscription can send a webhook or write a wake record. A wake record is one JSON message with the subscription identifier, the changed stream, the generation, and a timestamp. A runner claims the wake with a lease. A runner is the process that claims and processes wakes. A lease is a time-limited claim. An expired lease makes the wake claimable again. A generation is a subscription counter that increases on every wake. A stale generation is rejected. The source is <code>../../src.electric/markdown/03-the-durable-stream-primitive.md:159-195</code> and <code>../../src.electric/markdown/durable-streams/03-live-reads-and-subscriptions.md:406</code>.</p>
+<p>An Actor is a process with a mailbox and a state. The mailbox orders commands. The Actor executes one command and changes its state. The state is the result of the commands. A client can call the Actor and wait for a reply. The Actor can broadcast to connected clients. The source is <code>./README.md:7-12</code> and <code>./README.md:33-48</code>.</p>
+<p>The two models answer different questions. A stream answers "what happened, in what order?" An Actor answers "what should happen next, for this key?" A stream is good at distribution, sync, replay, fan-out, and audit. An Actor is good at command execution, transactions, timers, and per-key state.</p>
+<h3>7.1 The stream model</h3>
+<p>The table gives the stream properties and the Actor equivalent.</p>
+<table><tr><th>Property</th><th>Durable stream</th><th>Actor</th></tr><tr><td>Identity</td><td>Stream path or Uniform Resource Locator (URL)</td><td>Actor key inside a namespace</td></tr><tr><td>Ordering</td><td>Strict offset order for all readers</td><td>Mailbox order per Actor</td></tr><tr><td>State</td><td>The log itself</td><td>SQLite, key-value data, and in-memory state</td></tr><tr><td>Writer</td><td>Any producer with permission</td><td>One Actor owner at a time</td></tr><tr><td>Readers</td><td>Many, each at its own offset</td><td>Many, through requests and subscriptions</td></tr><tr><td>Replay</td><td>Read from any retained offset</td><td>Gasoline history replay for workflows</td></tr><tr><td>Fan-out</td><td>A stream can feed many subscriptions</td><td>One Actor broadcasts to its connections</td></tr><tr><td>Mutation</td><td>Append only; bytes do not change</td><td>Update in place through SQL and key-value calls</td></tr><tr><td>Wake</td><td>Webhook or pull-wake subscription</td><td>Guard routes to the Actor and wakes it</td></tr><tr><td>Fit</td><td>Data sync and event distribution</td><td>Command execution and per-key state</td></tr></table>
+<p>The storage substrate also differs. Electric has three deployments, and they do not share one store. The Node.js server writes one <code>.log</code> file per stream and keeps metadata in a Lightning Memory-Mapped Database (LMDB) store. The Cloudflare server uses one Durable Object for each stream, with Durable Object SQLite for metadata and bytes. The Caddy plugin keeps metadata in bbolt and bytes in a segment file. bbolt is a B+tree key-value store (<code>../../src.electric/markdown/durable-streams/08-server-implementations.md:18-27</code>). The file layout is at <code>../../src.electric/markdown/durable-streams/05-storage-and-durability.md:90-102</code>. The stream server is a storage and delivery service. It is not a general compute service.</p>
+<h3>7.2 Where each model fits</h3>
+<p>A stream is the right choice for seven jobs.</p>
+<ol><li><strong>Change distribution.</strong> One writer appends a change. Many clients read it.</li><li><strong>Sync.</strong> A client stores an offset and catches up after a disconnect.</li><li><strong>Audit.</strong> The log keeps every fact in order.</li><li><strong>Fan-out.</strong> A subscription sends each new event to a target.</li><li><strong>Forking.</strong> A conversation or document branches at an offset without a copy.</li><li><strong>Idempotent append.</strong> A producer sequence number prevents a duplicate.</li><li><strong>Cross-language consumers.</strong> Any HTTP client can read the log.</li></ol>
+<p>An Actor is the right choice for six jobs.</p>
+<ol><li><strong>Command execution.</strong> A client calls an action and waits for a result.</li><li><strong>Per-key state.</strong> A user, room, document, or tenant has one owner.</li><li><strong>Transactions.</strong> Several rows change together in SQLite.</li><li><strong>Timers and cron.</strong> The Actor sets an alarm and wakes on schedule.</li><li><strong>Realtime broadcast.</strong> The Actor holds WebSocket connections.</li><li><strong>Durable workflows.</strong> Gasoline replays a multi-step operation.</li></ol>
+<p>The two models combine well. An Actor can append to a stream. A stream consumer can call an Actor. The Electric agent runtime does exactly this. An entity stream is the stream for one agent entity. The agents-server writes an <code>inbox</code> event to that stream. A webhook subscription then wakes the runtime. The runtime is the process that reads the stream from its last acknowledged offset, runs the entity handler, and appends the results to the same stream. The source is <code>../../src.electric/markdown/README.md:97-110</code>. The stream is the durable memory of the agent. The runtime is the process that acts on it.</p>
+<p><strong>Aha:</strong> A stream is shared memory. An Actor is a private memory with one writer. The stream can serve a thousand readers from one history. The Actor can make a decision that no reader can make. A design that needs both should use both. The Actor writes the decision to the stream, and the stream distributes it.</p>
+<h2>8. celld</h2>
+<p>celld is a self-hosted implementation of the Cloudflare Workers platform. A cell is one Durable Object instance. A cell has its own SQLite database, one owner node at a time, and one fencing epoch. An epoch is a number that increases when ownership changes. A writer from an older epoch is stale. The next restore clips the stale writes at the cut. The cut is the last transaction identifier that the new chain covers. The bucket holds a chain of Lite Transaction (LTX) segments across these epochs. A snapshot is one segment that carries every page of the database at one transaction. A restore walks the chain from the newest epoch down to a snapshot (<code>../../src.celld/markdown/05-cell-storage-and-durability.md:7-17</code>). The bucket is the eventual home of every durable byte. The bucket is also the proof of an acknowledgement in bucket mode. In fleet mode, a follower <code>fsync</code> is the proof, and the bucket upload catches up later (<code>../../src.celld/markdown/05-cell-storage-and-durability.md:685-687</code>). A follower is another node that receives each write. <code>fsync</code> is the system call that forces the bytes to disk. The source is <code>../../src.celld/markdown/README.md:3-13</code> and <code>../../src.celld/markdown/05-cell-storage-and-durability.md:1-9</code>. The celld repository is at commit <code>8702f6d186c77698dbfb30cf29e3b1922a88f008</code>, version 0.6.3. The source is <code>../../src.celld/markdown/README.md:15-19</code>.</p>
+<p>celld is the closest system to Rivet in this set. Both keep one SQLite database per keyed unit. Both write a log. Both use a bucket. Both restore a unit after a failure. The differences are in the owner model, the write proof, and the runtime.</p>
+<h3>8.1 One cell and one Actor</h3>
+<p>The celld activation path is explicit. The cell scope is the class name, a colon, and the identifier (<code>../../src.celld/markdown/04-durable-objects.md:367-383</code>). The application calls <code>namespace.get(id)</code> and receives a stub. The first <code>fetch</code> or Remote Procedure Call (RPC) activates the cell.</p>
+<p>The owner node reads <code>cells/<scope>/own.json</code>. The record names a node and an epoch. The node decides whether another owner is live by reading that owner's lease at <code>nodes/<node>.json</code>. A lease is dead when its recorded expiry is at or before the reader's clock (<code>../../src.celld/markdown/06-ownership-failure-and-rebalancing.md:212-216</code>). If the owner is live, the request forwards to that node. Otherwise the node claims the next epoch. A missing record claims epoch 1. A released record or a dead owner claims <code>epoch + 1</code>. A record that names this node also claims <code>epoch + 1</code> for a new session. Only a clean local reload reuses the same epoch (<code>../../src.celld/markdown/04-durable-objects.md:429-437</code>).</p>
+<p>The restore then runs. It starts at the newest ownership record. It reads the epoch, lists the epoch prefixes, and builds a chain from the newest epoch down to one that opens with a snapshot (<code>../../src.celld/markdown/05-cell-storage-and-durability.md:690-730</code>). It opens the log prefix <code>cells/<scope>/ltx/e<epoch>/</code>. It builds the JavaScript instance (<code>../../src.celld/markdown/04-durable-objects.md:438-440</code>).</p>
+<p>The Rivet path is different. A request arrives at Guard. Guard asks Pegboard for the Actor. Pegboard reads the Actor workflow state. If the Actor is running and connectable, the request goes to the envoy. If the Actor is sleeping, Guard sends a wake signal. It then holds the client request. If the Actor is not connectable for another reason, Guard holds the client request and waits for a ready event. Section 8.1.1 gives the full path. If the Actor does not exist, Guard returns not found. Guard does not create the Actor on a plain <code>get</code> path. Only a <code>getOrCreate</code> query creates it. The Actor state is in the workflow state and the Actor's storage. There is no ownership record in a bucket. The placement decision is in Pegboard, not in a shared object. The source is <code>docs/general/content/architecture.mdx:42</code>.</p>
+<h4>8.1.1 The Rivet request path during a start</h4>
+<p>The client-visible behavior is a wait, not a queue in the Actor. The wait happens in Guard. The request is not stored in the Actor mailbox before the Actor starts. The mailbox holds commands after the Actor runs. Guard holds the request open. Guard subscribes to the ready, stopped, failed, and destroy events before it fetches the Actor (<code>engine/packages/guard/src/routing/pegboard_gateway/mod.rs:364-405</code>). It fetches the Actor record with <code>get_for_gateway</code> (<code>engine/packages/guard/src/routing/pegboard_gateway/mod.rs:407-428</code>). A <code>None</code> result means no Actor record exists. Guard returns <code>Actor::NotFound</code> (<code>engine/packages/guard/src/routing/pegboard_gateway/mod.rs:426-428</code>).</p>
+<p>If the Actor exists but is not connectable, Guard waits. A stopped event causes a rewake signal. Guard allows at most eight rewake attempts (<code>engine/packages/guard/src/routing/pegboard_gateway/mod.rs:623-683</code>). A failure event returns the Actor error. A destroy event returns <code>ActorDestroyedWhileWaitingForReady</code>. The wait also has a ready timeout (<code>engine/packages/guard/src/routing/pegboard_gateway/mod.rs:685-710</code>). The client sees one of these errors, or it sees the first reply after the Actor becomes ready. The request is not rejected during a normal start. It waits within those limits.</p>
+<p>A <code>getOrCreate</code> query is different. Guard resolves the key first. If no Actor exists, it calls the create operation (<code>engine/packages/guard/src/routing/pegboard_gateway/resolve_actor_query.rs:119-180</code>). That operation dispatches the version 2 workflow, which allocates the Actor (<code>engine/packages/pegboard/src/ops/actor/create.rs:105-124</code>).</p>
+<p>The table compares the two units.</p>
+<table><tr><th>Axis</th><th>Rivet Actor</th><th>celld cell</th><th>Stronger</th></tr><tr><td>Identity</td><td><code>actor_id</code> plus optional key</td><td>64-hexadecimal identifier from the namespace key and name (<code>../../src.celld/markdown/04-durable-objects.md:87-190</code>)</td><td>Equal for keyed lookup. Rivet has a readable key.</td></tr><tr><td>Owner</td><td>Pegboard placement and the Actor workflow</td><td><code>cells/<scope>/own.json</code> with a node name and an epoch</td><td>Rivet for scheduling policy. celld for a bucket-visible owner record.</td></tr><tr><td>SQLite</td><td>One database per Actor</td><td>One database per cell</td><td>Equal in shape</td></tr><tr><td>Log</td><td>Depot page index, commit rows, and delta chunks. Depot uses its own Lite Transaction (LTX) V3 file format (<code>engine/packages/depot/README.md:52</code>).</td><td>LTX segments under <code>cells/<scope>/ltx/e<epoch>/</code> (<code>../../src.celld/markdown/05-cell-storage-and-durability.md:42</code>)</td><td>Different implementations. The two LTX formats are not the same.</td></tr><tr><td>Bucket</td><td>Cold tier and background page movement. The bucket is not on the write path.</td><td>The eventual home of every durable byte. In bucket mode it is also the proof of an acknowledgement. In fleet mode a follower <code>fsync</code> is the proof, and the upload catches up later.</td><td>celld has the stronger durability proof. Rivet has the lower write-path dependence.</td></tr><tr><td>Placement</td><td>Pegboard allocation to an envoy; pool and data center inputs</td><td>Conditional write to the ownership record; lease <code>nodes/<node>.json</code>; takeover after lease expiry</td><td>Rivet for policy. celld for a self-contained placement record.</td></tr><tr><td>Failure</td><td>Reschedule the Actor; the workflow replays; state is intact</td><td>Fence the old epoch; restore the chain; self-fence the stale writer</td><td>Both handle a crash. celld proves the ack. Rivet moves the process.</td></tr><tr><td>Runtime</td><td>Node.js, Bun, or Rust</td><td>V8 with the Workers API</td><td>Rivet for language freedom. celld for Workers compatibility.</td></tr><tr><td>Density</td><td>72.4 KB RSS increase per Actor as the project reports</td><td>Up to 32 cells of one script per isolate (<code>MAX_CELLS_PER_ISOLATE</code>; <code>../../src.celld/markdown/04-durable-objects.md:463-465</code>)</td><td>Not directly comparable. Rivet reports memory per Actor. celld reports cells per isolate, not memory.</td></tr></table>
+<h3>8.2 The write proof</h3>
+<p>The celld write proof is the most important difference. celld has two modes. The operator selects one with <code>CELLD_DURABILITY</code>. The values are <code>bucket</code> and <code>fleet</code>. The default is <code>fleet</code> (<code>../../src.celld/markdown/05-cell-storage-and-durability.md:595-596</code>).</p>
+<p>A level 0 segment holds captured transactions before compaction. Compaction combines level 0 segments into a level 1 segment (<code>../../src.celld/markdown/05-cell-storage-and-durability.md:69</code>). The capture loop reads committed Write-Ahead Log (WAL) frames. It writes them as a level 0 segment. A write becomes an LTX segment at that point (<code>../../src.celld/markdown/05-cell-storage-and-durability.md:44</code>, <code>../../src.celld/markdown/05-cell-storage-and-durability.md:347</code>). A write that is not yet in a segment has a durability ticket. The output gate is the code that holds the reply. It waits until a proof covers that ticket (<code>../../src.celld/markdown/05-cell-storage-and-durability.md:192-232</code>). The position that the gate compares is the committed-write position. It is the sum of <code>total_changes</code>, <code>data_version</code>, and <code>schema_cookie</code>. It is a local counter. It is not the LTX transaction identifier (<code>../../src.celld/markdown/05-cell-storage-and-durability.md:205-216</code>).</p>
+<p>In fleet mode, the owner sends each write to one or two followers. A follower writes the bytes to its own disk and calls <code>fsync</code>. Only then does it acknowledge. The owner releases the reply when every follower in its current set has acknowledged (<code>../../src.celld/markdown/05-cell-storage-and-durability.md:644-655</code>). The bucket upload happens later, outside the acknowledgement path. The acknowledged write can exist only on the owner and its followers until the upload catches up (<code>../../src.celld/markdown/05-cell-storage-and-durability.md:685-687</code>).</p>
+<p>In bucket mode, the owner uploads the segment to the bucket and reads the ownership record once. The upload is the durability point. The read is not optional. A node that was fenced before the upload can write into an old prefix that a new owner will not read. The read confirms that <code>own.json</code> still names this node at this epoch. Otherwise the node refuses the reply (<code>../../src.celld/markdown/05-cell-storage-and-durability.md:629-639</code>).</p>
+<p>The timeline is short. Bucket mode: commit, capture and upload the segment, read <code>own.json</code>, release the reply. Fleet mode: commit, send the write to the followers, each follower <code>fsync</code>s and acknowledges, release the reply. The source is <code>../../src.celld/markdown/README.md:27-49</code>.</p>
+<p>Rivet acknowledges a write after the control plane has copied it to several instance disks (<code>README.md:68</code>). The benchmark setup used two of three instances (<code>README.md:155</code>). UniversalDB is the transactional store, and the architecture page says the control plane writes to replicated disks (<code>docs/general/content/architecture.mdx:48</code>). This document does not identify the replication protocol for general UniversalDB keys.</p>
+<p>Epoxy is a separate consensus layer in the same repository. It is a geo-distributed key-value store for its own keys. Its consensus records commit in UniversalDB (<code>engine/packages/epoxy/README.md:51</code>). Its consensus protocol is single-decree Fast Paxos, run independently per key (<code>engine/packages/epoxy/README.md:3</code>). Paxos is a family of protocols that make replicas agree on one value (General knowledge). Fast Paxos is a variant that can commit in fewer message delays (General knowledge). Single-decree means the replicas agree on one value, not on a shared log. A fresh key commits in one round trip; a key with in-flight state uses two (<code>engine/packages/epoxy/README.md:3</code>, <code>engine/packages/epoxy/README.md:19-23</code>). Epoxy is not EPaxos. The code inherited the <code>PreAccept</code> name from EPaxos ancestry, but that phase was always standard Paxos Phase 2a (<code>engine/packages/epoxy/README.md:27</code>). Phase 2a is the accept phase, in which a leader sends a value to the acceptors (General knowledge). EPaxos is a different protocol that orders commands across keys (General knowledge). It is only a reference for cross-key ordering (<code>engine/packages/epoxy/README.md:42</code>). In this snapshot Epoxy serves Actor key reservation only (<code>engine/packages/epoxy/README.md:37-42</code>). It is not the general write path.</p>
+<p>A UniversalDB transaction can name several keys. The store applies all named keys in one transaction as one atomic unit on the replica that runs it. This document does not establish how that multi-key transaction becomes visible on other replicas. The source describes per-key consensus for Epoxy, and Epoxy serves key reservation only. This comparison therefore claims per-key durability, not cross-key atomicity on the replicated layer.</p>
+<p>The bucket is not on the write path. A background process moves pages to the bucket. The source is <code>README.md:68</code>.</p>
+<p>The trade is clear. celld pays a bucket round trip in the bucket proof, or a follower <code>fsync</code> in the fleet proof. Rivet pays a replicated write across control plane disks. The benchmark setup uses two of three instances (<code>README.md:155</code>). celld gets a proof that a specific bucket object holds the write. Rivet avoids a bucket round trip on the write path. A slow or unavailable bucket does not block an acknowledged Rivet write. This document labels the trade as analysis. Neither source publishes a matched write-latency benchmark.</p>
+<h3>8.3 Where celld is stronger</h3>
+<p>celld is stronger on three axes.</p>
+<p>These are Sibling source claims. Each item cites its source file.</p>
+<ol><li><strong>Workers compatibility.</strong> celld runs Worker modules and the Durable Object</li></ol>
+<p>   API. A user can move a Cloudflare Worker to celld with a subset of the API.    The exploration documents the gaps in    <code>../../src.celld/markdown/10-limitations-and-compatibility.md</code>. Rivet does not    implement the Workers API. RivetKit is the Rivet client and Actor library    (<code>README.md:326</code>).</p>
+<ol><li><strong>Durability proof.</strong> In bucket mode, the bucket is the proof of every</li></ol>
+<p>   acknowledged write. The ownership record and the epoch make a stale writer    harmless. In fleet mode, a follower <code>fsync</code> is the proof, and the upload    catches up later. The source is    <code>../../src.celld/markdown/README.md:57-84</code> and    <code>../../src.celld/markdown/05-cell-storage-and-durability.md:685-687</code>. Rivet's    proof is a quorum of control plane disks, and the bucket catches up later.</p>
+<ol><li><strong>Ownership record.</strong> celld puts the owner in a conditional write to the</li></ol>
+<p>   bucket. Any node can read the record and find the owner. Rivet keeps the    placement in the control plane workflow state. A node outside the control    plane cannot read the placement. The source is    <code>../../src.celld/markdown/06-ownership-failure-and-rebalancing.md:218-246</code>.</p>
+<h3>8.4 Where Rivet is stronger</h3>
+<p>Rivet is stronger on three axes.</p>
+<ol><li><strong>Language runtime freedom.</strong> Rivet runs on native Node.js, Bun, or Rust.</li></ol>
+<p>   celld runs JavaScript in V8 with the Workers API. A Rust Actor, a native    package, or a Node.js addon works in Rivet and does not work in celld.</p>
+<ol><li><strong>Density and scheduling.</strong> Rivet publishes 72.4 KB per Actor and a 4.37 ms</li></ol>
+<p>   wake. It schedules Actors with Pegboard, pool selectors, data center inputs,    drain, and cron. celld places a cell by ownership and lease. It does not have    a general scheduler for user code.</p>
+<ol><li><strong>Write-path independence.</strong> The Rivet bucket is not on the write path</li></ol>
+<p>   (<code>README.md:68</code>). A slow bucket does not block an acknowledged write. celld's    bucket proof does block the acknowledgement on the upload. The fleet proof    removes the bucket from the ack, but it needs a live follower. In fleet mode,    the upload is asynchronous after the acknowledgement.</p>
+<p>The weaker celld points are the V8-only runtime, the compatibility gaps, and the operational complexity of ownership and fencing. The weaker Rivet points are the shared-process isolation, the younger code, and the control plane protocol. Both systems are young. Neither is a mature platform in the way that Kubernetes or Cloudflare is. That maturity statement is General knowledge and a judgment. This document did not measure it.</p>
+<h2>9. The synthesis</h2>
+<p>The synthesis has one table and one short argument for each system. The table has one row for each system. The durable unit is one column. The question column is the question that the system answers best. The cost column is the price that the user pays.</p>
+<table><tr><th>System</th><th>Question it answers</th><th>Durable unit</th><th>Placement rule</th><th>Cost paid</th></tr><tr><td>Rivet</td><td>"Which Actor handles this key, and what is its state?"</td><td>Actor plus SQLite, key-value data, queue, and workflow state</td><td>Pegboard allocates an Actor to an envoy. The operator sets the pool and data center.</td><td>A control plane, a bucket, nodes, and a complex protocol</td></tr><tr><td>Cloudflare Durable Objects</td><td>"Which object handles this key, and what is its SQLite data?"</td><td>Durable Object plus SQLite</td><td>Cloudflare places the object on its network</td><td>Vendor dependence, platform limits, custom runtime</td></tr><tr><td>Kubernetes</td><td>"Where should this container run, and what volume does it need?"</td><td>Pod plus Persistent Volume</td><td>The kube-scheduler places the pod on a node</td><td>A cluster control plane, networking, storage, and operations</td></tr><tr><td>Temporal</td><td>"How does this workflow continue after a crash?"</td><td>Workflow execution plus event history</td><td>Workers poll task queues. The service stores history.</td><td>A separate service, a database, and a worker fleet</td></tr><tr><td>Resonate</td><td>"What is the result of this call, and who may produce it?"</td><td>Durable promise plus task</td><td>The server stores the record. A worker acquires the task.</td><td>A server, a storage backend, and a worker fleet</td></tr><tr><td>Electric</td><td>"What happened, in what order, and where does this reader resume?"</td><td>Append-only stream at offsets</td><td>The stream server stores bytes. The client chooses the reader.</td><td>A stream store and a consumer that does the work</td></tr><tr><td>celld</td><td>"Which cell owns this object, and is the write proved?"</td><td>Cell plus SQLite, LTX log, ownership epoch</td><td>Conditional ownership record plus node lease</td><td>V8 only, compatibility gaps, ownership complexity</td></tr></table>
+<h3>9.1 When to choose each</h3>
+<p>Choose <strong>Rivet</strong> when the workload is a large number of keyed, stateful processes. Examples are one agent per user, one session per conversation, one room per document, or one tenant per customer. Choose it when the team wants standard Node.js, Bun, or Rust, wants self-hosting, and wants SQLite per key. Do not choose it when the workload needs a hard container boundary or a GPU per unit.</p>
+<p>Choose <strong>Cloudflare Durable Objects</strong> when the application already runs on Cloudflare, the keyed unit fits the platform limits, and the team does not want to operate infrastructure. Do not choose it when the data per key is larger than the stated limit, when the code needs native packages, or when the deployment must be self-hosted.</p>
+<p>Choose <strong>Kubernetes</strong> when the workload is a general container workload. Examples are databases, brokers, batch jobs, machine-learning services, and mixed services with sidecars. Choose it when the team needs isolation, GPU scheduling, network policy, or a mature ecosystem. Do not choose it when the unit is a millions-of-keys stateful process and the container overhead dominates the work.</p>
+<p>Choose <strong>Temporal</strong> when the problem is a long-running workflow across many services. Examples are order fulfillment, payment authorization, and human-in-the-loop approval. Choose it when the team needs many language SDKs and a mature visibility tool. Do not choose it when a single binary and a bucket are a hard requirement.</p>
+<p>Choose <strong>Resonate</strong> when the problem is durable promises across services and the team wants an executable formal model or a choice of storage backends. Choose it when a worker fleet already exists. Do not choose it when the application needs a per-key SQLite database or automatic placement of user code.</p>
+<p>Choose <strong>Electric Durable Streams</strong> when the problem is data distribution, sync, fan-out, audit, or replay. Choose it when many readers need the same ordered history. Do not choose it when the problem is command execution with per-key transactions. Use it with an Actor when both are needed.</p>
+<p>Choose <strong>celld</strong> when the application targets the Cloudflare Workers API and the team wants to self-host that platform. Choose it when the bucket proof matters more than write-path independence. Do not choose it when the code needs native packages or a language other than JavaScript.</p>
+<h2>10. Where Rivet is weaker</h2>
+<p>This section states the weaknesses plainly. A comparison that only lists strengths is not a comparison.</p>
+<h3>10.1 Rivet is young</h3>
+<p>The source is at version 2.3.31, commit <code>4a58441c</code>. The version and the commit metadata are in <code>../spec.md:20-22</code>. The maturity statements in this paragraph are general knowledge, not verified here. Kubernetes has a longer public history. Cloudflare Durable Objects is a managed service. Resonate publishes an executable formal model. Temporal publishes many SDKs. Rivet has a large codebase and a test suite, but it has less production history. A young system has more unknown failure modes. The source does not state a stability guarantee for the version 2 Actor path.</p>
+<h3>10.2 Rivet has fewer isolation guarantees than a container</h3>
+<p>An Actor is a task inside a node process. It is not a container, a micro Virtual Machine, or a sandbox. The README says a generated, untrusted code Actor gets its own database and filesystem. The source is <code>README.md:70</code>. That is a product claim. It is not a kernel boundary. Two Actors in one process share the process address space if the runtime or a native module breaks isolation. A container has cgroups, namespaces, seccomp, and often a separate kernel or micro Virtual Machine. A user who runs untrusted code must use a sandbox. The <code>agentOS</code> product is the Rivet answer, but it is a separate product. See <a href="17-the-product-family.html">17 The product family</a>.</p>
+<h3>10.3 The bucket is a single dependency</h3>
+<p>The README says the bucket is the only external durable store. The source is <code>README.md:262</code>. That is a strength in normal operation and a weakness in failure. If the bucket is unavailable, the control plane cannot read cold Actor pages. The write path does not wait for the bucket, but recovery does. A bucket outage is a single dependency for cold data. This snapshot does not establish whether a new Actor needs a bucket read at create. Depot resolves its bucket pointer lazily on first use (<code>engine/packages/depot/README.md:31-34</code>). The README does not state a degraded mode for a bucket outage.</p>
+<p>The bucket is also a cost and a security boundary. The operator must choose Amazon Simple Storage Service (S3), Google Cloud Storage (GCS), Azure Blob Storage, or an S3-compatible store. The operator must manage credentials, versioning, lifecycle, and access policy. The source is <code>README.md:262</code>. A self-hosted deployment needs this skill.</p>
+<h3>10.4 The protocol is complex</h3>
+<p>Rivet has a runner protocol, an envoy protocol, a public API, and a workflow history format. The envoy protocol has versioned message types. The repository has a <code>versioned.rs</code> file with conversions between versions. The source is <code>engine/packages/runner-protocol/src/versioned.rs</code>. A reader who debugs a start failure must follow Guard, Pegboard, the Actor workflow, the envoy, and the Actor runtime. A simpler system with one process and one database has a shorter failure path. The complexity buys density and self-hosting. It also raises the cost of an integration and a debug session.</p>
+<h3>10.5 Self-hosting needs operational skill</h3>
+<p>The README says self-hosting means four things: identical control plane instances, a persistent disk per instance, one bucket, and the nodes. The source is <code>README.md:218</code>. The benchmark page says three control plane instances on raw NVMe in three zones. The source is <code>docs/general/content/benchmarking.mdx:13-18</code>. The benchmark page also says Kubernetes does not give pods raw NVMe, so it cannot reproduce the numbers. The source is <code>docs/general/content/benchmarking.mdx:39</code>. A team that runs Rivet on a managed Kubernetes cluster may not get the published latency. The operator must understand disks, zones, quorum, bucket latency, and node pools. Rivet Cloud and Bring Your Own Cloud (BYOC) remove some of this work. They do not remove the need to understand the model.</p>
+<h3>10.6 The storage claim has a path-dependent limit</h3>
+<p>The README says storage is bottomless. The source is <code>README.md:68</code>. The limits document has a narrower rule. Remote SQL is the mode in which the SQLite queries run on the control plane, not inside the Actor runtime. The maximum database size for remote SQL is 256 MiB (65,536 pages). The page size is 4 kibibytes (KiB), so 65,536 pages give 256 MiB. That limit applies when queries run on the control plane. It always applies on the WebAssembly runtime. It applies on a native runtime when <code>sqlite.backend</code> is set to <code>"remote"</code>. The source is <code>docs/actors/content/docs/limits.mdx:87</code>. The same document limits one transaction to 32,768 changed pages, or 128 MiB. The source is <code>docs/actors/content/docs/limits.mdx:84</code>.</p>
+<p>The WebAssembly runtime is the RivetKit build for runtimes that cannot load native binaries. A user selects it with <code>runtime: "wasm"</code> (<code>docs/actors/content/docs/wasm-vs-native-sdk.mdx:7-12</code>). The limits document does not state why the remote limit always applies on that runtime. This document infers that the WebAssembly build cannot load the native SQLite binding.</p>
+<p>A fair statement is this. The native SQLite path moves pages to the bucket and has no fixed 10 GB limit in the README. The WebAssembly and remote SQL path has a 256 MiB database limit. A user who needs a very large database must use the native path. The README does not make this distinction. The limits document does. This document follows the limits document, which is the detailed source for this rule. This snapshot does not find a code constant for the 256 MiB database limit.</p>
+<h2>11. Diagrams</h2>
+<p>The diagrams summarize the comparison. The first diagram is a decision tree. The second shows the durable unit in each system. The third shows the storage path.</p>
+<h3>11.1 Decision tree by workload shape</h3>
+<p>The tree starts with the shape of the work, not the product name. A reader can follow one branch and reach a short list.</p>
+<div class="mermaid">
+flowchart TD
+    START[&quot;What is the shape of the work?&quot;] --&gt; Q1{&quot;One keyed process&lt;br/&gt;with commands and state?&quot;}
+    Q1 --&gt;|Yes| Q2{&quot;Need a hard container&lt;br/&gt;or GPU boundary?&quot;}
+    Q2 --&gt;|Yes| K8S[&quot;Kubernetes pod&lt;br/&gt;with a Persistent Volume&quot;]
+    Q2 --&gt;|No| Q3{&quot;Must self-host with&lt;br/&gt;native Node.js or Rust?&quot;}
+    Q3 --&gt;|Yes| RIVET[&quot;Rivet Actor&lt;br/&gt;SQLite plus queue plus bucket&quot;]
+    Q3 --&gt;|No| Q3W{&quot;Must self-host&lt;br/&gt;Workers code?&quot;}
+    Q3W --&gt;|Yes| CELLD[&quot;celld cell&lt;br/&gt;V8 plus SQLite plus bucket proof&quot;]
+    Q3W --&gt;|No| Q4{&quot;Already on Cloudflare&lt;br/&gt;and within limits?&quot;}
+    Q4 --&gt;|Yes| DO[&quot;Cloudflare Durable Object&quot;]
+    Q4 --&gt;|No| RIVET
+    Q1 --&gt;|No| QG{&quot;General container workload&lt;br/&gt;database, broker, batch job,&lt;br/&gt;or GPU?&quot;}
+    QG --&gt;|Yes| K8S
+    QG --&gt;|No| Q5{&quot;Multi-step workflow&lt;br/&gt;across services?&quot;}
+    Q5 --&gt;|Yes| Q6{&quot;Need a separate workflow&lt;br/&gt;service?&quot;}
+    Q6 --&gt;|Yes| TEMPORAL[&quot;Temporal workflow&lt;br/&gt;history plus worker fleet&quot;]
+    Q6 --&gt;|No| RPROC[&quot;Rivet Actor&lt;br/&gt;runs the steps in its own process&quot;]
+    Q5 --&gt;|No| Q7{&quot;Need durable promises&lt;br/&gt;across services?&quot;}
+    Q7 --&gt;|Yes| RESONATE[&quot;Resonate promise&lt;br/&gt;plus task&quot;]
+    Q7 --&gt;|No| Q8{&quot;Need an ordered log&lt;br/&gt;for sync or fan-out?&quot;}
+    Q8 --&gt;|Yes| ELECTRIC[&quot;Electric durable stream&lt;br/&gt;append-only offsets&quot;]
+    Q8 --&gt;|No| Q9{&quot;Need Workers API&lt;br/&gt;compatibility?&quot;}
+    Q9 --&gt;|Yes| CELLD[&quot;celld cell&lt;br/&gt;V8 plus SQLite plus bucket proof&quot;]
+    Q9 --&gt;|No| OTHER[&quot;No single fit&lt;br/&gt;combine systems or&lt;br/&gt;revisit requirements&quot;]
+
+</div>
+<p>The tree asks about Workers API compatibility twice. The question applies to two different shapes. A keyed process that must self-host asks it before the Cloudflare check. A non-keyed workload asks it after the log check. The tree has no formal-model node. An executable formal model is a property of Resonate, not a separate workload shape. A reader who requires one should add it as a requirement on the Resonate branch. Gasoline is the internal Rivet engine for control-plane workflows, not a user-facing workflow product (section 5.2). The tree therefore sends the no-separate-service branch to a Rivet Actor, not to Gasoline. The last node is explicit. Kubernetes is not the default for every remaining case. The tree is a guide, not a rule. A real system can use more than one branch. An Actor can write to a stream. A Kubernetes cluster can run the Rivet control plane. A Temporal workflow can call an Actor.</p>
+<h3>11.2 The durable unit in each system</h3>
+<p>The diagram shows one unit for each system. The box labels match the names in this document. An arrow <code>A --> B</code> points from a supporting item to the item that uses it. The support is one of four kinds. A identifies B, A provides state or storage to B, A is a record in B, or A feeds B. For example, <code>RKEY --> RACT</code> means the Actor key identifies the Actor task. <code>RWF --> RACT</code> means the workflow state supports the Actor task. <code>PROW --> RSTORE</code> means the promise row is a record in the storage engine. <code>THIST --> TWORK</code> means the event history feeds the worker replay. All arrows point in one direction.</p>
+<div class="mermaid">
+flowchart TB
+    subgraph RIVET[&quot;Rivet&quot;]
+        RKEY[&quot;Actor key&lt;br/&gt;agent-123&quot;] --&gt; RACT[&quot;Actor task&lt;br/&gt;in a node process&quot;]
+        RSQL[&quot;SQLite database&quot;] --&gt; RACT
+        RKV[&quot;Key-value space&quot;] --&gt; RACT
+        RQ[&quot;Queue and realtime&quot;] --&gt; RACT
+        RWF[&quot;Actor workflow state&lt;br/&gt;in UniversalDB&quot;] --&gt; RACT
+    end
+    subgraph DO[&quot;Cloudflare Durable Objects&quot;]
+        DKEY[&quot;Object identifier&quot;] --&gt; DOBJ[&quot;Durable Object&lt;br/&gt;in the Cloudflare runtime&quot;]
+        DOSQL[&quot;SQLite storage&quot;] --&gt; DOBJ
+        DOKV[&quot;Key-value storage&quot;] --&gt; DOBJ
+    end
+    subgraph K8S[&quot;Kubernetes&quot;]
+        PKEY[&quot;Workload spec&quot;] --&gt; POD[&quot;Pod&lt;br/&gt;container plus sandbox&quot;]
+        PV[&quot;Persistent Volume&quot;] --&gt; POD
+    end
+    subgraph TEMP[&quot;Temporal&quot;]
+        TKEY[&quot;Workflow identifier&quot;] --&gt; THIST[&quot;Event history&lt;br/&gt;in the persistence store&quot;]
+        THIST --&gt; TWORK[&quot;Worker replay&quot;]
+    end
+    subgraph RES[&quot;Resonate&quot;]
+        RID[&quot;Promise identifier&quot;] --&gt; PROW[&quot;Promise row&lt;br/&gt;plus optional task face&quot;]
+        PROW --&gt; RSTORE[&quot;Storage engine&lt;br/&gt;SQLite, PostgreSQL, MySQL,&lt;br/&gt;ScyllaDB, Blob, or Neo4j&quot;]
+    end
+    subgraph ELEC[&quot;Electric&quot;]
+        EURL[&quot;Stream URL&quot;] --&gt; ELOG[&quot;Append-only log&lt;br/&gt;at opaque offsets&quot;]
+        ELOG --&gt; EREAD[&quot;Reader at an offset&quot;]
+    end
+    subgraph CELLD[&quot;celld&quot;]
+        CNAME[&quot;Name&quot;] --&gt; CIDs[&quot;64-hex identifier&quot;]
+        CIDs --&gt; CCELL[&quot;Cell&lt;br/&gt;V8 plus SQLite&quot;]
+        COWN[&quot;Ownership record&lt;br/&gt;cells/scope/own.json&lt;br/&gt;in the bucket&quot;] --&gt; CCELL
+        COWN --&gt; CBUCKET
+        CCELL --&gt; CLTX[&quot;LTX log&lt;br/&gt;under an epoch prefix&quot;]
+        CLTX --&gt; CBUCKET[(&quot;Object store bucket&quot;)]
+    end
+
+</div>
+<p>The diagram shows the central difference. The Rivet Actor owns its state. The Durable Object owns its state. The pod owns a volume. Temporal and Resonate own a history or a promise row. Electric owns a log. celld owns a cell, an ownership record, and a bucket chain.</p>
+<h3>11.3 The storage path comparison</h3>
+<p>The storage path shows where a write becomes durable. This is the part that the marketing tables usually hide.</p>
+<div class="mermaid">
+flowchart LR
+    subgraph RIVETPATH[&quot;Rivet native SQLite path&quot;]
+        RA[&quot;Actor SQLite write&quot;] --&gt; RD[&quot;Depot page index, commit rows,&lt;br/&gt;and delta chunks in UniversalDB&quot;]
+        RD --&gt; RE[&quot;UniversalDB commit to&lt;br/&gt;control-plane replica disks&lt;br/&gt;benchmark setup: 2 of 3 instances&quot;]
+        RE -.-&gt;|&quot;asynchronous cold-tier upload&quot;| RB[(&quot;Object storage bucket&lt;br/&gt;background cold tier&quot;)]
+    end
+    subgraph DOPATH[&quot;Cloudflare Durable Objects&quot;]
+        DA[&quot;Durable Object SQLite write&quot;] --&gt; DB[(&quot;Cloudflare-managed&lt;br/&gt;SQLite storage&quot;)]
+    end
+    subgraph K8SPATH[&quot;Kubernetes&quot;]
+        KA[&quot;Container write&quot;] --&gt; KB[&quot;Persistent Volume&quot;]
+        KB --&gt; KC[&quot;CSI driver&lt;br/&gt;and backing store&quot;]
+    end
+    subgraph TEMPPATH[&quot;Temporal&quot;]
+        TA[&quot;Workflow event&quot;] --&gt; TB[(&quot;Temporal persistence&lt;br/&gt;database&quot;)]
+    end
+    subgraph RESPATH[&quot;Resonate&quot;]
+        RSA[&quot;Promise transition&quot;] --&gt; RSB[(&quot;SQLite, PostgreSQL, MySQL,&lt;br/&gt;ScyllaDB, Blob, or Neo4j&quot;)]
+    end
+    subgraph ELECNODE[&quot;Electric Node.js server&quot;]
+        ENA[&quot;Append&quot;] --&gt; ENB[&quot;One .log file&lt;br/&gt;per stream&quot;]
+        ENA --&gt; ENC[&quot;LMDB metadata&quot;]
+    end
+    subgraph ELECCF[&quot;Electric Cloudflare server&quot;]
+        ECA[&quot;Append&quot;] --&gt; ECQ[(&quot;Durable Object SQLite&quot;)]
+    end
+    subgraph ELECCADDY[&quot;Electric Caddy plugin&quot;]
+        EDA[&quot;Append&quot;] --&gt; EDB[&quot;Segment file&quot;]
+        EDA --&gt; EDC[&quot;bbolt metadata&quot;]
+    end
+    subgraph CELLDPATH[&quot;celld&quot;]
+        CA[&quot;Cell SQLite write&quot;] --&gt; CB[&quot;LTX segment&quot;]
+        CB --&gt; CC{&quot;Durability mode&quot;}
+        CC --&gt;|Fleet proof| CD[&quot;Follower fsync&quot;]
+        CC --&gt;|Bucket proof| CE[(&quot;Bucket upload and&lt;br/&gt;ownership read&quot;)]
+        CD -.-&gt;|&quot;asynchronous upload&lt;br/&gt;after the acknowledgement&quot;| CE
+    end
+
+</div>
+<p>The diagram does not show latency. It shows the dependency. A Rivet write depends on a replicated commit across control plane instances. The benchmark setup uses two of three instances (<code>README.md:155</code>). A Durable Object write depends on the Cloudflare storage service. A pod write depends on the CSI driver. A Temporal write depends on its database. A Resonate write depends on its storage engine. An Electric append depends on the deployment. The Node.js server uses a <code>.log</code> file and an LMDB store. The Cloudflare server uses Durable Object SQLite. The Caddy plugin uses a segment file and bbolt. These are three deployments, not one deployment. A celld write depends on a follower <code>fsync</code> in fleet mode or a bucket upload in bucket mode. The fleet mode upload is asynchronous after the acknowledgement.</p>
+<p><strong>Aha:</strong> The bucket appears in both Rivet and celld, but it plays a different role. In Rivet, the bucket is the cold tier. It is not on the write path. In celld, the bucket is the eventual home of every byte. It is also the proof of an acknowledged write in bucket mode. In fleet mode the proof is a follower <code>fsync</code>, and the upload catches up later. The same component lets one system avoid a bucket round trip on the write path and gives the other a stronger durable proof. The design choice, not the component, decides the guarantee.</p>
+<h2>What to read next</h2>
+<ul><li><a href="04-pegboard-scheduling.html">04 Pegboard</a> explains how an Actor is placed on an</li></ul>
+<p>  envoy and how the runner and envoy paths differ.</p>
+<ul><li><a href="05-gasoline-durable-execution.html">05 Gasoline</a> explains the workflow history</li></ul>
+<p>  and the replay path that this document compares with Temporal.</p>
+<ul><li><a href="06-actor-sqlite-and-depot.html">06 Depot</a> explains the page log, the commit</li></ul>
+<p>  rows, and the path from an Actor SQLite write to the bucket.</p>
+<h2>Glossary</h2>
+<table><tr><th>Term</th><th>Meaning in this document</th></tr><tr><td>Actor</td><td>The Rivet durable process. It has an optional key, state, a SQLite database, a queue, and a schedule.</td></tr><tr><td>Actor key</td><td>The user-facing key inside a namespace. The namespace, the Actor name, and the key select one Actor.</td></tr><tr><td>agentOS</td><td>The Rivet product that gives one agent a small Linux-compatible computer (<a href="17-the-product-family.html">17 The product family</a>).</td></tr><tr><td>Blob</td><td>A Resonate storage backend that is an object store (<code>../../src.resonate/markdown/06-storage-engines.md:7</code>).</td></tr><tr><td>Bucket</td><td>An object storage container. It holds durable bytes outside the control plane.</td></tr><tr><td>Bump subscription</td><td>A notification on the <code>gasoline.worker.bump</code> subject of <code>universalpubsub</code>, the publish-and-subscribe crate. It wakes the Gasoline worker (<code>engine/packages/gasoline/src/db/mod.rs:391-421</code>).</td></tr><tr><td>Cell</td><td>One celld Durable Object instance with one SQLite database and one owner at a time.</td></tr><tr><td>Cold start</td><td>A request that creates a new Actor. The published p50 figure is 6.92 ms (<code>README.md:153</code>).</td></tr><tr><td>Control plane</td><td>The Rivet binary that schedules Actors, routes requests, and stores state. The Kubernetes control plane is a separate set of components. The text says which one it means.</td></tr><tr><td>Depot</td><td>The Rivet per-Actor storage engine. It stores the page index, commit rows, and delta chunks for the SQLite pages.</td></tr><tr><td>Durable Object</td><td>A Cloudflare named object with one identity, a runtime, and SQLite or key-value storage.</td></tr><tr><td>Durable promise</td><td>A Resonate named record with a state, a value, and a deadline.</td></tr><tr><td>Durable stream</td><td>An append-only, ordered log that a client reads from an opaque offset.</td></tr><tr><td>Envoy</td><td>The process on a node that hosts Actors for the version 2 path.</td></tr><tr><td>Epoxy</td><td>The Rivet geo-distributed key-value store for its own consensus keys. It runs single-decree Fast Paxos per key (<code>engine/packages/epoxy/README.md:3</code>). It is not EPaxos. In this snapshot it serves Actor key reservation only (<code>engine/packages/epoxy/README.md:37-42</code>).</td></tr><tr><td>Epoch</td><td>The celld ownership counter that fences a stale writer.</td></tr><tr><td>Gasoline</td><td>The Rivet workflow engine. It runs internal control-plane workflows and keeps their history in UniversalDB.</td></tr><tr><td>Gateway</td><td>In Resonate, the port that accepts requests from a transport and forwards them to the server.</td></tr><tr><td>Guard</td><td>The Rivet request router. It receives a client request and resolves the Actor identity to the current envoy.</td></tr><tr><td>Hibernation</td><td>In Rivet, an opt-in WebSocket behavior: Guard parks the socket while the Actor is not running. In Cloudflare, a platform action that unloads an idle object. The two are not the same (<a href="10-realtime-and-hibernation.html">10 Realtime and hibernation</a>).</td></tr><tr><td>Isolate</td><td>A V8 JavaScript engine instance. Up to 32 cells of one script can share one isolate (<code>MAX_CELLS_PER_ISOLATE</code>; <code>../../src.celld/markdown/04-durable-objects.md:463-465</code>).</td></tr><tr><td>LTX</td><td>Lite Transaction. Depot uses its own LTX V3 file format for stored pages (<code>engine/packages/depot/README.md:52</code>). celld writes SQLite pages as LTX segments in the Litestream format (<code>../../src.celld/markdown/05-cell-storage-and-durability.md:42</code>). The two formats are not the same.</td></tr><tr><td>Origin</td><td>In Resonate, the text before the first colon in a promise identifier (<code>../../src.resonate/markdown/20-deterministic-identifiers.md:9</code>).</td></tr><tr><td>Pegboard</td><td>The Rivet scheduling and placement layer.</td></tr><tr><td>Persistent Volume</td><td>A Kubernetes storage object that outlives a pod.</td></tr><tr><td>Pod</td><td>The Kubernetes scheduling unit: one or more containers and their volumes.</td></tr><tr><td>RivetKit</td><td>The Rivet client and Actor library for TypeScript, Rust, and experimental Python and Swift (<code>README.md:326-329</code>).</td></tr><tr><td>Runner</td><td>The legacy host process that serves Actor commands and opens the <code>/runners/connect</code> WebSocket. The version 2 path calls the same role an envoy (<a href="04-pegboard-scheduling.html">04 Pegboard</a>).</td></tr><tr><td>Server sweep</td><td>The Resonate background loop that fires timers, expires leases, and retries tasks (<code>../../src.resonate/markdown/01-architecture.md:31</code>).</td></tr><tr><td>Snapshot</td><td>A celld LTX segment that carries every page of the database at one transaction.</td></tr><tr><td>SQLite</td><td>An embedded relational database engine. The name is not an acronym for Structured Query Language (SQL).</td></tr><tr><td>Task</td><td>The Resonate executable face of a promise. It is acquired with a lease and a version.</td></tr><tr><td>UniversalDB</td><td>The Rivet transactional key-value store. It holds workflow records and the Depot records for Actor SQLite in different key subspaces.</td></tr><tr><td>Wake</td><td>A signal that moves a sleeping Actor back to an active state. The signal can be a client request through Guard or an alarm. The published p50 figure is 4.37 ms for the client-request case (<code>README.md:154</code>).</td></tr><tr><td>Wake record</td><td>An Electric JSON message that tells a runner to process a stream change. It holds the subscription identifier, the changed stream, the generation, and a timestamp.</td></tr><tr><td>Zig server</td><td>The Resonate server implementation written in the Zig language.</td></tr></table>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

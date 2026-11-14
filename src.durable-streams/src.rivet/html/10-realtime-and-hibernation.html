@@ -1,0 +1,1403 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>10 Realtime connections and hibernation -- src.rivet</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue('--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        toolbar.appendChild(mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); }));
+        toolbar.appendChild(mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); }));
+        toolbar.appendChild(mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); }));
+        toolbar.appendChild(mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); }));
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.rivet/docs</span>
+    <div class="nav-actions">
+      <a href="07-universaldb-and-buckets.html" class="nav-breadcrumb">07 UniversalDB and Buckets</a><a href="08-epoxy-multi-region.html" class="nav-breadcrumb">08 Epoxy and Multi-Datacenter Replication</a><a href="09-guard-routing.html" class="nav-breadcrumb">09 Guard: HTTP and WebSocket routing, TLS, and the reverse proxy</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="09-guard-routing.html" class="nav-btn" title="Previous: 09 Guard: HTTP and WebSocket routing, TLS, and the reverse proxy">← prev</a>
+      <a href="11-rivetkit-typescript.html" class="nav-btn nav-btn-next" title="Next: 11 RivetKit for TypeScript">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>10 Realtime connections and hibernation</h1>
+<p>A Rivet Actor keeps a persistent WebSocket open to each client, sends named events to the clients that subscribed, and parks that socket at the gateway when the Actor sleeps. This document follows one frame in each direction. It starts at the TypeScript client, goes through Guard and the gateway, reaches the runner and the Actor task, and returns as a broadcast. It then follows the same connection through sleep and wake, and it states what the code keeps and what the code drops. The source of truth is commit <code>4a58441c50d1ce20d8803cfb1ab7c3285a5141d6</code>, version 2.3.31. Every path is relative to <code>/Users/darkvoid/GitSources/src.Rivet/rivet</code>. A citation with only a file name uses the path given for that file earlier in this document.</p>
+<p>The code runs in three places. The client is TypeScript. Guard, the gateway, and the control plane are Rust services. The runner process hosts a Rust core and a JavaScript runtime for user handlers. The core owns <code>ConnHandle</code>, the embedded Structured Query Language (SQL) database, subscriptions, and the sleep timer. <code>Conn</code> is the TypeScript view of a <code>ConnHandle</code>, and Node-API (NAPI) calls connect the two. Two runner paths exist: the TypeScript <code>engine-runner</code> and the Rust <code>envoy-client</code> runner.</p>
+<p><strong>Aha:</strong> The code treats a WebSocket as two separate things. One thing is the transport that Guard holds. The other thing is the connection record inside the Actor. The transport can sleep and die. A hibernatable record survives in the embedded SQL database with its identifier, its path, its headers, its subscriptions, and its state. A close, a failed restore, or the 90-second hibernation timeout removes it. This separation is why a client can keep one logical connection across an Actor restart. The obvious alternative is to close every socket at sleep and make the client reconnect. That alternative is simpler, but it loses subscriptions and connection state, and it forces every client to notice the Actor lifecycle.</p>
+<h2>1. The two realtime surfaces</h2>
+<p>An Actor has two network surfaces. A client can call an action over the Hypertext Transfer Protocol (HTTP), and a client can hold a WebSocket open. The two surfaces share actions and events, but they differ in lifetime.</p>
+<table><tr><th>Surface</th><th>Entry point</th><th>Lifetime</th><th>Server state per client</th></tr><tr><td>HTTP action</td><td>The <code>/request</code> endpoint, or an action call through the client</td><td>One request and one response</td><td>No connection record</td></tr><tr><td>WebSocket</td><td><code>PATH_CONNECT</code>, the value <code>"/connect"</code></td><td>Long lived, across sleep and wake</td><td>A <code>ConnHandle</code> with an identifier, parameters, state, and subscriptions</td></tr></table>
+<p>The table shows the <code>/connect</code> value. The constant file also defines <code>PATH_WEBSOCKET_BASE</code> and <code>PATH_WEBSOCKET_PREFIX</code>. The connection flow in this document does not use those two constants.</p>
+<pre><code class="language-typescript">// rivetkit-typescript/packages/rivetkit/src/common/actor-router-consts.ts:3-6
+// MARK: Paths
+export const PATH_CONNECT = &quot;/connect&quot;;
+export const PATH_WEBSOCKET_BASE = &quot;/websocket&quot;;
+export const PATH_WEBSOCKET_PREFIX = &quot;/websocket/&quot;;
+</code></pre>
+<p>The document uses these terms with these meanings.</p>
+<table><tr><th>Term</th><th>Meaning in this source</th></tr><tr><td>Connection</td><td>One WebSocket transport plus one server-side connection record</td></tr><tr><td>Connection ID</td><td>A string that names the record. <code>ConnHandle::connect_with_state_and_prepare</code> makes it with <code>Uuid::new_v4().to_string()</code></td></tr><tr><td>Event</td><td>A named message with arguments. The client protocol type is <code>Event { name, args }</code></td></tr><tr><td>Subscription</td><td>A set of event names on one connection. The Rust field is <code>subscriptions: RwLock<BTreeSet<String>></code></td></tr><tr><td>Broadcast</td><td>A loop over all connections. It sends the event to each connection whose subscription set contains the name</td></tr><tr><td>Presence</td><td>Not a type in the source. Presence is built from <code>ctx.conns</code>, <code>onConnect</code>, <code>onDisconnect</code>, and events</td></tr></table>
+<p>Presence deserves a precise statement. The source has no <code>Presence</code> struct and no presence endpoint. A developer builds presence from the connection map and from events. Section 10 shows the mechanism.</p>
+<p>The HTTP surface is not connectionless in the transport sense. It still uses a Transmission Control Protocol (TCP) connection. It has no per-client record inside the Actor, and it has no subscriptions. The rest of this document concerns the WebSocket surface.</p>
+<h2>2. The client opens a connection</h2>
+<p>The client path starts at <code>ActorHandleRaw.connect</code>. The method builds an <code>ActorConnRaw</code> and returns a proxy. The proxy constructor does not open a socket. The client adds the connection to its list, then calls <code>conn[CONNECT_SYMBOL]()</code>.</p>
+<pre><code class="language-typescript">// rivetkit-typescript/packages/rivetkit/src/client/actor-handle.ts:668-694
+	connect(
+		params?: unknown,
+		options: ActorConnectOptions = {},
+	): ActorConn&lt;AnyActorDefinition&gt; {
+		logger().debug({
+			msg: &quot;establishing connection from handle&quot;,
+			query: this.#actorResolutionState,
+		});
+
+		const connParams = params === undefined ? this.#params : params;
+		const getParams = params === undefined ? this.#getParams : undefined;
+
+		const conn = new ActorConnRaw(
+			this.#client,
+			this.#driver,
+			connParams,
+			getParams,
+			this.#encoding,
+			this.#actorResolutionState,
+			resolveActorGatewayOptions(this.#gatewayOptions, options),
+			this.#currentActorInvocation,
+		);
+
+		return this.#client[CREATE_ACTOR_CONN_PROXY](
+			conn,
+		) as ActorConn&lt;AnyActorDefinition&gt;;
+	}
+</code></pre>
+
+<pre><code class="language-typescript">// rivetkit-typescript/packages/rivetkit/src/client/client.ts:437-447
+	[CREATE_ACTOR_CONN_PROXY]&lt;AD extends AnyActorDefinition&gt;(
+		conn: ActorConnRaw,
+	): ActorConn&lt;AD&gt; {
+		// Save to connection list
+		this[ACTOR_CONNS_SYMBOL].add(conn);
+
+		// Start connection
+		conn[CONNECT_SYMBOL]();
+
+		return createActorProxy(conn) as ActorConn&lt;AD&gt;;
+	}
+</code></pre>
+<p><code>CONNECT_SYMBOL</code> calls <code>#connectWithRetry</code>. That method sets the status to <code>"connecting"</code> and starts <code>pRetry</code> in the background. The retry is deliberately not awaited. The comment at <code>actor-conn.ts:453-454</code> says so.</p>
+<pre><code class="language-typescript">// rivetkit-typescript/packages/rivetkit/src/client/actor-conn.ts:450-484
+	#connectWithRetry() {
+		this.#setConnStatus(&quot;connecting&quot;);
+
+		// Attempt to reconnect indefinitely
+		// This is intentionally not awaited - connection happens in background
+		pRetry(this.#connectAndWait.bind(this), {
+			forever: true,
+			minTimeout: 250,
+			maxTimeout: 30_000,
+
+			onFailedAttempt: (error) =&gt; {
+				logger().warn({
+					msg: &quot;failed to reconnect&quot;,
+					attempt: error.attemptNumber,
+					error: stringifyError(error),
+				});
+			},
+
+			// Cancel retry if aborted
+			signal: this.#abortController.signal,
+		}).catch((err) =&gt; {
+			if (
+				err instanceof AbortError ||
+				(err as Error).name === &quot;AbortError&quot; ||
+				!this.#shouldRetryConnectionOpenError(err)
+			) {
+				logger().info({ msg: &quot;connection retry aborted&quot; });
+			} else {
+				logger().error({
+					msg: &quot;unexpected error in connection retry&quot;,
+					error: stringifyError(err),
+				});
+			}
+		});
+	}
+</code></pre>
+<p>The first attempt calls <code>#connectAndWait</code>. That method creates an open promise, calls <code>#connectWebSocket</code>, and waits. A failure that is not retryable clears the queue, rejects pending actions, dispatches an error, and sets the status to <code>"idle"</code> (<code>actor-conn.ts:502-526</code>). The retry stops because <code>#connectAndWait</code> wraps a non-retryable error in <code>AbortError</code> (<code>actor-conn.ts:522-526</code>). <code>pRetry</code> stops on that class; the outer <code>.catch</code> only logs the result. <code>#shouldRetryConnectionOpenError</code> returns false for <code>ActorConnDisposed</code>. It returns true for an invalid token after one refresh attempt, a stale Actor, <code>get_params_failed</code>, and a retryable lifecycle signal (<code>actor-conn.ts:532-562</code>).</p>
+<p><code>#connectWebSocket</code> asks the driver for a socket at <code>PATH_CONNECT</code>. The driver is an <code>EngineControlClient</code> (<code>actor-conn.ts:209</code>). <code>openWebSocket</code> returns a <code>UniversalWebSocket</code> (<code>engine-client/mod.ts:419-425</code>). The driver attaches the <code>message</code>, <code>close</code>, and <code>error</code> listeners. The socket <code>open</code> event only writes a log line. It does not set the status.</p>
+<pre><code class="language-typescript">// rivetkit-typescript/packages/rivetkit/src/client/actor-conn.ts:598-652
+	async #connectWebSocket() {
+		const params = await this.#resolveConnectionParams();
+		const target = getGatewayTarget(this.#actorResolutionState);
+		const ws = await this.#driver.openWebSocket(
+			PATH_CONNECT,
+			target,
+			this.#encoding,
+			params,
+			this.#gatewayOptions,
+		);
+		invariant(ws, &quot;websocket should have been created&quot;);
+		logger().debug({
+			msg: &quot;opened websocket&quot;,
+			connId: this.#connId,
+			readyState: ws.readyState,
+			messageQueueLength: this.#messageQueue.length,
+		});
+		this.#websocket = ws;
+		ws.addEventListener(&quot;open&quot;, () =&gt; {
+			logger().debug({
+				msg: &quot;client websocket open&quot;,
+				connId: this.#connId,
+			});
+		});
+		ws.addEventListener(&quot;message&quot;, async (ev: { data: ConnMessage }) =&gt; {
+			try {
+				await this.#handleOnMessage(ev.data);
+			} catch (err) {
+				logger().error({
+					msg: &quot;error in websocket message handler&quot;,
+					error: stringifyError(err),
+				});
+			}
+		});
+		ws.addEventListener(&quot;close&quot;, async (ev: Event | CloseEventLike) =&gt; {
+			try {
+				await this.#handleOnClose(ev);
+			} catch (err) {
+				logger().error({
+					msg: &quot;error in websocket close handler&quot;,
+					error: stringifyError(err),
+				});
+			}
+		});
+		ws.addEventListener(&quot;error&quot;, () =&gt; {
+			try {
+				this.#handleOnError();
+			} catch (err) {
+				logger().error({
+					msg: &quot;error in websocket error handler&quot;,
+					error: stringifyError(err),
+				});
+			}
+		});
+	}
+</code></pre>
+<p>The handshake is an application frame, not an HTTP header. The server sends <code>Init</code> with two fields. The client stores both fields and calls <code>#handleOnOpen</code>. Therefore <code>"connected"</code> means "the <code>Init</code> frame arrived", not "the TCP socket opened".</p>
+<pre><code class="language-typescript">// rivetkit-typescript/packages/rivetkit/src/client/actor-conn.ts:744-754
+		if (response.body.tag === &quot;Init&quot;) {
+			// Store connection info
+			this.#actorId = response.body.val.actorId;
+			this.#connId = response.body.val.connectionId;
+			logger().trace({
+				msg: &quot;received init message&quot;,
+				actorId: this.#actorId,
+				connId: this.#connId,
+			});
+			this.#handleOnOpen();
+		} else if (response.body.tag === &quot;Error&quot;) {
+</code></pre>
+<p>The server side has five steps. The upgrade headers carry the client parameters as a URL-encoded JSON value under the <code>WS_PROTOCOL_CONN_PARAMS</code> subprotocol prefix (<code>registry/websocket.rs:859-880</code>). The handler calls <code>connect_conn_with_prepare</code>, which calls <code>connect_with_state_and_prepare</code> (<code>registry/websocket.rs:165-182</code>, <code>context.rs:1225-1251</code>). That function runs <code>create_conn_state</code>, makes the UUID, installs <code>configure_actor_connect_connection</code>, runs the preflight hook, inserts the record, and then runs <code>emit_connection_open</code>, which calls the user <code>onConnect</code> (<code>connection.rs:712-742</code>, <code>napi_actor_events.rs:606-626</code>). Finally the core <code>on_open</code> callback sends <code>Init</code> (<code>registry/websocket.rs:251-285</code>). On a restore the core sets <code>on_open: None</code>, so no new <code>Init</code> is sent (<code>registry/websocket.rs:251-254</code>).</p>
+<p><code>#handleOnOpen</code> checks for a dispose and a duplicate open, then schedules the work in a microtask (<code>actor-conn.ts:655-673</code>). The microtask checks for a dispose again before it sets <code>"connected"</code>, resolves the open promise, re-sends every active subscription, and flushes the queue. A failed flush puts the message back into the queue, because <code>#sendMessage</code> re-queues on failure.</p>
+<pre><code class="language-typescript">// rivetkit-typescript/packages/rivetkit/src/client/actor-conn.ts:686-719
+			logger().debug({
+				msg: &quot;socket open&quot;,
+				messageQueueLength: this.#messageQueue.length,
+				connId: this.#connId,
+			});
+
+			// Update connection state (this also notifies handlers)
+			this.#authRetryAvailable = true;
+			this.#setConnStatus(&quot;connected&quot;);
+
+			// Resolve open promise
+			if (this.#onOpenPromise) {
+				this.#onOpenPromise.resolve(undefined);
+			} else {
+				logger().warn({ msg: &quot;#onOpenPromise is undefined&quot; });
+			}
+
+			// Resubscribe to all active events
+			for (const eventName of this.#eventSubscriptions.keys()) {
+				this.#sendSubscription(eventName, true);
+			}
+
+			// Flush queue
+			//
+			// If the message fails to send, the message will be re-queued
+			const queue = this.#messageQueue;
+			this.#messageQueue = [];
+			logger().debug({
+				msg: &quot;flushing message queue&quot;,
+				queueLength: queue.length,
+			});
+			for (const msg of queue) {
+				this.#sendMessage(msg);
+			}
+</code></pre>
+<p>The client connection object holds the following state.</p>
+<table><tr><th>Field</th><th>Type</th><th>Purpose</th></tr><tr><td><code>#connStatus</code></td><td><code>ActorConnStatus</code></td><td>One of <code>"idle"</code>, <code>"connecting"</code>, <code>"connected"</code>, <code>"disconnected"</code></td></tr><tr><td><code>#actorId</code></td><td>`string \</td><td>undefined`</td><td>Actor identifier from <code>Init</code></td></tr><tr><td><code>#connId</code></td><td>`string \</td><td>undefined`</td><td>Connection identifier from <code>Init</code></td></tr><tr><td><code>#messageQueue</code></td><td>Array of action and subscription frames</td><td>Messages queued before the connection is ready</td></tr><tr><td><code>#actionsInFlight</code></td><td><code>Map<number, ActionInFlight></code></td><td>Pending actions keyed by the numeric action ID</td></tr><tr><td><code>#eventSubscriptions</code></td><td><code>Map<string, Set<EventSubscriptions>></code></td><td>Local listeners for each event name</td></tr><tr><td><code>#errorHandlers</code></td><td><code>Set<ActorErrorCallback></code></td><td>Listeners for connection errors</td></tr><tr><td><code>#openHandlers</code></td><td><code>Set<ConnectionStateCallback></code></td><td>Listeners for the open event</td></tr><tr><td><code>#closeHandlers</code></td><td><code>Set<ConnectionStateCallback></code></td><td>Listeners for the close event</td></tr><tr><td><code>#statusChangeHandlers</code></td><td><code>Set<StatusChangeCallback></code></td><td>Listeners for status changes</td></tr><tr><td><code>#websocket</code></td><td>`UniversalWebSocket \</td><td>undefined`</td><td>The current transport</td></tr><tr><td><code>#authRetryAvailable</code></td><td><code>boolean</code></td><td>False after an authentication failure</td></tr></table>
+<p>The listener Application Programming Interface (API) is <code>on</code>, <code>once</code>, and <code>onError</code>. The first listener for an event name sends a <code>SubscriptionRequest</code> with <code>subscribe: true</code>. The last listener to leave sends <code>subscribe: false</code>. <code>EventSubscriptions</code> is the stored record <code>{ callback, once }</code>.</p>
+<pre><code class="language-typescript">// rivetkit-typescript/packages/rivetkit/src/client/actor-conn.ts:1072-1101
+	#addEventSubscription&lt;Args extends Array&lt;unknown&gt;&gt;(
+		eventName: string,
+		callback: (...args: Args) =&gt; void,
+		once: boolean,
+	): EventUnsubscribe {
+		const listener: EventSubscriptions&lt;Args&gt; = {
+			callback,
+			once,
+		};
+
+		let subscriptionSet = this.#eventSubscriptions.get(eventName);
+		if (subscriptionSet === undefined) {
+			subscriptionSet = new Set();
+			this.#eventSubscriptions.set(eventName, subscriptionSet);
+			this.#sendSubscription(eventName, true);
+		}
+		subscriptionSet.add(listener);
+
+		// Return unsubscribe function
+		return () =&gt; {
+			const listeners = this.#eventSubscriptions.get(eventName);
+			if (listeners) {
+				listeners.delete(listener);
+				if (listeners.size === 0) {
+					this.#eventSubscriptions.delete(eventName);
+					this.#sendSubscription(eventName, false);
+				}
+			}
+		};
+	}
+</code></pre>
+<p>On the Actor side, <code>Conn.send(name, ...args)</code> sends one event to one connection. <code>c.broadcast(name, ...args)</code> sends to every subscribed connection. Inside an action, the context type is <code>ActionContext</code>, which adds <code>conn</code> to <code>ActorContext</code>. The action body receives that context as its first parameter, named <code>c</code> in this document.</p>
+<table><tr><th>Type</th><th>Member</th><th>Meaning</th></tr><tr><td><code>Conn</code></td><td><code>id: string</code></td><td>The connection ID</td></tr><tr><td><code>Conn</code></td><td><code>params: TConnParams</code></td><td>Values from the connection handshake</td></tr><tr><td><code>Conn</code></td><td><code>state: TConnState</code></td><td>Per-connection state</td></tr><tr><td><code>Conn</code></td><td><code>isHibernatable: boolean</code></td><td>True when the connection can survive sleep</td></tr><tr><td><code>Conn</code></td><td><code>send(name, ...args): void</code></td><td>Send one event to this connection</td></tr><tr><td><code>Conn</code></td><td><code>disconnect(reason?): Promise<void></code></td><td>Close this connection</td></tr><tr><td><code>ActionContext</code></td><td><code>conn: Conn</code></td><td>The connection that sent the action</td></tr><tr><td><code>ActorContext</code></td><td><code>conns: Map<string, Conn></code></td><td>Every live connection, keyed by ID</td></tr><tr><td><code>ActorContext</code></td><td><code>broadcast(name, ...args): void</code></td><td>Send an event to every subscribed connection</td></tr></table>
+<pre><code class="language-typescript">// rivetkit-typescript/packages/rivetkit/src/actor/config.ts:367-384
+export interface Conn&lt;
+	_TState = unknown,
+	TConnParams = unknown,
+	TConnState = unknown,
+	_TVars = unknown,
+	_TInput = unknown,
+	_TDatabase extends AnyDatabaseProvider = AnyDatabaseProvider,
+	_TEvents extends EventSchemaConfig = Record&lt;never, never&gt;,
+	_TQueues extends QueueSchemaConfig = Record&lt;never, never&gt;,
+&gt; {
+	id: string;
+	params: TConnParams;
+	state: TConnState;
+	isHibernatable: boolean;
+	send(name: string, ...args: any[]): void;
+	disconnect(reason?: string): Promise&lt;void&gt;;
+	[key: string]: any;
+}
+</code></pre>
+
+<pre><code class="language-typescript">// rivetkit-typescript/packages/rivetkit/src/actor/config.ts:420-439
+	readonly conns: Map&lt;
+		string,
+		Conn&lt;
+			TState,
+			TConnParams,
+			TConnState,
+			TVars,
+			TInput,
+			TDatabase,
+			TEvents,
+			TQueues
+		&gt;
+	&gt;;
+	readonly log: ActorLogger;
+	readonly abortSignal: AbortSignal;
+	readonly aborted: boolean;
+	readonly request?: Request;
+	/** @deprecated No-op. Always returns `false`. Use `keepAwake(promise)` or `waitUntil(promise)` instead. Will be removed in 2.2.0. */
+	readonly preventSleep: boolean;
+	broadcast(name: string, ...args: any[]): void;
+</code></pre>
+<p>The TypeScript <code>broadcast</code> validates the arguments against the event schema, encodes them, and calls the native <code>actorBroadcast</code> entry (<code>registry/native.ts:3287-3299</code>). The actual loop is in Rust.</p>
+<h2>3. The RivetKit wire protocol</h2>
+<p>There are two protocols in this document. The first one is the RivetKit client protocol. A client and an Actor use it. The second one is the runner tunnel protocol. Guard, the gateway, the envoy, and the runner use it. Do not merge them.</p>
+<p>The RivetKit protocol has four versions. The current version is 4. The protocol uses Binary Application Record Encoding (BARE) by default. The encoding can also be JavaScript Object Notation (JSON) or Concise Binary Object Representation (CBOR). A BARE frame is a version prefix from the external <code>vbare</code> package, then one body tag byte, then the fields. The body tag is the first byte after the prefix. This repository calls <code>serializeWithEmbeddedVersion</code> but does not contain the prefix writer (<code>serde.ts:92-105</code>).</p>
+<pre><code class="language-typescript">// rivetkit-typescript/packages/rivetkit/src/common/client-protocol-versioned.ts:7-7
+export const CURRENT_VERSION = 4;
+</code></pre>
+
+<pre><code class="language-typescript">// rivetkit-typescript/packages/rivetkit/src/common/encoding.ts:182-187
+export const EncodingSchema = z.enum([&quot;json&quot;, &quot;cbor&quot;, &quot;bare&quot;]);
+
+/**
+ * Encoding used to communicate between the client &amp; actor.
+ */
+export type Encoding = z.infer&lt;typeof EncodingSchema&gt;;
+</code></pre>
+<p>The version history is small. Version 1 had a <code>connectionToken</code> in <code>Init</code>. Version 2 removed it. Version 3 did not change the client frames. Version 4 added <code>actor: ActorSpecifier | null</code> to <code>Error</code>. <code>ActorSpecifier</code> is <code>{ actorId: string, generation: number, key?: string }</code> (<code>actor/errors.ts:24-28</code>). The converters are at <code>client-protocol-versioned.ts:10-79</code>.</p>
+<pre><code class="language-typescript">// rivetkit-typescript/packages/rivetkit/src/common/bare/generated/client-protocol/v4.ts:146-167
+export type Event = {
+    readonly name: string
+    readonly args: Cbor
+}
+
+export function readEvent(bc: bare.ByteCursor): Event {
+    return {
+        name: bare.readString(bc),
+        args: readCbor(bc),
+    }
+}
+
+export function writeEvent(bc: bare.ByteCursor, x: Event): void {
+    bare.writeString(bc, x.name)
+    writeCbor(bc, x.args)
+}
+
+export type ToClientBody =
+    | { readonly tag: &quot;Init&quot;; readonly val: Init }
+    | { readonly tag: &quot;Error&quot;; readonly val: Error }
+    | { readonly tag: &quot;ActionResponse&quot;; readonly val: ActionResponse }
+    | { readonly tag: &quot;Event&quot;; readonly val: Event }
+</code></pre>
+<table><tr><th>Direction</th><th>Frame</th><th>Tag</th><th>Fields</th><th>Meaning</th></tr><tr><td>Server to client</td><td><code>Init</code></td><td>0</td><td><code>actorId</code>, <code>connectionId</code></td><td>The connection is ready</td></tr><tr><td>Server to client</td><td><code>Error</code></td><td>1</td><td><code>group</code>, <code>code</code>, <code>message</code>, <code>metadata</code>, <code>actionId</code>, <code>actor</code></td><td>An action error or a connection error</td></tr><tr><td>Server to client</td><td><code>ActionResponse</code></td><td>2</td><td><code>id</code>, <code>output</code></td><td>The result of one action</td></tr><tr><td>Server to client</td><td><code>Event</code></td><td>3</td><td><code>name</code>, <code>args</code></td><td>One broadcast or direct event</td></tr><tr><td>Client to server</td><td><code>ActionRequest</code></td><td>0</td><td><code>id</code>, <code>name</code>, <code>args</code></td><td>Call one action</td></tr><tr><td>Client to server</td><td><code>SubscriptionRequest</code></td><td>1</td><td><code>eventName</code>, <code>subscribe</code></td><td>Add or remove a subscription</td></tr></table>
+<pre><code class="language-typescript">// rivetkit-typescript/packages/rivetkit/src/common/bare/generated/client-protocol/v4.ts:246-285
+export type ActionRequest = {
+    readonly id: uint
+    readonly name: string
+    readonly args: Cbor
+}
+
+export function readActionRequest(bc: bare.ByteCursor): ActionRequest {
+    return {
+        id: bare.readUint(bc),
+        name: bare.readString(bc),
+        args: readCbor(bc),
+    }
+}
+
+export function writeActionRequest(bc: bare.ByteCursor, x: ActionRequest): void {
+    bare.writeUint(bc, x.id)
+    bare.writeString(bc, x.name)
+    writeCbor(bc, x.args)
+}
+
+export type SubscriptionRequest = {
+    readonly eventName: string
+    readonly subscribe: boolean
+}
+
+export function readSubscriptionRequest(bc: bare.ByteCursor): SubscriptionRequest {
+    return {
+        eventName: bare.readString(bc),
+        subscribe: bare.readBool(bc),
+    }
+}
+
+export function writeSubscriptionRequest(bc: bare.ByteCursor, x: SubscriptionRequest): void {
+    bare.writeString(bc, x.eventName)
+    bare.writeBool(bc, x.subscribe)
+}
+
+export type ToServerBody =
+    | { readonly tag: &quot;ActionRequest&quot;; readonly val: ActionRequest }
+    | { readonly tag: &quot;SubscriptionRequest&quot;; readonly val: SubscriptionRequest }
+</code></pre>
+<p>The body has a one-byte tag. The tag numbers are part of the wire format, not an internal detail. Version 4 maps <code>Init</code> to 0, <code>Error</code> to 1, <code>ActionResponse</code> to 2, and <code>Event</code> to 3. The client maps <code>ActionRequest</code> to 0 and <code>SubscriptionRequest</code> to 1 (<code>v4.ts:169-186</code>, <code>v4.ts:287-315</code>).</p>
+<p><code>args</code> and <code>output</code> are byte buffers inside the envelope. The selected client encoding decides their contents. With JSON, the value is the JSON form. With CBOR, the value is CBOR. With BARE, the outer frame is BARE and the user value inside the <code>Cbor</code> field is itself CBOR-encoded (<code>serde.ts:75-109</code>, <code>actor-conn.ts:1294-1324</code>). This nested encoding is easy to miss. A BARE frame is not "all user fields inline".</p>
+<h2>4. The runner tunnel protocol</h2>
+<p>The second protocol carries the same WebSocket bytes between Guard and the runner. It has two versions. <code>PROTOCOL_MK1_VERSION</code> is 3, and <code>PROTOCOL_MK2_VERSION</code> is 7. The source is <code>engine/packages/runner-protocol/src/lib.rs:11-12</code>.</p>
+<p>The base identifier is <code>MessageId</code>. It has three fields. <code>gatewayId</code> is globally unique. <code>requestId</code> is unique inside the gateway. <code>messageIndex</code> is unique inside the request. The full type is at <code>engine-runner-protocol/src/index.ts:1028-1041</code>.</p>
+<pre><code class="language-typescript">// rivetkit-typescript/packages/engine-runner-protocol/src/index.ts:1028-1041
+export type MessageId = {
+    /**
+     * Globally unique ID
+     */
+    readonly gatewayId: GatewayId
+    /**
+     * Unique ID to the gateway
+     */
+    readonly requestId: RequestId
+    /**
+     * Unique ID to the request
+     */
+    readonly messageIndex: MessageIndex
+}
+</code></pre>
+<p>The WebSocket frame union has these members.</p>
+<pre><code class="language-typescript">// rivetkit-typescript/packages/engine-runner-protocol/src/index.ts:1176-1227
+export type ToClientWebSocketOpen = {
+    readonly actorId: Id
+    readonly path: string
+    readonly headers: ReadonlyMap&lt;string, string&gt;
+}
+
+export function readToClientWebSocketOpen(bc: bare.ByteCursor): ToClientWebSocketOpen {
+    return {
+        actorId: readId(bc),
+        path: bare.readString(bc),
+        headers: read9(bc),
+    }
+}
+
+export function writeToClientWebSocketOpen(bc: bare.ByteCursor, x: ToClientWebSocketOpen): void {
+    writeId(bc, x.actorId)
+    bare.writeString(bc, x.path)
+    write9(bc, x.headers)
+}
+
+export type ToClientWebSocketMessage = {
+    readonly data: ArrayBuffer
+    readonly binary: boolean
+}
+
+export function readToClientWebSocketMessage(bc: bare.ByteCursor): ToClientWebSocketMessage {
+    return {
+        data: bare.readData(bc),
+        binary: bare.readBool(bc),
+    }
+}
+
+export function writeToClientWebSocketMessage(bc: bare.ByteCursor, x: ToClientWebSocketMessage): void {
+    bare.writeData(bc, x.data)
+    bare.writeBool(bc, x.binary)
+}
+
+function read10(bc: bare.ByteCursor): u16 | null {
+    return bare.readBool(bc) ? bare.readU16(bc) : null
+}
+
+function write10(bc: bare.ByteCursor, x: u16 | null): void {
+    bare.writeBool(bc, x != null)
+    if (x != null) {
+        bare.writeU16(bc, x)
+    }
+}
+
+export type ToClientWebSocketClose = {
+    readonly code: u16 | null
+    readonly reason: string | null
+}
+</code></pre>
+<p>The functions <code>read9</code>/<code>write9</code> and <code>read10</code>/<code>write10</code> are generated helpers. The number is a generator identifier, not a frame tag or a protocol version. <code>read9</code> reads a string map, which is the <code>headers</code> field. <code>read10</code> reads an optional 16-bit integer, which is the <code>code</code> field.</p>
+<pre><code class="language-typescript">// rivetkit-typescript/packages/engine-runner-protocol/src/index.ts:1241-1290
+export type ToServerWebSocketOpen = {
+    readonly canHibernate: boolean
+}
+
+export function readToServerWebSocketOpen(bc: bare.ByteCursor): ToServerWebSocketOpen {
+    return {
+        canHibernate: bare.readBool(bc),
+    }
+}
+
+export function writeToServerWebSocketOpen(bc: bare.ByteCursor, x: ToServerWebSocketOpen): void {
+    bare.writeBool(bc, x.canHibernate)
+}
+
+export type ToServerWebSocketMessage = {
+    readonly data: ArrayBuffer
+    readonly binary: boolean
+}
+
+export function readToServerWebSocketMessage(bc: bare.ByteCursor): ToServerWebSocketMessage {
+    return {
+        data: bare.readData(bc),
+        binary: bare.readBool(bc),
+    }
+}
+
+export function writeToServerWebSocketMessage(bc: bare.ByteCursor, x: ToServerWebSocketMessage): void {
+    bare.writeData(bc, x.data)
+    bare.writeBool(bc, x.binary)
+}
+
+export type ToServerWebSocketMessageAck = {
+    readonly index: MessageIndex
+}
+
+export function readToServerWebSocketMessageAck(bc: bare.ByteCursor): ToServerWebSocketMessageAck {
+    return {
+        index: readMessageIndex(bc),
+    }
+}
+
+export function writeToServerWebSocketMessageAck(bc: bare.ByteCursor, x: ToServerWebSocketMessageAck): void {
+    writeMessageIndex(bc, x.index)
+}
+
+export type ToServerWebSocketClose = {
+    readonly code: u16 | null
+    readonly reason: string | null
+    readonly hibernate: boolean
+}
+</code></pre>
+<table><tr><th>Direction</th><th>Frame</th><th>Meaning</th></tr><tr><td>Gateway to runner</td><td><code>ToClientWebSocketOpen</code></td><td>Open a socket for an actor at a path, with headers</td></tr><tr><td>Gateway to runner</td><td><code>ToClientWebSocketMessage</code></td><td>One client message</td></tr><tr><td>Gateway to runner</td><td><code>ToClientWebSocketClose</code></td><td>Close the socket</td></tr><tr><td>Runner to gateway</td><td><code>ToServerWebSocketOpen</code></td><td>The socket is open. <code>canHibernate</code> enables hibernation</td></tr><tr><td>Runner to gateway</td><td><code>ToServerWebSocketMessage</code></td><td>One actor message</td></tr><tr><td>Runner to gateway</td><td><code>ToServerWebSocketMessageAck</code></td><td>The actor persisted and accepted messages up to <code>index</code></td></tr><tr><td>Runner to gateway</td><td><code>ToServerWebSocketClose</code></td><td>Close the socket. <code>hibernate</code> parks the socket instead of closing the client</td></tr></table>
+<p>The same frames have three names. The TypeScript runner uses <code>engine-runner-protocol</code> with <code>ToClient</code> and <code>ToServer</code>. The Rust runner uses <code>rivet_envoy_protocol</code> with <code>ToEnvoy</code> and <code>ToRivet</code>. The control plane uses the <code>ToEnvoy</code> and <code>ToRivet</code> names. The envoy protocol is version 8 (<code>engine/sdks/rust/envoy-protocol/src/versioned/mod.rs:1148</code>). The Rust runner protocol is MK2, version 7, on the current path (<code>runner2.rs:7</code>); MK1, version 3, is the legacy path (<code>lib.rs:14-16</code>).</p>
+<table><tr><th>Direction</th><th>TypeScript runner</th><th>Rust runner</th></tr><tr><td>Gateway to runner, open / message / close</td><td><code>ToClientWebSocketOpen</code>, <code>ToClientWebSocketMessage</code>, <code>ToClientWebSocketClose</code></td><td><code>ToEnvoyWebSocketOpen</code>, <code>ToEnvoyWebSocketMessage</code>, <code>ToEnvoyWebSocketClose</code></td></tr><tr><td>Runner to gateway, open / message / ack / close</td><td><code>ToServerWebSocketOpen</code>, <code>ToServerWebSocketMessage</code>, <code>ToServerWebSocketMessageAck</code>, <code>ToServerWebSocketClose</code></td><td><code>ToRivetWebSocketOpen</code>, <code>ToRivetWebSocketMessage</code>, <code>ToRivetWebSocketMessageAck</code>, <code>ToRivetWebSocketClose</code></td></tr></table>
+<p>The tunnel union wraps each WebSocket frame with a <code>MessageId</code>. The server direction has seven tags, and the client direction has six. The tag assignments are at <code>index.ts:1309-1346</code> and <code>index.ts:1408-1477</code>.</p>
+<pre><code class="language-typescript">// rivetkit-typescript/packages/engine-runner-protocol/src/index.ts:1309-1322
+export type ToServerTunnelMessageKind =
+    /**
+     * HTTP
+     */
+    | { readonly tag: &quot;ToServerResponseStart&quot;; readonly val: ToServerResponseStart }
+    | { readonly tag: &quot;ToServerResponseChunk&quot;; readonly val: ToServerResponseChunk }
+    | { readonly tag: &quot;ToServerResponseAbort&quot;; readonly val: ToServerResponseAbort }
+    /**
+     * WebSocket
+     */
+    | { readonly tag: &quot;ToServerWebSocketOpen&quot;; readonly val: ToServerWebSocketOpen }
+    | { readonly tag: &quot;ToServerWebSocketMessage&quot;; readonly val: ToServerWebSocketMessage }
+    | { readonly tag: &quot;ToServerWebSocketMessageAck&quot;; readonly val: ToServerWebSocketMessageAck }
+    | { readonly tag: &quot;ToServerWebSocketClose&quot;; readonly val: ToServerWebSocketClose }
+</code></pre>
+
+<div class="mermaid">
+flowchart LR
+    subgraph Client
+        C[ActorConnRaw]
+    end
+    subgraph Edge
+        G[Guard]
+        GW[pegboard-gateway3]
+    end
+    subgraph RunnerHost
+        E[pegboard-envoy]
+        R[engine-runner Tunnel]
+        A[Actor task]
+    end
+    C --&gt;|ToServer ActionRequest or SubscriptionRequest| G
+    G --&gt; GW
+    GW --&gt;|ToClientTunnelMessage| E
+    E --&gt;|ToClientWebSocketMessage| R
+    R --&gt;|RivetKit frame over virtual WebSocket| A
+    A --&gt;|ToClient Event or ActionResponse| R
+    R --&gt;|ToServerWebSocketMessage or Ack| E
+    E --&gt;|ToServerTunnelMessage| GW
+    GW --&gt;|RivetKit ToClient| G
+    G --&gt;|ToClient Event or Init| C
+
+</div>
+<h2>5. How the server holds and broadcasts connections</h2>
+<p>The Actor task owns a connection map. Each entry is a <code>ConnHandle</code>. The handle is a cloned reference to <code>ConnHandleInner</code>.</p>
+<pre><code class="language-rust">// rivetkit-rust/packages/rivetkit-core/src/actor/connection.rs:190-204
+struct ConnHandleInner {
+	id: ConnId,
+	params: Vec&lt;u8&gt;,
+	// Forced-sync: connection handles expose synchronous state and callback
+	// methods to foreign runtimes; callbacks are cloned before async work.
+	state: RwLock&lt;Vec&lt;u8&gt;&gt;,
+	is_hibernatable: bool,
+	dirty: AtomicBool,
+	subscriptions: RwLock&lt;BTreeSet&lt;String&gt;&gt;,
+	hibernation: RwLock&lt;Option&lt;HibernatableConnectionMetadata&gt;&gt;,
+	state_change_handler: RwLock&lt;Option&lt;StateChangeCallback&gt;&gt;,
+	event_sender: RwLock&lt;Option&lt;EventSendCallback&gt;&gt;,
+	transport_disconnect_handler: RwLock&lt;Option&lt;DisconnectCallback&gt;&gt;,
+	disconnect_handler: RwLock&lt;Option&lt;DisconnectCallback&gt;&gt;,
+}
+</code></pre>
+<table><tr><th>Field</th><th>Type</th><th>Purpose</th></tr><tr><td><code>id</code></td><td><code>ConnId</code>, an alias for <code>String</code></td><td>The connection identifier</td></tr><tr><td><code>params</code></td><td><code>Vec<u8></code></td><td>Encoded connection parameters from the handshake</td></tr><tr><td><code>state</code></td><td><code>RwLock<Vec<u8>></code></td><td>Encoded per-connection state</td></tr><tr><td><code>is_hibernatable</code></td><td><code>bool</code></td><td>The connection can park across sleep</td></tr><tr><td><code>dirty</code></td><td><code>AtomicBool</code></td><td>The connection has changes that are not saved</td></tr><tr><td><code>subscriptions</code></td><td><code>RwLock<BTreeSet<String>></code></td><td>Event names this connection accepts</td></tr><tr><td><code>hibernation</code></td><td><code>RwLock<Option<HibernatableConnectionMetadata>></code></td><td>Gateway ID, request ID, indexes, path, headers</td></tr><tr><td><code>state_change_handler</code></td><td><code>RwLock<Option<StateChangeCallback>></code></td><td>Marks the connection dirty and requests a save</td></tr><tr><td><code>event_sender</code></td><td><code>RwLock<Option<EventSendCallback>></code></td><td>Writes one event to the transport</td></tr><tr><td><code>transport_disconnect_handler</code></td><td><code>RwLock<Option<DisconnectCallback>></code></td><td>Drops the transport but keeps the record</td></tr><tr><td><code>disconnect_handler</code></td><td><code>RwLock<Option<DisconnectCallback>></code></td><td>Runs the full disconnect path</td></tr></table>
+<p><code>ConnHandle</code> is a newtype over <code>Arc<ConnHandleInner></code> (<code>connection.rs:187-188</code>). A clone is cheap and shares every field. The <code>RwLock</code> fields make the shared record mutable across clones. <code>subscribe</code> returns true when it inserts the name, and <code>unsubscribe</code> returns true when it removes the name (<code>connection.rs:313-319</code>).</p>
+<p>A new managed connection gets its identifier at <code>connection.rs:718-723</code>. The value is a version 4 Universally Unique Identifier (UUID). The connection is inserted only after the preflight hook <code>emit_connection_preflight</code> succeeds, and it is removed if the open hook <code>emit_connection_open</code> fails (<code>connection.rs:727-742</code>).</p>
+<p>The <code>broadcast</code> method is a loop with one filter. The native <code>actorBroadcast</code> calls it (<code>registry/native.ts:3287-3299</code>), and <code>ConnHandle::send</code> calls the event sender.</p>
+<pre><code class="language-rust">// rivetkit-rust/packages/rivetkit-core/src/actor/context.rs:997-1012
+	pub fn broadcast(&amp;self, name: &amp;str, args: &amp;[u8]) {
+		for connection in self.conns() {
+			if connection.is_subscribed(name) {
+				connection.send(name, args);
+			}
+		}
+	}
+
+	/// Returns a lock-backed iterator over live connections.
+	///
+	/// Do not hold the returned iterator across `.await`. It keeps a read lock
+	/// on the connection map until dropped, which blocks connection writers.
+	#[must_use]
+	pub fn conns(&amp;self) -&gt; ConnHandles&lt;&#x27;_&gt; {
+		self.iter_connections()
+	}
+</code></pre>
+<p><code>send</code> does not panic on failure. It logs the error and continues. The loop therefore reaches every other connection even when one sender is gone.</p>
+<pre><code class="language-rust">// rivetkit-rust/packages/rivetkit-core/src/actor/connection.rs:276-285
+	pub fn send(&amp;self, name: &amp;str, args: &amp;[u8]) {
+		if let Err(error) = self.try_send(name, args) {
+			tracing::error!(
+				?error,
+				conn_id = self.id(),
+				event_name = name,
+				&quot;failed to send event to connection&quot;
+			);
+		}
+	}
+</code></pre>
+
+<pre><code class="language-rust">// rivetkit-rust/packages/rivetkit-core/src/actor/connection.rs:401-415
+	pub(crate) fn try_send(&amp;self, name: &amp;str, args: &amp;[u8]) -&gt; Result&lt;()&gt; {
+		let event_sender = self.event_sender()?;
+		event_sender(OutgoingEvent {
+			name: name.to_owned(),
+			args: args.to_vec(),
+		})
+	}
+
+	fn event_sender(&amp;self) -&gt; Result&lt;EventSendCallback&gt; {
+		self.0
+			.event_sender
+			.read()
+			.clone()
+			.ok_or_else(|| connection_not_configured(&quot;event sender&quot;))
+	}
+</code></pre>
+<p><code>is_subscribed</code> and <code>subscribe</code> operate on the <code>BTreeSet</code>.</p>
+<pre><code class="language-rust">// rivetkit-rust/packages/rivetkit-core/src/actor/connection.rs:313-327
+	pub(crate) fn subscribe(&amp;self, event_name: impl Into&lt;String&gt;) -&gt; bool {
+		self.0.subscriptions.write().insert(event_name.into())
+	}
+
+	pub(crate) fn unsubscribe(&amp;self, event_name: &amp;str) -&gt; bool {
+		self.0.subscriptions.write().remove(event_name)
+	}
+
+	pub(crate) fn is_subscribed(&amp;self, event_name: &amp;str) -&gt; bool {
+		self.0.subscriptions.read().contains(event_name)
+	}
+
+	pub(crate) fn subscriptions(&amp;self) -&gt; Vec&lt;String&gt; {
+		self.0.subscriptions.read().iter().cloned().collect()
+	}
+</code></pre>
+<p>The event sender is installed when the transport is configured. For the RivetKit actor path, <code>configure_actor_connect_connection</code> wraps the <code>WebSocketSender</code> and encodes an <code>ActorConnectToClient::Event</code>. An outgoing message that is too long closes the socket with code 1011 and reason <code>message.outgoing_too_long</code>. The send itself returns <code>Ok(())</code> (<code>registry/websocket.rs:722-740</code>).</p>
+<p>The subscription path is important for hibernation. When a <code>SubscriptionRequest</code> arrives on a hibernatable connection, the Actor first records the message index, requests a save, and acknowledges the message to the gateway. Then it applies the subscription. A failure to persist closes the socket with <code>actor.hibernation_persist_failed</code>. The ack does not wait for the save to commit. <code>persist_and_ack_hibernatable_actor_message</code> changes the in-memory metadata, queues a delta, calls <code>request_save</code>, and sends the ack (<code>websocket.rs:744-759</code>). <code>dispatch_subscribe_request</code> then runs <code>onBeforeSubscribe</code> with the 5-second <code>onBeforeConnectTimeout</code>; a hook error closes the socket with the error group and code (<code>dispatch.rs:139-156</code>, <code>napi_actor_events.rs:644-662</code>).</p>
+<pre><code class="language-rust">// rivetkit-rust/packages/rivetkit-core/src/registry/websocket.rs:313-352
+						ActorConnectToServer::SubscriptionRequest(request) =&gt; {
+							if conn.is_hibernatable()
+								&amp;&amp; let Err(error) = persist_and_ack_hibernatable_actor_message(
+									&amp;ctx,
+									&amp;conn,
+									message.message_index,
+								)
+								.await
+							{
+								tracing::warn!(
+									?error,
+									conn_id = conn.id(),
+									&quot;failed to persist and ack hibernatable actor websocket message&quot;
+								);
+								message.sender.close(
+									Some(1011),
+									Some(&quot;actor.hibernation_persist_failed&quot;.to_owned()),
+								);
+								return;
+							}
+							if request.subscribe {
+								if let Err(error) = dispatch_subscribe_request(
+									&amp;ctx,
+									conn.clone(),
+									request.event_name.clone(),
+								)
+								.await
+								{
+									let error = RivetError::extract(&amp;error);
+									message.sender.close(
+										Some(1011),
+										Some(format!(&quot;{}.{}&quot;, error.group(), error.code())),
+									);
+									return;
+								}
+								conn.subscribe(request.event_name);
+							} else {
+								conn.unsubscribe(&amp;request.event_name);
+							}
+						}
+</code></pre>
+<h2>6. What hibernation keeps and what it drops</h2>
+<p>Hibernation applies only to a WebSocket that the Actor marks as hibernatable. The TypeScript option is <code>canHibernateWebSocket</code>. Its default is <code>false</code> (<code>actor/config.ts:1280-1282</code>). The native bridge reads it at <code>registry/native.ts:3906</code> and passes it to the Rust core. The runner reports the result to the gateway as <code>can_hibernate</code> in <code>ToServerWebSocketOpen</code> (<code>envoy-client/src/actor.rs:1000-1004</code>). The persisted record has ten fields, and the Rust encoder writes them with BARE.</p>
+<pre><code class="language-rust">// rivetkit-rust/packages/rivetkit-core/src/actor/connection.rs:358-377
+	pub(crate) fn persisted_with_state(&amp;self, state: Vec&lt;u8&gt;) -&gt; Option&lt;PersistedConnection&gt; {
+		let hibernation = self.0.hibernation.read().clone()?;
+
+		Some(PersistedConnection {
+			id: self.id().to_owned(),
+			parameters: self.params(),
+			state,
+			subscriptions: self
+				.subscriptions()
+				.into_iter()
+				.map(|event_name| PersistedSubscription { event_name })
+				.collect(),
+			gateway_id: hibernation.gateway_id,
+			request_id: hibernation.request_id,
+			server_message_index: hibernation.server_message_index,
+			client_message_index: hibernation.client_message_index,
+			request_path: hibernation.request_path,
+			request_headers: hibernation.request_headers.into_iter().collect(),
+		})
+	}
+</code></pre>
+<p>The <code>?</code> on <code>self.0.hibernation.read().clone()</code> means a connection without hibernation metadata returns <code>None</code>. No row is written for that connection (<code>connection.rs:358-359</code>).</p>
+<table><tr><th>Persisted</th><th>Source</th><th>Use after wake</th></tr><tr><td><code>id</code></td><td><code>ConnHandle::id()</code></td><td>Reuse the same connection ID</td></tr><tr><td><code>parameters</code></td><td>The handshake params</td><td>Rebuild the connection object</td></tr><tr><td><code>state</code></td><td><code>state: Vec<u8></code> from the runtime</td><td>Restore per-connection state</td></tr><tr><td><code>subscriptions</code></td><td><code>BTreeSet<String></code></td><td>Restore event routing without a new subscribe frame</td></tr><tr><td><code>gateway_id</code></td><td><code>HibernatableConnectionMetadata</code></td><td>Match the parked transport</td></tr><tr><td><code>request_id</code></td><td><code>HibernatableConnectionMetadata</code></td><td>Match the parked transport</td></tr><tr><td><code>server_message_index</code></td><td>The last client-to-Actor data index recorded. A new connection stores 0, which is the open-frame index; the first data message is 1</td><td>The next expected incoming index is this value plus 1, modulo 65,536</td></tr><tr><td><code>client_message_index</code></td><td>The next Actor-to-client index. The core writes 0 and has no setter, so every restore starts again at 0</td><td>Seed <code>envoy_message_index</code> for Actor-to-client messages</td></tr><tr><td><code>request_path</code></td><td>The original upgrade path</td><td>Rebuild the request</td></tr><tr><td><code>request_headers</code></td><td>The original upgrade headers</td><td>Rebuild the request</td></tr></table>
+<p>The persisted record has no callbacks. <code>from_persisted</code> creates a new handle with none of the four callback fields. A NAPI callback belongs to the previous runtime and cannot be reused after wake. The restore path rebuilds the handlers. <code>prepare_managed_conn</code> installs the state-change and disconnect handlers (<code>connection.rs:820-855</code>). <code>configure_actor_connect_connection</code> installs the event sender (<code>registry/websocket.rs:699-742</code>). <code>engine/CLAUDE.md:119</code> states the same rule.</p>
+<pre><code class="language-rust">// rivetkit-rust/packages/rivetkit-core/src/actor/connection.rs:379-399
+	pub(crate) fn from_persisted(persisted: PersistedConnection) -&gt; Self {
+		let conn = Self::new(
+			persisted.id.clone(),
+			persisted.parameters,
+			persisted.state,
+			true,
+		);
+		conn.configure_hibernation(Some(HibernatableConnectionMetadata {
+			gateway_id: persisted.gateway_id,
+			request_id: persisted.request_id,
+			server_message_index: persisted.server_message_index,
+			client_message_index: persisted.client_message_index,
+			request_path: persisted.request_path,
+			request_headers: persisted.request_headers.into_iter().collect(),
+		}));
+		for subscription in persisted.subscriptions {
+			conn.subscribe(subscription.event_name);
+		}
+		conn.clear_hibernation_dirty();
+		conn
+	}
+</code></pre>
+<p>The restore is a two-stage process. First, <code>restore_persisted</code> loads every row from SQLite and inserts a <code>ConnHandle</code> for each row. The handle has no transport yet. Then, when a start command names a parked request, <code>reconnect_hibernatable</code> finds the handle by gateway ID and request ID. It reuses the connection ID and does not call <code>onConnect</code>.</p>
+<p>Three open callbacks are easy to confuse.</p>
+<table><tr><th>Hook</th><th>Owner</th><th>New connection</th><th>Restore</th></tr><tr><td><code>onConnect</code></td><td>Actor configuration, run by <code>emit_connection_open</code> (<code>actor/config.ts:1781</code>, <code>napi_actor_events.rs:606-626</code>)</td><td>Runs after the record is inserted</td><td>Does not run</td></tr><tr><td>Core <code>on_open</code></td><td>Actor core <code>WebSocketHandler</code> (<code>registry/websocket.rs:251-285</code>)</td><td>Sends <code>Init</code></td><td><code>None</code>, so no new <code>Init</code></td></tr><tr><td>Runner <code>on_open</code></td><td>Runner WebSocket handler (<code>envoy-client/src/actor.rs:1016-1029</code>)</td><td>Runs on open</td><td>The Rust runner runs it; the TypeScript runner does not</td></tr></table>
+<p>The second path starts in the same core. <code>restore_hibernatable_connections</code> builds <code>HibernatingWebSocketMetadata</code> from the restored handles and calls <code>envoy_handle.restore_hibernating_requests(actor_id, meta_entries)</code> (<code>context.rs:1434-1457</code>). The envoy passes <code>meta.path</code> and <code>meta.headers</code> to the runner's <code>websocket</code> callback, which rebuilds each handler. The runner does not read the Actor's SQLite file; the core sends the metadata through the envoy handle. Section 7 follows this path. <code>gateway_id</code> and <code>request_id</code> are 4-byte arrays (<code>connection.rs:45-46</code>). They are not the connection ID string. The connection ID is <code>id</code>, and it is the version 4 UUID.</p>
+<pre><code class="language-rust">// rivetkit-rust/packages/rivetkit-core/src/actor/connection.rs:770-818
+	pub(crate) async fn restore_persisted(&amp;self) -&gt; Result&lt;Vec&lt;ConnHandle&gt;&gt; {
+		let persisted_connections = internal_storage::load_connections(self.sql())
+			.await
+			.context(&quot;load hibernatable connections from sqlite&quot;)?;
+		let mut restored = Vec::new();
+
+		for persisted in persisted_connections {
+			let conn = ConnHandle::from_persisted(persisted);
+			self.prepare_managed_conn(&amp;conn);
+			self.insert_existing(conn.clone());
+			tracing::debug!(
+				actor_id = %self.actor_id(),
+				conn_id = conn.id(),
+				&quot;hibernatable connection restored&quot;
+			);
+			restored.push(conn);
+		}
+
+		Ok(restored)
+	}
+
+	pub(crate) fn reconnect_hibernatable(
+		&amp;self,
+		gateway_id: &amp;[u8],
+		request_id: &amp;[u8],
+	) -&gt; Result&lt;ConnHandle&gt; {
+		let gateway_id = hibernatable_id_from_slice(&quot;gateway_id&quot;, gateway_id)?;
+		let request_id = hibernatable_id_from_slice(&quot;request_id&quot;, request_id)?;
+		let Some(conn) = self
+			.iter_connections()
+			.find(|conn| match conn.hibernation() {
+				Some(hibernation) =&gt; {
+					hibernation.gateway_id == gateway_id &amp;&amp; hibernation.request_id == request_id
+				}
+				None =&gt; false,
+			})
+		else {
+			return Err(ConnectionRestoreNotFound.build());
+		};
+
+		self.record_connections_updated();
+		self.reset_sleep_timer();
+		tracing::debug!(
+			actor_id = %self.actor_id(),
+			conn_id = conn.id(),
+			&quot;hibernatable connection transport restored&quot;
+		);
+		Ok(conn)
+	}
+</code></pre>
+<p>The database tables are <code>_rivet_conns</code> and <code>_rivet_conn_state</code>. <code>StateDelta</code> is the enum passed to <code>save_state</code>. The connection delta is <code>StateDelta::ConnHibernation</code>; the removal delta is <code>StateDelta::ConnHibernationRemoved</code>. The TypeScript bridge sends each delta as <code>connHibernation</code> or <code>connHibernationRemoved</code>. The <code>state</code> field is separate: it is the Actor state read from the runtime, not a connection delta (<code>registry/native.ts:3349-3377</code>). The Rust NAPI layer restores connection state with <code>restore_hibernatable_conn</code>, which calls <code>conn.set_state_initial</code> (<code>rivetkit-typescript/packages/rivetkit-napi/src/actor_context.rs:264-271</code>).</p>
+<p>The browser-facing side of hibernation is the gateway request state. The enum has <code>Active</code>, <code>PendingHibernation</code>, and <code>Hibernating</code>. <code>start_hibernation</code> moves <code>Active</code> to <code>PendingHibernation</code> (<code>shared_state.rs:1519-1547</code>). <code>handle_websocket_hibernation</code> calls <code>get_hibernating_in_flight_request</code>, which calls <code>hibernate</code> (<code>lib.rs:766</code>, <code>shared_state.rs:515-555</code>, <code>2280-2316</code>). The exact enum is <code>InFlightRequestState</code> in <code>engine/packages/pegboard-gateway3/src/shared_state.rs:2390-2410</code>. The gateway parks the request only after the Actor stops. The order is: the core queues the hibernation delta and requests a save; the Actor exits; the runner reports the stop; the gateway runs <code>start_hibernation</code>; then <code>hibernate</code> parks the request.</p>
+<div class="mermaid">
+stateDiagram-v2
+    [*] --&gt; idle
+    idle --&gt; connecting: connect called, setConnStatus connecting
+    connecting --&gt; connected: Init frame arrives, setConnStatus connected
+    connecting --&gt; idle: non-retryable open failure
+    connecting --&gt; disconnected: socket close before Init
+    connected --&gt; disconnected: socket close, setConnStatus disconnected
+    disconnected --&gt; connecting: wasConnected and authRetryAvailable
+    disconnected --&gt; connected: retry opens and Init arrives
+    connected --&gt; idle: dispose, setConnStatus idle
+    disconnected --&gt; idle: non-retryable close or dispose
+
+    state &quot;Gateway request&quot; as Gateway {
+        [*] --&gt; Active
+        Active --&gt; PendingHibernation: start_hibernation
+        PendingHibernation --&gt; Hibernating: hibernate
+        PendingHibernation --&gt; Active: wake
+        Hibernating --&gt; Active: wake
+        Active --&gt; Active: wake replaces the channels
+        PendingHibernation --&gt; [*]: stop
+        Hibernating --&gt; [*]: stop (close or timeout)
+        Active --&gt; [*]: stop
+    }
+
+</div>
+<p>The client machine is from <code>actor-conn.ts:451</code>, <code>502-526</code>, <code>520</code>, <code>694</code>, <code>889</code>, <code>977-982</code>, and <code>1518</code>. The gateway machine is from <code>shared_state.rs:1519-1547</code>, <code>shared_state.rs:2280-2316</code>, and the enum at <code>shared_state.rs:2390-2410</code>.</p>
+<p>The two machines are independent. A client can be <code>"connecting"</code> while the server record is <code>Hibernating</code>. This is normal. The TCP socket is open, but <code>Init</code> has not arrived, so the client status stays <code>"connecting"</code>. Guard holds the socket and waits for a runner. The gateway WebSocket open timeout is 15 seconds (<code>config/pegboard.rs:306-308</code>).</p>
+<h2>7. The sleep and wake sequence</h2>
+<p>Idle sleep uses a deadline and a predicate. The deadline is <code>sleepTimeout</code>, which defaults to 30,000 ms (<code>actor/config.ts:1314</code>). The grace window is <code>sleepGracePeriod</code>, which defaults to 15,000 ms (<code>actor/config.ts:21</code>, <code>1300-1303</code>). The predicate is <code>can_arm_sleep_timer</code>. It returns the first blocking reason.</p>
+<pre><code class="language-rust">// rivetkit-rust/packages/rivetkit-core/src/actor/sleep.rs:65-77
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CanSleep {
+	Yes,
+	NotReady,
+	NoSleep,
+	ActiveHttpRequests,
+	ActiveKeepAwake,
+	ActiveInternalKeepAwake,
+	ActiveRunHandler,
+	ActiveDisconnectCallbacks,
+	ActiveConnections,
+	ActiveWebSocketCallbacks,
+}
+</code></pre>
+
+<pre><code class="language-rust">// rivetkit-rust/packages/rivetkit-core/src/actor/sleep.rs:249-282
+	pub(crate) async fn can_arm_sleep_timer(&amp;self) -&gt; CanSleep {
+		let config = self.sleep_state_config();
+		if !self.0.sleep.lifecycle_started.load(Ordering::SeqCst) {
+			return CanSleep::NotReady;
+		}
+		if config.no_sleep {
+			return CanSleep::NoSleep;
+		}
+		if self.active_http_request_count() &gt; 0 {
+			return CanSleep::ActiveHttpRequests;
+		}
+		if self.sleep_keep_awake_count() &gt; 0 {
+			return CanSleep::ActiveKeepAwake;
+		}
+		if self.sleep_internal_keep_awake_count() &gt; 0 {
+			return CanSleep::ActiveInternalKeepAwake;
+		}
+		// Queue receives are sleep-compatible: sleep aborts the wait via the
+		// actor abort token, then the next generation restarts the run loop.
+		if self.run_handler_active() &amp;&amp; self.active_queue_wait_count() == 0 {
+			return CanSleep::ActiveRunHandler;
+		}
+		if self.pending_disconnect_count() &gt; 0 {
+			return CanSleep::ActiveDisconnectCallbacks;
+		}
+		if !self.conns().is_empty() {
+			return CanSleep::ActiveConnections;
+		}
+		if self.websocket_callback_count() &gt; 0 {
+			return CanSleep::ActiveWebSocketCallbacks;
+		}
+
+		CanSleep::Yes
+	}
+</code></pre>
+<p>This predicate creates a tension that the reader must see. A live connection is a blocker, because <code>ActiveConnections</code> appears when <code>!self.conns().is_empty()</code>. Therefore an Actor with any connection does not sleep from the idle timer. The timer path logs "sleep idle deadline elapsed but actor stayed awake" and resets the deadline (<code>task.rs:2213-2219</code>). The files opened here show no automatic idle hibernation while a connection record exists.</p>
+<p>An explicit sleep intent resolves the tension. Three inputs send the intent. <code>c.sleep()</code> calls <code>request_sleep_from_envoy</code> (<code>context.rs:653-687</code>). The envoy <code>sleep_actor</code> sends <code>ActorIntentSleep</code> (<code>envoy-client/src/handle.rs:166-176</code>). The public sleep endpoint signals <code>Main::Sleep</code> (<code>api-peer/src/actors/sleep.rs:39-45</code>). The workflow turns each input into <code>CommandStopActor { reason: StopActorReason::SleepIntent }</code> (<code>engine/packages/pegboard/src/workflows/actor2/mod.rs:721-743</code>, <code>933-963</code>). The full sleep lifecycle is in <a href="03-actors-and-lifecycle.html">03 Actors</a>.</p>
+<p>The grace phase treats a hibernatable connection differently from a normal connection. A normal connection receives <code>DisconnectConn</code>. A hibernatable connection receives <code>request_hibernation_transport_save</code>. The code does not close it. The core queues a hibernation delta and requests a save (<code>context.rs:1285-1288</code>). The save is requested, not awaited. The socket stays open. The gateway parks the request after the Actor stops.</p>
+<pre><code class="language-rust">// rivetkit-rust/packages/rivetkit-core/src/actor/task.rs:784-802
+	fn emit_grace_events(&amp;mut self, reason: ShutdownKind) {
+		let conns: Vec&lt;_&gt; = self.ctx.conns().collect();
+		for conn in conns {
+			let hibernatable_sleep =
+				matches!(reason, ShutdownKind::Sleep) &amp;&amp; conn.is_hibernatable();
+			if hibernatable_sleep {
+				self.ctx.request_hibernation_transport_save(conn.id());
+				continue;
+			}
+			self.ctx.begin_core_dispatched_hook();
+			let reply = self.core_dispatched_hook_reply(&quot;disconnect_conn&quot;);
+			let conn_id = conn.id().to_owned();
+			if let Err(error) = self.send_actor_event(
+				&quot;grace_disconnect_conn&quot;,
+				ActorEvent::DisconnectConn { conn_id, reply },
+			) {
+				tracing::error!(?error, &quot;failed to enqueue disconnect cleanup event&quot;);
+			}
+		}
+</code></pre>
+<p><code>ShutdownKind</code> is <code>Sleep</code> or <code>Destroy</code>. Only <code>Sleep</code> saves a hibernatable transport (<code>task.rs:784-802</code>).</p>
+<pre><code class="language-rust">// rivetkit-rust/packages/rivetkit-core/src/actor/context.rs:1285-1288
+	pub(crate) fn request_hibernation_transport_save(&amp;self, conn_id: &amp;str) {
+		self.queue_hibernation_update(conn_id.to_owned());
+		self.request_save(RequestSaveOpts::default());
+	}
+</code></pre>
+<p>The wake path starts with a new message for a parked request. Guard sees the hibernating socket, sends the <code>Wake</code> signal, and waits for <code>Ready</code>. <code>Ready</code> is the Pegboard workflow signal that carries the <code>envoy_key</code>, the name of the envoy process that hosts the Actor (<code>engine/packages/guard/src/routing/pegboard_gateway/mod.rs:526</code>, <code>616-622</code>). The envoy <code>hydrate_command_wrapper</code> fills <code>CommandStartActor.hibernating_requests</code> before the start command reaches the runner (<code>hibernating_requests.rs:5-27</code>). The list operation takes one <code>actor_id</code> and returns <code>gateway_id</code> and <code>request_id</code> (<code>pegboard/src/ops/actor/hibernating_request/list.rs:15-18</code>). The gateway keepalive task upserts the record every 45 seconds, half of the 90-second <code>hibernating_request_eligible_threshold</code> (<code>keepalive_task.rs:24-30</code>, <code>config/pegboard.rs:271-274</code>). The full 90 seconds is the age at which the gateway expires a silent request (<code>shared_state.rs:218</code>, <code>2366-2375</code>).</p>
+<pre><code class="language-rust">// engine/packages/pegboard-envoy/src/hibernating_requests.rs:5-27
+/// Hydrates ephemeral hibernating request ids before a start command reaches envoy.
+/// Stored serverful commands keep this empty because request ids can change while
+/// queued commands wait for envoy reconnect.
+pub(crate) async fn hydrate_command_wrapper(
+	ctx: &amp;StandaloneCtx,
+	command_wrapper: &amp;mut protocol::CommandWrapper,
+) -&gt; Result&lt;()&gt; {
+	if let protocol::Command::CommandStartActor(start) = &amp;mut command_wrapper.inner {
+		let actor_id =
+			Id::parse(&amp;command_wrapper.checkpoint.actor_id).context(&quot;invalid command actor id&quot;)?;
+		start.hibernating_requests = ctx
+			.op(pegboard::ops::actor::hibernating_request::list::Input { actor_id })
+			.await?
+			.into_iter()
+			.map(|request| protocol::HibernatingRequest {
+				gateway_id: request.gateway_id,
+				request_id: request.request_id,
+			})
+			.collect();
+	}
+
+	Ok(())
+}
+</code></pre>
+<p>The runner rebuilds each connection in a fixed order. First, it restores the record and rebuilds the request from the path and headers. Then it builds a new handler from the callback, rebinds the route, and sends an open acknowledgement. Finally, it starts the outgoing task and calls <code>on_open</code>.</p>
+<p>Two records take part. The Actor-side SQLite row holds the connection state. The runner-side <code>HibernatingWebSocketMetadata</code> holds the transport route: <code>gateway_id</code>, <code>request_id</code>, <code>envoy_message_index</code>, <code>rivet_message_index</code>, <code>path</code>, and <code>headers</code> (<code>context.rs:1438-1451</code>). <code>meta_entries</code> is the list of the second kind. <code>meta.envoy_message_index</code> seeds the outgoing index, and <code>meta.rivet_message_index</code> seeds the incoming index (<code>actor.rs:925</code>, <code>970</code>). The two <code>true</code> arguments are <code>is_hibernatable</code> and <code>is_restoring_hibernatable</code> (<code>actor.rs:1363-1375</code>). The open acknowledgement is <code>ToRivetWebSocketOpen</code> in the envoy protocol. It is the same frame as <code>ToServerWebSocketOpen</code> in the runner protocol (<code>actor.rs:996-1006</code>).</p>
+<pre><code class="language-rust">// engine/sdks/rust/envoy-client/src/actor.rs:914-1029
+	let hibernating_requests = std::mem::take(&amp;mut ctx.hibernating_requests);
+
+	for hib_req in &amp;hibernating_requests {
+		let meta = meta_entries.iter().find(|entry| {
+			entry.gateway_id == hib_req.gateway_id &amp;&amp; entry.request_id == hib_req.request_id
+		});
+
+		if let Some(meta) = meta {
+			ctx.websocket_requests.insert(
+				&amp;[&amp;hib_req.gateway_id, &amp;hib_req.request_id],
+				WebSocketRequestState {
+					envoy_message_index: meta.envoy_message_index,
+				},
+			);
+
+			let mut full_headers = meta.headers.clone();
+			full_headers.insert(&quot;Upgrade&quot;.to_string(), &quot;websocket&quot;.to_string());
+			full_headers.insert(&quot;Connection&quot;.to_string(), &quot;Upgrade&quot;.to_string());
+
+			let request = HttpRequest {
+				method: &quot;GET&quot;.to_string(),
+				path: meta.path.clone(),
+				headers: full_headers.clone(),
+				body: None,
+				body_stream: None,
+			};
+
+			let (hws_outgoing_tx, hws_outgoing_rx) = mpsc::unbounded_channel();
+			let hws_sender = WebSocketSender {
+				tx: hws_outgoing_tx.clone(),
+			};
+
+			let ws_result = ctx
+				.shared
+				.config
+				.callbacks
+				.websocket(
+					handle.clone(),
+					ctx.actor_id.clone(),
+					hib_req.gateway_id,
+					hib_req.request_id,
+					request,
+					meta.path.clone(),
+					full_headers,
+					true,
+					true,
+					hws_sender,
+				)
+				.await;
+
+			match ws_result {
+				Ok(ws_handler) =&gt; {
+					ctx.ws_entries.insert(
+						&amp;[&amp;hib_req.gateway_id, &amp;hib_req.request_id],
+						WsEntry {
+							is_hibernatable: true,
+							rivet_message_index: meta.rivet_message_index,
+							ws_handler: Some(ws_handler),
+							outgoing_tx: hws_outgoing_tx,
+						},
+					);
+					if !handle
+						.rebind_hibernating_websocket(
+							ctx.actor_id.clone(),
+							ctx.generation,
+							hib_req.gateway_id,
+							hib_req.request_id,
+						)
+						.await
+					{
+						tracing::warn!(
+							request_id = id_to_str(&amp;hib_req.request_id),
+							&quot;hibernating websocket route disappeared before restore&quot;
+						);
+						ctx.websocket_requests
+							.remove(&amp;[&amp;hib_req.gateway_id, &amp;hib_req.request_id]);
+						ctx.ws_entries
+							.remove(&amp;[&amp;hib_req.gateway_id, &amp;hib_req.request_id]);
+						continue;
+					}
+					// Gateway wake flows wait for the websocket-open ack before
+					// they resume forwarding buffered client messages.
+					send_actor_message(
+						ctx,
+						hib_req.gateway_id,
+						hib_req.request_id,
+						protocol::ToRivetTunnelMessageKind::ToRivetWebSocketOpen(
+							protocol::ToRivetWebSocketOpen {
+								can_hibernate: true,
+							},
+						),
+					)
+					.await;
+					// Writes made by the restored callback are already queued in
+					// `hws_outgoing_rx`. Start forwarding them only after the exact route
+					// is rebound and the restore Open frame has entered the ordered tunnel.
+					spawn_ws_outgoing_task(
+						ctx.shared.clone(),
+						hib_req.gateway_id,
+						hib_req.request_id,
+						hws_outgoing_rx,
+					);
+					if let Some(ws) = ctx
+						.ws_entries
+						.get_mut(&amp;[&amp;hib_req.gateway_id, &amp;hib_req.request_id])
+					{
+						if let Some(handler) = &amp;mut ws.ws_handler {
+							if let Some(on_open) = handler.on_open.take() {
+								let sender = WebSocketSender {
+									tx: ws.outgoing_tx.clone(),
+								};
+
+								on_open(sender).await;
+							}
+						}
+					}
+</code></pre>
+
+<div class="mermaid">
+sequenceDiagram
+    participant A as Client A, waker
+    participant B as Client B, socket parked
+    participant G as Guard
+    participant P as Pegboard
+    participant E as pegboard-envoy
+    participant GW as pegboard-gateway3
+    participant T as Actor task
+    A-&gt;&gt;G: ActionRequest say
+    Note over GW: request is Hibernating
+    G-&gt;&gt;P: Wake signal
+    P-&gt;&gt;E: CommandStartActor with hibernating_requests
+    E-&gt;&gt;T: start Actor for B gateway_id and request_id
+    T-&gt;&gt;T: restore_persisted loads B record; A is new
+    T-&gt;&gt;E: restore_hibernating_requests(meta_entries)
+    E-&gt;&gt;E: rebuild B handler and bind route
+    E-&gt;&gt;GW: ToRivetWebSocketOpen, can_hibernate true
+    G-&gt;&gt;GW: forward ActionRequest after Ready
+    GW-&gt;&gt;E: ToEnvoyWebSocketMessage for A
+    E-&gt;&gt;T: deliver ActionRequest to A virtual socket
+    T-&gt;&gt;T: run say action
+    T-&gt;&gt;T: broadcast say to A and B
+    T-&gt;&gt;E: ToRivetWebSocketMessage for A and B
+    E-&gt;&gt;GW: ToServerWebSocketMessage
+    GW-&gt;&gt;G: ToClient Event say
+    G-&gt;&gt;A: Event say
+    G-&gt;&gt;B: Event say
+    A-&gt;&gt;A: dispatch listener
+    B-&gt;&gt;B: dispatch listener after route rebind
+
+</div>
+<p>The sequence diagram shows the ordinary wake. Client A wakes the Actor with a new action. Client B has a parked socket, not a sleeping process. <code>restore_persisted</code> runs in the Actor core; <code>restore_hibernating_requests</code> sends metadata to the runner through the envoy handle. The Actor restores B before user code runs. The broadcast reaches B. If B's metadata is missing, the runner sends <code>ToServerWebSocketClose</code> with code 1000 and reason <code>ws.meta_not_found_during_restore</code>, and B does not receive the event (<code>tunnel.ts:157-175</code>). If the restored handler throws, the runner sends code 1011 and reason <code>ws.restore_error</code> (<code>actor.rs:1035-1058</code>).</p>
+<h2>8. Ordering, backpressure, and limits</h2>
+<p>The ordering guarantee is per connection and per direction. It is built on a 16-bit message index. The runner checks every hibernatable incoming message. A duplicate is ignored. A gap closes the socket. The gateway spends index 0 on <code>ToEnvoyWebSocketOpen</code>, so the first data message is index 1. The adapter starts <code>#serverMessageIndex</code> at 0 as a sentinel for a new connection (<code>tunnel.ts:984-999</code>, <code>websocket-tunnel-adapter.ts:37-52</code>). A duplicate is dropped before the Actor, so the runner sends no second ack. If the first ack is lost, the gateway waits for the 30-second <code>gateway_hws_message_ack_timeout_ms</code>; the pending entry then becomes a garbage-collection reason (<code>config/pegboard.rs:331-333</code>, <code>shared_state.rs:2355-2363</code>).</p>
+<pre><code class="language-typescript">// rivetkit-typescript/packages/engine-runner/src/websocket-tunnel-adapter.ts:147-183
+		// Validate message index for hibernatable websockets
+		if (this.#hibernatable) {
+			const previousIndex = this.#serverMessageIndex;
+
+			if (wrappingLteU16(serverMessageIndex, previousIndex)) {
+				this.#log?.info({
+					msg: &quot;received duplicate hibernating websocket message&quot;,
+					requestId,
+					actorId: this.#actorId,
+					previousIndex,
+					receivedIndex: serverMessageIndex,
+				});
+				return true;
+			}
+
+			const expectedIndex = wrappingAddU16(previousIndex, 1);
+			if (serverMessageIndex !== expectedIndex) {
+				const closeReason = &quot;ws.message_index_skip&quot;;
+				this.#log?.warn({
+					msg: &quot;hibernatable websocket message index out of sequence, closing connection&quot;,
+					requestId,
+					actorId: this.#actorId,
+					previousIndex,
+					expectedIndex,
+					receivedIndex: serverMessageIndex,
+					closeReason,
+					gap: wrappingSubU16(
+						wrappingSubU16(serverMessageIndex, previousIndex),
+						1,
+					),
+				});
+				this.#close(1008, closeReason, true);
+				return true;
+			}
+
+			this.#serverMessageIndex = serverMessageIndex;
+		}
+</code></pre>
+<p>The index space is 0 to 65535. It wraps. The duplicate test is <code>wrappingLteU16(received, previous)</code>. The expected value is <code>wrappingAddU16(previous, 1)</code>. The stored value is the last accepted index, so the next expected value is one more. A value that is neither a duplicate nor the expected value is a gap. The acknowledgement path rejects a JavaScript number outside the range before it uses it (<code>tunnel.ts:1082-1083</code>); on the wire the value is a 16-bit unsigned integer. The third argument of <code>#close</code> is <code>sendCallback</code>, not <code>hibernate</code> (<code>websocket-tunnel-adapter.ts:228-239</code>). The close callback sends <code>ToServerWebSocketClose</code> with <code>hibernate: false</code> (<code>tunnel.ts:360-371</code>). The client receives code 1008.</p>
+<pre><code class="language-rust">// engine/packages/pegboard-gateway3/src/shared_state.rs:1503-1506
+		// Retain messages with index &gt; ack_index (messages that haven&#x27;t been acknowledged yet)
+		let len_before = hs.pending_ws_msgs.len();
+		hs.pending_ws_msgs
+			.retain(|msg| wrapping_gt(msg.message_index, ack_index));
+</code></pre>
+<p>The gateway also bounds the pending buffer. It rejects a message when the total size exceeds <code>gateway_hws_max_pending_size</code> or when 65,535 messages are already pending (<code>len >= u16::MAX</code>). The 65,536th message is the first rejection, so the buffer holds 65,535 messages.</p>
+<pre><code class="language-rust">// engine/packages/pegboard-gateway3/src/shared_state.rs:906-927
+		if let (Some(hs), true) = (req.hibernation_state_mut(), is_ws_message) {
+			hs.total_pending_ws_msgs_size += message_serialized.len() as u64;
+
+			if hs.total_pending_ws_msgs_size &gt; self.shared_state.hws_max_pending_size
+				|| hs.pending_ws_msgs.len() &gt;= u16::MAX as usize
+			{
+				return Err(WebsocketPendingLimitReached {}.build());
+			}
+
+			let pending_ws_msg = PendingWebsocketMessage {
+				payload: message_serialized.clone(),
+				send_instant: Instant::now(),
+				message_index: current_message_index,
+			};
+
+			hs.pending_ws_msgs.push(pending_ws_msg);
+			tracing::debug!(
+				index = current_message_index,
+				new_count = hs.pending_ws_msgs.len(),
+				&quot;pushed pending websocket message&quot;
+			);
+		}
+</code></pre>
+<table><tr><th>Limit</th><th>Default</th><th>Source</th></tr><tr><td>Actor inbound message (from client)</td><td>64 Kibibytes (KiB)</td><td><code>registry/config/index.ts:92</code> gives <code>maxIncomingMessageSize</code> 65,536</td></tr><tr><td>Actor outbound message (to client)</td><td>1 Mebibyte (MiB)</td><td><code>registry/config/index.ts:95</code> gives <code>maxOutgoingMessageSize</code> 1,048,576</td></tr><tr><td>Runner tunnel payload</td><td>20 MiB</td><td><code>engine-runner/src/utils.ts:3-4</code></td></tr><tr><td>Runner response body</td><td>20 MiB</td><td><code>config/pegboard.rs:357-360</code></td></tr><tr><td>Pending hibernating messages</td><td>128 MiB or 65,535 messages</td><td><code>config/pegboard.rs:335-338</code>, <code>shared_state.rs:909-913</code></td></tr><tr><td>Hibernating message ack timeout</td><td>30 seconds</td><td><code>config/pegboard.rs:331-333</code></td></tr><tr><td>Hibernation eligibility and timeout</td><td>90 seconds</td><td><code>config/pegboard.rs:271-274</code></td></tr><tr><td>Gateway WebSocket open timeout</td><td>15 seconds</td><td><code>config/pegboard.rs:306-308</code></td></tr></table>
+<p>The backpressure story depends on the direction.</p>
+<ul><li>Client to Actor: the client keeps <code>#messageQueue</code> for messages that are not sent, and the source does not bound that array (<code>actor-conn.ts:1267-1291</code>). The gateway keeps <code>pending_ws_msgs</code> for messages that the Actor did not acknowledge. The gateway buffer is bounded by bytes and by count. It rejects a new message when its size would pass 128 MiB or when the count is already 65,535. When the bound is reached, the gateway returns <code>WebsocketPendingLimitReached</code>.</li><li>Actor to client: the Rust core enqueues into an unbounded <code>mpsc::UnboundedSender</code> (<code>envoy-client/src/websocket.rs:24-26</code>). That queue has no size limit, so memory is its only bound. The writer task drains the queue into the tunnel. Guard's <code>WebSocketHandle::send</code> awaits a mutex and then awaits the socket write (<code>guard-core/src/websocket_handle.rs:40-68</code>). A slow client blocks that write, which fills the socket buffer and then the unbounded queue. The <code>broadcast</code> loop does not await the write; <code>send</code> returns after the event sender enqueues the frame.</li><li>Large Actor to client event: the encode path checks <code>max_outgoing_message_size</code>. An oversized event closes the socket with 1011 and <code>message.outgoing_too_long</code>. The <code>broadcast</code> loop continues to the next connection (<code>registry/websocket.rs:722-740</code>). The 20 MiB envoy limit below applies only if the configured Actor limit is larger.</li><li>Oversized tunnel payload: the envoy checks each outgoing tunnel payload against <code>envoy_max_response_payload_size</code>, which defaults to 20 MiB (<code>config/pegboard.rs:395-398</code>). It replaces an oversized payload before it forwards the payload (<code>ws_to_tunnel_task.rs:823-847</code>). For an actor WebSocket message, the replacement is a close with code 1009, the reason <code>actor WebSocket message exceeds the maximum size</code>, and <code>hibernate: false</code> (<code>ws_to_tunnel_task.rs:1602-1610</code>).</li><li>Large client to Actor message: the Actor checks the incoming limit and closes with 1011 and <code>message.incoming_too_long</code> (<code>registry/websocket.rs:294-299</code>).</li></ul>
+<p>The source does not state a global ordering guarantee across connections. The only order is the order of the loop in <code>broadcast</code>, plus the per-connection order of the transport. Each connection sees its own frames in order. Two clients can see the same broadcast at different times.</p>
+<h2>9. Reconnection and delivery guarantees</h2>
+<p>The client reconnects forever. The backoff starts at 250 milliseconds and caps at 30 seconds. The retry stops when the connection is aborted, or when the error is not retryable. The status after a non-retryable failure is <code>"idle"</code>, not <code>"disconnected"</code>. A disconnect does not always reconnect. The condition is <code>wasConnected && this.#authRetryAvailable</code> (<code>actor-conn.ts:976-982</code>). If the socket never reached <code>Init</code>, the status was <code>"connecting"</code>, and <code>wasConnected</code> is false. The retry loop itself is still running. If the close was an authentication failure, <code>#authRetryAvailable</code> becomes false.</p>
+<pre><code class="language-typescript">// rivetkit-typescript/packages/rivetkit/src/client/actor-conn.ts:885-889
+		if (this.#disposed) {
+			// Use ActorConnDisposed error and prevent unhandled rejection
+			this.#rejectPendingPromises(new errors.ActorConnDisposed(), true);
+		} else {
+			this.#setConnStatus(&quot;disconnected&quot;);
+</code></pre>
+
+<pre><code class="language-typescript">// rivetkit-typescript/packages/rivetkit/src/client/actor-conn.ts:969-984
+			this.#rejectPendingPromises(error, false);
+
+			// Dispatch to error handler if it&#x27;s an ActorError
+			if (error instanceof errors.ActorError) {
+				this.#dispatchActorError(error);
+			}
+
+			// Automatically reconnect if we were connected
+			if (wasConnected &amp;&amp; this.#authRetryAvailable) {
+				logger().debug({
+					msg: &quot;triggering reconnect&quot;,
+					connId: this.#connId,
+				});
+				this.#connectWithRetry();
+			}
+		}
+</code></pre>
+<p>The reconnect has three effects on state.</p>
+<ol><li>The client sends the same connection params again.</li><li>The client re-sends every active subscription after the new <code>Init</code>.</li><li>The client flushes the queued actions and subscriptions.</li></ol>
+<p>The server treats the reconnect as a new connection in the ordinary case. The handshake goes through <code>connect_conn</code> (<code>context.rs:1206-1223</code>), which delegates to <code>connect_with_state</code>, then to <code>connect_with_state_and_prepare</code>. That last function makes the ID with <code>Uuid::new_v4().to_string()</code> (<code>connection.rs:718-723</code>), so the connection ID changes. The old record ends when the old transport's disconnect path runs. If the old process died, the record ended with that process. The client replaces <code>#connId</code> with the new ID when <code>Init</code> arrives (<code>actor-conn.ts:746-747</code>).</p>
+<p>A hibernation restore is different. It finds the existing record by gateway ID and request ID and reuses the connection ID (<code>connection.rs:791-818</code>). It does not call <code>onConnect</code>. The client may not even notice, because its socket never closed.</p>
+<p>The delivery guarantee must be stated per direction.</p>
+<table><tr><th>Direction</th><th>Guarantee</th><th>Deciding code</th></tr><tr><td>Client to Actor</td><td>At least once for the handler, with duplicate suppression by message index</td><td>The gateway keeps the message until an ack (<code>shared_state.rs:906-927</code>, <code>1503-1506</code>). The runner ignores an index at or below the previous index (<code>websocket-tunnel-adapter.ts:151-160</code>). The Actor acks after the action completes, and the save is requested, not awaited (<code>registry/websocket.rs:402-421</code>, <code>state.rs:384-394</code>).</td></tr><tr><td>Actor to client</td><td>At most once</td><td><code>ConnHandle::try_send</code> writes and returns. The client protocol has no acknowledgement frame (<code>v4.ts:163-167</code>). A send error is logged and the event is not retried (<code>connection.rs:276-285</code>).</td></tr><tr><td>Client action call</td><td>At most once from the caller's view, unless the caller retries</td><td>A close rejects every pending action (<code>actor-conn.ts:969</code>). The client does not resend an in-flight action.</td></tr></table>
+<p>The at-least-once claim needs one careful sentence. The transport can replay a message after a crash. The runner suppresses a replay that has the same index. Therefore a handler sees a duplicate only when the Actor ran the handler, did not persist the new index, and then restarted. The duplicate is possible because the ack happens after the action returns. The source does not claim exactly-once delivery.</p>
+<p>The two ack positions differ. For a subscription, the core records the index, requests a save, and sends the ack first. Only then does it call <code>dispatch_subscribe_request</code> and <code>conn.subscribe</code> (<code>registry/websocket.rs:313-352</code>). For an action, the core runs the action and builds the response first. Only then does it record the index, request a save, and send the ack (<code>registry/websocket.rs:353-421</code>). An acked subscription can therefore be lost if the process dies between the ack and <code>conn.subscribe</code>. The client repairs that gap only after a new <code>Init</code>, where it re-sends every active subscription (<code>actor-conn.ts:703-706</code>). A hibernation restore that reuses the socket does not send a new <code>Init</code>.</p>
+<p>The client action ID is a counter. The client checks the response ID against the in-flight map, so a late response for a rejected action does not resolve a new action (<code>actor-conn.ts:344-345</code>, <code>381-387</code>).</p>
+<h2>10. Presence and state sync</h2>
+<p>The source has no automatic Actor-state push. The React hook does not receive a state snapshot. It receives a six-field state object: <code>hash</code>, <code>handle</code>, <code>connection</code>, <code>connStatus</code>, <code>error</code>, and <code>opts</code>. Actor state changes must be sent by the Actor as events. The React package is small. <code>useActor</code> calls <code>getOrCreateActor</code> and <code>mount</code>. It reads the store with <code>useStore</code>. The <code>useEvent</code> hook attaches a listener to <code>actorState.connection</code> and removes it on cleanup. The full client is in <a href="11-rivetkit-typescript.html">11 RivetKit TypeScript</a>.</p>
+<pre><code class="language-typescript">// rivetkit-typescript/packages/react/src/mod.ts:93-124
+		const useEvent = ((
+			eventName: string,
+			handler: (...args: unknown[]) =&gt; void,
+		) =&gt; {
+			const ref = useRef(handler);
+			const actorState = useStore(state);
+
+			useEffect(() =&gt; {
+				ref.current = handler;
+			}, [handler]);
+
+			// biome-ignore lint/correctness/useExhaustiveDependencies: it&#x27;s okay to not include all dependencies here
+			useEffect(() =&gt; {
+				const connection = actorState.connection as {
+					on: (
+						eventName: string,
+						callback: (...args: unknown[]) =&gt; void,
+					) =&gt; () =&gt; void;
+				} | null;
+				if (!connection) return;
+
+				function eventHandler(...args: unknown[]) {
+					ref.current(...args);
+				}
+				return connection.on(eventName, eventHandler);
+			}, [
+				actorState.connection,
+				actorState.connStatus,
+				actorState.hash,
+				eventName,
+			]);
+		}) as UseEvent&lt;Registry, ActorName&gt;;
+</code></pre>
+<p>The state object is built in <code>framework-base</code>. It has <code>hash</code>, <code>handle</code>, <code>connection</code>, <code>connStatus</code>, <code>error</code>, and <code>opts</code> (<code>framework-base/src/mod.ts:16-74</code>). The mount effect creates the connection and registers <code>onStatusChange</code> and <code>onError</code> (<code>framework-base/src/mod.ts:320-383</code>, <code>403-496</code>). It does not subscribe to Actor state. The <code>hash</code> value is <code>JSON.stringify({ name, key, params, noCreate })</code> (<code>mod.ts:498-500</code>). The store uses that string as the entry key, so two hooks with equal options share one entry.</p>
+<table><tr><th>React value</th><th>Source</th><th>Changes when</th></tr><tr><td><code>connection</code></td><td>The <code>ActorConn</code> from <code>handle.connect()</code> (<code>framework-base/src/mod.ts:432-434</code>)</td><td>The store entry is created or replaced</td></tr><tr><td><code>connStatus</code></td><td><code>connection.onStatusChange</code> callback (<code>mod.ts:449-468</code>)</td><td>The status changes</td></tr><tr><td><code>error</code></td><td><code>connection.onError</code> callback (<code>mod.ts:471-486</code>)</td><td>A connection error occurs</td></tr><tr><td><code>hash</code></td><td><code>defaultHashFunction(opts)</code> (<code>mod.ts:498-500</code>)</td><td>The options change</td></tr><tr><td><code>handle</code></td><td><code>client.getOrCreate</code> or <code>client.get</code> (<code>mod.ts:422-430</code>)</td><td>The options change</td></tr><tr><td><code>opts</code></td><td>The options passed to <code>useActor</code></td><td>The options change</td></tr></table>
+<p>A developer who wants state sync must build it. The common pattern is a state event. The Actor calls <code>c.broadcast("state", c.state)</code> after a mutation. The client listens with <code>useEvent("state", setState)</code>. The event is at most once, so the client should fetch a snapshot when it reconnects. The source does not include this pattern as a built-in hook. The document states this because the name <code>useActor</code> can suggest automatic state sync, and the code does not do that.</p>
+<p>The server-side <code>onStateChange</code> hook exists, but it is not a broadcast. It is a local callback after a state save or change. State changes inside the hook do not trigger another call (<code>actor/config.ts:1723-1746</code>).</p>
+<p>Presence is a use of the same primitives. The Actor has <code>ctx.conns</code>, and it has <code>onConnect</code> and <code>onDisconnect</code>. A presence list is the set of <code>conn.id</code> and <code>conn.params</code> values, plus any per-connection state. A join event is a broadcast from <code>onConnect</code>. A leave event is a broadcast from <code>onDisconnect</code>. The source does not ship a presence helper.</p>
+<p>Hibernation changes one step of that pattern. A restored connection is already in <code>ctx.conns</code> after <code>restore_persisted</code> (<code>connection.rs:770-789</code>). The restore path does not call <code>onConnect</code>, so no join broadcast runs again. Other clients therefore never see that member leave or return. The presence list is correct after a page load that reads <code>ctx.conns</code>. A live page that relies on join and leave events keeps the old list across a sleep.</p>
+<h2>11. Failure behavior</h2>
+<p>Each party observes a different failure. The table states what the code does, not what would be desirable.</p>
+<table><tr><th>Failure</th><th>Client observes</th><th>Actor observes</th><th>Gateway and runner observe</th></tr><tr><td>Actor crashes with open non-hibernatable connections</td><td>Socket closes. Status becomes <code>disconnected</code>. Pending actions reject with an error. The client retries if it was connected</td><td>No close hook runs in the old process. The record belonged to that process and ended with it</td><td>The runner's tunnel subscription closes, and the gateway sends the close and stops the request (<code>tunnel_to_ws_task.rs:85-90</code>, <code>lib.rs:609-656</code>)</td></tr><tr><td>Actor crashes with hibernatable connections</td><td>The socket may stay open at Guard. The client sees no close until a restore fails or the hibernation timeout expires</td><td>After restart, <code>restore_persisted</code> loads the records. <code>reconnect_hibernatable</code> restores the transport. <code>on_open</code> runs again in the rebuilt handler on the Rust runner path; the TypeScript runner does not call it</td><td>Pending client messages replay after the new open ack. A missing record closes with <code>ws.meta_not_found_during_restore</code></td></tr><tr><td>Runner dies</td><td>Socket closes. The client reconnects. The new connection has a new ID</td><td>The Actor is gone. Pegboard starts it elsewhere with the saved state</td><td><code>runner_lost_threshold</code> is 15 seconds (<code>config/pegboard.rs:267-269</code>). The gateway stops the old tunnel</td></tr><tr><td>Guard restarts</td><td>The client's TCP connection ends, because Guard held it. The client retries with the same backoff</td><td>No Actor-side event at first. The old transport disconnect may run later</td><td>The source does not state a dedicated Guard restart path in the files opened here. A parked record fails <code>hibernated_connection_is_live</code> when its gateway request is gone, and the next start removes it (<code>context.rs:1311-1338</code>)</td></tr><tr><td>Client disappears without a close frame</td><td>Nothing. The process is gone</td><td><code>onDisconnect</code> runs when the transport reports the close. The config has <code>connectionLivenessTimeout</code> 2500 ms and <code>connectionLivenessInterval</code> 5000 ms (<code>actor/config.ts:1310-1311</code>), but the files opened here do not show the consumer that enforces them for the Actor connection</td><td>The gateway removes the in-flight request when its stream closes or when the hibernation timeout expires</td></tr><tr><td>Client closes during hibernation</td><td>The close completes locally</td><td>The Actor is woken to learn about the close. The gateway consumes the close frame</td><td><code>HibernationResult::Close</code> sets <code>ws_hibernation_close</code> (<code>guard-core/src/proxy_service.rs:1897-1903</code>)</td></tr><tr><td>Outgoing event too large</td><td>The client receives close code 1011 and <code>message.outgoing_too_long</code></td><td>The broadcast loop continues to the next connection</td><td>The connection is closed, not hibernated</td></tr><tr><td>Incoming message index gap</td><td>The client receives close code 1008 and <code>ws.message_index_skip</code></td><td>The connection closes. The close frame uses <code>hibernate: false</code></td><td>The gateway sends <code>ToEnvoyWebSocketClose</code> and stops the request (<code>lib.rs:609-656</code>)</td></tr></table>
+<p>Four timers decide the visible outcome. The gateway WebSocket open timeout is 15 seconds (<code>config/pegboard.rs:306-308</code>). The pending message ack timeout is 30 seconds (<code>config/pegboard.rs:331-333</code>). The hibernation eligibility and timeout is 90 seconds (<code>config/pegboard.rs:271-274</code>). The runner-lost threshold is 15 seconds (<code>config/pegboard.rs:267-269</code>). A fifth setting, the 2500-millisecond liveness timeout, has no enforcement point in the files opened here.</p>
+<p>The close-during-hibernation row uses two names. <code>HibernationResult</code> is the enum <code>Continue</code> or <code>Close</code> (<code>guard-core/src/custom_serve.rs:13-16</code>). Guard sets <code>ws_hibernation_close = true</code> when the result is <code>Close</code> (<code>proxy_service.rs:1897-1903</code>). The comment at <code>proxy_service.rs:1894-1896</code> gives the reason: Guard reconnects to the Actor so that the Actor knows that the connection closed. The close is therefore not silent, even though the transport was parked.</p>
+<p>The Actor crash case needs one more detail. A non-hibernatable connection is not saved. Its <code>onDisconnect</code> does not run in the new generation. The new generation has no record of it. The client must reconnect, and the reconnect creates a new record and runs <code>onConnect</code> again. A hibernatable connection is saved, so the new generation restores it and does not run <code>onConnect</code>. This is the main behavioral difference between the two connection types. The Rust core uses the same liveness defaults (<code>rivetkit-core/src/actor/config.rs:10-20</code>).</p>
+<h2>12. A worked example with real values</h2>
+<p>This section follows one connection from handshake to restore. The values are from the code paths above. The identifiers are examples, but their shapes match the source. A real connection ID is a version 4 UUID string. The Actor config sets <code>canHibernateWebSocket</code> to <code>true</code> for this example, because the default is <code>false</code> (<code>actor/config.ts:1280-1282</code>).</p>
+<ol><li>The client calls <code>handle.connect()</code>.</li><li><code>ActorConnRaw</code> starts with <code>#connStatus = "idle"</code>.</li><li><code>CONNECT_SYMBOL</code> calls <code>#connectWithRetry</code>, which sets <code>"connecting"</code>.</li><li><code>#connectWebSocket</code> opens <code>"/connect"</code> through the driver.</li><li>Guard routes the upgrade to the gateway (<a href="09-guard-routing.html">09 Guard</a>). The Actor is asleep, so the gateway records a wake, and the Actor starts. The runner restores no record, because this is a new connection.</li><li>The Actor calls <code>connect_conn</code>. That call delegates to <code>connect_with_state_and_prepare</code>, and the new ID is <code>"6f1c2a5e-3b7d-4c8a-9e10-2d4f6a8b0c31"</code>. The Actor sends <code>Init { actorId: "actor_01j...", connectionId: "6f1c..." }</code>.</li><li>The client stores both values and sets <code>"connected"</code>.</li><li>The client calls <code>connection.on("chat", handler)</code>. <code>#addEventSubscription</code> sends <code>SubscriptionRequest { eventName: "chat", subscribe: true }</code> (<code>actor-conn.ts:1072-1101</code>).</li><li>The Rust side records index 1, requests a save, and acks index 1. Index 0 was spent on <code>ToEnvoyWebSocketOpen</code>. It then inserts <code>"chat"</code> into the subscription set.</li><li>If the listener was added before <code>Init</code>, <code>#sendMessage</code> would queue the frame and flush it after <code>Init</code> (<code>actor-conn.ts:1267-1291</code>). In this example the status is already <code>"connected"</code>, so the frame goes out at once.</li><li>Another client calls the <code>say</code> action. The action calls <code>c.broadcast("chat", { text: "hello" })</code>.</li><li><code>broadcast</code> iterates <code>conns()</code>. The first connection has <code>"chat"</code> in its set, so <code>send</code> encodes <code>Event { name: "chat", args: ... }</code>. The client receives tag 3, looks up the listener set, and calls the handler with the decoded arguments.</li><li>The Actor goes idle. The idle timer cannot sleep because <code>conns()</code> is not empty.</li><li>An operator or the engine sends a sleep intent. The workflow sends <code>CommandStopActor { reason: SleepIntent }</code>.</li><li>The grace phase sees a hibernatable connection. It calls <code>request_hibernation_transport_save</code>. It does not call <code>DisconnectConn</code>.</li><li>The connection record is saved with <code>id</code>, <code>parameters</code>, <code>state</code>, <code>subscriptions = ["chat"]</code>, <code>gateway_id</code>, <code>request_id</code>, <code>server_message_index = 1</code>, <code>client_message_index = 0</code>, <code>request_path = "/connect"</code>, and the request headers.</li><li>The gateway parks the socket. It sends no close frame to the client.</li><li>On the next start, <code>restore_hibernatable_connections</code> runs, and then <code>settle_hibernated_connections</code> runs at once (<code>task.rs:1239-1245</code>). A record is live when <code>hibernated_connection_is_live(gateway_id, request_id)</code> returns true. That call asks the envoy about the gateway request (<code>context.rs:1311-1338</code>). A record with no metadata, or a record whose request is gone, is removed with <code>request_hibernation_transport_removal</code> and <code>remove_conn</code> (<code>task.rs:1433-1441</code>).</li><li>A new client message arrives for the same request. The gateway replays it after the Actor starts.</li><li>The Actor starts. <code>restore_persisted</code> inserts the handle with the same ID. <code>reconnect_hibernatable</code> finds it by gateway ID and request ID.</li><li>The runner rebuilds the adapter, rebinds the route, and sends <code>ToServerWebSocketOpen { canHibernate: true }</code>. On the TypeScript path, the restore does not call the open handler (<code>tunnel.ts:186-198</code>, <code>316-410</code>). On the Rust path, <code>on_open</code> runs (<code>envoy-client/src/actor.rs:1016-1029</code>).</li><li>The gateway replays the pending message with index 2. The adapter was seeded with <code>serverMessageIndex = 1</code>, so the previous index was 1 and the message is accepted (<code>tunnel.ts:186-198</code>, <code>websocket-tunnel-adapter.ts:37-52</code>).</li><li>The action runs. The core records index 2, requests a save, and acks index 2. The event path continues as in step 11.</li></ol>
+<p>The example shows the two index counters. <code>server_message_index</code> is the last client to Actor index that the core recorded before the ack. <code>persist_and_ack_hibernatable_actor_message</code> sets it from the incoming message index, requests a save, and then sends the ack (<code>registry/websocket.rs:744-759</code>). <code>client_message_index</code> is the outgoing seed, and the core writes only 0 to it in this commit (<code>registry/websocket.rs:156</code>, <code>536</code>). <code>restore_hibernatable_connections</code> maps <code>client_message_index</code> to <code>envoy_message_index</code> and <code>server_message_index</code> to <code>rivet_message_index</code> (<code>context.rs:1445-1446</code>). The names are easy to read backwards, so check this mapping, not the name.</p>
+<h2>13. Where the internal documents disagree with the code</h2>
+<p>Three disagreements matter. First, <code>docs-internal/rivetkit-typescript/HIBERNATABLE_CONNECTIONS.md</code> describes a <code>ConnectionManager.restoreConnections</code> and <code>Runner.config.hibernatableWebSocket.loadAll</code> flow (lines 70-110). The current TypeScript <code>engine-runner</code> has no <code>loadAll</code>. It restores from <code>restoreHibernatingRequests(actorId, metaEntries)</code> (<code>tunnel.ts:120-307</code>) and from persisted connection metadata. The document also says "load connections from KV" (line 72). The current code uses SQLite tables <code>_rivet_conns</code> and <code>_rivet_conn_state</code>.</p>
+<p>Second, <code>HIBERNATABLE_CONNECTIONS.md</code> says the open event is not called on restoration. <code>engine-runner/src/mod.ts:126-129</code> repeats that for the TypeScript runner. The TypeScript restore path sets a restored socket to ready state 1 in the adapter constructor (<code>websocket-tunnel-adapter.ts:63-70</code>). It creates the adapter in <code>#createWebSocket</code>, which does not call <code>_handleOpen</code> (<code>tunnel.ts:186-198</code>, <code>316-410</code>). But the Rust runner path does call <code>on_open</code> after a restore (<code>envoy-client/src/actor.rs:1016-1029</code>), and <code>engine/CLAUDE.md:119</code> requires it. The correct statement is path-specific. The TypeScript <code>engine-runner</code> does not call the open handler on restore. The Rust engine runner does.</p>
+<p>Third, the internal document uses <code>saveState({ maxWait: 5000ms })</code> at a 500 KiB threshold (lines 147-152). The current Rust code persists through <code>request_hibernation_transport_save</code>, which queues a hibernation update and calls <code>request_save(RequestSaveOpts::default())</code> (<code>actor/context.rs:1285-1288</code>). The TypeScript <code>saveState</code> option still exists in the public API, but the hibernation path uses the core save. The accuracy rule of this exploration applies: the code wins.</p>
+<p>The <code>HIBERNATING_WS.md</code> lifecycle is accurate at the level of its listed steps (<code>docs-internal/engine/HIBERNATING_WS.md:5-17</code>). Step 7 says the runner sends <code>ToServerWebSocketClose</code> with <code>hibernate = true</code>. The frame type has that field (<code>index.ts:1286-1290</code>). But every close path in <code>engine-runner</code> and <code>envoy-client</code> sets <code>hibernate: false</code> (<code>tunnel.ts:167-171</code>, <code>envoy-client/src/actor.rs:1046-1051</code>). The TypeScript <code>Tunnel.shutdown</code> closes non-hibernatable sockets and leaves hibernatable sockets open (<code>tunnel.ts:106-112</code>). Hibernation starts at the gateway when the actor stops and the request moves to <code>PendingHibernation</code> (<code>shared_state.rs:1519-1547</code>). The actor-stopped arm returns <code>WebSocketServiceHibernate</code> when <code>can_hibernate</code> is true (<code>tunnel_to_ws_task.rs:93-104</code>). <code>engine/packages/pegboard-gateway3/src/lib.rs:610-656</code> turns that signal into <code>start_hibernation</code>. The hibernation handler then moves the request to <code>Hibernating</code> (<code>shared_state.rs:2280-2316</code>). The document describes a close frame that this code does not send on the sleep path. The code wins.</p>
+<h2>14. Glossary for this document</h2>
+<blockquote><strong>Glossary.</strong>
+<strong>BARE.</strong> Binary Application Record Encoding. A compact binary encoding with a schema.
+<strong>CBOR.</strong> Concise Binary Object Representation. A binary data encoding.
+<strong>Connection.</strong> One WebSocket transport plus one server-side record with an ID, state, and subscriptions. Its ID is the string that names the connection. New connections use a version 4 UUID.
+<strong>Envoy.</strong> The <code>pegboard-envoy</code> process that connects a runner to the control plane and relays tunnel frames.
+<strong>Gateway.</strong> The <code>pegboard-gateway3</code> service that holds a client request in flight and parks hibernating sockets.
+<strong>Guard.</strong> The edge proxy that accepts the client connection and routes it to the gateway.
+<strong>Message index.</strong> A 16-bit counter that orders messages and suppresses duplicates. The WebSocket ack index is separate from <code>MessageId.messageIndex</code>.</blockquote>
+<h2>What to read next</h2>
+<ul><li><a href="03-actors-and-lifecycle.html">03 Actors</a> explains sleep, wake, and the Actor lifecycle that this document assumes.</li><li><a href="09-guard-routing.html">09 Guard</a> explains how Guard accepts the WebSocket and routes it to the gateway.</li><li><a href="11-rivetkit-typescript.html">11 RivetKit TypeScript</a> explains the client, the registry, and the React package in full.</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

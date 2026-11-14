@@ -4,12 +4,13 @@ title: Durable Streams and Durable Promises
 
 # Durable streams and durable promises
 
-This page is the shared index for four explorations. One explores Electric and
+This page is the shared index for five explorations. One explores Electric and
 its Durable Streams protocol. One explores Resonate and its durable promises.
 One explores celld, a self-hosted Cloudflare Workers platform. One explores
-TanStack DB, the reactive client store that consumes synced data. The page also
-answers the question that joins them: how does each system defer work, which one
-is better at what, and how can they work together.
+TanStack DB, the reactive client store that consumes synced data. One explores
+Rivet, an orchestrator for stateful processes that it calls Actors. The page
+also answers the question that joins them: how does each system defer work,
+which one is better at what, and how can they work together.
 
 | Exploration | What it covers | Start here |
 |-------------|----------------|------------|
@@ -17,6 +18,7 @@ is better at what, and how can they work together.
 | [Resonate](src.resonate/html/README.html) | The formal specification, the Rust server core, the Postgres and Zig servers, five Software Development Kits (SDKs), and the durable promise protocol | [Overview](src.resonate/html/00-overview.html), then [durable promises and tasks](src.resonate/html/03-durable-promises-and-tasks.html) |
 | [celld](src.celld/html/README.html) | A self-hosted Workers runtime: the fleet, the cell, the bucket, Durable Objects, every service, ownership, security, and limits | [Overview](src.celld/html/00-overview.html), then [Resonate S3 and celld](src.celld/html/11-resonate-s3-and-celld.html) |
 | [TanStack DB](tanstackdb/html/README.html) | Collections, live queries, optimistic mutations, sync adapters, and framework bindings | [README](tanstackdb/html/README.html) |
+| [Rivet](src.rivet/html/README.html) | Actors as durable processes: the control plane, Pegboard scheduling, Gasoline durable execution, per-Actor SQLite in Depot, UniversalDB, Epoxy replication, Guard, RivetKit, and the seven sibling repositories | [Overview](src.rivet/html/00-overview.html), then [Pegboard scheduling](src.rivet/html/04-pegboard-scheduling.html) |
 
 ## The short answer
 
@@ -37,6 +39,13 @@ Cloudflare Workers. Its durable memory is one SQLite database per cell, backed b
 a transaction log in the same kind of bucket that Resonate uses for documents.
 The [celld exploration](src.celld/html/README.html) compares the two storage
 models directly.
+
+Rivet is not a third answer either. It is a runtime for durable processes. Its
+Actor is a task with a key and durable state, and the scheduler can move it
+between nodes. Its durable memory is one SQLite database per Actor, written
+through a log into UniversalDB. The [Rivet exploration](src.rivet/html/README.html)
+compares it with Cloudflare Durable Objects, Kubernetes, and the promise systems
+on this page.
 
 | Question | Durable Streams answer | Resonate answer |
 |----------|------------------------|-----------------|
@@ -593,6 +602,28 @@ The rules of the architecture are:
 | [Work placement and sharding](src.celld/html/12-work-placement-and-sharding.html) | How Resonate distributes tasks and how celld places cells |
 | [Glossary](src.celld/html/13-glossary.html) | Every term, spelled out |
 
+### Rivet
+
+| Document | What it covers |
+|----------|----------------|
+| [README](src.rivet/html/README.html) | The thesis, the four separations, the reading order, and the measurements |
+| [Overview](src.rivet/html/00-overview.html) | The problem, the Actor, the request path, and the guarantees |
+| [Repository map](src.rivet/html/01-repository-map.html) | Every workspace crate, package, and sibling repository |
+| [Control plane](src.rivet/html/02-control-plane-architecture.html) | The binary, the services, the pools, and bootstrap |
+| [Actors and lifecycle](src.rivet/html/03-actors-and-lifecycle.html) | Identity, create, start, sleep, wake, and destroy |
+| [Pegboard scheduling](src.rivet/html/04-pegboard-scheduling.html) | Runner pools, allocation, envoy, and the runner protocol |
+| [Gasoline](src.rivet/html/05-gasoline-durable-execution.html) | Workflows, activities, replay, and history |
+| [Actor SQLite and Depot](src.rivet/html/06-actor-sqlite-and-depot.html) | The virtual file system, the page log, and compaction |
+| [UniversalDB](src.rivet/html/07-universaldb-and-buckets.html) | The key space, transactions, and the RocksDB and PostgreSQL drivers |
+| [Epoxy](src.rivet/html/08-epoxy-multi-region.html) | Per-key Fast Paxos, replicas, ballots, and multi-region commit |
+| [Guard](src.rivet/html/09-guard-routing.html) | HTTP and WebSocket routing, TLS, and the reverse proxy |
+| [RivetKit TypeScript](src.rivet/html/11-rivetkit-typescript.html) | Actor definition, registry, client, and React hooks |
+| [Authentication](src.rivet/html/13-auth-and-namespaces.html) | Tokens, JSON Web Tokens, namespaces, and policy |
+| [Deployment](src.rivet/html/15-deployment-and-self-hosting.html) | Self-host, Rivet Cloud, bring your own cloud, and storage |
+| [Tests and limits](src.rivet/html/16-tests-benchmarks-and-limits.html) | The harness, the benchmarks, the limits, and the risks |
+| [Comparison](src.rivet/html/18-comparisons.html) | Durable Objects, Kubernetes, and the durable promise systems |
+| [Glossary](src.rivet/html/19-glossary.html) | Every term, spelled out |
+
 ### TanStack DB
 
 | Document | What it covers |
@@ -659,6 +690,8 @@ Two documents restate each system as numbered laws. Each law is a Behavior-Drive
 - Resonate SDKs: `/Users/darkvoid/GitSources/src.resonatehq/resonate/impl/sdk/`.
 - Resonate Rust SDK: `/Users/darkvoid/GitSources/src.resonatehq/resonate-sdk-rs/`.
 - celld: `/Users/darkvoid/GitSources/src.s3/celld/`, commit `8702f6d186c77698dbfb30cf29e3b1922a88f008`, version 0.6.3.
+- Rivet: `/Users/darkvoid/GitSources/src.Rivet/rivet/`, commit `4a58441c50d1ce20d8803cfb1ab7c3285a5141d6`, version 2.3.31, Apache-2.0.
+- Rivet sibling repositories: `/Users/darkvoid/GitSources/src.Rivet/agents/`, `agentos/`, `workflows/`, `dynamic-apps/`, `open-orange/`, `durable-object-migrator/`, and `website/`.
 
 ## How to build this site
 

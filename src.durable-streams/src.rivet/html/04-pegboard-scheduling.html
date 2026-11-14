@@ -1,0 +1,1309 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>04 Pegboard scheduling, runner pools, and envoy -- src.rivet</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue('--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        toolbar.appendChild(mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); }));
+        toolbar.appendChild(mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); }));
+        toolbar.appendChild(mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); }));
+        toolbar.appendChild(mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); }));
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.rivet/docs</span>
+    <div class="nav-actions">
+      <a href="01-repository-map.html" class="nav-breadcrumb">01 Repository map</a><a href="02-control-plane-architecture.html" class="nav-breadcrumb">02 Control Plane Architecture</a><a href="03-actors-and-lifecycle.html" class="nav-breadcrumb">03 Actors and lifecycle</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="03-actors-and-lifecycle.html" class="nav-btn" title="Previous: 03 Actors and lifecycle">← prev</a>
+      <a href="05-gasoline-durable-execution.html" class="nav-btn nav-btn-next" title="Next: 05 Gasoline: durable execution by recorded history">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>04 Pegboard scheduling, runner pools, and envoy</h1>
+<p>Pegboard decides which process hosts each Actor and carries every command and event between the control plane and that process. It keeps a durable index of runner capacity and envoy connections. It chooses a host inside one UniversalDB (UDB) transaction and speaks one binary protocol to the host over a WebSocket tunnel. A tunnel is an opaque byte stream that the protocol carries between a gateway and the envoy that hosts the Actor. This document follows the placement decision and the transport. It does not describe the Actor state machine, which is in <a href="03-actors-and-lifecycle.html">03 Actors and lifecycle</a>. It does not describe the per-Actor Structured Query Language (SQLite) path, which is in <a href="06-actor-sqlite-and-depot.html">06 Actor SQLite and Depot</a>. Four connection modes exist in this commit, and they use three wire transports. A <code>Normal</code> pool without a protocol version uses a runner WebSocket and runner protocol version 3. A <code>Normal</code> pool with a protocol version uses an envoy WebSocket and the envoy protocol version of at most 8 that the pool records. These two modes share the WebSocket transport. A <code>Serverless</code> pool with a protocol version uses one Hypertext Transfer Protocol (HTTP) request and a stream of Server-Sent Events (SSE). A <code>Serverless</code> pool without a protocol version uses one long-lived HTTP SSE connection. The <code>Serverless</code> metadata endpoint reports its runner protocol version. A reported value above 3 selects the <code>ToRunnerClose</code> message, and any other value selects <code>ToClientClose</code>. The pool record selects the mode. Where the modes differ, this document names the path.</p>
+<h2>1. The three questions Pegboard answers</h2>
+<p>Pegboard answers three questions for every Actor.</p>
+<ol><li><strong>Where does the Actor run?</strong> The Actor record names its pool. The <code>allocate</code> activity reads that pool. For a <code>Normal</code> pool, which the allocation code calls <code>Serverful</code>, it picks a host inside it. For a <code>Serverless</code> pool it returns <code>Allocation::Serverless</code> and picks no host (section 4). The pool is fixed at Actor creation, when <code>actor/setup.rs</code> writes <code>RunnerNameSelectorKey</code> (<code>engine/packages/pegboard/src/workflows/actor/setup.rs:97-104</code>). Section 3.3 covers the backfill for Actors created before that key existed.</li><li><strong>How does a request reach the host?</strong> Guard runs a gateway object. The gateway publishes a message to a Universal Pub/Sub (UPS) subject that the host reads. A <code>Serverless</code> pool that has a protocol version starts each Actor with an HTTP request instead (section 10).</li><li><strong>What happens when the host dies?</strong> The host stops replying to pings. The control plane runs <code>ping_task</code>, which sends <code>ToEnvoyPing</code> every <code>envoy_update_ping_interval</code> and writes <code>LastPingTsKey</code> through <code>update_ping</code> (<code>engine/packages/pegboard-envoy/src/ping_task.rs:24-53</code>; <code>engine/packages/pegboard/src/ops/envoy/update_ping.rs:105-108</code>). The same task aborts the connection when the in-memory last pong is older than <code>envoy_ping_timeout</code> (<code>ping_task.rs:36-51</code>). An allocation scan that meets a stale entry sends the host to <code>EnvoyExpireScheduler</code>, which expires it and removes it from the placement index. When the envoy WebSocket closes, the control plane expires the envoy unless a newer connection already replaced it (<code>engine/packages/pegboard-envoy/src/lib.rs:326-350</code>). No periodic sweep exists in this commit; section 11.2 states the TODO.</li></ol>
+<p>Figure 1 shows the pieces and the two directions of traffic.</p>
+<div class="mermaid">
+flowchart LR
+    subgraph Control[&quot;Control plane process&quot;]
+        A2[pegboard_actor2 workflow]
+        AL[allocate activity]
+        PT[ping_task]
+        EXP[pegboard_envoy_expire op]
+        SCH[EnvoyExpireScheduler]
+    end
+    subgraph Node[&quot;Operator node&quot;]
+        ENV[Envoy host process]
+        ACT[Actor task]
+    end
+    C[Client or SDK]
+    G[Guard routing]
+    UDB[(UniversalDB)]
+    UPS[(Universal Pub/Sub)]
+    C --&gt;|HTTP or WebSocket| G
+    A2 --&gt; AL
+    AL --&gt;|read and write index| UDB
+    AL --&gt;|stale entry| SCH
+    AL --&gt;|Allocation Serverful envoy_key| A2
+    A2 --&gt;|ToEnvoyCommands| UPS
+    UPS --&gt;|EnvoyReceiverSubject| ENV
+    ENV --&gt;|hosts| ACT
+    G --&gt;|ToEnvoyTunnelMessage| UPS
+    ENV --&gt;|ToRivetTunnelMessage| UPS
+    PT --&gt;|ToEnvoyPing| ENV
+    ENV --&gt;|ToRivetPong| PT
+    PT --&gt;|ops::envoy::update_ping| UDB
+    SCH --&gt;|expire| EXP
+    EXP --&gt;|delete index entries| UDB
+
+</div>
+<p>The diagram uses real names. <code>pegboard_actor2</code> is the Actor workflow. <code>allocate</code> is its placement activity. <code>ping_task</code> is the per-connection heartbeat task. <code>pegboard_envoy_expire</code> is the expiry operation. <code>EnvoyExpireScheduler</code> is the process-local queue. <code>EnvoyReceiverSubject</code> is the UPS topic that the envoy WebSocket task subscribes to. The operator node runs a host process built with the <code>rivet-envoy-client</code> Software Development Kit (SDK) (<code>engine/sdks/rust/envoy-client/src/lib.rs:1-42</code>). That process is not the <code>pegboard-envoy</code> crate: <code>pegboard-envoy</code> is the control-plane side of the connection, and Guard hosts it in process (section 12).</p>
+<p><strong>Aha:</strong> Pegboard puts the placement decision inside the same UDB transaction that reserves a slot. It does not call a separate scheduler service. The obvious alternative is a central placement service with its own state. That alternative adds a second network hop, a second failure domain, and a cache that can disagree with the capacity counter. The cost of the Pegboard choice is one extra read of the load-balancer index and one read conflict on the chosen envoy's hash entry. A concurrent ping, expiry, or registration of that envoy therefore forces the allocation to retry. Two allocations that pick the same envoy do not conflict on that entry alone. They conflict on the shared <code>ActorSlotsKey</code> add in the same transaction (<code>engine/packages/pegboard/src/workflows/actor2/runtime.rs:227-241</code>). Section 5 shows how the <code>slot_jitter</code> field spreads the choices without a second service.</p>
+<h2>2. The runner model: runner, pool, config, envoy, slot</h2>
+<p>Five terms carry the whole model. Table 1 states each one and where the source defines it.</p>
+<table><tr><th>Term</th><th>Meaning in the source</th><th>Source</th></tr><tr><td>Runner</td><td>One host process that serves Actor commands. In the legacy path the process opens a WebSocket to <code>/runners/connect</code>. In the newer path the process is an envoy and opens a WebSocket to <code>/envoys/connect</code>.</td><td><code>engine/packages/guard/src/routing/runner.rs:28-39</code>; <code>engine/packages/guard/src/routing/envoy.rs:36-39</code></td></tr><tr><td>Runner pool</td><td>A named group of runners or envoys inside one namespace. The pool name is a string on the config. The Actor stores the pool name as <code>runner_name_selector</code>; the Actor workflow calls the same value <code>pool_name</code>.</td><td><code>engine/packages/types/src/runner_configs.rs:68-115</code>; <code>engine/packages/guard/src/routing/pegboard_gateway/mod.rs:735-738</code></td></tr><tr><td>Runner config</td><td>The output type of <code>ops::runner_config::get</code>. It wraps the stored <code>rivet_types::runner_configs::RunnerConfig</code> record and adds <code>protocol_version: Option<u16></code>. The name <code>RunnerConfig</code> therefore means two different structs in this document; the text names the module when the difference matters. The stored record's <code>kind</code> is either <code>Normal</code> or <code>Serverless</code>.</td><td><code>engine/packages/pegboard/src/ops/runner_config/get.rs:14-21</code>; <code>engine/packages/types/src/runner_configs.rs:68-115</code></td></tr><tr><td>Envoy</td><td>A host process that speaks the envoy protocol. It registers a durable identity, a protocol version, and a slot counter. In this commit an envoy normally serves a <code>Normal</code> pool, and the code also accepts a <code>Serverless</code> pool (<code>Conn::is_serverless</code>).</td><td><code>engine/packages/pegboard-envoy/src/conn.rs:31-62</code></td></tr><tr><td>Slot</td><td>One unit of Actor capacity. The legacy path measures capacity in millislots of a <code>total_slots</code> value; one millislot is one thousandth of that capacity. The newer path counts a per-pool <code>ActorSlotsKey</code> against <code>max_concurrent_actors</code>.</td><td><code>engine/packages/pegboard/src/keys/ns.rs</code> <code>RunnerAllocIdxKey</code>; <code>engine/packages/pegboard/src/workflows/actor2/runtime.rs:225-241</code></td></tr></table>
+<p>The two <code>RunnerConfigKind</code> variants are not two names for the same thing. A <code>Normal</code> pool runs host processes. A <code>Serverless</code> pool exposes an HTTP <code>url</code> that the control plane calls. The <code>protocol_version</code> field selects the Actor version: <code>None</code> creates a version 1 Actor and <code>Some</code> creates a version 2 Actor (<code>engine/packages/pegboard/src/ops/actor/create.rs:105-124</code>). The Actor version then selects the workflow family. Section 15 states the full rule.</p>
+<pre><code class="language-rust">// engine/packages/types/src/runner_configs.rs:84-99
+	Serverless {
+		url: String,
+		headers: HashMap&lt;String, String&gt;,
+		/// Seconds.
+		request_lifespan: u32,
+		max_concurrent_actors: u64,
+		/// Seconds.
+		drain_grace_period: u32,
+		/// Deprecated.
+		slots_per_runner: u32,
+		/// Deprecated.
+		min_runners: u32,
+		/// Deprecated.
+		max_runners: u32,
+		/// Deprecated.
+		runners_margin: u32,
+</code></pre>
+<p>The variant continues with <code>metadata_poll_interval</code>, <code>drain_on_version_upgrade</code>, <code>actor_eviction_delay</code>, <code>actor_eviction_period</code>, and <code>actor_eviction_rate</code> (<code>runner_configs.rs:100-113</code>).</p>
+<p>The <code>Normal</code> variant at source lines 71-83 carries four fields: <code>drain_on_version_upgrade</code>, <code>actor_eviction_delay</code>, <code>actor_eviction_period</code>, and <code>actor_eviction_rate</code> (<code>runner_configs.rs:71-83</code>). Four <code>Serverless</code> fields are marked deprecated in the source: <code>slots_per_runner</code>, <code>min_runners</code>, <code>max_runners</code>, and <code>runners_margin</code>. The runner pool workflow still reads them, as section 3 shows.</p>
+<p>The pool record also carries a protocol version.</p>
+<pre><code class="language-rust">// engine/packages/pegboard/src/ops/runner_config/get.rs:14-21
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RunnerConfig {
+	pub namespace_id: Id,
+	pub name: String,
+	pub config: rivet_types::runner_configs::RunnerConfig,
+	/// Unset if the runner&#x27;s metadata endpoint has never returned `envoyProtocolVersion`
+	pub protocol_version: Option&lt;u16&gt;,
+}
+</code></pre>
+<p>The comment states the rule. <code>protocol_version</code> is <code>None</code> until the pool's metadata endpoint reports <code>envoyProtocolVersion</code>. Two writers set the field. For a <code>Normal</code> pool, envoy registration writes it (<code>engine/packages/pegboard-envoy/src/conn.rs:498-511</code>). For a <code>Serverless</code> pool, <code>runner_pool_metadata_poller</code> calls <code>refresh_metadata</code>, which writes it (<code>engine/packages/pegboard/src/ops/runner_config/refresh_metadata.rs:44-65</code>). A <code>None</code> value marks a pool that speaks the legacy runner protocol. A <code>Some</code> value marks a pool that speaks a versioned envoy protocol. The same field selects the Actor workflow family. A version 1 Actor runs <code>pegboard::workflows::actor</code>; a version 2 Actor runs <code>pegboard::workflows::actor2</code> (<code>ops/actor/create.rs:105-124</code>). The field is cached for 5000 milliseconds (<code>get.rs:35</code>).</p>
+<h3>2.1 The slot counter</h3>
+<p>The newer path keeps one counter per namespace and pool. The code builds <code>ActorSlotsKey::new(namespace_id, pool_name.clone())</code>. If <code>max_concurrent_actors</code> is <code>Some</code>, the code reads the counter with a <code>Snapshot</code> read. Below the ceiling it adds <code>1i64</code> with <code>MutationType::Add</code> and returns <code>true</code>. At the ceiling it returns <code>false</code>. With no ceiling it adds <code>1i64</code> and returns <code>true</code> without a read (<code>runtime.rs:225-241</code>).</p>
+<p>The add is the guard, not the read. Every start writes the same key, so two concurrent starts cannot both commit without one of them retrying. The retry re-runs the closure and reads the new value. The source does not comment on this race; the guarantee comes from the transaction model.</p>
+<p><code>max_concurrent_actors</code> is a <code>u64</code> field of the <code>Serverless</code> variant (<code>runner_configs.rs:89</code>). The allocation code extracts it as <code>Option<u64></code>; the value is <code>Some</code> only for a <code>Serverless</code> pool and <code>None</code> for a <code>Normal</code> pool (<code>runtime.rs:201-207</code>). A <code>Normal</code> pool therefore increments the counter with no ceiling. The counter is an <code>i64</code> little-endian atomic value. A failed start releases the slot, and <a href="03-actors-and-lifecycle.html">03 Actors and lifecycle</a> follows that path.</p>
+<p>The counter protects the pool. It does not measure load for a <code>Normal</code> pool. The load signal for a <code>Normal</code> pool is <code>SlotsKey</code> on each envoy, which section 5 uses. The two names are different keys. <code>ActorSlotsKey</code> counts Actors in one pool and is written inside the allocation transaction. <code>SlotsKey</code> counts Actors on one envoy and is written later, in <code>set_connectable</code> (<code>runtime.rs:916-920</code>). Section 5.3 states how the allocator uses each one.</p>
+<h2>3. The runner pool workflow</h2>
+<p><code>pegboard_runner_pool2</code> manages replica counts. It does not place an Actor. It keeps the number of legacy serverless connection workflows equal to a computed desired count. Those connections are <code>pegboard_serverless_conn2</code> workflows, not the <code>pegboard-outbound</code> service in section 10. A serverless receiver is a control-plane workflow, <code>pegboard_serverless_receiver2</code>, that dispatches one connection workflow (<code>engine/packages/pegboard/src/workflows/serverless/receiver.rs:23-57</code>). It is not a separate process.</p>
+<p>The connection workflow is <code>pegboard_serverless_conn2</code> in <code>engine/packages/pegboard/src/workflows/serverless/conn.rs</code>. It runs the <code>OutboundReq</code> activity, and that activity dials <code>GET {url}/start</code> with a <code>reqwest_eventsource</code> client (<code>serverless/conn.rs:299-320</code>). The endpoint sends <code>ToServerlessServerInit</code> on the stream (<code>serverless/conn.rs:352-360</code>). The workflow stores <code>init.runner_protocol_version</code>. The value selects the close message family when the connection drains (<code>serverless/conn.rs:598-599</code>, <code>656-661</code>). The dial direction is control plane to endpoint. The endpoint never connects back.</p>
+<pre><code class="language-rust">// engine/packages/pegboard/src/workflows/runner_pool.rs:27-40
+#[workflow]
+pub async fn pegboard_runner_pool2(ctx: &amp;mut WorkflowCtx, input: &amp;Input) -&gt; Result&lt;()&gt; {
+	// Exit before starting sidecar workflows if there is no serverless runner config to manage.
+	if matches!(
+		ctx.v(4)
+			.activity(ReadDesiredInput {
+				namespace_id: input.namespace_id,
+				runner_name: input.runner_name.clone(),
+			})
+			.await?,
+		ReadDesiredOutput::Stop
+	) {
+		return Ok(());
+	}
+</code></pre>
+<p>The workflow has three version gates. <code>ctx.v(4)</code> guards the first <code>ReadDesired</code> call, <code>ctx.v(2)</code> guards the dispatch of <code>runner_pool_error_tracker</code>, and <code>ctx.v(3)</code> guards the dispatch of <code>runner_pool_metadata_poller</code> (<code>runner_pool.rs:31-63</code>). The version gate is a Gasoline mechanism; <a href="05-gasoline-durable-execution.html">05 Gasoline durable execution</a> explains it.</p>
+<p>The workflow state is <code>LifecycleState { runners: Vec<RunnerState> }</code>. Each <code>RunnerState</code> holds <code>receiver_wf_id: Id</code> and <code>details_hash: u64</code> (<code>runner_pool.rs:16-25</code>). The first field is the workflow identifier that the dispatch returned.</p>
+<p><code>details_hash</code> is a hash of the serverless endpoint details. When the operator changes the <code>url</code> or the headers, the hash changes. The workflow then drains every runner that holds the old hash (<code>runner_pool.rs:92-105</code>).</p>
+<h3>3.1 The desired count</h3>
+<p><code>read_desired</code> is the activity that computes the target. It has three branches.</p>
+<pre><code class="language-rust">// engine/packages/pegboard/src/workflows/runner_pool.rs:237-257
+	let RunnerConfigKind::Serverless {
+		url,
+		headers,
+
+		slots_per_runner,
+		min_runners,
+		max_runners,
+		runners_margin,
+		..
+	} = runner_config.config.kind
+	else {
+		return Ok(ReadDesiredOutput::Stop);
+	};
+
+	// Envoys don&#x27;t need this workflow
+	if runner_config.protocol_version.is_some() {
+		return Ok(ReadDesiredOutput::Desired {
+			desired_count: 0,
+			details_hash: 0,
+		});
+	}
+</code></pre>
+<ol><li>No runner config exists, or the kind is <code>Normal</code>: the activity returns <code>Stop</code>. The workflow exits. A <code>Normal</code> pool needs no replica manager because its envoys connect on their own.</li><li>The kind is <code>Serverless</code> and <code>protocol_version</code> is <code>Some</code>: the activity returns a <code>Desired</code> value with count 0. The comment says "Envoys don't need this workflow". The serverless outbound path in section 10 serves this pool.</li><li>The kind is <code>Serverless</code> and <code>protocol_version</code> is <code>None</code>: the activity computes a count from the deprecated slot fields. The control plane then connects out to the endpoint, and the endpoint reports its runner protocol version (<code>serverless/conn.rs:352-360</code>).</li></ol>
+<p>The count formula is <code>max(runners_margin + ceil(slots / slots_per_runner), min_runners)</code>, then <code>min(max_runners, pool_desired_max_override)</code>. The first <code>slots</code> term is <code>adjusted_desired_slots</code>: the stored count, or 0 when the stored count is negative. The final term is the operator-set global cap <code>pool_desired_max_override</code>, an <code>Option<u32></code> in the engine config that falls back to <code>u32::MAX</code> (<code>engine/packages/config/src/config/pegboard.rs:66-67</code>, <code>276-281</code>). The code calls <code>div_ceil</code> on <code>adjusted_desired_slots as u32</code> and <code>slots_per_runner.max(1)</code>, so it rounds up and never divides by zero. It then hashes <code>url</code> and the sorted headers with <code>DefaultHasher</code> to produce <code>details_hash</code> (<code>runner_pool.rs:271-290</code>).</p>
+<p><code>desired_slots</code> comes from one UDB read of <code>ServerlessDesiredSlotsKey</code> with <code>Serializable</code> isolation (<code>runner_pool.rs:217-231</code>). A serverless version 1 Actor allocation adds one to this key (<code>engine/packages/pegboard/src/workflows/actor/runtime.rs:304-313</code>). Two paths subtract one. <code>actor_clear_pending_alloc_tx</code> subtracts when the pending key still exists and the Actor got a serverless slot (<code>runtime.rs:1170-1192</code>). <code>engine/packages/pegboard/src/workflows/actor/destroy.rs</code> subtracts when an Actor is destroyed while pending (<code>destroy.rs:295-306</code>). The comment at <code>runtime.rs:1173-1175</code> gives the reason for the first check: a missing pending key means the Actor was already allocated or destroyed. A negative stored value is an error, and the workflow logs it and scales to 0 (<code>runner_pool.rs:259-269</code>).</p>
+<h3>3.2 The reconcile loop</h3>
+<p>After <code>ReadDesired</code>, the loop partitions the runner list by <code>details_hash</code> and computes the two counts. The partition happens first, and each runner with an old hash receives a <code>Drain</code> signal (<code>runner_pool.rs:92-105</code>). The excerpt below starts after that partition.</p>
+<pre><code class="language-rust">// engine/packages/pegboard/src/workflows/runner_pool.rs:107-124
+				// These will never both be non-zero
+				let drain_count = state.runners.len().saturating_sub(desired_count);
+				let start_count = desired_count.saturating_sub(state.runners.len());
+
+				// Drain unnecessary runners
+				if drain_count != 0 {
+					// TODO: Implement smart logic of draining runners with the lowest allocated actors
+					let remaining_runners = state.runners.split_off(drain_count);
+					let draining_runners = std::mem::replace(&amp;mut state.runners, remaining_runners);
+
+					// TODO: Spawn sub wf to process these so this is not blocking the loop
+					for runner in draining_runners {
+						ctx.signal(serverless::receiver::Drain {})
+							.to_workflow_id(runner.receiver_wf_id)
+							.send()
+							.await?;
+					}
+				}
+</code></pre>
+<p><code>split_off(drain_count)</code> keeps the first <code>drain_count</code> entries in <code>state.runners</code> and returns the tail. <code>std::mem::replace</code> then puts the tail back and returns the first entries as the draining set. The drained entries are therefore the oldest entries in insertion order.</p>
+<p>The <code>else</code> branch dispatches new <code>serverless::receiver::Input</code> workflows and pushes one <code>RunnerState</code> for each (<code>runner_pool.rs:126-145</code>). The source has three TODO comments in this region. Two say that draining blocks the loop. One says that the drain does not prefer runners with low load. This document repeats the limits because the source states them.</p>
+<p>The loop then waits for a signal (<code>runner_pool.rs:147-176</code>). <code>Bump {endpoint_config_changed}</code> wakes the loop when the operator changes the config (<code>runner_pool.rs:298-303</code>). <code>OutboundConnDrainStarted {receiver_wf_id}</code> records a receiver that started to drain (<code>runner_pool.rs:305-308</code>). A pool stop drains all runners and breaks the loop (<code>runner_pool.rs:80-90</code>).</p>
+<p>Figure 2 shows one reconcile pass.</p>
+<div class="mermaid">
+sequenceDiagram
+    participant CFG as Operator config or Actor start
+    participant WF as pegboard_runner_pool2
+    participant RD as read_desired
+    participant UDB as UniversalDB
+    participant RX as serverless receiver workflow
+    participant CONN as serverless conn workflow
+    CFG-&gt;&gt;WF: Bump signal
+    CONN-&gt;&gt;WF: OutboundConnDrainStarted signal
+    WF-&gt;&gt;RD: ReadDesiredInput
+    RD-&gt;&gt;UDB: ops::runner_config::get
+    RD-&gt;&gt;UDB: read ServerlessDesiredSlotsKey (Serializable)
+    RD-&gt;&gt;RD: hash url and sorted headers
+    RD--&gt;&gt;WF: ReadDesiredOutput
+    alt ReadDesiredOutput::Stop
+        WF--&gt;&gt;WF: return Ok(())
+    else ReadDesiredOutput::Desired
+        WF-&gt;&gt;RX: Drain signal for each outdated details_hash
+        WF-&gt;&gt;WF: compute drain_count and start_count
+        WF-&gt;&gt;RX: Drain signal for surplus receivers
+        WF-&gt;&gt;RX: dispatch Input for missing receivers
+    end
+
+</div>
+<p>Every participant is a real workflow, activity, or key. <code>ReadDesiredInput</code> and <code>ReadDesiredOutput</code> are the activity input and output types. <code>serverless::receiver::Drain</code> and <code>serverless::receiver::Input</code> are the two messages.</p>
+<p>The loop has no timer. <code>ctx.lupe()</code> repeats only after <code>ctx.listen_n::<Main>(256)</code> returns, and that call waits for at least one signal (<code>runner_pool.rs:65-68</code>, <code>147-176</code>; <code>gasoline/src/ctx/workflow.rs:717-720</code>). <code>Main</code> is the signal enum; its members include <code>Bump</code> and <code>OutboundConnDrainStarted</code> (<code>runner_pool.rs:310-313</code>). A pool therefore reconciles when a <code>Bump</code> or <code>OutboundConnDrainStarted</code> signal arrives. A version 1 Actor allocation and a config change both send <code>Bump</code> (<code>workflows/actor/runtime.rs:916</code>; <code>ops/runner_config/upsert.rs:255</code>). The <code>serverless_conn</code> workflow sends <code>OutboundConnDrainStarted</code> (<code>serverless/conn.rs:104</code>, <code>474</code>).</p>
+<h3>3.3 The two backfill workflows</h3>
+<p><code>pegboard_runner_pool2_backfill</code> scans serverless runner configs and dispatches one pool workflow for each unique pool (<code>engine/packages/pegboard/src/workflows/runner_pool2_backfill.rs:20-77</code>). Its constants are <code>BACKFILL_NAME = "runner_pool2_backfill"</code> (line 14), <code>MAX_ENTRIES = 50</code> (line 15), and <code>EARLY_TXN_TIMEOUT = 2500 ms</code> (line 13). The limit of 50 entries bounds one transaction.</p>
+<p><code>pegboard_actor_runner_name_selector_backfill</code> writes the <code>RunnerNameSelectorKey</code> for Actors created before the key existed (<code>engine/packages/pegboard/src/workflows/actor_runner_name_selector_backfill.rs:1-2</code>). Its constants are <code>BACKFILL_NAME = "actor_runner_name_selector"</code> (line 14), <code>EARLY_TXN_TIMEOUT = 2500 ms</code> (line 17), and <code>BATCH_SIZE = 256</code> (line 19). The workflow pages by <code>after_actor_id</code>, the last Actor identifier in the previous batch, and stops when a batch returns no last identifier (<code>lines 30-71</code>). It then writes <code>backfill::CompleteKey</code> (<code>lines 86-106</code>).</p>
+<p>The selector key matters for placement. A <code>Normal</code> pool is addressed by pool name. <code>ops::actor::get_for_gateway</code> reads <code>RunnerNameSelectorKey</code> to fill <code>actor.runner_name_selector</code> (<code>engine/packages/pegboard/src/ops/actor/get_for_gateway.rs:41</code>). The gateway uses that field for its pool error check (section 13.4). The backfill exists because an Actor created before the key was added has no stored value.</p>
+<p>The bootstrap task starts both workflows. It dispatches a workflow only when <code>backfill::CompleteKey</code> is absent, and <code>.unique()</code> prevents a duplicate dispatch (<code>engine/packages/bootstrap/src/backfill.rs:4-16</code>, <code>53-64</code>, <code>106-121</code>). Each workflow writes its <code>CompleteKey</code> when it finishes (<code>runner_pool2_backfill.rs:71-74</code>; <code>actor_runner_name_selector_backfill.rs:86-106</code>). Each workflow therefore runs once for each database.</p>
+<h2>4. How the control plane places an Actor</h2>
+<p>Placement is one activity in the <code>pegboard_actor2</code> workflow. That workflow runs for a version 2 Actor, which is every Actor in a pool whose <code>protocol_version</code> is <code>Some</code>. <code>AllocateInput</code> carries one field, <code>generation</code>, with <code>#[serde(default)]</code> so Gasoline can replay older state (<code>runtime.rs:164-169</code>). A generation is an allocation counter. Each successful allocation adds one (<code>runtime.rs:489-497</code>). A message or signal that carries an older generation is ignored (<code>engine/packages/pegboard/src/workflows/actor2/mod.rs:643-646</code>), so a late message cannot act on the next placement.</p>
+<pre><code class="language-rust">// engine/packages/pegboard/src/workflows/actor2/runtime.rs:184-207
+#[activity(Allocate)]
+pub async fn allocate(ctx: &amp;ActivityCtx, input: &amp;AllocateInput) -&gt; Result&lt;AllocateOutput&gt; {
+	let start = Instant::now();
+	let mut state = ctx.state::&lt;State&gt;()?;
+
+	// NOTE: Assuming cache is populated, this is faster than reading the runner config in the fdb txn below
+	let pool_res = ctx
+		.op(crate::ops::runner_config::get::Input {
+			runners: vec![(state.namespace_id, state.pool_name.clone())],
+			bypass_cache: false,
+		})
+		.await?;
+	let pool = pool_res.into_iter().next();
+	let is_serverless = pool
+		.as_ref()
+		.map(|pool| matches!(pool.config.kind, RunnerConfigKind::Serverless { .. }))
+		.unwrap_or(false);
+	let max_concurrent_actors = pool.as_ref().and_then(|pool| match &amp;pool.config.kind {
+		RunnerConfigKind::Serverless {
+			max_concurrent_actors,
+			..
+		} =&gt; Some(*max_concurrent_actors),
+		_ =&gt; None,
+	});
+</code></pre>
+<p>The comment in the excerpt says "fdb txn". FoundationDB (FDB) is the transaction model that UniversalDB follows. The activity opens the transaction with <code>ctx.udb()?</code> (<code>runtime.rs:217-219</code>). The <code>Transaction</code> type is the UniversalDB re-export (<code>engine/packages/universaldb/src/lib.rs:24</code>).</p>
+<p>The activity reads the pool config from the process cache first. The comment states the reason: the cache is faster than a read inside the UDB transaction. A cache miss falls through to the store. The cache time to live is 5000 milliseconds (<code>ops/runner_config/get.rs:35</code>), so a config change can lag by up to that value.</p>
+<p><code>state</code> is the workflow <code>State</code> at <code>actor2/mod.rs:36-67</code>. It holds five identity fields: <code>actor_id</code>, <code>name</code>, <code>pool_name</code>, <code>key</code>, and <code>namespace_id</code>. It also holds the slot flag <code>acquired_slot</code>, the last command index <code>envoy_last_command_idx</code>, and a cached <code>envoy_key</code>. Eight timestamps follow: <code>create_ts</code>, <code>create_complete_ts</code>, <code>allocate_ts</code>, <code>start_ts</code>, <code>sleep_ts</code>, <code>connectable_ts</code>, <code>reschedule_ts</code>, and <code>destroy_ts</code>. It ends with <code>error: Option<ActorError></code>. The comment states when <code>error</code> clears: on allocation and when the Actor becomes connectable.</p>
+<p><code>envoy_eligible_threshold</code> comes from <code>ctx.config().pegboard().envoy_eligible_threshold()</code> (<code>runtime.rs:212</code>). <code>pools</code> is a clone of <code>ctx.pools()</code>. Its type is <code>PoolsHandle</code>, an alias for <code>Pools</code>, a cloneable <code>Arc</code> over the configuration, the node identifier, the UDB client, the UPS client, and the ClickHouse client (<code>engine/packages/pools/src/pools.rs:10-20</code>; <code>engine/packages/pools/src/lib.rs:14</code>).</p>
+<p>The output is one of two shapes.</p>
+<pre><code class="language-rust">// engine/packages/pegboard/src/workflows/actor2/runtime.rs:171-182
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = &quot;snake_case&quot;)]
+pub enum Allocation {
+	Serverless,
+	Serverful { envoy_key: String },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AllocateOutput {
+	pub allocation: Option&lt;Allocation&gt;,
+	pub now: i64,
+}
+</code></pre>
+<p><code>Allocation::Serverless</code> means the outbound path carries the Actor start. <code>Allocation::Serverful { envoy_key }</code> names the chosen envoy. <code>allocation: None</code> means the activity failed to place the Actor, and <code>state.error</code> holds the reason.</p>
+<h3>4.1 The placement transaction</h3>
+<p>The activity opens one transaction named <code>pegboard_actor2_acquire_slot</code>. It reserves the slot first, then places the Actor.</p>
+<pre><code class="language-rust">// engine/packages/pegboard/src/workflows/actor2/runtime.rs:243-256
+				let (allocation, error) = if acquired_slot {
+					if is_serverless {
+						(Some(Allocation::Serverless), None)
+					} else {
+						let allocation = super::alloc_serverful::allocate_serverful(
+							namespace_id,
+							&amp;pool_name,
+							&amp;tx,
+							&amp;pools,
+							now,
+							envoy_eligible_threshold,
+							&amp;envoy_load_balancer,
+						)
+						.await?;
+</code></pre>
+
+<pre><code class="language-rust">// engine/packages/pegboard/src/workflows/actor2/runtime.rs:280-297
+						let error = allocation.is_none().then_some(super::ActorError::NoEnvoys);
+
+						(
+							allocation.map(|envoy_key| Allocation::Serverful { envoy_key }),
+							error,
+						)
+					}
+				} else {
+					(None, Some(super::ActorError::ConcurrentActorLimitReached))
+				};
+
+				if allocation.is_some() {
+					// Set not sleeping
+					tx.delete(&amp;keys::actor::SleepTsKey::new(actor_id));
+					tx.write(&amp;keys::actor::GenerationKey::new(actor_id), input.generation)?;
+				}
+
+				Ok((acquired_slot, allocation, error))
+</code></pre>
+<p>The two excerpts omit the debug dump between them. That dump runs only when <code>RIVET_DEBUG_PEGBOARD_ALLOCATOR</code> is set (<code>runtime.rs:333-340</code>), and it reads with <code>Snapshot</code> so it adds no conflict range (<code>runtime.rs:351-354</code>).</p>
+<p>Three error cases exist in this block and its neighbours.</p>
+<ol><li>The slot counter is at <code>max_concurrent_actors</code>, so <code>acquired_slot</code> is false. The error is <code>ActorError::ConcurrentActorLimitReached</code>.</li><li>No fresh envoy exists in the pool. An envoy is fresh when <code>last_ping_ts >= now - envoy_eligible_threshold</code> (<code>engine/packages/pegboard/src/workflows/actor2/alloc_serverful/hash.rs:129</code>; section 11). The error is <code>ActorError::NoEnvoys</code>.</li><li>The transaction itself fails. The <code>?</code> propagates the error, and Gasoline retries the activity.</li></ol>
+<p>On success the transaction deletes the <code>SleepTsKey</code> and writes the new <code>GenerationKey</code>. Both writes commit in the same transaction as the <code>ActorSlotsKey</code> add, so two allocations in the same pool conflict on that counter (<code>runtime.rs:227-241</code>). The Hash allocator also adds a read conflict on the chosen envoy's hash entry, so a concurrent ping, expiry, or registration of that envoy forces a retry (<code>hash.rs:558-575</code>). Two allocations that choose the same envoy do not conflict on that read alone. A conflict key is a key that the transaction reads or writes so that a second transaction on the same key must retry. The activity records a metric with two labels: <code>serverless</code> or <code>serverful</code>, and <code>allocated</code> or <code>not_allocated</code> (<code>runtime.rs:315-328</code>).</p>
+<h2>5. The Hash allocator: ring membership, power-of-K, and slot jitter</h2>
+<p><code>allocate_serverful</code> is the dispatch point. It takes seven parameters: <code>namespace_id: Id</code>, <code>pool_name: &str</code>, <code>tx: &universaldb::Transaction</code>, <code>pools: &rivet_pools::PoolsHandle</code>, <code>now: i64</code>, <code>envoy_eligible_threshold: i64</code>, and <code>envoy_load_balancer: &EnvoyLoadBalancer</code>. It returns <code>Result<Option<String>></code> (<code>alloc_serverful/mod.rs:13-21</code>).</p>
+<pre><code class="language-rust">// engine/packages/pegboard/src/workflows/actor2/alloc_serverful/mod.rs:13-27
+pub(super) async fn allocate_serverful(
+	namespace_id: Id,
+	pool_name: &amp;str,
+	tx: &amp;universaldb::Transaction,
+	pools: &amp;rivet_pools::PoolsHandle,
+	now: i64,
+	envoy_eligible_threshold: i64,
+	envoy_load_balancer: &amp;EnvoyLoadBalancer,
+) -&gt; Result&lt;Option&lt;String&gt;&gt; {
+	let start = Instant::now();
+	let mut stats = AllocStats::default();
+	// `emits_scan_stats` is false for strategies that do not walk the index
+	// (newest_ping_timestamp short-reads the head, so scan_depth/wrap_count
+	// would always be 0). The cheap stable labels (alloc/no_envoy/duration)
+	// still fire for every strategy.
+</code></pre>
+<p>The function matches on <code>envoy_load_balancer</code> into a <code>(strategy, emits_scan_stats, allocation)</code> tuple (<code>mod.rs:28-43</code>). The <code>strategy</code> label feeds the allocation metrics. <code>emits_scan_stats</code> is false for strategies that read one entry instead of walking the index.</p>
+<p>Four strategies exist. Table 2 lists them with the rule that each one follows.</p>
+<table><tr><th>Strategy</th><th>Rule</th><th>Source</th></tr><tr><td><code>RandomPingTimestamp</code></td><td>Read the oldest fresh ping entry, pick a random timestamp between that entry and now, seek to it, skip stale entries</td><td><code>engine/packages/pegboard/src/workflows/actor2/alloc_serverful/random_ping_timestamp.rs</code></td></tr><tr><td><code>NewestPingTimestamp</code></td><td>Read the newest ping entry in reverse order and return it if it is fresh</td><td><code>engine/packages/pegboard/src/workflows/actor2/alloc_serverful/newest_ping_timestamp.rs</code></td></tr><tr><td><code>RandomFullRange</code></td><td>Read the full range at the highest version, collect fresh entries, and remove one at random</td><td><code>engine/packages/pegboard/src/workflows/actor2/alloc_serverful/random_full_range.rs</code></td></tr><tr><td><code>Hash</code></td><td>Power-of-K choices over a virtual-node ring, then minimum slot count with jitter</td><td><code>engine/packages/pegboard/src/workflows/actor2/alloc_serverful/hash.rs</code></td></tr></table>
+<p>All four read <code>EnvoyLoadBalancerIdxKey</code>. That key orders entries by pool version (highest first), then by <code>last_ping_ts</code> (oldest first), then by envoy key (<code>keys/ns.rs:1579-1596</code>). Only the <code>Hash</code> strategy reads <code>SlotsKey</code>. The <code>version</code> in the key is the pool index version that each connection sends in its handshake query (section 8.1). The <code>Hash</code> strategy reads only the first entry of <code>EnvoyLoadBalancerIdxKey</code>, to learn the highest version (<code>hash.rs:531-556</code>). It then scans <code>EnvoyHashIdxKey</code> at that version (<code>hash.rs:157-183</code>).</p>
+<p>The default is <code>Hash</code>, not <code>RandomPingTimestamp</code>.</p>
+<pre><code class="language-rust">// engine/packages/config/src/config/pegboard.rs:511-524
+impl Default for EnvoyLoadBalancer {
+	fn default() -&gt; Self {
+		// EnvoyLoadBalancer::RandomPingTimestamp {
+		// 	use_snapshot_read: true,
+		// }
+		EnvoyLoadBalancer::Hash {
+			virtual_nodes: 8,
+			samples: 2,
+			max_scan: 16,
+			slot_jitter: 4,
+			use_snapshot_read: true,
+		}
+	}
+}
+</code></pre>
+<p>The source has a stale comment above the enum. The comment calls <code>RandomPingTimestamp</code> the "Current default" (<code>pegboard.rs:457</code>). The <code>Default</code> implementation disagrees, and it is the code that runs. This document follows the code. The four field defaults are <code>virtual_nodes = 8</code> (line 530), <code>samples = 2</code> (line 534), <code>max_scan = 16</code> (line 538), and <code>slot_jitter = 4</code> (line 542).</p>
+<h3>5.1 The ring</h3>
+<p>Each envoy in a pool that uses the <code>Hash</code> strategy writes <code>virtual_nodes</code> positions into the UDB key space when it registers. A pool that uses a legacy strategy writes none, and the next paragraph states that test.</p>
+<p>Registration writes <code>VirtualNodesKey</code> with the count. It then writes one <code>EnvoyHashIdxKey</code> for each index from 0 to <code>virtual_nodes - 1</code> (<code>conn.rs:479-496</code>, shown in section 8.2). The position is a 128-bit <code>xxh3</code> hash of the envoy key with the virtual node index as the seed. The value is empty. The key is the record.</p>
+<pre><code class="language-rust">// engine/packages/pegboard/src/keys/ns.rs:1699-1705
+pub struct EnvoyHashIdxKey {
+	pub namespace_id: Id,
+	pub pool_name: String,
+	pub version: u32,
+	pub hash_pos: [u8; 16],
+	pub envoy_key: String,
+}
+</code></pre>
+<p>The first two tuple components are the subspace prefix <code>NAMESPACE</code> and the key tag <code>ENVOY_HASH_IDX</code>; the struct fields follow (<code>keys/ns.rs:1747-1756</code>). The field order is <code>namespace_id</code>, <code>pool_name</code>, reverse <code>version</code>, <code>hash_pos</code>, then <code>envoy_key</code>. "Reverse version" means the code stores <code>(version as i32).wrapping_neg()</code>, so version 4 sorts before version 3 (<code>keys/ns.rs:11-13</code>). The <code>hash_pos</code> bytes are a fixed 16-byte string, so tuple order is byte order. A range read that starts at a pivot lands on the first position at or after that pivot. That is the only property the allocator uses. It does not compute a consistent-hash owner, and it does not use the position as a target. Section 5.3 states the exact rule.</p>
+<p><code>virtual_nodes</code> is written only when the configured strategy is <code>Hash</code> (<code>conn.rs:141-145</code>). A pool that uses a legacy strategy writes no hash entries.</p>
+<h3>5.2 The allocator signature and the shared scan budget</h3>
+<pre><code class="language-rust">// engine/packages/pegboard/src/workflows/actor2/alloc_serverful/hash.rs:112-147
+pub(super) async fn allocate_with_rng(
+	namespace_id: Id,
+	pool_name: &amp;str,
+	tx: &amp;universaldb::Transaction,
+	pools: &amp;rivet_pools::PoolsHandle,
+	stats: &amp;mut AllocStats,
+	now: i64,
+	envoy_eligible_threshold: i64,
+	samples: u8,
+	max_scan: u32,
+	slot_jitter: u8,
+	use_snapshot_read: bool,
+	rng: &amp;mut impl HashAllocatorRng,
+	mut read_stats: Option&lt;&amp;mut HashAllocatorReadStats&gt;,
+) -&gt; Result&lt;Option&lt;String&gt;&gt; {
+	debug_assert!(samples &gt;= 1, &quot;samples must be &gt;= 1&quot;);
+
+	let ping_threshold_ts = now - envoy_eligible_threshold;
+	let read_isolation = read_isolation(use_snapshot_read);
+	let Some(highest_version) =
+		read_highest_version(namespace_id, pool_name, tx, read_isolation).await?
+	else {
+		return Ok(None);
+	};
+
+	// One shared stale-entry budget covers every scan_for_fresh call in this
+	// allocation: forward + wrap across all K samples. Per-direction or
+	// per-sample budgets let pathological pools burn K * 2 * max_scan
+	// LastPingTs reads against the same stale entries. AtomicU32 because all
+	// K scans run concurrently and decrement the same counter.
+	let remaining_scan = AtomicU32::new(max_scan);
+
+	// Pre-draw all K pivots from the RNG before spawning the parallel scans.
+	// next_pivot() takes &amp;mut self, and the futures must not retain a mut
+	// borrow on the rng across .await points.
+	let pivots: Vec&lt;[u8; 16]&gt; = (0..samples).map(|_| rng.next_pivot()).collect();
+</code></pre>
+<p><code>samples</code> is K. <code>max_scan</code> is the shared budget for stale entries. The budget is one counter for all K scans and both directions. The comment states the reason: a per-sample budget would let a pool with many stale entries read <code>K <em> 2 </em> max_scan</code> times.</p>
+<p><code>read_isolation</code> returns <code>Snapshot</code> or <code>Serializable</code> (<code>alloc_serverful/mod.rs:164-170</code>). The default config sets <code>use_snapshot_read: true</code>, so the default is <code>Snapshot</code>. A <code>Snapshot</code> read does not conflict with the ping writers. The allocator adds one explicit read conflict on the winner instead.</p>
+<p><code>HashAllocatorRng</code> has three methods: <code>next_pivot(&mut self) -> [u8; 16]</code>, <code>choose_tied_index(&mut self, len: usize) -> usize</code>, and <code>next_slot_jitter(&mut self, max: u8) -> u8</code> (<code>hash.rs:313-321</code>). <code>ThreadHashAllocatorRng</code> uses thread-local randomness, and <code>SeededHashAllocatorRng</code> takes a seed for tests (<code>hash.rs:323-377</code>). <code>choose_tied_index</code> is the tiebreak when two candidates have the same jittered value (<code>hash.rs:286-304</code>).</p>
+<h3>5.3 The exact selection rule</h3>
+<p>The rule has six steps.</p>
+<ol><li>Read the highest version of the pool index.</li><li>Draw K random 128-bit pivots.</li><li>For each pivot, scan forward from the pivot to the end of the index subspace for that pool version. If the forward scan finds none and budget remains, scan backward from the pivot to the start (<code>hash.rs:149-186</code>). The subspace is built from <code>(namespace_id, pool_name, version)</code>, so the scan cannot reach an envoy of another version (<code>hash.rs:429-454</code>).</li><li>Merge the K candidates and remove duplicates.</li><li>If K is 1, return the single candidate.</li><li>If K is at least 2, read <code>SlotsKey</code> for each candidate with <code>read_isolation</code>, add a random jitter, and return the minimum (<code>hash.rs:241-248</code>).</li></ol>
+<p>A hash index entry has no value; the key carries the envoy identifier. <code>scan_for_fresh</code> therefore reads <code>LastPingTsKey</code> for each entry and accepts the first entry whose timestamp is at or above <code>ping_threshold_ts</code> (<code>hash.rs:467-481</code>). An entry below the threshold is stale, and the scan enqueues it for expiry.</p>
+<p>Every stale entry met during a scan consumes one unit of the shared budget. When the budget is gone, <code>scan_for_fresh</code> logs a warning, increments <code>ENVOY_LB_SCAN_CIRCUIT_BREAKER_TOTAL</code>, and returns without a candidate (<code>hash.rs:512-525</code>). Other pivots can still return candidates. If every pivot returns none, the candidate list is empty and the allocator returns <code>Ok(None)</code>. That value becomes <code>ActorError::NoEnvoys</code> in the Actor workflow (section 4.1).</p>
+<p>Step 5 pops the single candidate, adds the hash conflict when <code>use_snapshot_read</code> is set, and returns <code>Ok(Some(envoy_key))</code>. If the candidate list is empty it returns <code>Ok(None)</code> (<code>hash.rs:221-235</code>). When <code>use_snapshot_read</code> is false, the index and slot reads use <code>Serializable</code>, so the transaction already conflicts with the writers and the explicit conflict is not needed (<code>hash.rs:306-308</code>).</p>
+<p>When K is 1, the allocator skips the <code>SlotsKey</code> read and returns its only candidate. When K is at least 2, several pivots can land on the same envoy and the deduplicated list removes the repeats before the slot comparison. The candidate is drawn from fresh ring positions, not from envoys. An envoy with more positions would have a higher chance, but every envoy writes the same <code>virtual_nodes</code> value, so the positions are equal.</p>
+<p>Step 6 is the load-aware branch.</p>
+<pre><code class="language-rust">// engine/packages/pegboard/src/workflows/actor2/alloc_serverful/hash.rs:276-290
+	let jittered: Vec&lt;(String, i64, i64)&gt; = candidates
+		.into_iter()
+		.map(|(envoy_key, slots)| {
+			let jitter = rng.next_slot_jitter(slot_jitter) as i64;
+			let effective = slots.saturating_add(jitter);
+			(envoy_key, slots, effective)
+		})
+		.collect();
+
+	let effective_min = jittered.iter().map(|(_, _, e)| *e).min().unwrap();
+	let tied = jittered
+		.iter()
+		.filter(|(_, _, e)| *e == effective_min)
+		.map(|(k, s, _)| (k.clone(), *s))
+		.collect::&lt;Vec&lt;_&gt;&gt;();
+</code></pre>
+<p>When more than one candidate ties, the code increments <code>ENVOY_LB_TIED_MIN_TOTAL</code>. It then draws <code>tied_index</code> from <code>choose_tied_index(tied_count)</code>, takes that element with <code>nth</code>, and adds the conflict key (<code>hash.rs:292-308</code>).</p>
+<p>Three properties follow.</p>
+<ol><li>The comparison is <code>slots + jitter</code>, not <code>slots</code>. A lightly loaded envoy can lose to a heavily loaded one. That is intended. The jitter breaks the case where a new envoy has the same slot count as an old one.</li><li>The tie is broken at random. The source requires this. The internal design document says a deterministic tiebreak would send a burst of cold-pool allocations to one envoy (<code>docs-internal/engine/envoy-load-balancing.md</code>).</li><li>The allocator adds a read conflict on the winner's first virtual-node entry, computed with <code>xxh3_128_with_seed(envoy_key, 0)</code> (<code>hash.rs:558-575</code>). Seed 0 is a fixed position that every registration of the envoy writes. The conflict key is therefore the same for every allocation that chooses that envoy. It is not the pivot that selected the envoy. A read conflict is a <code>ConflictRangeType::Read</code> record. The transaction names the key without reading its value, and a concurrent write to that key forces a retry. Separately, every allocation in the pool writes the same <code>ActorSlotsKey</code> with <code>MutationType::Add</code> (section 2.1). Two allocations in one pool therefore conflict on that counter whether or not they pick the same envoy. The <code>SlotsKey</code> on the envoy is not written here.</li></ol>
+<p>The choice is neither consistent hashing nor least-loaded placement. It is power-of-K choices over a ring, with additive jitter before the minimum. The ring gives a cheap uniform candidate source. Power-of-K gives an approximate least-loaded result with K reads. The jitter trades a small placement error for less contention.</p>
+<h3>5.4 Why the jitter exists</h3>
+<pre><code class="language-rust">// engine/packages/pegboard/src/workflows/actor2/alloc_serverful/hash.rs:68-86
+// Why `slot_jitter` exists and how the default was sized.
+//
+// The hash allocator reads `SlotsKey` snapshot-isolated and picks the
+// minimum-slot envoy. `SlotsKey` is not incremented inside the allocator
+// transaction; it is bumped later in `set_connectable`. So during a burst,
+// many in-flight allocator transactions all observe the same `SlotsKey`
+// value for any given envoy, and all decide the same low-slot envoy is
+// the minimum. That envoy then gets a thundering herd of new actors all
+// at once, even though the load balancer believed it was picking the
+// least-loaded one.
+//
+// Concretely, the number of allocators racing on the same stale snapshot
+// of `SlotsKey` for one (namespace, pool) is approximately
+//
+//   in_flight = allocation_rate * allocator_tx_duration
+//
+// where allocation_rate is allocations per second into that pool and
+// allocator_tx_duration is the time from FDB transaction open to commit.
+// Without jitter, all `in_flight` allocators land on the same envoy.
+</code></pre>
+<p><code>slot_gap</code> is the difference between the slot counts of the K candidates. The comment continues at lines 88-111. Jitter dominates the comparison when <code>slot_jitter >= slot_gap</code>, so candidates inside that range are sampled roughly uniformly. The default is 4. The comment sizes it against three load cases, using <code>in_flight = allocation_rate * allocator_tx_duration</code>. About 10 allocations per second with a 5 millisecond transaction gives <code>in_flight = 0.05</code>. About 100 per second with a 5 millisecond transaction gives <code>0.5</code>. About 1000 per second with a 10 millisecond transaction gives <code>10</code>. The accepted range is 0 to 64 (<code>hash.rs:111</code>). The comment states that a load above the heavy burst case needs in-transaction slot reservation, not a larger jitter.</p>
+<h3>5.5 The freshness scan</h3>
+<p>For one pivot, <code>scan_for_fresh</code> runs a forward pass from the pivot to the end of the index. It runs a backward pass from the pivot to the start only when the forward pass finds no fresh entry and the shared budget remains (<code>hash.rs:149-186</code>). Each stale entry is passed to <code>EnvoyExpireScheduler::try_enqueue</code> for background expiry, and the shared budget decreases (<code>hash.rs:483-491</code>).</p>
+<p>An invariant protects the scan. The allocator never observes an envoy whose <code>ExpiredTsKey</code> is set. The expire operation deletes the virtual hash entries in the same transaction that writes <code>ExpiredTsKey</code> (<code>hash.rs:379-402</code>; <code>ops/envoy/expire.rs:139-180</code>). A concurrent snapshot read therefore sees one of two states only: the hash entries are present and <code>ExpiredTsKey</code> is absent, or the hash entries are absent and <code>ExpiredTsKey</code> is present.</p>
+<h3>5.6 Allocation flowchart</h3>
+<div class="mermaid">
+flowchart TD
+    S[allocate] --&gt; CFG[ops::runner_config::get]
+    CFG --&gt; TX[&quot;txn pegboard_actor2_acquire_slot&quot;]
+    TX --&gt; SLOT{ActorSlotsKey below max_concurrent_actors}
+    SLOT --&gt;|no| ERR1[ActorError::ConcurrentActorLimitReached]
+    SLOT --&gt;|yes or no max| KIND{kind}
+    KIND --&gt;|Serverless| SL[Allocation::Serverless]
+    KIND --&gt;|Normal| AS[allocate_serverful]
+    AS --&gt; LB{EnvoyLoadBalancer}
+    LB --&gt;|Hash| HV[read_highest_version]
+    LB --&gt;|other strategy| OTHER[&quot;random_ping_timestamp / newest_ping_timestamp / random_full_range&quot;]
+    OTHER --&gt;|fresh envoy| OUT
+    OTHER --&gt;|none| ERR2
+    HV --&gt;|none| ERR2
+    HV --&gt;|version| PIV[&quot;pivots: K draws, K = samples&quot;]
+    PIV --&gt; SCAN[scan_for_fresh]
+    SCAN --&gt; CAND[envoy_candidates]
+    CAND --&gt;|empty| ERR2
+    CAND --&gt; K{samples == 1}
+    K --&gt;|yes| PICK1[envoy_candidates.pop]
+    K --&gt;|no| SLOTS[SlotsKey]
+    SLOTS --&gt; JIT[slot_jitter]
+    JIT --&gt; MIN[choose_tied_index]
+    PICK1 --&gt; CONF[add_chosen_envoy_hash_conflict]
+    MIN --&gt; CONF
+    CONF --&gt; OUT[&quot;AllocateOutput: allocation Some(Serverful envoy_key)&quot;]
+    ERR2[ActorError::NoEnvoys] --&gt; OUT2[&quot;AllocateOutput: allocation None, state.error set&quot;]
+    ERR1 --&gt; OUT2
+    SL --&gt; OUT3[&quot;AllocateOutput: allocation Some(Serverless)&quot;]
+
+</div>
+<p>The labels are real functions, variables, keys, errors, and enum variants. <code>txn pegboard_actor2_acquire_slot</code> is the transaction name. <code>read_highest_version</code>, <code>scan_for_fresh</code>, <code>next_pivot</code>, <code>choose_tied_index</code>, <code>add_chosen_envoy_hash_conflict</code>, and <code>allocate_serverful</code> are function or method names. <code>random_ping_timestamp</code>, <code>newest_ping_timestamp</code>, and <code>random_full_range</code> are the other strategy modules under <code>alloc_serverful/</code>. <code>envoy_candidates</code> and <code>slot_jitter</code> are variables. <code>ActorError::ConcurrentActorLimitReached</code>, <code>ActorError::NoEnvoys</code>, <code>Allocation::Serverless</code>, and <code>Allocation::Serverful</code> are error and allocation variants. The <code>AllocateOutput</code> is built in <code>allocate</code>, not in <code>allocate_serverful</code>; <code>allocate_serverful</code> returns <code>Option<String></code> (section 5). The three non-<code>Hash</code> strategies do not call <code>add_chosen_envoy_hash_conflict</code>. Only the <code>Hash</code> path adds that read conflict (<code>hash.rs:224</code>, <code>307</code>).</p>
+<h3>5.7 A worked example</h3>
+<p>Take a <code>Normal</code> pool named <code>default</code> in one namespace. Two envoys are fresh. Envoy <code>E1</code> has <code>SlotsKey = 5</code>. Envoy <code>E2</code> has <code>SlotsKey = 2</code>. The pool index version is 3, the <code>version</code> query parameter that both envoys sent at registration. The allocator reads only the highest version, so both envoys must report the same value. An envoy that registered with a lower version is invisible to the allocator until it registers again at the highest version. The example uses 3; the value does not affect the mechanism. Each envoy has 8 positions, so the index holds 16 positions.</p>
+<p>The allocator draws <code>K = 2</code> pivots from <code>ThreadHashAllocatorRng</code>. Suppose pivot A lands before a position of <code>E1</code> and pivot B lands before a position of <code>E2</code>. The candidate list is <code>[E1, E2]</code>. The allocator reads both slot counts in parallel.</p>
+<p>The jitter draws are 3 for <code>E1</code> and 0 for <code>E2</code>. The effective values are 8 and 2. The minimum is <code>E2</code>, so the allocator returns <code>E2</code>.</p>
+<p>Now suppose both envoys have <code>SlotsKey = 2</code>, and the jitter draws are 1 and 2. The effective values are 3 and 4. The minimum is <code>E1</code>. A third allocation in the same tick reads the same stale counts. The new jitter draws are 4 and 0, so the minimum is <code>E2</code>. The herd splits.</p>
+<p>The exact random values depend on the random number generator. The mechanism does not. The source exposes <code>SeededHashAllocatorRng</code> for tests (<code>hash.rs:343-377</code>), and <code>allocate_hash_for_tests</code> wraps it (<code>alloc_serverful/mod.rs:127-162</code>). The test path proves the rule is reproducible.</p>
+<h2>6. The legacy placement path: runner slot scanning</h2>
+<p>The legacy path does not use the ring. A runner registers a <code>total_slots</code> value. The runner workflow fills Actors from a pending queue. The pending entry is <code>PendingActorByRunnerNameSelectorKey</code>, with fields <code>namespace_id: Id</code>, <code>runner_name_selector: String</code>, <code>ts: i64</code>, and <code>actor_id: Id</code>; the value is the Actor generation (<code>keys/ns.rs:159-175</code>).</p>
+<p><code>CrashPolicy</code> has three values: <code>Restart</code>, <code>Sleep</code>, and the default <code>Destroy</code> (<code>engine/packages/types/src/actors.rs:42-47</code>). The allocation activity writes the pending entry unless the policy is <code>Sleep</code>, <code>force_allocate</code> is false, and the pool is not <code>Serverless</code> (<code>workflows/actor/runtime.rs:447-476</code>). A <code>Sleep</code> policy with <code>force_allocate</code> true still writes the entry.</p>
+<p>The legacy workflow hands the Actor to <code>pegboard_actor2</code> on the next start after the pool gains a protocol version. The field is written by <code>refresh_metadata</code> or by envoy registration (section 2.1). The activity <code>allocate_actor_v2</code> reads the cached pool and returns <code>AllocateActorOutputV2 { status, serverless }</code> (<code>workflows/actor/runtime.rs:191-194</code>, <code>255-273</code>). When the pool has a protocol version, <code>status</code> is <code>AllocateActorStatus::MigrateToV2</code> (line 233). The legacy workflow then dispatches <code>workflows::actor2::Input</code> with <code>from_v1: true</code> (<code>engine/packages/pegboard/src/workflows/actor/mod.rs:220-239</code>). The source does not show a proactive migration of a running Actor. The migration paths run at the next spawn or after the Actor stops (<code>actor/mod.rs:680-685</code>, <code>864-876</code>). This is a different type from <code>AllocateOutput</code> in section 4: the legacy activity has its own status enum, and it never produces the <code>Allocation</code> enum. The <code>serverless</code> field reports the pool kind. It is true when the config kind is <code>Serverless</code> (<code>workflows/actor/runtime.rs:262-265</code>, <code>432-441</code>).</p>
+<pre><code class="language-rust">// engine/packages/pegboard/src/workflows/runner.rs:1007-1018
+			&#x27;queue_loop: loop {
+				if start.elapsed() &gt; EARLY_TXN_TIMEOUT {
+					tracing::warn!(&quot;timed out processing pending actors queue&quot;);
+					break;
+				}
+
+				let Some(queue_entry) = queue_stream.try_next().await? else {
+					break;
+				};
+
+				let (queue_key, generation) =
+					tx.read_entry::&lt;keys::ns::PendingActorByRunnerNameSelectorKey&gt;(&amp;queue_entry)?;
+</code></pre>
+<p>The pending queue is ordered by <code>ts</code> and then by Actor identifier (<code>keys/ns.rs:202-217</code>). The rule is: take pending Actors in that order, scan runners in index order, and pair each Actor with the first eligible runner. The runner scan stores the version of its first entry in <code>highest_version</code> (<code>runner.rs:1034-1057</code>). Three checks control the scan. First, the scan stops when the index version drops below <code>highest_version</code>. Second, the scan stops when the runner entry's <code>remaining_millislots</code> reaches 0. The entries are ordered by descending remaining slots, so a zero means every later runner in that version is also full. Third, a runner whose <code>last_ping_ts</code> is older than <code>now - runner_eligible_threshold</code> is skipped and the scan continues (<code>runner.rs:1042-1067</code>).</p>
+<p>A pair writes six changes in one transaction. It deletes the runner index entry and the pending entry. It writes the runner index again with one fewer slot (<code>runner.rs:1070-1098</code>). It writes <code>RemainingSlotsKey</code>, <code>RunnerIdKey</code>, and <code>runner::ActorKey</code> (<code>runner.rs:1100-1119</code>). It then returns an <code>Allocate</code> signal for that Actor (<code>runner.rs:1121-1130</code>).</p>
+<p>The scan walks an order that is already best-first and takes the first eligible entry. <code>RunnerAllocIdxKey</code> packs the highest version first, then the largest <code>remaining_millislots</code>, then the oldest <code>last_ping_ts</code>, then <code>runner_id</code> (<code>keys/ns.rs:73-92</code>). The first fresh entry is therefore the emptiest fresh runner in the highest version. This document therefore calls the scan best-fit: it takes the first entry of an order that is already best-first, and it does not sort again.</p>
+<p>The scan stops after 2500 milliseconds to avoid a transaction timeout. The constant is <code>EARLY_TXN_TIMEOUT</code> (<code>runner.rs:19</code>). The loop breaks or jumps to the queue loop with a warning (<code>runner.rs:1007-1011</code>, <code>1036-1040</code>).</p>
+<p>The loop opens a <code>get_ranges_keyvalues</code> stream over the <code>RunnerAllocIdxKey</code> subspace with <code>StreamingMode::Iterator</code> and <code>Snapshot</code> isolation (<code>runner.rs:1020-1032</code>). The comment states the reason: the scan must not conflict with every key, only the one it chooses. The chosen runner gets an explicit read conflict.</p>
+<h3>6.1 Legacy runner registration</h3>
+<p>The legacy runner workflow handles the first message from the runner.</p>
+<pre><code class="language-rust">// engine/packages/pegboard/src/workflows/runner.rs:82-98
+				Some(Main::Forward(sig)) =&gt; {
+					match sig.inner {
+						protocol::ToServer::ToServerInit(protocol::ToServerInit {
+							last_command_idx,
+							prepopulate_actor_names,
+							metadata,
+							..
+						}) =&gt; {
+							let init_data = ctx
+								.activity(ProcessInitInput {
+									runner_id: input.runner_id,
+									namespace_id: input.namespace_id,
+									last_command_idx: last_command_idx.unwrap_or(-1),
+									prepopulate_actor_names,
+									metadata,
+								})
+								.await?;
+</code></pre>
+<p><code>ProcessInitInput</code> carries <code>runner_id</code>, <code>namespace_id</code>, <code>last_command_idx</code>, <code>prepopulate_actor_names</code>, and <code>metadata</code> (<code>runner.rs:732-738</code>). <code>ProcessInitOutput</code> carries <code>last_event_idx</code> and <code>missed_commands</code> (<code>runner.rs:740-744</code>). The handler then calls <code>SendMessageToRunnerInput</code> with a <code>ToClientInit</code> message. That message carries <code>runner_id</code>, <code>last_event_idx</code> from the activity output, and a <code>ProtocolMetadata</code> with <code>runner_lost_threshold</code> (<code>runner.rs:100-111</code>). It then sends any <code>init_data.missed_commands</code> as a <code>ToClientCommands</code> message (<code>runner.rs:113-122</code>). Every message to a legacy runner is serialized with <code>PROTOCOL_MK1_VERSION</code> in the <code>send_message_to_runner</code> activity, so the embedded version prefix is 3 (<code>runner.rs:1150-1162</code>).</p>
+<p>The runner lost threshold is 15000 milliseconds (<code>engine/packages/config/src/config/pegboard.rs:268</code>). The <code>listen_with_timeout::<Main>(runner_lost_threshold)</code> call at line 78 uses it. If the runner sends no message in that window, the loop sees <code>None</code> and the workflow treats the runner as lost.</p>
+<p>The workflow then sends missed commands and inserts the runner into the index, unless the runner is draining (<code>runner.rs:113-138</code>). The source has a note at line 136: this workflow does not implement <code>drain_on_version_upgrade</code>, because it is the legacy workflow.</p>
+<p>Commands leave through one activity.</p>
+<pre><code class="language-rust">// engine/packages/pegboard/src/workflows/runner.rs:1150-1162
+#[activity(SendMessageToRunner)]
+async fn send_message_to_runner(ctx: &amp;ActivityCtx, input: &amp;SendMessageToRunnerInput) -&gt; Result&lt;()&gt; {
+	let receiver_subject = crate::pubsub_subjects::RunnerReceiverSubject::new(input.runner_id);
+
+	let message_serialized = versioned::ToRunner::wrap_latest(input.message.clone())
+		.serialize_with_embedded_version(PROTOCOL_MK1_VERSION)?;
+
+	ctx.ups()?
+		.publish(&amp;receiver_subject, &amp;message_serialized, PublishOpts::one())
+		.await?;
+
+	Ok(())
+}
+</code></pre>
+<p>The message uses <code>PROTOCOL_MK1_VERSION</code>, which is 3. The legacy runner therefore cannot receive a version 7 message, even though the same crate holds the version 7 schema.</p>
+<h2>7. The runner protocol and Binary Application Record Encoding (BARE) versioning</h2>
+<p>The runner protocol crate exports two families.</p>
+<pre><code class="language-rust">// engine/packages/runner-protocol/src/lib.rs:1-16
+pub mod compat;
+pub mod generated;
+pub mod util;
+pub mod uuid_compat;
+pub mod versioned;
+
+// Re-export latest
+pub use generated::v3::*;
+pub use generated::v7 as mk2;
+
+pub const PROTOCOL_MK1_VERSION: u16 = 3;
+pub const PROTOCOL_MK2_VERSION: u16 = 7;
+
+pub fn is_mk2(protocol_version: u16) -&gt; bool {
+	protocol_version &gt; PROTOCOL_MK1_VERSION
+}
+</code></pre>
+<p><code>generated::v3</code> is the legacy family. <code>generated::v7 as mk2</code> is the newer family. <code>is_mk2</code> is a strict greater-than test, so version 3 is the last legacy version and version 4 is the first newer version. A protocol bump must update <code>PROTOCOL_MK2_VERSION</code> and the TypeScript runner's <code>PROTOCOL_VERSION</code> together (<code>engine/CLAUDE.md:28-33</code>). <code>PROTOCOL_MK1_VERSION</code> stays at 3 as the legacy ceiling.</p>
+<p>The schemas are Binary Application Record Encoding (BARE) files under <code>engine/sdks/schemas/runner-protocol/</code>. Files <code>v1.bare</code> to <code>v7.bare</code> exist. The build script compiles them and the crate includes the generated code (<code>engine/packages/runner-protocol/src/generated.rs</code>).</p>
+<h3>7.1 The message families</h3>
+<p>Table 3 lists every top-level message in version 7, its direction, and its purpose.</p>
+<table><tr><th>Message</th><th>Union and direction</th><th>Purpose</th><th>Source</th></tr><tr><td><code>ToServerInit</code></td><td><code>ToServer</code>, runner to control plane</td><td>First message. Carries the last command index, preloaded Actor names, and runner metadata.</td><td><code>v7.bare:359</code></td></tr><tr><td><code>ToServerEvents</code></td><td><code>ToServer</code>, runner to control plane</td><td>Actor events. Each event carries a checkpoint: an Actor identifier, a generation, and an event index.</td><td><code>v7.bare:360</code></td></tr><tr><td><code>ToServerAckCommands</code></td><td><code>ToServer</code>, runner to control plane</td><td>Acknowledges commands up to a checkpoint.</td><td><code>v7.bare:361</code></td></tr><tr><td><code>ToServerStopping</code></td><td><code>ToServer</code>, runner to control plane</td><td>The runner is shutting down.</td><td><code>v7.bare:362</code></td></tr><tr><td><code>ToServerPong</code></td><td><code>ToServer</code>, runner to control plane</td><td>Reply to a ping.</td><td><code>v7.bare:363</code></td></tr><tr><td><code>ToServerKvRequest</code></td><td><code>ToServer</code>, runner to control plane</td><td>Actor key-value request.</td><td><code>v7.bare:364</code></td></tr><tr><td><code>ToServerTunnelMessage</code></td><td><code>ToServer</code> and <code>ToGateway</code>, runner to control plane or gateway</td><td>An opaque tunnel message for a gateway request.</td><td><code>v7.bare:365</code>, <code>427</code></td></tr><tr><td><code>ToClientInit</code></td><td><code>ToClient</code>, control plane to runner</td><td>Registration reply. Carries <code>runnerId</code> and <code>ProtocolMetadata</code>.</td><td><code>v7.bare:375-378</code></td></tr><tr><td><code>ToClientCommands</code></td><td><code>ToClient</code>, control plane to runner</td><td>A list of <code>CommandWrapper</code>.</td><td><code>v7.bare:380</code></td></tr><tr><td><code>ToClientAckEvents</code></td><td><code>ToClient</code>, control plane to runner</td><td>Acknowledges events up to <code>lastEventCheckpoints</code>.</td><td><code>v7.bare:382-384</code></td></tr><tr><td><code>ToClientKvResponse</code></td><td><code>ToClient</code>, control plane to runner</td><td>Reply to a key-value request.</td><td><code>v7.bare:386-389</code></td></tr><tr><td><code>ToClientTunnelMessage</code></td><td><code>ToClient</code>, control plane to runner</td><td>An opaque tunnel message for a gateway request.</td><td><code>v7.bare:396</code></td></tr><tr><td><code>ToClientPing</code></td><td><code>ToClient</code>, control plane to runner</td><td>Connection heartbeat on the runner WebSocket for a version above 3. It carries only <code>ts</code>.</td><td><code>v7.bare:327-329</code>, <code>397</code></td></tr><tr><td><code>ToRunnerPing</code></td><td><code>ToRunner</code>, control plane to runner</td><td>Gateway tunnel ping. It carries <code>gatewayId</code>, <code>requestId</code>, and <code>ts</code>, so the gateway can match <code>ToGatewayPong</code>.</td><td><code>v7.bare:401-405</code></td></tr><tr><td><code>ToRunnerClose</code></td><td><code>ToRunner</code>, control plane to runner</td><td>Closes the runner connection.</td><td><code>v7.bare:407</code></td></tr><tr><td><code>ToGatewayPong</code></td><td><code>ToGateway</code>, runner to gateway</td><td>Ping reply with <code>requestId</code> and <code>ts</code>.</td><td><code>v7.bare:420-423</code></td></tr><tr><td><code>ToServerlessServerInit</code></td><td><code>ToServerlessServer</code>, serverless endpoint to control plane</td><td>Registration for the serverless server role. Carries <code>runnerId</code> and <code>runnerProtocolVersion</code>.</td><td><code>v7.bare:431-434</code></td></tr></table>
+<p><code>ToServer</code> is the family that the runner sends to the control plane. <code>ToClient</code> is the family that the control plane sends to the runner. <code>ToServerlessServer</code> is the family that the serverless endpoint sends to the control plane. This document states each direction instead of inferring it from the name. <code>ToRunner</code> and <code>ToGateway</code> are transport wrappers that repeat some members. <code>ToServerTunnelMessage</code> appears in both <code>ToServer</code> and <code>ToGateway</code> (<code>v7.bare:425-428</code>). <code>ProtocolMetadata</code> carries <code>runnerLostThreshold</code>, <code>actorStopThreshold</code>, and <code>serverlessDrainGracePeriod</code> (<code>v7.bare:369-373</code>).</p>
+<p><code>ToClientPing</code> is the heartbeat of the runner WebSocket. The control-plane <code>ping_task</code> in <code>pegboard-runner</code> sends it every <code>runner_update_ping_interval_ms</code> plus a jitter of at most 127 milliseconds (<code>engine/packages/pegboard-runner/src/ping_task.rs:21-29</code>, <code>57-68</code>). The same task updates the allocation index ping on every run. It enforces <code>runner_ping_timeout_ms</code> only when <code>is_mk2</code> is true (<code>ping_task.rs:35-53</code>). The control plane therefore sends no <code>ToClientPing</code> to a runner protocol 3 connection. Its eligibility comes from the stored ping timestamp.</p>
+<p>Version 3 uses different close and tunnel messages. The version 3 <code>ToClient</code> union has <code>ToClientClose</code>, and the version 3 tunnel unions have <code>DeprecatedTunnelAck</code> (<code>v3.bare:288-301</code>, <code>309-320</code>, <code>388-397</code>). The version 7 <code>ToRunner</code> union has <code>ToRunnerClose</code> instead, and the version 7 tunnel unions do not have <code>DeprecatedTunnelAck</code> (<code>v7.bare:407-417</code>).</p>
+<p>Version 3 also has a different <code>ToClientInit</code>. It carries an extra <code>lastEventIdx</code> field, which version 4 removed (<code>v3.bare:371-375</code>; <code>v4.bare:375-378</code>). The legacy path in section 6 fills that field (<code>engine/packages/pegboard/src/workflows/runner.rs:100-111</code>).</p>
+<p>The envoy protocol is a separate crate and a separate schema family. Its latest schema is <code>v8.bare</code>, and the compiled constant is 8.</p>
+<pre><code class="language-rust">// engine/sdks/rust/envoy-protocol/src/lib.rs:5-13
+// Re-export latest
+pub use generated::v8::*;
+
+pub use generated::PROTOCOL_VERSION;
+
+/// Initial unacknowledged body bytes allowed in either HTTP stream direction.
+/// Receivers return credit with cumulative window-update messages as the body
+/// is consumed by the next layer.
+pub const HTTP_STREAM_INITIAL_WINDOW_BYTES: u64 = 1024 * 1024;
+</code></pre>
+<p>The value 8 is asserted in a test (<code>engine/sdks/rust/envoy-protocol/src/versioned/mod.rs:1148</code>). The envoy protocol has its own top-level union, <code>ToRivet</code> and <code>ToEnvoy</code>. Those unions carry the SQLite messages that the runner protocol does not have (section 8.4).</p>
+<h3>7.2 The versioned wrapper</h3>
+<p>Each message family has an owned versioned type. The newer client family is <code>ToClientMk2</code>.</p>
+<pre><code class="language-rust">// engine/packages/runner-protocol/src/versioned.rs:29-42
+	fn deserialize_version(payload: &amp;[u8], version: u16) -&gt; Result&lt;Self&gt; {
+		match version {
+			4 =&gt; Ok(ToClientMk2::V4(rivet_util::serde::bare_from_slice!(
+				payload
+			)?)),
+			5 =&gt; Ok(ToClientMk2::V5(rivet_util::serde::bare_from_slice!(
+				payload
+			)?)),
+			6 | 7 =&gt; Ok(ToClientMk2::V7(rivet_util::serde::bare_from_slice!(
+				payload
+			)?)),
+			_ =&gt; bail!(&quot;invalid version: {version}&quot;),
+		}
+	}
+</code></pre>
+<p><code>serialize_version</code> writes the current shape with <code>bare_to_vec!</code> (<code>versioned.rs:44-50</code>). <code>deserialize_converters</code> returns <code>[Ok, Ok, Ok, v4_to_v5, v5_to_v7, Ok]</code> and <code>serialize_converters</code> returns <code>[Ok, v7_to_v5, v5_to_v4, Ok, Ok, Ok]</code> (<code>versioned.rs:52-58</code>). Each vector has six entries, so the entries do not map one-to-one onto the three enum variants. The trait that consumes the vectors lives in the external <code>vbare</code> crate (<code>Cargo.toml:418-419</code>), which this document did not read, so the exact index rule is not stated here. The literal entries name four converters: <code>v4_to_v5</code>, <code>v5_to_v7</code>, <code>v7_to_v5</code>, and <code>v5_to_v4</code>. The other entries are <code>Ok</code>, which passes the value through unchanged. <code>deserialize_version</code> maps 4 to <code>V4</code>, 5 to <code>V5</code>, and 6 or 7 to <code>V7</code> (<code>versioned.rs:29-42</code>).</p>
+<p>The enum itself is <code>V4(v4::ToClient)</code>, <code>V5(v5::ToClient)</code>, <code>V7(v7::ToClient)</code> with <code>Latest = v7::ToClient</code> (<code>versioned.rs:8-15</code>). The version 6 arm reuses the version 7 reader. The engine notes permit this only when the bytes did not change (<code>engine/CLAUDE.md:8-13</code>). Version 4 to version 5 changed bytes, so <code>v4_to_v5</code> converts field by field.</p>
+<p>The conversion reads one field at a time. <code>v4_to_v5</code> maps <code>ToClientInit</code> and <code>ToClientCommands</code> into the version 5 shapes (<code>versioned.rs:62-100</code>). The engine notes forbid the shortcut of serializing one version and deserializing the other (<code>engine/CLAUDE.md:25</code>). The notes give the reason implicitly: the wire layout can change even when the types look the same.</p>
+<p>Version 2 has one compatibility rule. <code>version_needs_tunnel_ack(version: u16)</code> returns <code>version == 2</code> (<code>engine/packages/runner-protocol/src/compat.rs:1-7</code>). Only version 2 needs the <code>DeprecatedTunnelAck</code> message. The member sits in <code>ToServerTunnelMessageKind</code> and <code>ToClientTunnelMessageKind</code> (<code>v3.bare:288-301</code>, <code>309-320</code>). The caller is the runner-side <code>handle_message_mk1</code> in <code>pegboard-runner</code>, which decodes the version 2 bytes and sends the compatibility acknowledgement before it parses the message (<code>engine/packages/pegboard-runner/src/ws_to_tunnel_task.rs:500-510</code>). The comment gives the reason: older protocols have a garbage collection cycle that checks for the tunnel acknowledgement. Version 2 still matters because the protocol parser accepts versions 1, 2, and 3 (<code>versioned.rs:1578-1585</code>). The function exists so the sender does not branch on a literal in several places.</p>
+<h2>8. The envoy connection: registration and the tunnel</h2>
+<p>An envoy connects to Guard at <code>/envoys/connect</code>. Guard checks the path in <code>route_request_path_based</code> (<code>engine/packages/guard/src/routing/envoy.rs:36-47</code>). It then validates the regional host with <code>validate_regional_host</code>, checks the connection with <code>check_connection_auth</code>, and returns a <code>PegboardEnvoyWs</code> object (<code>envoy.rs:51-62</code>).</p>
+<p><code>validate_regional_host</code> rejects a request whose hostname is not one of the valid hosts of the current datacenter. It returns <code>MustUseRegionalHost</code> with the list of valid hosts (<code>engine/packages/guard/src/routing/mod.rs:374-402</code>). <code>check_connection_auth</code> reads the token from the <code>Sec-WebSocket-Protocol</code> header for a WebSocket, or from the <code>x-rivet-token</code> header otherwise. It then checks the token against the namespace in the query string, unless the engine runs with <code>insecure_allow_unauthenticated</code> (<code>engine/packages/guard/src/routing/mod.rs:118-181</code>).</p>
+<h3>8.1 The handshake URL</h3>
+<pre><code class="language-rust">// engine/packages/pegboard-envoy/src/utils.rs:23-39
+	pub fn parse_url(url: url::Url, max_protocol_version: u16) -&gt; Result&lt;UrlData&gt; {
+		// Read protocol version from query parameters
+		let protocol_version = url
+			.query_pairs()
+			.find_map(|(n, v)| (n == &quot;protocol_version&quot;).then_some(v))
+			.ok_or_else(|| {
+				WsError::InvalidRequest(&quot;missing `protocol_version` query parameter&quot;).build()
+			})?
+			.parse::&lt;u16&gt;()
+			.context(
+				WsError::InvalidRequest(&quot;invalid `protocol_version` query parameter&quot;).build(),
+			)?;
+		if protocol_version &lt; MIN_PROTOCOL_VERSION || protocol_version &gt; max_protocol_version {
+			return Err(
+				WsError::InvalidRequest(&quot;unsupported `protocol_version` query parameter&quot;).build(),
+			);
+		}
+</code></pre>
+<p><code>UrlData</code> holds five fields: <code>protocol_version: u16</code>, <code>namespace: String</code>, <code>pool_name: String</code>, <code>envoy_key: String</code>, and <code>version: u32</code> (<code>engine/packages/pegboard-envoy/src/utils.rs:8-15</code>). Five query parameters are required: <code>protocol_version</code>, <code>namespace</code>, <code>pool_name</code>, <code>envoy_key</code>, and <code>version</code>. The minimum protocol version is 2 (<code>utils.rs:6</code>). The maximum is not the compiled ceiling. It is the fleet-negotiated version, which Guard reads from <code>ctx.config().protocols().envoy.version()</code> (<code>pegboard-envoy/src/lib.rs:89</code>).</p>
+<p>The fleet value comes from <code>version-management</code>. That service reads the <code>version_management::keys::ProtocolVersionKey</code> entries that each instance writes. It deletes entries older than 30000 milliseconds, then sets the override to the oldest version still present (<code>engine/packages/version-management/src/lib.rs:10-11</code>, <code>106-170</code>). This key is not <code>runner_config::ProtocolVersionKey</code> (the pool's protocol version) or <code>envoy::ProtocolVersionKey</code> (the version stored for one envoy registration); section 8.2 describes the latter two. <code>RuntimeProtocol::version()</code> returns that override, or the compiled version when no override exists (<code>engine/packages/config/src/runtime_protocols.rs:38-53</code>). A mixed fleet therefore accepts the older version until the last old instance stops writing its entry.</p>
+<p>The <code>pool_name</code> limit is 128 bytes. The <code>envoy_key</code> limit is 3 to 128 bytes, and the key must be a valid identifier (<code>utils.rs:55-74</code>). A bad parameter returns <code>WsError::InvalidRequest</code> before the WebSocket upgrade completes.</p>
+<p>The <code>version</code> parameter comes from <code>EnvoyConfig::version</code>, a required <code>u32</code> field of the envoy client configuration (<code>engine/sdks/rust/envoy-client/src/config.rs:14-15</code>). The client sends it in <code>ws_url</code> (<code>engine/sdks/rust/envoy-client/src/connection/mod.rs:360-368</code>). Registration stores it in <code>VersionKey</code>, and the allocator reads only the highest value (section 5.3). An envoy that reports a lower value is therefore invisible to placement. The source does not state the intended rollout process.</p>
+<h3>8.2 Registration</h3>
+<p><code>init_conn</code> creates a new <code>envoy_conn_id</code> with <code>Id::new_v1(dc_label)</code> and reads <code>virtual_nodes</code> from the configured strategy (<code>conn.rs:137-145</code>). <code>dc_label</code> is the datacenter label that the server-side connection context supplies; it becomes the identifier prefix. It starts three futures in one <code>tokio::try_join!</code>: send the init packet, run the <code>envoy_conn_prepare</code> transaction, and read the missed commands (<code>conn.rs:146-194</code>). The comment states the goal of the first future: "Send init packet as soon as possible". <code>try_join!</code> does not order the three, so the init packet can arrive before, during, or after the prepare transaction.</p>
+<p>If any one of the three fails, <code>try_join!</code> returns the error and drops the other futures. The connection setup then fails. The durable registration <code>envoy_conn_register</code> runs after the join (<code>conn.rs:374</code>). A failure after that claim (the <code>envoy_conn_register</code> transaction) calls <code>fail_closed_post_claim</code>, which expires the envoy with a fence and shuts down its Actors (<code>conn.rs:341-360</code>). The three metadata values are <code>envoy_lost_threshold</code> (15000 milliseconds), <code>actor_stop_threshold</code> (1800000 milliseconds), and <code>envoy_max_response_payload_size</code> (20 mebibytes). Table 7 in section 11 lists the sources.</p>
+<p>The <code>envoy_conn_prepare</code> transaction reads <code>ProtocolVersionKey</code> with Serializable isolation (<code>conn.rs:166-186</code>). It returns true when the stored version differs from the connecting version, and it writes nothing. A true result purges the runner config caches before the claim (<code>conn.rs:215-222</code>).</p>
+<p>The registration transaction is <code>envoy_conn_register</code>; its tracing span is <code>envoy_register_tx</code>. It writes the durable identity and the index entries.</p>
+<p>Figure 3 shows the order of the handshake. The subscription comes first, and the claim comes after every fallible prepare step.</p>
+<div class="mermaid">
+sequenceDiagram
+    participant E as Envoy host process
+    participant G as Guard /envoys/connect
+    participant C as pegboard-envoy handle_websocket
+    participant U as UniversalDB
+    participant P as Universal Pub/Sub
+    E-&gt;&gt;G: WebSocket with protocol_version, namespace, envoy_key, version, pool_name
+    G-&gt;&gt;G: validate_regional_host and check_connection_auth
+    G-&gt;&gt;C: upgrade, then handle_websocket
+    C-&gt;&gt;P: subscribe EnvoyReceiverSubject and EnvoyEvictionSubject
+    par try_join!
+        C-&gt;&gt;E: ToEnvoyInit with ProtocolMetadata
+    and
+        C-&gt;&gt;U: txn envoy_conn_prepare
+    and
+        C-&gt;&gt;U: read_actor_commands
+    end
+    C-&gt;&gt;U: txn envoy_conn_register
+    U--&gt;&gt;C: commit result and protocol-changed flag
+    C-&gt;&gt;E: ToEnvoyCommands with missed commands, if any
+    C-&gt;&gt;P: publish EnvoyEvictionSubject wakeup
+
+</div>
+<p>The <code>try_join!</code> runs the prepare transaction, the init packet send, and the missed-command read together (<code>engine/packages/pegboard-envoy/src/conn.rs:146-194</code>). The claim follows them (<code>conn.rs:278-288</code>). The eviction wakeup follows the claim, in <code>handle_websocket</code> (<code>engine/packages/pegboard-envoy/src/lib.rs:157-171</code>).</p>
+<pre><code class="language-rust">// engine/packages/pegboard-envoy/src/conn.rs:468-496
+		tx.write(
+			&amp;pegboard::keys::ns::EnvoyLoadBalancerIdxKey::new(
+				namespace_id,
+				pool_name.to_string(),
+				version,
+				last_ping_ts,
+				envoy_key.to_string(),
+			),
+			(),
+		)?;
+
+		if let Some(virtual_nodes) = virtual_nodes {
+			tx.write(
+				&amp;VirtualNodesKey::new(namespace_id, envoy_key.to_string()),
+				virtual_nodes,
+			)?;
+			for i in 0..virtual_nodes {
+				tx.write(
+					&amp;EnvoyHashIdxKey::new(
+						namespace_id,
+						pool_name.to_string(),
+						version,
+						xxh3_128_with_seed(envoy_key.as_bytes(), i as u64).to_be_bytes(),
+						envoy_key.to_string(),
+					),
+					(),
+				)?;
+			}
+		}
+</code></pre>
+<p>The transaction also writes <code>EnvoyConnIdKey</code>, <code>PoolNameKey</code>, <code>VersionKey</code>, <code>SlotsKey</code>, <code>CreateTsKey</code>, <code>LastPingTsKey</code>, <code>envoy::ProtocolVersionKey</code>, <code>ActiveEnvoyKey</code>, and <code>ActiveEnvoyByNameKey</code> (<code>conn.rs:363-467</code>). Each key has one job. <code>SlotsKey</code> is an atomic add of 0 at registration. The add creates the key when it is absent. It also conflicts with any concurrent slot change. Registration and allocation therefore cannot both miss each other (<code>conn.rs:410-414</code>). <code>EnvoyConnIdKey</code> holds the fencing token. <code>PoolNameKey</code> ties the envoy key to its pool. <code>VersionKey</code> holds the handshake query version, which is the envoy build's version number, not the wire protocol version. <code>SlotsKey</code> counts the Actors on the envoy. <code>CreateTsKey</code> holds the first registration time and does not change on reconnect. <code>LastPingTsKey</code> holds the latest ping. <code>envoy::ProtocolVersionKey</code> holds the wire protocol version that this connection reported. <code>ActiveEnvoyKey</code> and <code>ActiveEnvoyByNameKey</code> are ordered indexes of the active envoys by namespace and by pool. It clears <code>ExpiredTsKey</code> if the key exists. It deletes the old <code>EnvoyLoadBalancerIdxKey</code> and adds a read conflict on it. After the excerpt it reads and writes <code>runner_config::ProtocolVersionKey</code> (<code>conn.rs:498-511</code>). The comment at line 498 gives the reason: a <code>Normal</code> pool does not run the metadata poller, so registration is the only writer.</p>
+<p><code>envoy_conn_id</code> is a new <code>Id</code> with the datacenter label (<code>conn.rs:138</code>). Every message from this connection carries the identity implicitly, because the connection state holds it. The expiry operation uses it as a fencing token.</p>
+<h3>8.3 The connection state</h3>
+<p><code>Conn</code> holds all per-connection state. Table 4 lists every field.</p>
+<table><tr><th>Field</th><th>Type</th><th>Purpose</th></tr><tr><td><code>namespace_id</code></td><td><code>Id</code></td><td>Namespace of the pool.</td></tr><tr><td><code>namespace_name</code></td><td><code>String</code></td><td>Namespace name for logging and configuration.</td></tr><tr><td><code>pool_name</code></td><td><code>String</code></td><td>Pool name.</td></tr><tr><td><code>envoy_key</code></td><td><code>String</code></td><td>Stable operator-chosen identity.</td></tr><tr><td><code>envoy_conn_id</code></td><td><code>Id</code></td><td>Identity of this connection, used as a fencing token.</td></tr><tr><td><code>protocol_version</code></td><td><code>u16</code></td><td>Negotiated version for every message on this connection.</td></tr><tr><td><code>ws_handle</code></td><td>WebSocket handle</td><td>Sends frames to the envoy.</td></tr><tr><td><code>authorized_tunnel_routes</code></td><td><code>HashMap<(GatewayId, RequestId), ()></code></td><td>Gateway requests that this envoy may answer.</td></tr><tr><td><code>pending_websocket_opens</code></td><td><code>HashMap<(GatewayId, RequestId), Instant></code></td><td>Websocket opens that wait for the envoy.</td></tr><tr><td><code>udb</code></td><td>UDB handle</td><td>Durable store.</td></tr><tr><td><code>node_id</code></td><td>node identity</td><td>The control plane node that owns the connection.</td></tr><tr><td><code>actor_dbs</code></td><td><code>HashMap<String, Arc<Db>></code></td><td>Cached SQLite handles per Actor.</td></tr><tr><td><code>remote_sqlite_executors</code></td><td><code>HashMap<(String, u64), Arc<OnceCell<NativeDatabaseHandle>>></code></td><td>Native executors for remote Structured Query Language (SQL).</td></tr><tr><td><code>pool</code></td><td>runner config</td><td>The pool config.</td></tr><tr><td><code>connected_at</code></td><td><code>Instant</code></td><td>Connection start, used for lifetime metrics.</td></tr><tr><td><code>last_rtt</code></td><td><code>AtomicU32</code></td><td>Last round-trip time.</td></tr><tr><td><code>last_ping_ts</code></td><td><code>AtomicI64</code></td><td>Last ping timestamp.</td></tr><tr><td><code>reported_stopping</code></td><td><code>AtomicBool</code></td><td>The envoy sent <code>ToRivetStopping</code>.</td></tr></table>
+<p>Source: <code>engine/packages/pegboard-envoy/src/conn.rs:31-57</code>.</p>
+<p><code>is_current_registration</code> reads <code>EnvoyConnIdKey</code> with <code>Serializable</code> and compares it to <code>envoy_conn_id</code> (<code>conn.rs:69-86</code>). A stale connection fails this test. <code>tunnel_to_ws_task</code> uses the test when it receives an eviction message (<code>tunnel_to_ws_task.rs:63-84</code>). <code>ws_to_tunnel_task</code> uses it when it receives a stopping message (<code>ws_to_tunnel_task.rs:864-899</code>).</p>
+<h3>8.4 The envoy message families</h3>
+<p>Table 5 lists the version 8 top-level messages.</p>
+<table><tr><th>Union</th><th>Variants</th><th>Direction</th></tr><tr><td><code>ToRivet</code></td><td><code>ToRivetMetadata</code>, <code>ToRivetEvents</code>, <code>ToRivetAckCommands</code>, <code>ToRivetStopping</code>, <code>ToRivetPong</code>, <code>ToRivetKvRequest</code>, <code>ToRivetTunnelMessage</code>, eight SQLite request variants</td><td>envoy to control plane</td></tr><tr><td><code>ToEnvoy</code></td><td><code>ToEnvoyInit</code>, <code>ToEnvoyCommands</code>, <code>ToEnvoyAckEvents</code>, <code>ToEnvoyKvResponse</code>, <code>ToEnvoyTunnelMessage</code>, <code>ToEnvoyPing</code>, eight SQLite response variants</td><td>control plane to envoy</td></tr><tr><td><code>ToEnvoyConn</code></td><td><code>ToEnvoyConnPing</code>, <code>ToEnvoyConnClose</code>, <code>ToEnvoyCommands</code>, <code>ToEnvoyAckEvents</code>, <code>ToEnvoyTunnelMessage</code></td><td>control plane to envoy over the tunnel</td></tr><tr><td><code>ToGateway</code></td><td><code>ToGatewayPong</code>, <code>ToRivetTunnelMessage</code></td><td>control plane to gateway</td></tr><tr><td><code>ToOutbound</code></td><td><code>ToOutboundActorStart</code></td><td>control plane to the outbound handler</td></tr></table>
+<p>Sources: <code>engine/sdks/schemas/envoy-protocol/v8.bare:695-830</code>. The eight SQLite requests are <code>ToRivetSqliteGetPagesRequest</code>, <code>ToRivetSqliteCommitRequest</code>, <code>ToRivetSqliteCommitStageBeginRequest</code>, <code>ToRivetSqliteCommitStageSegmentRequest</code>, <code>ToRivetSqliteCommitFinalizeRequest</code>, <code>ToRivetSqliteExecRequest</code>, <code>ToRivetSqliteExecuteRequest</code>, and <code>ToRivetSqliteExecuteBatchRequest</code>. The eight responses are the matching <code>ToEnvoySqliteGetPagesResponse</code>, <code>ToEnvoySqliteCommitResponse</code>, <code>ToEnvoySqliteCommitStageBeginResponse</code>, <code>ToEnvoySqliteCommitStageSegmentResponse</code>, <code>ToEnvoySqliteCommitFinalizeResponse</code>, <code>ToEnvoySqliteExecResponse</code>, <code>ToEnvoySqliteExecuteResponse</code>, and <code>ToEnvoySqliteExecuteBatchResponse</code> (<code>v8.bare:735-773</code>). The requests divide into one page read (<code>GetPages</code>), a four-message staged commit (<code>Commit</code>, <code>CommitStageBegin</code>, <code>CommitStageSegment</code>, <code>CommitFinalize</code>), and three query messages (<code>Exec</code>, <code>Execute</code>, <code>ExecuteBatch</code>). The five page and commit messages use the <code>actor_sqlite_page_task</code> queue, and the three query messages use the <code>actor_remote_sqlite_task</code> queue (<code>ws_to_tunnel_task.rs:807-821</code>, <code>1012-1014</code>). <a href="06-actor-sqlite-and-depot.html">06 Actor SQLite and Depot</a> explains the SQLite messages.</p>
+<p>Both <code>ToGateway</code> variants travel from a control-plane task to a gateway. <code>tunnel_to_ws_task</code> publishes the pong in reply to a gateway ping (<code>engine/packages/pegboard-envoy/src/tunnel_to_ws_task.rs:141-164</code>). <code>ws_to_tunnel_task</code> publishes the tunnel reply (<code>ws_to_tunnel_task.rs:1467-1469</code>).</p>
+<p><code>ToEnvoyConn</code> is a control-plane envelope, not a WebSocket frame. A gateway or control-plane task publishes it to <code>EnvoyReceiverSubject</code>. <code>tunnel_to_ws_task</code> decodes it and maps the command, acknowledgement, and tunnel variants to the matching <code>ToEnvoy</code> frame (<code>tunnel_to_ws_task.rs:118-224</code>). <code>ToEnvoy</code> is the union that the connection serializes to the host. The ping becomes a pong and the close ends the connection; neither becomes a <code>ToEnvoy</code> frame (<code>tunnel_to_ws_task.rs:141-166</code>).</p>
+<p>The envoy metadata has a different shape from the runner metadata.</p>
+<pre><code class="language-rust">// engine/sdks/schemas/envoy-protocol/v8.bare:714-722
+type ProtocolMetadata struct {
+	envoyLostThreshold: i64
+	actorStopThreshold: i64
+	maxResponsePayloadSize: u64
+}
+
+type ToEnvoyInit struct {
+	metadata: ProtocolMetadata
+}
+</code></pre>
+<p><code>maxResponsePayloadSize</code> is new in the envoy protocol. The runner protocol has no such field. The value is 20 mebibytes (<code>pegboard.rs:397</code>).</p>
+<h2>9. One envoy, many Actors: demultiplexing</h2>
+<p>One WebSocket carries messages for every Actor on the envoy. The connection task, <code>ws_to_tunnel_task</code>, demultiplexes the stream into per-entity serial queues. <code>TaskManager</code> holds <code>ctx: StandaloneCtx</code>, <code>conn: Arc<Conn></code>, five <code>StdHashMap</code> queues, and <code>workers: JoinSet<Result<TaskExit>></code>. <code>TaskExit</code> names the queue that exited and carries its key: <code>Kv(key)</code>, <code>SqlitePage(key)</code>, <code>RemoteSqlite(key)</code>, <code>Tunnel(key)</code>, or <code>Control</code> (<code>engine/packages/pegboard-envoy/src/ws_to_tunnel_task.rs:69-94</code>). <code>remove_worker_task</code> uses that key to remove the map entry (<code>ws_to_tunnel_task.rs:161-207</code>).</p>
+<p>Five queues exist. Table 6 lists the key and the reason for the key.</p>
+<table><tr><th>Queue</th><th>Key</th><th>Reason</th></tr><tr><td><code>kv_tasks</code></td><td>one Actor identifier</td><td>Key-value operations for one Actor must stay in order.</td></tr><tr><td><code>sqlite_page_tasks</code></td><td>Actor identifier and generation</td><td>Page operations for one generation must stay in order, and a new generation must not mix with an old one.</td></tr><tr><td><code>remote_sqlite_tasks</code></td><td>Actor identifier and generation</td><td>Same rule for remote SQL execution.</td></tr><tr><td><code>tunnel_tasks</code></td><td><code>GatewayId</code> and <code>RequestId</code></td><td>One gateway request has one ordered stream of tunnel messages.</td></tr><tr><td><code>control_tasks</code></td><td>unit</td><td>Metadata and command acknowledgements are connection-wide.</td></tr></table>
+<p>The generation segment is important. A stopped Actor can start again with a higher generation. A late SQLite message from the old generation must not touch the new generation. The key includes the generation, so the old task and the new task are different tasks.</p>
+<p>The remote queue runs <code>actor_remote_sqlite_task</code>. Its <code>Key</code> has two fields: <code>actor_id: String</code> and <code>generation: u64</code> (<code>engine/packages/pegboard-envoy/src/actor_remote_sqlite_task.rs:12-25</code>). Its <code>Message</code> enum has three variants: <code>Exec</code>, <code>Execute</code>, and <code>ExecuteBatch</code> (<code>actor_remote_sqlite_task.rs:27-32</code>). Each variant carries one protocol request. The task calls <code>handle_remote_sqlite_exec_response</code>, <code>handle_remote_sqlite_execute_response</code>, or <code>handle_remote_sqlite_execute_batch_response</code>, and sends the reply on the same WebSocket (<code>actor_remote_sqlite_task.rs:34-71</code>). An idle task exits after <code>TASK_IDLE_TIMEOUT</code>, which is 30 seconds (<code>engine/packages/pegboard-envoy/src/ws_to_tunnel_task.rs:67</code>), and returns <code>TaskExit::RemoteSqlite</code> (<code>actor_remote_sqlite_task.rs:68</code>).</p>
+<h3>9.1 The dispatch function</h3>
+<pre><code class="language-rust">// engine/packages/pegboard-envoy/src/ws_to_tunnel_task.rs:711-733
+		// Process KV request
+		protocol::ToRivet::ToRivetKvRequest(req) =&gt; {
+			let key = actor_kv_task::Key::new(req.actor_id.clone());
+			task_manager.enqueue_kv(key, actor_kv_task::Message::Request(req))?;
+		}
+		protocol::ToRivet::ToRivetSqliteGetPagesRequest(req) =&gt; {
+			let Some(generation) = req.data.expected_generation else {
+				send_sqlite_get_pages_response(
+					&amp;conn,
+					req.request_id,
+					protocol::SqliteGetPagesResponse::SqliteErrorResponse(
+						sqlite_protocol_error_response(
+							&quot;sqlite get_pages missing expectedGeneration&quot;,
+						),
+					),
+				)
+				.await?;
+				return Ok(None);
+			};
+			let key = actor_sqlite_page_task::Key::new(req.data.actor_id.clone(), generation);
+			task_manager
+				.enqueue_sqlite_page(key, actor_sqlite_page_task::Message::GetPages(req))?;
+		}
+</code></pre>
+<p>The excerpt starts at the key-value arm. The match begins one arm earlier, with <code>ToRivetPong</code> (<code>ws_to_tunnel_task.rs:693-710</code>). It computes <code>rtt</code> from <code>pong.ts</code>, clamps a future timestamp to <code>u32::MAX</code>, stores the value in <code>last_rtt</code> and <code>last_ping_ts</code>, and records the <code>ENVOY_PING_LAG_SECONDS</code> metric. Every SQLite arm tests <code>expected_generation</code> first. A missing generation produces a <code>SqliteErrorResponse</code> and the connection stays open. The engine notes require the websocket handler to return <code>SqliteErrorResponse</code> for unexpected SQLite input instead of failing the shared connection task (<code>engine/CLAUDE.md:120</code>). The generation test and the error reply follow that rule.</p>
+<pre><code class="language-rust">// engine/packages/pegboard-envoy/src/ws_to_tunnel_task.rs:846-871
+				replace_oversized_payload_with_terminal_message(&amp;mut tunnel_msg.message_kind);
+			}
+			let key = tunnel_message_task::Key::new(
+				tunnel_msg.message_id.gateway_id,
+				tunnel_msg.message_id.request_id,
+			);
+			task_manager.enqueue_tunnel(key, tunnel_message_task::Message::Message(tunnel_msg))?;
+		}
+		protocol::ToRivet::ToRivetMetadata(metadata) =&gt; {
+			task_manager.enqueue_control(control_task::Message::Metadata(metadata))?;
+		}
+		// Forward to demuxer which forwards to actor wf
+		protocol::ToRivet::ToRivetEvents(events) =&gt; {
+			for event in events {
+				event_demuxer.ingest(Id::parse(&amp;event.checkpoint.actor_id)?, event);
+			}
+		}
+		protocol::ToRivet::ToRivetAckCommands(ack) =&gt; {
+			task_manager.enqueue_control(control_task::Message::AckCommands(ack))?;
+		}
+		protocol::ToRivet::ToRivetStopping =&gt; {
+			// A stopping message may arrive from a superseded websocket. Do not let that stale
+			// connection transition metrics or begin evicting the replacement&#x27;s actors.
+			if !conn.is_current_registration().await? {
+				return Ok(Some(LifecycleResult::Evicted));
+			}
+</code></pre>
+<p>The size test at lines 823-826 compares the payload against <code>envoy_max_response_payload_size</code>. The warning at lines 828-844 logs <code>namespace_id</code>, <code>pool_name</code>, <code>envoy_key</code>, <code>protocol_version</code>, the gateway and request identifiers, the message index, the message kind, the payload size, and the maximum size. It does not close the connection. The stopping arm then sets <code>reported_stopping</code> and records the <code>Stopping</code> metric (<code>ws_to_tunnel_task.rs:873-882</code>). For a <code>Normal</code> (serverful) envoy it calls <code>ops::envoy::expire</code> with the connection identifier and <code>skip_if_fresh: false</code> (<code>ws_to_tunnel_task.rs:884-893</code>). It checks the registration again, then spawns an eviction task after <code>actor_eviction_delay</code> (<code>ws_to_tunnel_task.rs:895-931</code>).</p>
+<p><code>ActorEventDemuxer</code> keeps one channel for each Actor and spawns a handler for each new Actor (<code>engine/packages/pegboard-envoy/src/actor_event_demuxer.rs</code>). A garbage collection pass removes idle handlers every 30000 milliseconds. The idle threshold is also 30000 milliseconds. Both values come from <code>envoy_event_demuxer_gc_interval</code> and <code>envoy_event_demuxer_max_last_seen_threshold</code> (<code>pegboard.rs:386-392</code>).</p>
+<h3>9.2 Serial execution and idle timeout</h3>
+<p>Each queue type runs one task at a time for its key.</p>
+<pre><code class="language-rust">// engine/packages/pegboard-envoy/src/actor_sqlite_page_task.rs:13-17
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(super) struct Key {
+	actor_id: String,
+	generation: u64,
+}
+</code></pre>
+<p>The task <code>Message</code> enum has five variants: <code>GetPages</code>, <code>Commit</code>, <code>StageBegin</code>, <code>StageSegment</code>, and <code>Finalize</code> (<code>actor_sqlite_page_task.rs:28-37</code>). A comment at lines 32-33 states why staged commits share the task. One Actor's stage, its segments, and its finalize must stay serialized against each other and against its ordinary commits.</p>
+<p>The task drains its channel and exits after <code>TASK_IDLE_TIMEOUT</code>. The constant is 30 seconds (<code>ws_to_tunnel_task.rs:67</code>). When a task exits, <code>remove_worker_task</code> removes the map entry for the key that the task reports (<code>ws_to_tunnel_task.rs:161-207</code>). The next message creates a new task.</p>
+<p>This design gives ordering without a lock per Actor. The cost is one task for each open key. Three queues are keyed by Actor, so an envoy with 1000 active Actors holds about 3000 per-Actor tasks. The idle timeout bounds the count for Actors that stop sending messages.</p>
+<h3>9.3 The outbound tunnel tasks</h3>
+<p>The control plane also sends messages toward the envoy. Two tasks carry them.</p>
+<p><code>tunnel_to_ws_task</code> subscribes to the envoy receiver subject and the eviction subject. It reads <code>ToEnvoyConn</code> messages and writes them to the WebSocket.</p>
+<pre><code class="language-rust">// engine/packages/pegboard-envoy/src/tunnel_to_ws_task.rs:141-161
+		protocol::ToEnvoyConn::ToEnvoyConnPing(ping) =&gt; {
+			// Publish pong to UPS
+			let gateway_reply_to = GatewayReceiverSubject::new(ping.gateway_id);
+			let msg_serialized = versioned::ToGateway::wrap_latest(
+				protocol::ToGateway::ToGatewayPong(protocol::ToGatewayPong {
+					request_id: ping.request_id,
+					ts: ping.ts,
+				}),
+			)
+			.serialize_with_embedded_version(PROTOCOL_VERSION)
+			.context(&quot;failed to serialize pong message for gateway&quot;)?;
+			ctx.ups()
+				.context(&quot;failed to get UPS instance for tunnel message&quot;)?
+				.publish(&amp;gateway_reply_to, &amp;msg_serialized, PublishOpts::one())
+				.await
+				.with_context(|| {
+					format!(
+						&quot;failed to publish tunnel message to gateway reply topic: {}&quot;,
+						gateway_reply_to
+					)
+				})?;
+</code></pre>
+<p>The ping arm returns <code>Ok(false)</code>, so a pong is not sent to the envoy. <code>ToEnvoyConnClose</code> returns <code>Ok(true)</code>. The returned boolean means "this connection must exit as evicted": the loop maps <code>true</code> to <code>LifecycleResult::Evicted</code> (<code>tunnel_to_ws_task.rs:26-44</code>, <code>166</code>). <code>ToEnvoyConn::ToEnvoyCommands</code> calls <code>hibernating_requests::hydrate_command_wrapper</code> on each wrapper. It calls <code>actor_lifecycle::stop_actor</code> when the inner command is <code>CommandStopActor</code>, then returns <code>ToEnvoy::ToEnvoyCommands</code> (<code>tunnel_to_ws_task.rs:167-179</code>).</p>
+<p><code>hydrate_command_wrapper</code> fills the <code>hibernating_requests</code> field of each start command. A hibernating request is a gateway request that waits across an Actor sleep. The function lists the stored request identifiers for the Actor and copies them into the command (<code>pegboard-envoy/src/hibernating_requests.rs:5-23</code>). <code>actor_lifecycle::stop_actor</code> handles the opposite direction. It removes the cached SQLite handle and closes any remote SQLite executor for the stopped generation, and it does not touch storage (<code>engine/packages/pegboard-envoy/src/actor_lifecycle.rs:8-35</code>).</p>
+<p>The tunnel message path records the <code>(GatewayId, RequestId)</code> pair in <code>authorized_tunnel_routes</code> and arms a pending WebSocket open timer (<code>tunnel_to_ws_task.rs:181-224</code>).</p>
+<p><code>tunnel_to_ws_task</code> sends a reply after the WebSocket handoff. The flag <code>reply_after_websocket_handoff</code> is true only for <code>ToEnvoyTunnelMessage</code> (<code>tunnel_to_ws_task.rs:126-134</code>). The helper <code>ordered_handoff</code> acknowledges the tunnel message only after the send completes (<code>tunnel_to_ws_task.rs:251-256</code>). The ordering prevents an acknowledgement for a message that never reached the envoy.</p>
+<p><code>tunnel_to_ws_task</code> returns <code>LifecycleResult::Evicted</code> when a newer connection owns the registration. <code>recv_msg</code> watches <code>EnvoyEvictionSubject</code>, whose topic is <code>pegboard.envoy.eviction.{namespace_id}.{envoy_key}</code> (<code>engine/packages/pegboard/src/pubsub_subjects.rs:141-168</code>). Each new connection publishes a wakeup to that subject after <code>init_conn</code>, and the comment at <code>tunnel_to_ws_task.rs:68-69</code> says every registration publishes it (<code>engine/packages/pegboard-envoy/src/lib.rs:157-171</code>). The task reads <code>EnvoyConnIdKey</code> and compares the value with its own <code>envoy_conn_id</code>. If the values differ, the task increments <code>EVICTION_TOTAL</code> and returns <code>Evicted</code> (<code>tunnel_to_ws_task.rs:56-84</code>). <code>handle_message</code> returns <code>true</code> only for <code>ToEnvoyConnClose</code>, and that is the only <code>handle_message</code> result that makes the loop return <code>Evicted</code> (<code>tunnel_to_ws_task.rs:26-44</code>, <code>166</code>). The eviction subscription returns <code>Evicted</code> directly when a newer registration owns the key (<code>tunnel_to_ws_task.rs:63-84</code>). A stopping message from a stale connection also returns <code>Evicted</code> in the other task (<code>ws_to_tunnel_task.rs:864-899</code>).</p>
+<p>Eviction means that a newer WebSocket for the same envoy key replaced this one. <code>handle_websocket</code> then skips the expire call, because the newer registration must stay in the index (<code>lib.rs:326-350</code>). It marks the metric <code>Disconnected</code> with reason <code>evicted</code> (<code>lib.rs:508</code>) and closes with reason <code>ws.eviction#{ray_id}</code> (<code>lib.rs:388-395</code>). <code>ray_id</code> is the trace identifier that the connection assigns to a request for log correlation.</p>
+<p><code>LifecycleResult</code> maps to a close frame and a metric label (<code>lib.rs:368-419</code>, <code>497-521</code>). <code>Closed</code> sends close code 1000 with <code>ws.closed</code>, and records <code>Stopped</code> with <code>graceful_shutdown_complete</code> when the envoy reported stopping; otherwise it records <code>Disconnected</code> with <code>websocket_closed</code>. <code>Aborted</code> sends 1000 with <code>ws.closed</code> and records <code>connection_error</code>. <code>Evicted</code> sends 1000 with <code>ws.eviction#{ray_id}</code> and records <code>evicted</code>. An error sends close code 1000 when it carries a <code>RivetError</code> with group <code>ws</code> and code <code>connection_closed</code> or <code>eviction</code>; every other error sends 1011 (<code>lib.rs:396-418</code>). A <code>ws.timed_out</code> error records <code>Lost</code> with <code>ping_timeout</code>. <code>shutdown_conn_actors</code> still runs for this connection (<code>lib.rs:352</code>).</p>
+<p>Actor eviction is a separate operation. When an envoy reports <code>Stopping</code>, <code>ws_to_tunnel_task</code> waits <code>actor_eviction_delay</code> seconds and calls <code>pegboard::ops::envoy::evict_actors</code> (<code>ws_to_tunnel_task.rs:895-931</code>). The operation lists the Actors in the <code>ActorKey</code> subspace of the envoy. The entry holds the Actor identifier in the key and the generation in the value (<code>evict_actors.rs:54-70</code>). It sends <code>GoingAway { generation }</code> to each Actor workflow. The <code>Throttle</code> limits the rate to <code>actor_eviction_rate</code> Actors per second and the whole run to <code>actor_eviction_period</code> seconds (<code>engine/packages/pegboard/src/ops/envoy/evict_actors.rs:8-24</code>, <code>83-135</code>). The three eviction values are fields of the pool record, not engine constants. <code>actor_eviction_delay</code> and <code>actor_eviction_period</code> are unsigned integers of seconds, and <code>actor_eviction_rate</code> is a float of Actors per second (<code>engine/packages/types/src/runner_configs.rs:28-66</code>). The operation rechecks the registration before each signal. A stale connection sends no signal (<code>evict_actors.rs:44-51</code>, <code>97-99</code>).</p>
+<p><code>ping_task</code> runs every <code>envoy_update_ping_interval</code> plus a random jitter of 0 to 128 milliseconds (<code>engine/packages/pegboard-envoy/src/ping_task.rs:20-30</code>). The jitter spreads pings across the fleet. The task checks <code>last_ping_ts</code> against <code>envoy_ping_timeout</code>. If the difference exceeds the timeout, the task returns <code>WsError::TimedOut</code> and the connection closes (<code>ping_task.rs:36-51</code>).</p>
+<h2>10. The serverless outbound connection</h2>
+<p>A <code>Serverless</code> pool with a protocol version has no runner pool capacity to manage. <code>read_desired</code> returns a count of 0 for this pool, and the comment says "Envoys don't need this workflow" (<code>runner_pool.rs:251-257</code>). The control plane opens one HTTP request to the operator endpoint for each Actor start. A <code>Serverless</code> pool without a protocol version is different, and section 3 describes the long-lived connection.</p>
+<p>Placement does not select an envoy for this pool. The acquire-slot transaction tests <code>is_serverless</code> and returns <code>Allocation::Serverless</code> without a call to <code>allocate_serverful</code> (<code>runtime.rs:243-256</code>). The host process is still an envoy in the code. A <code>Serverless</code> pool can register a <code>pegboard-envoy</code> WebSocket, and <code>Conn::is_serverless</code> tests the stored pool kind (<code>engine/packages/pegboard-envoy/src/conn.rs:59-62</code>). The code uses that test to skip the load-balancer refresh on each ping and to skip the expiry when the envoy reports stopping (<code>ping_task.rs:63</code>, <code>ws_to_tunnel_task.rs:884-893</code>). The start command travels over the outbound request instead of the tunnel. Every later command and every request tunnel message uses the WebSocket, as section 8 describes.</p>
+<p>The <code>envoy_key</code> reaches the Actor record after the start. <code>Allocation::Serverless</code> carries no key. The host reports <code>ActorStateRunning</code> through its envoy WebSocket, and the Actor workflow reads <code>sig.envoy_key</code> (<code>engine/packages/pegboard/src/workflows/actor2/mod.rs:772-817</code>). The event on the wire does not carry the key. <code>actor_event_demuxer::dispatch_events</code> reads <code>envoy_key</code> from the connection and puts it on the <code>Events</code> signal (<code>engine/packages/pegboard-envoy/src/actor_event_demuxer.rs:154-173</code>). The workflow writes <code>EnvoyKeyKey</code> in <code>set_connectable</code> (<code>runtime.rs:902-914</code>) and sends <code>Ready</code> with the same key. Guard waits for <code>Ready</code> before it routes a request (section 13.4).</p>
+<p>The host is an envoy that registered a WebSocket. The source does not state whether the host opens that WebSocket before or after the outbound request. The <code>Ready</code> message decides when Guard may route a request, so the order does not change routing.</p>
+<p><code>send_outbound</code> is the activity that starts this path. It wraps <code>ToOutboundActorStart</code> and publishes the payload to <code>ServerlessOutboundSubject</code> (<code>engine/packages/pegboard/src/workflows/actor2/runtime.rs:408-444</code>). <code>pegboard-outbound</code> is a separate service in the control plane process (<code>engine/packages/engine/src/run_config.rs:24-29</code>). <code>start</code> creates a <code>StandaloneCtx</code> named <code>pegboard_outbound</code> and runs <code>inner</code> (<code>engine/packages/pegboard-outbound/src/lib.rs:27-99</code>). <code>inner</code> subscribes to the same subject with the <code>"service"</code> queue consumer and spawns one <code>OutboundHandler</code> for each message (<code>lib.rs:101-134</code>).</p>
+<p>The handler builds one command.</p>
+<pre><code class="language-rust">// engine/packages/pegboard-outbound/src/lib.rs:238-267
+	let protocol_version = pool.protocol_version.unwrap_or(PROTOCOL_VERSION);
+	let res = async {
+		let payload_body =
+			versioned::ToEnvoy::wrap_latest(protocol::ToEnvoy::ToEnvoyCommands(vec![
+				protocol::CommandWrapper {
+					checkpoint,
+					inner: protocol::Command::CommandStartActor(protocol::CommandStartActor {
+						config: actor_config,
+						hibernating_requests: hibernating_requests
+							.into_iter()
+							.map(|x| protocol::HibernatingRequest {
+								gateway_id: x.gateway_id,
+								request_id: x.request_id,
+							})
+							.collect(),
+						preloaded_kv,
+					}),
+				},
+			]))
+			.serialize(protocol_version)?;
+		let mut payload = Vec::with_capacity(2 + payload_body.len());
+		payload.extend_from_slice(&amp;protocol_version.to_le_bytes());
+		payload.extend_from_slice(&amp;payload_body);
+
+		// Send ack to actor wf before starting an outbound req
+		ctx.signal(pegboard::workflows::actor2::Allocated { generation })
+			.to_workflow::&lt;pegboard::workflows::actor2::Workflow&gt;()
+			.tag(&quot;actor_id&quot;, &amp;actor_id)
+			.send()
+			.await?;
+</code></pre>
+<p>The payload has a 2-byte little-endian version prefix, then the BARE body. The version comes from the pool config, not from the compiled constant. The fallback is <code>PROTOCOL_VERSION</code>, which is 8. This path serves a version 2 Actor, and a version 2 Actor is created only when the pool reported a protocol version. A version 2 Actor is not wire protocol version 2. The wire version is the pool's envoy protocol version, and the prefix carries that value (<code>lib.rs:238</code>, <code>253-261</code>). The fallback is defensive, and it never selects the legacy version 3 protocol.</p>
+<p>The <code>Allocated</code> signal leaves before the HTTP request. The comment states the order. The Actor workflow therefore records the allocation before the network call can fail.</p>
+<h3>10.1 The request</h3>
+<p><code>serverless_outbound_req</code> builds the request.</p>
+<table><tr><th>Header</th><th>Value</th><th>Source</th></tr><tr><td><code>x-rivet-endpoint</code></td><td><code>current_dc.public_url</code></td><td><code>lib.rs:419-440</code></td></tr><tr><td><code>x-rivet-pool-name</code></td><td>pool name</td><td><code>lib.rs:419-440</code></td></tr><tr><td><code>x-rivet-namespace-name</code></td><td>namespace name</td><td><code>lib.rs:419-440</code></td></tr><tr><td><code>x-rivet-token</code></td><td>admin token, when authentication is configured</td><td><code>lib.rs:269-273</code></td></tr></table>
+<p>The <code>url</code> field of the <code>Serverless</code> config provides the base (<code>engine/packages/types/src/runner_configs.rs:85</code>). The Universal Resource Locator (URL) is <code>"{url}/start"</code>, and <code>serverless_outbound_req</code> sends it with <code>POST</code> (<code>lib.rs:442</code>, <code>476</code>). A destination policy check runs before the request. A blocked destination returns <code>RunnerPoolError::ServerlessDestinationBlocked</code> (<code>lib.rs:444-472</code>).</p>
+<p>The policy is <code>rivet_outbound_guard::Policy</code>, built from the <code>outbound</code> configuration section (<code>engine/packages/outbound-guard/src/policy.rs:210-239</code>). <code>check_url</code> allows only the <code>https</code> scheme. It allows <code>http</code> only when <code>allow_insecure_scheme</code> is true. It rejects embedded credentials and a missing host. An exact host in <code>allow_hosts</code> skips every address rule. An address literal is checked at once, and a domain name is checked when it resolves (<code>policy.rs:255-294</code>). <code>check_addr</code> applies the deny list first, then the allow list, and then the address class. An address class other than globally routable is blocked unless the matching flag allows it. The flags are <code>outbound.allow_loopback</code> (default true), <code>outbound.allow_private_networks</code> (default false), and <code>outbound.allow_insecure_scheme</code> (default true); <code>allow_hosts</code> and <code>allow_cidrs</code> are the two allow lists (<code>engine/packages/config/src/config/outbound.rs:17-65</code>; <code>policy.rs:296-348</code>). A rejection carries one of the ten <code>BlockReason</code> variants (<code>policy.rs:8-31</code>). The variants are <code>InvalidUrl</code>, <code>UnsupportedScheme</code>, <code>InsecureScheme</code>, <code>EmbeddedCredentials</code>, <code>MissingHost</code>, <code>BlockedAddress</code>, <code>DeniedAddress</code>, <code>NoAllowedAddresses</code>, <code>ResolutionFailed</code>, and <code>TooManyRedirects</code>. The same check runs on each redirect hop. The default redirect limit is 4 (<code>engine/packages/config/src/config/outbound.rs:68-70</code>; <code>outbound-guard/src/client.rs:57-61</code>).</p>
+<p>The client uses <code>reqwest_eventsource::EventSource</code> (<code>lib.rs:474-480</code>). The response is a stream of Server-Sent Events (SSE). The client yields two transport events and a separate error type, and the handler treats them differently.</p>
+<table><tr><th>Transport event</th><th>Handler action</th><th>Source</th></tr><tr><td><code>Open</code></td><td>Observe <code>REQ_SSE_OPEN_DURATION</code>. Warn when the open took more than <code>SSE_OPEN_WARN_THRESHOLD</code>.</td><td><code>lib.rs:489-509</code></td></tr><tr><td><code>Message</code> with <code>event = "ping"</code></td><td>Ignore the message.</td><td><code>lib.rs:510-512</code></td></tr><tr><td><code>Message</code> with <code>event = "stopping"</code></td><td>Return <code>Ok(Some(DrainReason::Stopping))</code>.</td><td><code>lib.rs:513-516</code></td></tr><tr><td><code>Message</code> with any other event name</td><td>Log a warning and ignore the message.</td><td><code>lib.rs:517-523</code></td></tr></table>
+<table><tr><th>Stream error</th><th>Handler action</th><th>Source</th></tr><tr><td><code>StreamEnded</code></td><td>Report <code>ServerlessStreamEndedEarly</code>. Return <code>Ok(None)</code>.</td><td><code>lib.rs:526-540</code></td></tr><tr><td><code>InvalidStatusCode</code></td><td>Report <code>ServerlessHttpError</code> with the status and a 512-byte body slice. Return the error.</td><td><code>lib.rs:541-562</code></td></tr><tr><td><code>InvalidContentType</code></td><td>Report <code>ServerlessConnectionError</code>. Return the error.</td><td><code>lib.rs:563-579</code></td></tr><tr><td>Any other error</td><td>Report <code>ServerlessDestinationBlocked</code> when <code>rivet_outbound_guard::block_reason</code> matches, else <code>ServerlessConnectionError</code> with the full error chain. Return the error.</td><td><code>lib.rs:580-608</code></td></tr></table>
+<p>The return value decides the reaction. The <code>tokio::select!</code> has three branches: the stream handler, a sleep until <code>request_lifespan - drain_grace_period</code>, and the termination signal (<code>lib.rs:620-658</code>). It sends <code>Lost { generation, reason: EnvoyConnectionLost }</code> only when the stream handler returns an error (<code>lib.rs:622-642</code>). An early <code>StreamEnded</code> returns <code>Ok(None)</code>, so the control plane sends no <code>Lost</code> signal and the function returns <code>Ok(())</code> (<code>lib.rs:654</code>). The handler still reports <code>ServerlessStreamEndedEarly</code> to the pool error tracker (<code>lib.rs:526-540</code>). A <code>stopping</code> event also returns without an error. The source does not state why an early stream end is not treated as a loss.</p>
+<p>The open warning threshold is <code>SSE_OPEN_WARN_THRESHOLD = 5 s</code> (<code>lib.rs:25</code>).</p>
+<h3>10.2 Lifespan and drain</h3>
+<p>The handler keeps the stream open for <code>request_lifespan - drain_grace_period</code> (<code>lib.rs:620-658</code>). The subtraction saturates at zero (<code>lib.rs:620-621</code>). Both values come from the <code>Serverless</code> pool config, in seconds.</p>
+<p>At the end of the lifespan, the handler signals <code>GoingAway</code> to the Actor workflow (<code>lib.rs:662-673</code>). It then reads the stream for up to <code>drain_grace_period</code> seconds (<code>lib.rs:675-699</code>). The drain ends early when the stream closes or the endpoint sends <code>stopping</code>. The total lifetime is the first interval plus the drain. The first interval saturates at zero, so a <code>request_lifespan</code> shorter than <code>drain_grace_period</code> gives a total of one <code>drain_grace_period</code>. A stream error sends <code>Lost { generation, reason: EnvoyConnectionLost }</code> before the handler returns (<code>lib.rs:623-642</code>).</p>
+<p>The <code>DrainReason</code> values are <code>LifespanReached</code>, <code>GoingAway</code>, <code>Stopping</code>, <code>ConnectionLost</code>, and <code>TermSignal</code> (<code>lib.rs:313-321</code>).</p>
+<p><strong>Aha:</strong> The serverless path reuses the envoy protocol instead of defining a third protocol. The control plane builds the same <code>ToEnvoyCommands</code> message that a persistent envoy receives. The cost is an SSE connection per Actor start. The benefit is one Actor start path in the workflow and one command decoder in the operator's server. The obvious alternative is a request-response "start this Actor" call that returns at once. That alternative needs a new message family and a new acknowledgement scheme. The SSE stream also gives the control plane a liveness signal for the whole Actor lifetime: a stream error marks the Actor lost (<code>lib.rs:622-642</code>). A clean early close is reported only through the pool error tracker, not as a loss (<code>lib.rs:526-540</code>).</p>
+<h2>11. Ping, eligibility, and expiry</h2>
+<p>Three timestamps describe whether an envoy can receive an Actor. Only <code>LastPingTsKey</code> decides eligibility; the other two record expiry and latency.</p>
+<table><tr><th>Timestamp</th><th>Meaning</th><th>Written by</th></tr><tr><td><code>LastPingTsKey</code></td><td>Last successful ping</td><td><code>engine/packages/pegboard/src/ops/envoy/update_ping.rs</code></td></tr><tr><td><code>ExpiredTsKey</code></td><td>The envoy is expired</td><td><code>engine/packages/pegboard/src/ops/envoy/expire.rs</code></td></tr><tr><td><code>LastRttKey</code></td><td>Last round-trip time</td><td><code>engine/packages/pegboard/src/ops/envoy/update_ping.rs</code></td></tr></table>
+<p>The eligibility test is <code>last_ping_ts >= now - envoy_eligible_threshold</code> (<code>hash.rs:129</code>). The threshold is 10000 milliseconds (<code>pegboard.rs:405</code>). A ping every 3000 milliseconds keeps an envoy eligible with three failures of margin.</p>
+<p><code>update_ping</code> validates <code>envoy_conn_id</code>. A message from a stale connection is rejected. An expired envoy is rejected unless it reports stopping. <code>is_stopping</code> is a field on <code>Input</code>, and the <code>Expired</code> outcome is returned only when <code>ExpiredTsKey</code> exists and <code>is_stopping</code> is false (<code>update_ping.rs:16-17</code>, <code>79-89</code>). <code>ping_task</code> fills the field from <code>conn.reported_stopping</code> (<code>ping_task.rs:65</code>). <code>ToRivetStopping</code> sets that flag before the expiry removes the envoy from the load balancer, so a planned shutdown keeps its heartbeat and is not reported as a lost connection (<code>ping_task.rs:87-100</code>). On success the operation writes <code>LastPingTsKey</code> and <code>LastRttKey</code>. When <code>update_lb</code> is true and the envoy is not expired, it deletes the old <code>EnvoyLoadBalancerIdxKey</code> and writes a new one.</p>
+<p>Registration writes <code>EnvoyLoadBalancerIdxKey</code> for every connection, and the hash entries when the strategy is <code>Hash</code> (<code>engine/packages/pegboard-envoy/src/conn.rs:468-496</code>). <code>ping_task</code> passes <code>update_lb: !conn.is_serverless()</code> (<code>ping_task.rs:57-85</code>). A serverless envoy therefore writes the index entry once at registration and does not move it on each ping (<code>update_ping.rs:114-137</code>). The value in <code>LastPingTsKey</code> still advances on each ping. <code>expire</code> builds the index key from that value (<code>engine/packages/pegboard/src/ops/envoy/expire.rs:139-149</code>), so the delete does not match the entry that registration wrote. The source does not state a cleanup path for the remaining entry. Placement never scans this index for a serverless pool, so the entry cannot receive an Actor (section 10).</p>
+<h3>11.1 Expiry fencing</h3>
+<p>Expiry is the dangerous operation. A stale connection could delete a fresh registration. The operation fences on <code>envoy_conn_id</code>.</p>
+<pre><code class="language-rust">// engine/packages/pegboard/src/ops/envoy/expire.rs:62-81
+				match (input.expected_envoy_conn_id, current_envoy_conn_id) {
+					(Some(expected), Some(current)) if expected != current =&gt; {
+						tracing::debug!(
+							namespace_id = ?input.namespace_id,
+							envoy_key = %input.envoy_key,
+							%expected,
+							%current,
+							&quot;skipping expiry from stale envoy connection&quot;,
+						);
+						return Ok(Output { did_expire: false });
+					}
+					(Some(expected), None) =&gt; {
+						tracing::warn!(
+							namespace_id = ?input.namespace_id,
+							envoy_key = %input.envoy_key,
+							%expected,
+							&quot;skipping fenced expiry for legacy envoy registration&quot;,
+						);
+						return Ok(Output { did_expire: false });
+					}
+</code></pre>
+<p>The match has six outcomes. The table lists every combination.</p>
+<table><tr><th><code>expected_envoy_conn_id</code></th><th>Stored <code>EnvoyConnIdKey</code></th><th><code>skip_if_fresh</code></th><th>Outcome</th></tr><tr><td><code>None</code></td><td>absent</td><td>either</td><td>Pass the fence. The later reads find no registration and return <code>did_expire: false</code>.</td></tr><tr><td><code>None</code></td><td>present</td><td><code>false</code></td><td>Skip. The log line says "unfenced forced expiry for fenced envoy registration".</td></tr><tr><td><code>None</code></td><td>present</td><td><code>true</code></td><td>Proceed. The read path expires a registration that it found stale.</td></tr><tr><td><code>Some(x)</code></td><td>absent</td><td>either</td><td>Skip. The log line says "legacy envoy registration".</td></tr><tr><td><code>Some(x)</code></td><td><code>Some(x)</code></td><td>either</td><td>Proceed to the freshness check. This connection owns the registration.</td></tr><tr><td><code>Some(x)</code></td><td><code>Some(y)</code> where <code>x != y</code></td><td>either</td><td>Skip. The log line says "stale envoy connection".</td></tr></table>
+<p>The <code>skip_if_fresh</code> column in the fence match matters only for the unfenced rows (<code>expire.rs:62-92</code>). The later freshness check applies whenever <code>skip_if_fresh</code> is true, including a fenced caller that owns the registration (<code>expire.rs:94-105</code>). An unfenced caller with <code>skip_if_fresh: false</code> cannot force an expiry of a fenced registration. An unfenced caller with <code>skip_if_fresh: true</code> can expire a fenced registration that it found stale. That is the read-path expiry, and it re-checks freshness. A fenced caller cannot expire a registration that another connection owns. When <code>skip_if_fresh</code> is true, the operation also re-reads the ping and expiry keys inside the transaction. A fresh ping or an existing <code>ExpiredTsKey</code> cancels the expiry (<code>expire.rs:94-105</code>).</p>
+<p>The re-read is <code>Serializable</code>. It therefore conflicts with a concurrent ping write. A ping that lands during the expiry either wins or loses the conflict, and the transaction retries on a new state.</p>
+<p>The delete set is one transaction.</p>
+<pre><code class="language-rust">// engine/packages/pegboard/src/ops/envoy/expire.rs:139-161
+				if !expired {
+					let idx_key = keys::ns::EnvoyLoadBalancerIdxKey::new(
+						input.namespace_id,
+						pool_name.clone(),
+						version,
+						old_last_ping_ts,
+						input.envoy_key.clone(),
+					);
+
+					tx.add_conflict_key(&amp;idx_key, ConflictRangeType::Read)?;
+					tx.delete(&amp;idx_key);
+
+					if let Some(virtual_nodes) = virtual_nodes_entry {
+						for i in 0..virtual_nodes {
+							tx.delete(&amp;keys::ns::EnvoyHashIdxKey::new(
+								input.namespace_id,
+								pool_name.clone(),
+								version,
+								xxh3_128_with_seed(input.envoy_key.as_bytes(), i as u64).to_be_bytes(),
+								input.envoy_key.clone(),
+							));
+						}
+					}
+</code></pre>
+<p>The same transaction then writes <code>ExpiredTsKey</code>, deletes <code>VirtualNodesKey</code>, <code>ActiveEnvoyKey</code>, and <code>ActiveEnvoyByNameKey</code>, and returns <code>did_expire: !expired</code> (<code>expire.rs:163-182</code>). The load-balancer index entry is deleted with a read conflict. Every virtual hash entry is deleted with the same hash seed that registration used. The <code>ExpiredTsKey</code> is written in the same transaction. A snapshot reader therefore never sees an envoy whose hash entries are gone but whose expired key is absent. Section 5.5 states this invariant.</p>
+<h3>11.2 The expire scheduler</h3>
+<p>The scheduler is a process-local singleton.</p>
+<pre><code class="language-rust">// engine/packages/pegboard/src/envoy_expire_scheduler.rs:23-29
+pub struct EnvoyExpireScheduler {
+	pending: scc::HashSet&lt;String&gt;,
+	pending_empty: Notify,
+	semaphore: Arc&lt;Semaphore&gt;,
+	max_pending: usize,
+	expire: ExpireFn,
+}
+</code></pre>
+<p><code>get(pools)</code> builds the singleton once with the configured limits: 32 concurrent expires and 1024 pending entries (<code>pegboard.rs:413-418</code>). <code>try_enqueue</code> rejects a key at capacity, deduplicates the key, and spawns a worker (<code>envoy_expire_scheduler.rs:106-130</code>). The worker takes a permit, calls expire with <code>expected_envoy_conn_id: None</code> and <code>skip_if_fresh: true</code>, and records the outcome (<code>envoy_expire_scheduler.rs:53-64</code>, <code>133-191</code>).</p>
+<p>Five call sites enqueue a stale envoy, and all five are in the allocation scans: <code>hash.rs:491</code>, <code>newest_ping_timestamp.rs:66</code>, <code>random_full_range.rs:57</code>, <code>random_ping_timestamp.rs:88</code>, and <code>random_ping_timestamp.rs:149</code>. A rejection at capacity returns no error and logs nothing. <code>try_enqueue</code> increments <code>ENVOY_EXPIRE_SCHEDULER_ENQUEUED_TOTAL</code> with the label <code>rejected_capacity</code> and returns immediately (<code>envoy_expire_scheduler.rs:109-114</code>). It does not retry. The allocation continues its scan without that expired candidate. The comment at <code>hash.rs:483-490</code> states the rule for the stale candidate: "No throw, no error."</p>
+<p>The file starts with a TODO comment. The comment says the scheduler should be replaced by a <code>pegboard_envoy_stale_sweep</code> workflow (<code>envoy_expire_scheduler.rs:1-6</code>). The current design is per-process. Two control plane instances can each hold a queue for the same envoy. The scheduler path passes <code>expected_envoy_conn_id: None</code>, so the expiry fence does not apply (<code>envoy_expire_scheduler.rs:53-64</code>). Safety comes from <code>skip_if_fresh</code>. That flag makes the transaction re-read <code>LastPingTsKey</code> and <code>ExpiredTsKey</code> with Serializable reads (<code>expire.rs:12-21</code>, <code>94-105</code>). A heartbeat that commits after the stale observation then conflicts with the transaction instead of being missed (<code>expire.rs:16-19</code>). The first expiry writes <code>ExpiredTsKey</code>, and the second run then returns <code>did_expire: false</code> (<code>expire.rs:100-103</code>). The duplicate work is safe, but it is not free.</p>
+<h3>11.3 The constants</h3>
+<p>Table 7 lists the timers and limits that bear on placement and transport. Every value comes from <code>engine/packages/config/src/config/pegboard.rs</code>, and the line is the accessor line. Some rows support a neighbouring section or a cross-reference, and no sentence above names them.</p>
+<table><tr><th>Constant</th><th>Value</th><th>Line</th></tr><tr><td><code>base_retry_timeout</code></td><td>2000 ms</td><td>234</td></tr><tr><td><code>actor_allocation_threshold</code></td><td>2000 ms</td><td>238</td></tr><tr><td><code>actor_start_threshold</code></td><td>30000 ms</td><td>242</td></tr><tr><td><code>actor_stop_threshold</code></td><td>1800000 ms</td><td>248</td></tr><tr><td><code>actor_retry_duration_threshold</code></td><td>300000 ms</td><td>252</td></tr><tr><td><code>retry_reset_duration</code></td><td>600000 ms</td><td>256</td></tr><tr><td><code>reschedule_backoff_max_exponent</code></td><td>8</td><td>260</td></tr><tr><td><code>runner_eligible_threshold</code></td><td>10000 ms</td><td>264</td></tr><tr><td><code>runner_lost_threshold</code></td><td>15000 ms</td><td>268</td></tr><tr><td><code>hibernating_request_eligible_threshold</code></td><td>90000 ms</td><td>273</td></tr><tr><td><code>default_metadata_poll_interval</code></td><td>10000 ms</td><td>295</td></tr><tr><td><code>min_metadata_poll_interval</code></td><td>5000 ms</td><td>299</td></tr><tr><td><code>actor_allocation_candidate_sample_size</code></td><td>100</td><td>303</td></tr><tr><td><code>gateway_websocket_open_timeout_ms</code></td><td>15000 ms</td><td>307</td></tr><tr><td><code>gateway_response_start_timeout_ms</code></td><td>300000 ms</td><td>312</td></tr><tr><td><code>gateway_update_ping_interval_ms</code></td><td>3000 ms</td><td>320</td></tr><tr><td><code>gateway_tunnel_ping_timeout_ms</code></td><td>30000 ms</td><td>328</td></tr><tr><td><code>runner_max_response_payload_body_size</code></td><td>20 mebibytes</td><td>359</td></tr><tr><td><code>runner_update_ping_interval_ms</code></td><td>3000 ms</td><td>363</td></tr><tr><td><code>runner_ping_timeout_ms</code></td><td>15000 ms</td><td>367</td></tr><tr><td><code>envoy_lost_threshold</code></td><td>15000 ms</td><td>379</td></tr><tr><td><code>envoy_ping_timeout</code></td><td>15000 ms</td><td>383</td></tr><tr><td><code>envoy_max_response_payload_size</code></td><td>20 mebibytes</td><td>397</td></tr><tr><td><code>envoy_update_ping_interval</code></td><td>3000 ms</td><td>401</td></tr><tr><td><code>envoy_eligible_threshold</code></td><td>10000 ms</td><td>405</td></tr><tr><td><code>envoy_expire_scheduler_max_concurrent_expires</code></td><td>32</td><td>413</td></tr><tr><td><code>envoy_expire_scheduler_max_pending</code></td><td>1024</td><td>418</td></tr><tr><td><code>serverless_drain_grace_period</code></td><td>10000 ms</td><td>422</td></tr><tr><td><code>envoy_websocket_rate_limit_requests</code></td><td>16384</td><td>434</td></tr><tr><td><code>envoy_websocket_rate_limit_drip_rate_us</code></td><td>200 µs</td><td>438</td></tr></table>
+<p>The rate limiter is a leaky bucket. The connection admits 16384 requests, then refills one request every 200 microseconds (<code>ws_to_tunnel_task.rs:475-491</code>).</p>
+<p>Two rows need a qualifier. <code>serverless_drain_grace_period</code> is the control-plane default for the legacy serverless connection (<code>serverless/conn.rs:457</code>, <code>590</code>). The serverless outbound path in section 10 reads the per-pool <code>drain_grace_period</code> field instead (<code>pegboard-outbound/src/lib.rs:621</code>, <code>697</code>). <code>actor_allocation_candidate_sample_size</code> belongs to the legacy allocator, where it bounds the candidate list (<code>workflows/actor/runtime.rs:250</code>; <code>workflows/runner2.rs:740-819</code>). It does not set <code>samples</code> for the <code>Hash</code> allocator; that value comes from the <code>EnvoyLoadBalancer::Hash</code> config (section 5).</p>
+<h2>12. Gateways: which component is on the request path</h2>
+<p>Three crates have "gateway" in the name. A fourth crate, <code>pegboard-envoy</code>, is the control-plane side of the envoy WebSocket connection. The operator's host process is a different program, built with the <code>rivet-envoy-client</code> SDK. None of the three gateway crates runs as a separate process.</p>
+<table><tr><th>Crate</th><th>Role</th><th>Binary target</th></tr><tr><td><code>pegboard-gateway</code></td><td>Legacy gateway for Actor version 1</td><td>None</td></tr><tr><td><code>pegboard-gateway2</code></td><td>Gateway for Actor version 2, default selection</td><td>None</td></tr><tr><td><code>pegboard-gateway3</code></td><td>Streaming gateway for Actor version 2, feature-gated</td><td>None</td></tr><tr><td><code>pegboard-envoy</code></td><td>Control-plane WebSocket handler for one envoy connection; it demultiplexes commands, tunnel messages, and Actor SQLite traffic</td><td>None</td></tr></table>
+<p>The source confirms the absence of binary targets. Each crate has a <code>Cargo.toml</code> with a package section and dependencies, and no <code>[[bin]]</code> section. Guard depends on all three gateway crates (<code>engine/packages/guard/Cargo.toml:34-36</code>). Guard constructs them in process.</p>
+<p>The legacy crate supplies <code>PegboardGateway</code>. Guard uses it only for Actor version 1 (<code>pegboard_gateway/mod.rs:970-977</code>). <code>handle_actor_v1</code> reaches this code after a wake and after a <code>runner_id</code> appears on the Actor record (<code>mod.rs:809-970</code>). The wake uses the legacy <code>pegboard::workflows::actor::Wake</code> workflow and <code>AllocationOverride::DontSleep</code>.</p>
+<p>For Actor version 2, Guard selects gateway 2 or gateway 3.</p>
+<p><code>actor.envoy_protocol_version</code> is one field of the output from <code>pegboard_actor_get_for_gateway</code> (<code>engine/packages/pegboard/src/ops/actor/get_for_gateway.rs:11-26</code>). The operation reads the Actor's <code>EnvoyKeyKey</code>, then reads <code>envoy::ProtocolVersionKey</code> for that envoy key in the same transaction (<code>get_for_gateway.rs:83-91</code>). An envoy registration writes that key (<code>conn.rs:425-428</code>). The field is <code>None</code> when the Actor has no envoy key, which is the legacy runner case. The selector then returns <code>ProtocolUnknown</code>, and the request goes to gateway 2.</p>
+<pre><code class="language-rust">// engine/packages/guard/src/routing/pegboard_gateway/mod.rs:748-762
+	let selection = select_gateway(
+		&amp;ctx.config().features().guard_gateway_v3(),
+		req_ctx,
+		actor.namespace_id,
+		actor_id,
+		actor.envoy_protocol_version,
+	);
+	selection.record();
+	let request_kind = if req_ctx.is_websocket() {
+		rivet_guard_core::metrics::PegboardGatewayRequestKind::WebSocket
+	} else {
+		rivet_guard_core::metrics::PegboardGatewayRequestKind::Http
+	};
+
+	if selection.use_gateway3() {
+</code></pre>
+<p>The <code>if</code> branch builds <code>PegboardGateway3::new</code> with the actor generation (<code>mod.rs:762-784</code>). Gateway 3 requires that value. The field is <code>actor.generation</code>, an <code>Option<u32></code> (<code>get_for_gateway.rs:24</code>). The operation reads <code>GenerationKey</code> with <code>read_opt</code>, so a record written before that key existed has no generation (<code>get_for_gateway.rs:48</code>, <code>73</code>, <code>104</code>). The <code>context</code> call at <code>mod.rs:763-765</code> returns the error "gateway3 actor is missing its generation" when the field is <code>None</code>. The <code>else</code> branch at line 785 builds <code>pegboard_gateway2::PegboardGateway2::new</code> with the same actor identity fields and <code>None</code> for the generation argument (<code>mod.rs:785-805</code>). Both branches receive <code>actor.envoy_protocol_version</code> (<code>mod.rs:768</code>, <code>778</code>, <code>788</code>, <code>798</code>). Both branches return <code>RoutingOutput::CustomServe</code>. The source does not state why gateway 2 receives no generation.</p>
+<p>The selection has a strict order.</p>
+<pre><code class="language-rust">// engine/packages/guard/src/routing/pegboard_gateway/gateway3_selector.rs:146-164
+	let decision = if config.mode == GuardGatewayV3Mode::Off {
+		Decision::Disabled
+	} else if request_kind == RequestKind::WebSocket {
+		Decision::WebSocket
+	} else if protocol_version.is_none() {
+		Decision::ProtocolUnknown
+	} else if !protocol_version.is_some_and(|version| {
+		(MIN_GATEWAY3_PROTOCOL_VERSION..=PROTOCOL_VERSION).contains(&amp;version)
+	}) {
+		Decision::ProtocolIncompatible
+	} else if config.mode == GuardGatewayV3Mode::Opportunistic
+		&amp;&amp; !request_kind.is_opportunistic_candidate()
+	{
+		Decision::NotCandidate
+	} else if sampled_in(namespace_id, actor_id, config.percentage) {
+		Decision::SampledIn
+	} else {
+		Decision::SampledOut
+	};
+</code></pre>
+<p>The minimum version for gateway 3 is 7 (<code>gateway3_selector.rs:11</code>). The maximum is <code>PROTOCOL_VERSION</code>, which is 8. The order decides which reason wins. <code>Off</code> returns <code>Disabled</code> before any request-kind or protocol test. A WebSocket returns <code>WebSocket</code> before the protocol test. An absent protocol returns <code>ProtocolUnknown</code> before the range test. A WebSocket always goes to gateway 2, even when gateway 3 is on. The source states the reason in the code order, not in a comment: gateway 3 is a streaming HTTP gateway, and the selection returns <code>Decision::WebSocket</code> for a WebSocket request.</p>
+<p>The default configuration is off.</p>
+<pre><code class="language-rust">// engine/packages/config/src/config/features.rs:47-54
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = &quot;snake_case&quot;)]
+pub enum GuardGatewayV3Mode {
+	#[default]
+	Off,
+	Opportunistic,
+	On,
+}
+</code></pre>
+<p>A unit test in the same file asserts that the default mode is <code>Off</code> and the default percentage is 0 (<code>features.rs:56-65</code>).</p>
+<p>Therefore gateway 2 is the effective default in this commit. Gateway 3 runs only when an operator sets the mode and the sampling test passes. The sampling bucket is <code>xxh3_128_with_seed</code> over a fixed domain, the namespace identifier, a zero byte, and the Actor identifier, modulo 10000 (<code>gateway3_selector.rs:239-246</code>). <code>SAMPLE_BUCKETS</code> is 10000 (<code>line 12</code>).</p>
+<p><strong>Aha:</strong> The gateway is not a network service. It is a Rust object that Guard constructs after it resolves the Actor. This removes one hop and one failure domain from the request path. The cost is that Guard holds the request for the whole tunnel exchange, so a Guard restart drops in-flight requests. The alternative is a separate gateway service behind Guard. That alternative can restart independently, but it needs service discovery, a second connection pool, and a second authorization check.</p>
+<h3>12.1 The routing order</h3>
+<p>Guard tries path-based routes first, then header- or protocol-based routes.</p>
+<table><tr><th>Order</th><th>Route</th><th>Matcher</th><th>Source</th></tr><tr><td>1</td><td><code>ws_health</code></td><td>health path, when enabled</td><td><code>routing/mod.rs:197-210</code></td></tr><tr><td>2</td><td><code>pegboard_gateway</code></td><td>path-based Actor route</td><td><code>routing/mod.rs:215-226</code></td></tr><tr><td>3</td><td><code>runner</code></td><td>path-based runner route</td><td><code>routing/mod.rs:229-240</code></td></tr><tr><td>4</td><td><code>envoy</code></td><td>path <code>/envoys/connect</code></td><td><code>routing/mod.rs:243-254</code></td></tr><tr><td>5</td><td><code>pegboard_gateway</code></td><td>target header or protocol <code>actor</code></td><td><code>routing/mod.rs:283-296</code></td></tr><tr><td>6</td><td><code>runner</code></td><td>target header or protocol <code>runner</code></td><td><code>routing/mod.rs:298-311</code></td></tr><tr><td>7</td><td><code>envoy</code></td><td>target header or protocol <code>envoy</code></td><td><code>routing/mod.rs:313-324</code></td></tr><tr><td>8</td><td><code>api_public</code></td><td>target header or protocol <code>api</code></td><td><code>routing/mod.rs:326-339</code></td></tr><tr><td>9</td><td><code>api_public</code></td><td>default</td><td><code>routing/mod.rs:342-355</code></td></tr></table>
+<p>The last resort is <code>errors::NoRoute</code>. <a href="09-guard-routing.html">09 Guard routing</a> covers the full table, the timeouts, and the authentication checks.</p>
+<h2>13. Failure paths</h2>
+<p>This section follows four failures. Each one names the subsystem that detects the failure and the recovery action.</p>
+<h3>13.1 The envoy WebSocket closes</h3>
+<p><code>handle_websocket</code> joins three tasks: <code>tunnel_to_ws_task</code>, <code>ws_to_tunnel_task</code>, and <code>ping_task</code> (<code>pegboard-envoy/src/lib.rs:229-251</code>). When one task ends, the handler aborts the other two. A ping error aborts <code>ws_to_tunnel_task</code> immediately, to preserve the single-writer rule for the key-value store (<code>lib.rs:301-307</code>). The rule is that one Actor's key-value store is accessed from one connection at a time (<code>lib.rs:301-303</code>). A ping error means the control plane cannot prove that the old connection is alive. The hard abort stops all in-flight key-value requests before another connection can serve the Actor.</p>
+<p>An eviction is the superseded-connection case from section 9.3. If the exit is not an eviction, the handler calls expire with a fence.</p>
+<pre><code class="language-rust">// engine/packages/pegboard-envoy/src/lib.rs:331-341
+		else {
+			// Make envoy immediately ineligible when it disconnects
+			let expire_res = self
+				.ctx
+				.op(pegboard::ops::envoy::expire::Input {
+					namespace_id: conn.namespace_id,
+					envoy_key: conn.envoy_key.to_string(),
+					expected_envoy_conn_id: Some(conn.envoy_conn_id),
+					skip_if_fresh: false,
+				})
+				.await;
+</code></pre>
+<p>An error from expire is logged at <code>error</code> level with the namespace, the envoy key, and the error (<code>lib.rs:342-349</code>). The fence prevents this connection from expiring a newer registration that arrived during the close. <code>shutdown_conn_actors</code> then clears the cached SQLite handles (<code>lib.rs:352</code>).</p>
+<p><code>classify_final_envoy_state</code> maps the exit to a metric label (<code>lib.rs:497-523</code>). A timeout maps to <code>Lost</code> with reason <code>ping_timeout</code>. An eviction maps to <code>Disconnected</code> with reason <code>evicted</code>.</p>
+<p>The close-code mapping runs at <code>lib.rs:359-419</code>. Each <code>LifecycleResult</code> produces a WebSocket close code and reason.</p>
+<h3>13.2 The runner dies in the legacy path</h3>
+<p>The legacy runner workflow waits with <code>listen_with_timeout(runner_lost_threshold)</code>. The threshold is 15000 milliseconds (<code>runner.rs:76-80</code>). A timeout means no message arrived. The workflow then cleans the runner record and signals each hosted Actor.</p>
+<pre><code class="language-rust">// engine/packages/pegboard/src/workflows/runner.rs:406-418
+		// Set all remaining actors as going away immediately
+		if !actors.is_empty() {
+			for (actor_id, generation) in &amp;actors {
+				let res = ctx
+					.signal(crate::workflows::actor::GoingAway {
+						generation: *generation,
+						reset_rescheduling: reset_actor_rescheduling,
+					})
+					.to_workflow::&lt;crate::workflows::actor::Workflow&gt;()
+					.tag(&quot;actor_id&quot;, actor_id)
+					.graceful_not_found()
+					.send()
+					.await?;
+</code></pre>
+<p>When the signal finds no workflow, the code logs a warning that the Actor workflow was not found and was likely already stopped (<code>runner.rs:420-425</code>).</p>
+<p><code>handle_stopping</code> sets <code>state.draining = true</code> first. It then runs <code>ClearDbInput</code> with <code>update_state: RunnerState::Draining</code> and <code>FetchRemainingActorsInput</code> (<code>runner.rs:386-404</code>). In <code>runner.rs</code>, <code>RunnerState</code> is a two-variant enum: <code>Draining</code> and <code>Stopped</code> (<code>runner.rs:664-667</code>). It is a different type from the <code>RunnerState</code> struct in <code>runner_pool.rs</code>. The control plane can send a <code>Stop</code> signal for a planned shutdown, and the runner can send <code>ToServerStopping</code>. Both paths mark the runner as draining and send <code>GoingAway</code> to each hosted Actor. The workflow then sends <code>ToClientClose</code> on the runner socket (<code>runner.rs:370-375</code>). <code>ToClientClose</code> is the close message of runner protocol version 3 (<code>v3.bare:388-397</code>). A runner protocol with a version above 3 uses <code>ToRunnerClose</code> instead (section 7.1).</p>
+<p>The internal design notes give the intended sequence. <code>docs-internal/engine/RUNNER_LIFECYCLE.md:101-172</code> draws five shutdown phases, and <code>docs-internal/engine/RUNNER_SHUTDOWN.md:1-17</code> gives the same sequence in six steps. The counts group the same events differently; neither count is a code constant. The code agrees on the message order. The runner sends <code>ToServerStopping</code>; the workflow drains and sends <code>ToClientClose</code>; the socket closes with code 1000 and reason <code>pegboard.runner_shutdown</code>. The TypeScript runner waits for its Actors for up to 120000 milliseconds and checks every 100 milliseconds (<code>engine/sdks/typescript/runner/src/mod.ts:662-705</code>). It closes with the same reason (<code>mod.ts:614</code>). A runner that stops sending messages without this sequence is lost after <code>runner_lost_threshold</code>, which is the failure path above.</p>
+<h3>13.3 The Actor start times out</h3>
+<p><code>actor_start_threshold</code> is 30000 milliseconds (<code>pegboard.rs:242</code>). The <code>Starting</code> state sets <code>lost_timeout_ts</code> to <code>now + actor_start_threshold</code> (<code>mod.rs:656-660</code>). A timeout produces a <code>Lost { reason: EnvoyNoResponse }</code> signal (<code>mod.rs:480-495</code>). A <code>Serverless</code> allocation enters <code>Allocating</code> first. That state sets <code>lost_timeout_ts</code> to <code>now + actor_allocation_threshold</code>, which is 2000 milliseconds (<code>runtime.rs:500-507</code>; <code>pegboard.rs:238</code>). The outbound handler sends the <code>Allocated</code> signal, and the state then becomes <code>Starting</code> (<code>mod.rs:643-661</code>).</p>
+<p>The retry policy uses <code>base_retry_timeout = 2000 ms</code> and <code>reschedule_backoff_max_exponent = 8</code> (<code>pegboard.rs:234</code>, <code>260</code>). The backoff is <code>base_retry_timeout * 2^min(retry_count, 8)</code>, so the longest wait is 512000 milliseconds (<code>engine/packages/util/src/throttle.rs:96-98</code>). <code>retry_reset_duration = 600000 ms</code> clears the backoff after ten minutes of success (<code>pegboard.rs:256</code>). <code>Reallocating</code> also moves to <code>Sleeping</code> when <code>actor_retry_duration_threshold</code>, which is 300000 milliseconds, passes (<code>mod.rs:604-613</code>; <code>pegboard.rs:252</code>).</p>
+<p>The placement lifecycle has these states.</p>
+<div class="mermaid">
+stateDiagram-v2
+    [*] --&gt; Allocating: Serverless allocation
+    [*] --&gt; Starting: Serverful allocation
+    Allocating --&gt; Starting: Allocated signal
+    Allocating --&gt; Reallocating: no candidate
+    Allocating --&gt; Sleeping: allocation timeout
+    Starting --&gt; Running: ActorStateRunning event
+    Starting --&gt; Destroying: ActorStateRunning event with destroy_after_start
+    Starting --&gt; Sleeping: start timeout
+    Running --&gt; SleepIntent: Sleep signal or ActorIntentSleep
+    Running --&gt; StopIntent: ActorIntentStop
+    Running --&gt; GoingAway: Reschedule signal
+    Running --&gt; Sleeping: Lost signal
+    SleepIntent --&gt; Sleeping: ActorStateStopped event
+    StopIntent --&gt; Destroying: ActorStateStopped event
+    GoingAway --&gt; Reallocating: ActorStateStopped event
+    Reallocating --&gt; Allocating: serverless allocation
+    Reallocating --&gt; Starting: serverful allocation
+    Reallocating --&gt; Sleeping: actor_retry_duration_threshold
+    Sleeping --&gt; Allocating: Wake signal, serverless allocation
+    Sleeping --&gt; Starting: Wake signal, serverful allocation
+    Destroying --&gt; [*]
+
+</div>
+<p>The labels are the <code>Transition</code> enum variants in <code>engine/packages/pegboard/src/workflows/actor2/runtime.rs:37-76</code>: <code>Allocating</code>, <code>Starting</code>, <code>Running</code>, <code>SleepIntent</code>, <code>StopIntent</code>, <code>GoingAway</code>, <code>Sleeping</code>, <code>Reallocating</code>, and <code>Destroying</code>. <code>destroy_after_start</code> is a boolean on <code>Allocating</code> and <code>Starting</code>. A destroy signal sets it in either state (<code>actor2/mod.rs:1135-1146</code>). The <code>Allocated</code> signal copies the value from <code>Allocating</code> into <code>Starting</code> (<code>actor2/mod.rs:649-661</code>). The destroy action runs from <code>Starting</code> after <code>ActorStateRunning</code> (<code>actor2/mod.rs:776-817</code>). <code>Reschedule</code> is the signal <code>Main::Reschedule</code> (<code>actor2/mod.rs:975</code>, <code>1343</code>). <code>Wake</code>, <code>Sleep</code>, and <code>Reschedule</code> are workflow signals (<code>actor2/mod.rs:1336-1343</code>). <code>ActorIntentSleep</code> and <code>ActorIntentStop</code> are the two variants of the <code>ActorIntent</code> union (<code>v8.bare:357-365</code>). The host sends one inside an <code>EventActorIntent</code> event, and the workflow moves from <code>Running</code> to <code>SleepIntent</code> or <code>StopIntent</code> (<code>actor2/mod.rs:715-769</code>). <code>since_ts</code> is a field of <code>Transition::Reallocating</code> (<code>runtime.rs:69-71</code>). The workflow sets it when the transition starts (<code>runtime.rs:712</code>). The <code>actor_retry_duration_threshold</code> edge is taken when the last retry is older than <code>since_ts + actor_retry_duration_threshold</code> (<code>actor2/mod.rs:604-613</code>).</p>
+<p>When the timeout passes, the forged <code>Lost</code> signal enters <code>handle_stopped</code>. <code>handle_stopped</code> is an async function in <code>runtime.rs</code> (<code>558-564</code>). It takes the workflow context, the workflow input, the lifecycle state, the metrics identifier, and a <code>StoppedVariant</code>. <code>StoppedVariant</code> has three variants: <code>FailedAllocation</code>, <code>Stopped</code>, and <code>Lost</code> (<code>runtime.rs:540-550</code>). It returns <code>Result<StoppedResult></code>, and <code>StoppedResult</code> is <code>Continue</code> or <code>Destroy</code> (<code>runtime.rs:552-556</code>, <code>564</code>). The function records <code>ActorError::EnvoyNoResponse</code>, deallocates the slot, and moves to <code>Sleeping</code> (<code>runtime.rs:585-604</code>, <code>607</code>, <code>650-661</code>, <code>726-730</code>). The next <code>Wake</code> signal reallocates. If an alarm is due, the decision becomes reallocate at once (<code>runtime.rs:665-673</code>). An allocation that returns no candidate calls <code>handle_stopped</code> with <code>FailedAllocation</code> (<code>runtime.rs:524-535</code>). The decision is <code>Backoff</code>, and the state becomes <code>Reallocating</code> (<code>runtime.rs:650-651</code>, <code>719-724</code>). <a href="03-actors-and-lifecycle.html">03 Actors and lifecycle</a> explains each transition and its timers.</p>
+<h3>13.4 A request arrives during a start</h3>
+<p>The gateway does not forward the request to a host that has no Actor yet. It waits.</p>
+<p><code>handle_actor_v2</code> wakes the Actor if it is sleeping (<code>pegboard_gateway/mod.rs:532-561</code>). It waits for readiness only when the record is not already usable. An Actor record with an <code>envoy_key</code> and <code>actor.connectable</code> true skips the wait (<code>pegboard_gateway/mod.rs:563-571</code>). The caller can request the same bypass with the <code>x-rivet-skip-ready-wait</code> header, the <code>rivet_skip_ready_wait</code> WebSocket protocol name, or the <code>skip_ready_wait</code> query field (<code>pegboard_gateway/mod.rs:259</code>, <code>285</code>, <code>1035-1047</code>; <code>routing/actor_path.rs:48-56</code>). The wait selects on six futures: the <code>Ready</code> message, the <code>Stopped</code> signal, the <code>Failed</code> message, the destroy signal, the runner pool error check, and a ready timeout (<code>pegboard_gateway/mod.rs:615-713</code>). Guard creates the subscriptions before it fetches the Actor record (<code>pegboard_gateway/mod.rs:364-405</code>, <code>407-428</code>). The failure stream subscribes to <code>pegboard::workflows::actor2::Failed</code> and to the legacy <code>pegboard::workflows::actor::Failed</code> (<code>pegboard_gateway/mod.rs:384-394</code>). The handler returns the error that the message carries as <code>msg.error</code> (<code>pegboard_gateway/mod.rs:685-689</code>). The <code>Ready</code> message carries an <code>envoy_key</code>. The Actor workflow sends it after <code>SetConnectable</code> (<code>actor2/mod.rs:806-817</code>). If the Actor stops before <code>Ready</code>, the handler sends <code>Wake</code> again. The counter allows 8 such retries (<code>pegboard_gateway/mod.rs:626-668</code>). The next <code>Stopped</code> signal returns <code>ActorWakeRetriesExceeded { wake_retries: 8, reason: "actor_stopped_before_ready" }</code> (<code>pegboard_gateway/mod.rs:669-683</code>). A separate timer, <code>guard.actor_ready_timeout</code>, returns <code>ActorReadyTimeout</code> (<code>pegboard_gateway/mod.rs:702-711</code>). The failure stream returns the error that it carries, and the destroy signal returns <code>DestroyedWhileWaitingForReady</code> (<code>pegboard_gateway/mod.rs:685-694</code>).</p>
+<p>After the wait, the handler re-reads the Actor record. If the Actor is destroyed or its envoy key changed, the handler returns <code>ActorStoppedWhileWaiting</code> with phase <code>route_after_ready</code> (<code>pegboard_gateway/mod.rs:716-733</code>). It does not forward the request to the new envoy.</p>
+<p>The gateway also checks the runner pool error state before it waits. <code>check_runner_pool_error_loop</code> is one branch of the same <code>tokio::select!</code> (<code>pegboard_gateway/mod.rs:695-700</code>). It sleeps 1000 milliseconds first and then checks every 2000 milliseconds (<code>pegboard_gateway/mod.rs:32-34</code>, <code>1079-1099</code>). An active error in the runner config returns <code>ActorRunnerFailed</code> (<code>pegboard_gateway/mod.rs:1088-1095</code>; <code>695-700</code>). The delay gives the Actor time to allocate while the pool status is flapping, as the function comment states (<code>pegboard_gateway/mod.rs:1060-1066</code>).</p>
+<p>The checked state is the <code>active_error</code> field of the <code>pegboard_runner_pool_error_tracker</code> workflow (<code>ops/runner_config/get_error.rs:120-142</code>). Three producers send <code>ReportError</code>: the legacy serverless connection, <code>refresh_metadata</code>, and <code>pegboard-outbound</code> (<code>serverless/conn.rs:691</code>; <code>refresh_metadata.rs:122</code>; <code>pegboard-outbound/src/lib.rs:733</code>). A <code>ReportSuccess</code> signal increments <code>consecutive_successes</code>. The error clears only after <code>runner_pool_error_consecutive_successes_to_clear</code>, which defaults to 3 (<code>runner_pool_error_tracker.rs:130-147</code>; <code>pegboard.rs:291</code>).</p>
+<p>The request then goes into one of two transforms:</p>
+<ol><li><code>PegboardGateway2</code> publishes the request to the <code>EnvoyReceiverSubject</code> as a <code>ToEnvoyTunnelMessage</code>. It subscribes to the Actor <code>Stopped</code> signal so it can close the stream if the Actor stops.</li><li><code>PegboardGateway3</code> keeps a <code>PreparedHttpRequest</code> and streams the response body. <code>PreparedHttpRequest</code> holds eight fields. They are a tunnel message receiver, a garbage-collection reason receiver, an abort reason receiver, and an in-flight request handle. The other four are a <code>Stopped</code> subscription, a client-disconnect guard, a request identifier, and a request-stream flag (<code>engine/packages/pegboard-gateway3/src/http_stream/handler.rs:40-49</code>). It is used only when the sampling test selects it. The mode removes only one test. <code>On</code> and <code>Opportunistic</code> both keep the WebSocket test and the protocol tests. <code>Opportunistic</code> adds one more test: the request must be an HTTP Server-Sent Events request or have an unknown-length body (<code>gateway3_selector.rs:33-35</code>, <code>146-164</code>). The sampling test applies in every mode except <code>Off</code>. A percentage of 0 selects no request, and a percentage of 100 selects every request (<code>gateway3_selector.rs:231-237</code>). The default percentage is 0 (<code>features.rs:60-65</code>). Section 12 states the full order.</li></ol>
+<p>If the Actor stops while the request waits, the gateway returns an error. The source does not state the exact status code in the code this document read. <a href="09-guard-routing.html">09 Guard routing</a> covers the response mapping.</p>
+<h3>13.5 The Actor is hosted on another envoy after the wait</h3>
+<p><code>handle_actor_v2</code> returns <code>ActorStoppedWhileWaiting</code> when the envoy key changed after the wait. The handler does not retry on the new envoy.</p>
+<p>The same rule applies on the gateway side. <code>PegboardGateway2::handle_request_inner</code> re-fetches the Actor after it subscribes to the <code>Stopped</code> signal. A changed envoy key returns <code>ActorStoppedWhileWaiting</code> with phase <code>PHASE_PRE_REQUEST</code> instead of publishing to the wrong host (<code>engine/packages/pegboard-gateway2/src/lib.rs:155-183</code>).</p>
+<h2>14. The request path end to end</h2>
+<p>This section traces one HTTP request for a version 2 Actor.</p>
+<ol><li>A client sends <code>GET /gateway/<actor_key>/<path></code> to Guard, which matches the path-based Actor route (<code>routing/mod.rs:215-226</code>).</li><li><code>route_request_path_based_inner</code> parses the path and fetches the Actor record.</li><li>If the Actor identifier belongs to another datacenter, Guard forwards the request to that datacenter. The forward is a <code>RoutingOutput::Route</code> to the peer datacenter's proxy host and port, with the same path (<code>engine/packages/guard/src/routing/pegboard_gateway/mod.rs:341-361</code>).</li><li>Guard runs the authorization check and calls <code>handle_actor_v2</code>, because <code>actor.version == 2</code>. The <code>version</code> field of the Actor record selects the handler: 1 calls <code>handle_actor_v1</code>, 2 calls <code>handle_actor_v2</code>, and any other value returns "unknown actor version" (<code>engine/packages/guard/src/routing/pegboard_gateway/mod.rs:469-514</code>).</li><li>If the Actor is sleeping, Guard signals a wake and waits for the ready signal.</li><li>Guard selects gateway 2 or gateway 3. With the default configuration, it selects gateway 2.</li><li><code>PegboardGateway2</code> re-fetches the Actor, confirms the envoy key, and publishes a <code>ToEnvoyConn::ToEnvoyTunnelMessage</code> to <code>EnvoyReceiverSubject::new(namespace_id, envoy_key)</code> (<code>engine/packages/pegboard-gateway2/src/shared_state.rs:648-654</code>).</li><li>The control-plane <code>tunnel_to_ws_task</code> receives that message from Universal Pub/Sub and converts it to <code>protocol::ToEnvoy::ToEnvoyTunnelMessage</code> (<code>engine/packages/pegboard-envoy/src/tunnel_to_ws_task.rs:181-224</code>).</li><li><code>tunnel_to_ws_task</code> writes the serialized <code>ToEnvoy</code> frame to the WebSocket whose other end is the envoy host process, with <code>conn.ws_handle.send</code> (<code>tunnel_to_ws_task.rs:227-250</code>). The gateway receives the acknowledgement only after this write (<code>lines 126-134</code>).</li><li>The envoy host process calls <code>handle_tunnel_message</code> on the frame (<code>engine/sdks/rust/envoy-client/src/tunnel.rs:93-124</code>). For a <code>ToEnvoyRequestStart</code>, which is a variant of <code>ToEnvoyTunnelMessageKind</code> (<code>v8.bare:608-620</code>), it sends an HTTP request to the Actor.</li><li>The Actor replies with a <code>ToRivetTunnelMessage</code>.</li><li><code>ws_to_tunnel_task</code> publishes a <code>ToGateway::ToRivetTunnelMessage</code> to <code>GatewayReceiverSubject</code>. The gateway writes the HTTP response body, and Guard returns the response to the client.</li></ol>
+<p>Figure 4 shows the message flow.</p>
+<div class="mermaid">
+sequenceDiagram
+    participant C as Client
+    participant G as Guard routing
+    participant PG as PegboardGateway2
+    participant UPS as Universal Pub/Sub
+    participant TW as tunnel_to_ws_task
+    participant E as Envoy host process
+    participant A as Actor
+    participant WT as ws_to_tunnel_task
+    C-&gt;&gt;G: GET /gateway/actor_key/path
+    G-&gt;&gt;G: route_request_path_based_inner
+    G-&gt;&gt;G: handle_actor_v2, wake and wait for Ready
+    G-&gt;&gt;PG: PegboardGateway2::new
+    PG-&gt;&gt;UPS: ToEnvoyTunnelMessage on EnvoyReceiverSubject
+    UPS-&gt;&gt;TW: ToEnvoyConn TunnelMessage
+    TW-&gt;&gt;E: ToEnvoy frame on WebSocket
+    E-&gt;&gt;A: HTTP request
+    A-&gt;&gt;E: HTTP response or WebSocket message
+    E-&gt;&gt;WT: ToRivetTunnelMessage on WebSocket
+    WT-&gt;&gt;UPS: ToRivetTunnelMessage on GatewayReceiverSubject
+    UPS-&gt;&gt;PG: tunnel reply
+    PG-&gt;&gt;G: response body
+    G-&gt;&gt;C: HTTP response
+
+</div>
+<p>Every participant is a real function, type, service, or process. <code>route_request_path_based_inner</code> and <code>handle_actor_v2</code> are functions in <code>pegboard_gateway/mod.rs</code>. <code>PegboardGateway2</code> is the struct. <code>tunnel_to_ws_task</code> and <code>ws_to_tunnel_task</code> are modules. <code>Envoy host process</code> is the operator program built with the envoy client SDK. <code>EnvoyReceiverSubject</code> and <code>GatewayReceiverSubject</code> are the UPS topics.</p>
+<p>The request identifier pair is <code>(GatewayId, RequestId)</code>. Both types are <code>data[4]</code>, so each value is 4 bytes. The tunnel message also carries a <code>MessageIndex</code> of type <code>u16</code> (<code>engine/sdks/schemas/envoy-protocol/v8.bare:6-8</code>). The pair identifies the request, and the index orders the messages inside it.</p>
+<p>A tunnel message larger than <code>envoy_max_response_payload_size</code>, which is 20 mebibytes, does not close the connection (<code>pegboard.rs:397</code>). <code>pegboard-envoy</code> logs a warning and replaces the payload with a terminal message (<code>ws_to_tunnel_task.rs:823-846</code>). A terminal message ends the stream for that request. For a response stream the replacement is <code>ToRivetResponseAbort</code> with <code>HttpStreamAbortReasonKind::InternalError</code> and the detail "actor response payload exceeds the maximum size". For a WebSocket message the replacement is <code>ToRivetWebSocketClose</code> with code 1009 and the reason "actor WebSocket message exceeds the maximum size". Both are variants of <code>ToRivetTunnelMessageKind</code> (<code>v8.bare:543-545</code>, <code>580-584</code>, <code>586-600</code>). The other message kinds return without a change (<code>ws_to_tunnel_task.rs:1588-1619</code>).</p>
+<p>For a WebSocket request, the gateway holds the connection open and the tunnel carries WebSocket frames. The path is the same up to step 8. The hibernation rules for a WebSocket are in <a href="10-realtime-and-hibernation.html">10 Realtime and hibernation</a>.</p>
+<h2>15. What the operator must provide</h2>
+<p>The pool kind and the protocol version together select the infrastructure. Table 8 lists the four combinations.</p>
+<table><tr><th>Kind</th><th>Protocol version</th><th>Operator provides</th><th>Control plane runs</th></tr><tr><td><code>Normal</code></td><td><code>Some</code></td><td>Envoy processes that open <code>/envoys/connect</code> with five query parameters</td><td><code>pegboard_actor2</code>, the Hash allocator, and envoy protocol version 8 or lower</td></tr><tr><td><code>Normal</code></td><td><code>None</code></td><td>Runner processes that open <code>/runners/connect</code> and report <code>total_slots</code></td><td><code>pegboard_runner</code> and the legacy slot queue, runner protocol 3</td></tr><tr><td><code>Serverless</code></td><td><code>Some</code></td><td>An HTTP endpoint for <code>POST {url}/start</code> that returns SSE</td><td><code>pegboard-outbound</code>, one SSE request for each Actor start, envoy protocol version 8 or lower</td></tr><tr><td><code>Serverless</code></td><td><code>None</code></td><td>An HTTP endpoint for <code>GET {url}/start</code> that returns SSE and reports a runner protocol version</td><td><code>pegboard_runner_pool2</code> and <code>pegboard_serverless_conn2</code>, one long-lived connection for each receiver, serverless SSE messages, and <code>ToClientClose</code> or <code>ToRunnerClose</code> in runner protocol 3 or 7</td></tr></table>
+<p>Five names in Table 8 are worth separating. <code>pegboard_runner</code> is the legacy runner workflow in <code>engine/packages/pegboard/src/workflows/runner.rs</code>. <code>pegboard-outbound</code> is the service in section 10. <code>pegboard_runner_pool2</code> is the pool workflow in section 3. <code>pegboard_serverless_receiver2</code> dispatches one legacy serverless connection for each entry in the computed desired count, and <code>pegboard_serverless_conn2</code> is that connection workflow (<code>serverless/receiver.rs:23-57</code>; <code>serverless/conn.rs</code>).</p>
+<p>The pool record is the switch. The <code>kind</code> field selects <code>Normal</code> or <code>Serverless</code>. The <code>protocol_version</code> field selects the Actor version and the workflow family. A <code>None</code> value means a version 1 Actor and the legacy runner machinery. A <code>Some</code> value means a version 2 Actor and the envoy machinery (<code>ops/actor/create.rs:105-109</code>; <code>workflows/actor/runtime.rs:267-273</code>). A <code>Serverless</code> pool with a protocol version is not managed by the runner pool workflow, even though its kind is <code>Serverless</code>.</p>
+<p>The two fields answer different questions from the runner wire version. The pool record selects the Actor version and the start path. The endpoint reports its own runner protocol version in <code>ToServerlessServerInit</code>, on every connection (<code>serverless/conn.rs:352-356</code>, <code>566-573</code>). The connection reads that value once, when it drains, to select the close message family (<code>serverless/conn.rs:598-599</code>, <code>656-661</code>). The pool record does not store this value.</p>
+<p>A <code>Normal</code> pool placement that finds no fresh envoy returns <code>ActorError::NoEnvoys</code>. The Actor workflow retries with backoff. The source does not retry inside the <code>allocate</code> activity.</p>
+<h2>16. What the source does not state</h2>
+<ol><li><strong>Why the default strategy is <code>Hash</code>.</strong> The <code>Default</code> implementation selects <code>Hash</code> (<code>pegboard.rs:511-524</code>). A stale comment above the enum still calls <code>RandomPingTimestamp</code> the "Current default" (<code>pegboard.rs:457</code>). No source comment explains why the default changed. This document follows the implementation and marks the rationale from <code>docs-internal/engine/envoy-load-balancing.md</code> as a design document, not code.</li><li><strong>Why the runner pool workflow drains by count, not by load.</strong> The source has a TODO at <code>runner_pool.rs:113</code>. It says: "Implement smart logic of draining runners with the lowest allocated actors". The current code keeps the tail of the list and drains the first <code>drain_count</code> entries (<code>runner_pool.rs:108-124</code>). <code>split_off(drain_count)</code> keeps the first <code>drain_count</code> entries in <code>state.runners</code> and returns the tail; <code>std::mem::replace</code> then makes those first entries the draining set. The list order is insertion order.</li><li><strong>Why a non-eviction exit forces an expiry.</strong> The comment at <code>pegboard-envoy/src/lib.rs:331-341</code> gives one reason: "Make envoy immediately ineligible when it disconnects". The call uses <code>skip_if_fresh: false</code>, so it expires the envoy even when a fresh ping exists (<code>expire.rs:94-105</code>). The source does not state why a forced expiry is safe at that point.</li><li><strong>The exact HTTP status for a request that arrives during a failed start.</strong> The gateway code in this document returns an error. This document did not trace the status mapping, which belongs to <a href="09-guard-routing.html">09 Guard routing</a>.</li></ol>
+<h2>What to read next</h2>
+<ul><li><a href="03-actors-and-lifecycle.html">03 Actors and lifecycle</a> for the Actor state machine that calls <code>allocate</code> and reacts to <code>GoingAway</code> and <code>Lost</code>.</li><li><a href="09-guard-routing.html">09 Guard routing</a> for the full routing table, authentication, and the response mapping for a failed request.</li><li><a href="10-realtime-and-hibernation.html">10 Realtime and hibernation</a> for WebSocket requests that hibernate while the Actor is asleep.</li></ul>
+<h2>Glossary for this document</h2>
+<p><strong>Actor slots key.</strong> <code>ActorSlotsKey</code>. A per-pool atomic counter of running Actors. It enforces <code>max_concurrent_actors</code>, which is set only for a <code>Serverless</code> pool.</p>
+<p><strong>Checkpoint.</strong> An Actor identifier, a generation, and an event index. It locates one event in the Actor event stream.</p>
+<p><strong>Conflict key.</strong> A key that a transaction reads or writes so that a second transaction on the same key must retry.</p>
+<p><strong>Envoy.</strong> A host process that speaks the envoy protocol over one WebSocket. In this commit an envoy normally serves a <code>Normal</code> pool, and the code also accepts a <code>Serverless</code> pool (<code>Conn::is_serverless</code>).</p>
+<p><strong>Envoy connection identifier.</strong> A new <code>Id</code> created at registration. It is a fencing token: a stale operation with an old identifier does nothing.</p>
+<p><strong>Generation.</strong> An integer that increases by one at each allocation (<code>actor2/runtime.rs:497</code>). The workflow writes it to <code>GenerationKey</code>, and a message that carries an older value is stale.</p>
+<p><strong>Hash ring position.</strong> A 128-bit <code>xxh3</code> hash of the envoy key and a virtual node index. It is a sorting key, not a consistent-hash target.</p>
+<p><strong>Millislot.</strong> A thousandth of a runner's capacity in the legacy path. The stored value is <code>(remaining_slots * 1000) / total_slots</code> (<code>runner.rs:626</code>). The division is integer division, so the result rounds down.</p>
+<p><strong>Operation (op).</strong> A control-plane request that runs in one UDB transaction and can be retried.</p>
+<p><strong>Power-of-K choices.</strong> Draw K random candidates and pick the best one. The source calls the parameter <code>samples</code>, and the default is 2.</p>
+<p><strong>Runner.</strong> A host process in the legacy path. It speaks the versioned runner protocol, not the envoy protocol.</p>
+<p><strong>Serverless receiver.</strong> The workflow <code>pegboard_serverless_receiver2</code>. It runs one legacy serverless connection workflow and accepts the drain signal.</p>
+<p><strong>Slot and slot jitter.</strong> One unit of Actor capacity. The newer path counts one slot per running Actor; the legacy path counts millislots of <code>total_slots</code>. Slot jitter is a random integer added before the minimum comparison. The default range is 0 to 4, and the accepted maximum is 64.</p>
+<p><strong>Tunnel.</strong> An opaque byte stream that a gateway and the envoy that hosts the Actor exchange inside protocol messages. <code>MessageIndex</code> orders its parts.</p>
+<p><strong>Virtual node.</strong> One of the <code>virtual_nodes</code> positions that an envoy writes into the hash index. The default count is 8.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

@@ -1,0 +1,1176 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>08 Epoxy and Multi-Datacenter Replication -- src.rivet</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue('--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        toolbar.appendChild(mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); }));
+        toolbar.appendChild(mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); }));
+        toolbar.appendChild(mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); }));
+        toolbar.appendChild(mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); }));
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.rivet/docs</span>
+    <div class="nav-actions">
+      <a href="05-gasoline-durable-execution.html" class="nav-breadcrumb">05 Gasoline: durable execution by recorded history</a><a href="06-actor-sqlite-and-depot.html" class="nav-breadcrumb">06 Actor SQLite and Depot</a><a href="07-universaldb-and-buckets.html" class="nav-breadcrumb">07 UniversalDB and Buckets</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="07-universaldb-and-buckets.html" class="nav-btn" title="Previous: 07 UniversalDB and Buckets">← prev</a>
+      <a href="09-guard-routing.html" class="nav-btn nav-btn-next" title="Next: 09 Guard: HTTP and WebSocket routing, TLS, and the reverse proxy">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>08 Epoxy and Multi-Datacenter Replication</h1>
+<p>Epoxy is the per-key replicated key-value (KV) layer that makes a control-plane write durable in more than one datacenter. It keeps a small set of control-plane records, such as Actor key reservations, runner configuration, and the JSON Web Token (JWT) signing key ring. Each datacenter runs its own UniversalDB (UDB) and its own Epoxy replica. The replicas exchange Binary Application Record Encoding (BARE) messages over Hypertext Transfer Protocol (HTTP). The source at commit <code>4a58441c50d1ce20d8803cfb1ab7c3285a5141d6</code> implements a per-key single-decree Fast Paxos variant. It is not EPaxos, and it is not Multi-Paxos. This document derives the protocol from the source, including the parts that are incomplete.</p>
+<p>A decree is one decision slot for one key. Single-decree means each key gets one independent decision and no shared log. Fast Paxos lets a proposer skip Phase 1 when the key has no prior ballot. It uses a larger fast quorum so that a fast quorum and a slow quorum always intersect (<code>README.md:3</code>, <code>utils.rs:86-101</code>).</p>
+<p>The exploration plan calls document 08 “EPaxos, replicas, ballots, commit” (<code>spec.md:72</code> and <code>spec.md:103</code>). The source does not use that label for the current protocol. The Epoxy README says the protocol is “single-decree Fast Paxos (Lamport, 2006), run independently per key” (<code>engine/packages/epoxy/README.md:3</code>). The README mentions EPaxos only as ancestry for the old <code>PreAccept</code> name and as a reference for cross-key ordering (<code>README.md:27</code> and <code>README.md:42</code>). In this document, a bare <code>README.md</code> citation means <code>engine/packages/epoxy/README.md</code>. This document follows the source.</p>
+<h2>1. The problem Epoxy answers</h2>
+<p>A Rivet deployment can run the same control-plane binary in several availability zones or regions. The topology lists each datacenter, its label, its leader flag, its public Universal Resource Locator (URL), and its Application Programming Interface (API) peer URL. Every field is in <code>Datacenter</code> (<code>engine/packages/config/src/config/topology.rs:155-179</code>). Each process has its own local UDB. A local UDB transaction cannot see a write in another datacenter (<code>protocol_version.rs:3-6</code>; see <a href="07-universaldb-and-buckets.html">07 UniversalDB and Buckets</a>).</p>
+<p>The control plane still needs one agreed value for a small number of keys. Three examples appear in the source:</p>
+<table><tr><th>Record</th><th>Writer</th><th>Why agreement matters</th><th>Source</th></tr><tr><td>Actor key reservation</td><td>Pegboard</td><td>Two datacenters must not reserve the same namespace, name, and key for different Actors.</td><td><code>engine/packages/pegboard/src/workflows/actor2/keys.rs:211-245</code></td></tr><tr><td>Runner configuration</td><td>Pegboard</td><td>A runner configuration must be visible in every enabled datacenter with one version.</td><td><code>engine/packages/pegboard/src/ops/runner_config/upsert.rs:162-181</code></td></tr><tr><td>JWT signing key ring</td><td>auth-jwt</td><td>Every datacenter must use one signing ring generation.</td><td><code>engine/packages/auth-jwt/src/ops/key_ring/compare_and_set.rs:33-95</code></td></tr></table>
+<p>The assignment for this document is a separate exploration brief, not a file in this repository. The brief states that a single object storage bucket has no low-latency compare-and-set (CAS). The source does not contain a design note that compares a bucket with Epoxy. The source does show that Epoxy does not use a bucket. It stores consensus state in UDB and sends messages to peer replicas. The bucket is not in the Epoxy write path. See <a href="07-universaldb-and-buckets.html">07 UniversalDB and Buckets</a> for the storage drivers and the Enterprise cold tier.</p>
+<p>This document reduces the problem to five requirements:</p>
+<ol><li>A write must survive the loss of one control-plane instance.</li><li>Concurrent writes to the same key must get one order.</li><li>Writes to different keys do not need one global order.</li><li>A read must be able to request a strong guarantee, or accept a weaker one explicitly.</li><li>A key can be scoped to a subset of datacenters when the workload is regional.</li></ol>
+<p>Epoxy answers requirements 1 to 4 with per-key consensus. It answers requirement 5 with <code>target_replicas</code>. The scope is not a general-purpose database. It is a small, high-value control-plane KV layer.</p>
+<h2>2. What the source says Epoxy is</h2>
+<p>The README gives the protocol identity in three short statements:</p>
+<ul><li>“The consensus protocol is single-decree Fast Paxos (Lamport, 2006), run independently per key.” (<code>engine/packages/epoxy/README.md:3</code>)</li><li>“Each key only needs agreement on one value, so each key gets its own independent single-decree Paxos instance.” (<code>README.md:19</code>)</li><li>“There is no shared log” and “No leader election” (<code>README.md:21-22</code>).</li></ul>
+<p>The code agrees. <code>epoxy_propose</code> reads one key and selects a ballot for that key. It runs one Accept round, or one Prepare plus Accept round, and commits one value (<code>engine/packages/epoxy/src/ops/propose.rs:320-518</code>). There is no sequence number across keys. There is no dependency graph. There is no leader election loop.</p>
+<p>The following table separates the labels.</p>
+<table><tr><th>Label</th><th>Does the source use it?</th><th>What the source actually implements</th></tr><tr><td>EPaxos</td><td>Only as ancestry and as a cross-key reference (<code>README.md:27</code>, <code>README.md:42</code>).</td><td>No. There is no dependency graph and no cross-key ordering.</td></tr><tr><td>Multi-Paxos</td><td>No.</td><td>No. There is no elected leader and no shared log.</td></tr><tr><td>Fast Paxos</td><td>Yes (<code>README.md:3</code>).</td><td>Yes, per key, with an optional Prepare phase.</td></tr><tr><td>Single-decree Paxos</td><td>Yes (<code>README.md:19</code>).</td><td>Yes. One key gets one decided value per round.</td></tr><tr><td>Leader</td><td>The README table uses the word loosely (<code>README.md:29-35</code>).</td><td>No elected leader role. Any replica can propose.</td></tr><tr><td>Ballot</td><td>Yes (<code>README.md:265-271</code> and <code>replica/ballot.rs:9-38</code>).</td><td>A per-key pair <code>(counter, replica_id)</code>.</td></tr><tr><td>Epoch</td><td>Yes (<code>types.rs:10</code>).</td><td>A configuration membership generation. It is not in the ballot.</td></tr></table>
+<p>The <code>PreAccept</code> message still exists in the version 4 BARE schema and in the request union. The wire handler rejects it:</p>
+<pre><code class="language-rust">// engine/packages/epoxy/src/replica/message_request.rs:52-54
+			protocol::RequestKind::PreAcceptRequest(_) =&gt; {
+				bail!(&quot;unreachable: pre accept is not sent over the wire&quot;)
+			}
+</code></pre>
+<p>The old leader errors also remain. The <code>Kv</code> enum in <code>engine/packages/epoxy/src/errors.rs:4-21</code> declares <code>NoLeaderElected</code>, <code>LeaderForwardingFailed</code>, <code>ResponseChannelClosed</code>, and <code>NotLeader</code>. A repository search finds these four variants only in <code>errors.rs</code> inside Epoxy. Pegboard and auth-jwt do not use them. This is evidence that the current path has no leader role, even though the names survive.</p>
+<h3>2.1 Fast path and slow path</h3>
+<p><code>BallotSelection</code> has four outcomes (<code>engine/packages/epoxy/src/replica/ballot.rs:61-72</code>):</p>
+<table><tr><th>Outcome</th><th>Condition</th><th>Path</th><th>Quorum</th></tr><tr><td><code>AlreadyCommitted</code></td><td>A committed value exists and either the value or the request is immutable.</td><td>No network. Map the result.</td><td>None</td></tr><tr><td><code>AlreadyCommittedMutable</code></td><td>A committed mutable value exists and the request is mutable.</td><td>Prepare, then Accept.</td><td>Slow for both</td></tr><tr><td><code>FreshBallot</code></td><td>No committed value and the local ballot is zero or absent.</td><td>Accept only.</td><td>Fast</td></tr><tr><td><code>NeedsPrepare</code></td><td>No committed value and the local ballot is nonzero.</td><td>Prepare, then Accept.</td><td>Slow for both</td></tr></table>
+<p>The fast path skips Phase 1. The slow path runs Phase 1 and Phase 2. The code selects the path from the local key state only. The source does not ask a quorum whether the key is fresh. This is why the fast quorum size matters. For a three-replica cluster, the fast quorum is three. One slow or down replica makes the first fast attempt fail. The caller must retry, and the retry sees the ballot that the failed attempt wrote, so it takes the slow path.</p>
+<h2>3. Roles and terms</h2>
+<p>Epoxy has no fixed role assignment. One replica can be the proposer for one key, an acceptor for another key, and a learner for a third key at the same time. The roles below describe one proposal.</p>
+<table><tr><th>Role</th><th>Code name</th><th>Function</th><th>Source</th></tr><tr><td>Proposer</td><td><code>from_replica_id</code> in <code>epoxy_propose</code></td><td>Reads the local config, selects the ballot, sends Prepare and Accept, commits locally, and broadcasts Commit.</td><td><code>propose.rs:320-518</code></td></tr><tr><td>Acceptor or voter</td><td><code>prepare</code>, <code>accept</code>, <code>read_state</code></td><td>Promises a ballot, accepts a value, or returns committed state in one serializable transaction.</td><td><code>replica/messages/prepare.rs</code>, <code>accept.rs</code>, <code>read_state.rs</code></td></tr><tr><td>Learner</td><td><code>commit_kv</code>, <code>changelog::apply_entry</code></td><td>Writes a committed value and appends a changelog entry.</td><td><code>replica/commit_kv.rs:81-97</code>, <code>replica/changelog.rs:88-149</code></td></tr><tr><td>Configuration coordinator</td><td><code>epoxy_coordinator_v2</code> workflow</td><td>Adds replicas, changes status, increments the epoch, and broadcasts config.</td><td><code>workflows/coordinator/mod.rs:27-100</code></td></tr><tr><td>Configuration coordinator replica</td><td><code>coordinator_replica_id</code></td><td>Receives status updates and config messages. It is not a consensus leader.</td><td><code>types.rs:9</code>, <code>setup.rs:118-140</code></td></tr><tr><td>Version probe</td><td><code>epoxy_protocol_version</code> service</td><td>Probes peer replicas for their agreed protocol version.</td><td><code>protocol_version.rs:62-155</code></td></tr></table>
+<p>The <code>coordinator_replica_id</code> field is easy to misread. It is set to the local replica identifier of the leader datacenter (<code>workflows/coordinator/mod.rs:96</code>). The source uses it for configuration and status messages, not for key proposals. The proposal path uses <code>target_replicas</code> and the active replica list. The README’s use of “leader” in its terminology table refers to the replica that runs a proposal, not to an elected key leader.</p>
+<p><code>ReplicaStatus</code> has three values (<code>types.rs:22-27</code>):</p>
+<table><tr><th>Status</th><th>BARE comment</th><th>Actual source behavior</th></tr><tr><td><code>Joining</code></td><td>“Receives nothing” (<code>v4.bare:33-34</code>)</td><td>Added by <code>reconfigure</code> (<code>reconfigure.rs:205-209</code>). <code>broadcast_commits</code> sends commits to every replica, including Joining (<code>propose.rs:1070-1075</code>). The comment is stale.</td></tr><tr><td><code>Learning</code></td><td>“Receives commits, cannot propose, cannot vote” (<code>v4.bare:35-36</code>)</td><td>Declared in <code>types.rs:22-27</code>. No workflow assigns it. A search of <code>engine/packages/epoxy/src</code> finds no <code>ReplicaStatus::Learning</code> assignment. The replica workflow sends only <code>Active</code> after its catch-up loop (<code>setup.rs:57-61</code>, <code>:118-140</code>). The status signal type can carry any status (<code>coordinator/mod.rs:128-132</code>), but its only sender passes <code>Active</code>.</td></tr><tr><td><code>Active</code></td><td>“Receives commits, can propose, can vote” (<code>v4.bare:37-38</code>)</td><td>The only status in the initial cluster config (<code>coordinator/mod.rs:87-92</code>). It is the only status in quorum helpers (<code>utils.rs:27-34</code>).</td></tr></table>
+<p><code>BeginLearning</code> is a Gasoline signal on the replica workflow (<code>workflows/replica/mod.rs:34-37</code>). <code>ReplicaStatusChange</code> is a coordinator signal (<code>workflows/coordinator/mod.rs:128-132</code>). The Joining to Active path runs through <code>setup.rs:24-63</code>. The state machine below shows the transitions that the source permits. The dashed state is declared but unused (<code>types.rs:22-27</code>).</p>
+<div class="mermaid">
+stateDiagram-v2
+    classDef unused fill:#f4f4f4,stroke:#999,stroke-dasharray:5 5
+    [*] --&gt; Active: initial_cluster_config
+    [*] --&gt; Joining: reconfigure adds a datacenter
+    Joining --&gt; Active: BeginLearning then Active status
+    Active --&gt; Learning: ReplicaStatusChange with Learning
+    Learning --&gt; Active: ReplicaStatusChange with Active
+    Learning --&gt; Joining: ReplicaStatusChange with Joining
+    Active --&gt; Joining: ReplicaStatusChange with Joining
+    class Learning unused
+    note right of Learning
+        Declared in types.rs:22-27.
+        No source workflow assigns it.
+        The signal handler accepts it.
+        No current sender emits it.
+    end note
+
+</div>
+<p>The epoch increments only when a replica moves from a non-Active status to Active (<code>replica_status_change.rs:78-84</code> and <code>:100-104</code>). Adding a Joining replica does not increment the epoch. The source comment says this is intentional and refers to the README (<code>reconfigure.rs:213-214</code>). The README says the epoch versions cluster membership changes and is not part of the per-key ballot (<code>README.md:579</code>). No ballot path reads the epoch. The <code>Ballot</code> comparison uses only <code>counter</code> and <code>replica_id</code> (<code>ballot.rs:32-38</code>). <code>ballot_selection</code> reads the committed value, the legacy values, and the ballot, but not the config (<code>ballot.rs:74-158</code>).</p>
+<h2>4. The replica set and the datacenter mapping</h2>
+<p>Epoxy does not have a configured replica count. It has one replica for each datacenter in the topology. The current datacenter identifier is the datacenter label cast to a 64-bit unsigned integer.</p>
+<pre><code class="language-rust">// engine/packages/config/src/config/mod.rs:345-353
+	/// Alias of `dc_label`. This is for convenience &amp; clarify when reading code.
+	pub fn epoxy_replica_id(&amp;self) -&gt; u64 {
+		self.dc_label() as u64
+	}
+
+	/// Current datacenter&#x27;s label.
+	pub fn dc_label(&amp;self) -&gt; u16 {
+		self.topology().datacenter_label
+	}
+</code></pre>
+<p><code>epoxy_read_cluster_config</code> reads the local replica’s <code>ConfigKey</code> through <code>utils::read_config</code> in one UDB transaction (<code>ops/read_cluster_config.rs:15-26</code>). The replica identifier in that read is <code>ctx.config().epoxy_replica_id()</code>, so each datacenter reads its own subspace. <code>utils::read_config</code> returns an error when the replica has no stored config (<code>utils.rs:121-138</code>).</p>
+<p>The default topology has one datacenter. Its name is “default”, its label is 1, and it is the leader (<code>engine/packages/config/src/config/topology.rs:47-75</code>). A default deployment therefore has one Epoxy replica. The fast and slow quorum sizes for one replica are both one (<code>utils.rs:86-101</code>). A one-replica cluster is not multi-datacenter durable. It is a valid development shape, not the shape that answers the assignment’s durability problem.</p>
+<p>The coordinator builds the first cluster config from every topology datacenter:</p>
+<pre><code class="language-rust">// engine/packages/epoxy/src/workflows/coordinator/mod.rs:81-100
+fn initial_cluster_config(ctx: &amp;ActivityCtx) -&gt; types::ClusterConfig {
+	let replicas = ctx
+		.config()
+		.topology()
+		.datacenters
+		.iter()
+		.map(|dc| types::ReplicaConfig {
+			replica_id: dc.datacenter_label as u64,
+			status: types::ReplicaStatus::Active,
+			api_peer_url: dc.peer_url.to_string(),
+			guard_url: dc.public_url.to_string(),
+		})
+		.collect();
+
+	types::ClusterConfig {
+		coordinator_replica_id: ctx.config().epoxy_replica_id(),
+		epoch: 0,
+		replicas,
+	}
+}
+</code></pre>
+<p>The Rust types in <code>engine/packages/epoxy/src/types.rs:7-27</code> mirror the schema. <code>ClusterConfig</code> holds <code>coordinator_replica_id</code>, <code>epoch</code>, and <code>replicas</code>. <code>ReplicaConfig</code> holds <code>replica_id</code>, <code>status</code>, <code>api_peer_url</code>, and <code>guard_url</code>. <code>ReplicaStatus</code> has <code>Joining</code>, <code>Learning</code>, and <code>Active</code>. The following table lists every field and its purpose.</p>
+<table><tr><th>Type</th><th>Field</th><th>Type</th><th>Purpose</th><th>Source</th></tr><tr><td><code>ClusterConfig</code></td><td><code>coordinator_replica_id</code></td><td><code>ReplicaId</code> (<code>u64</code>)</td><td>The replica that receives configuration and status messages.</td><td><code>types.rs:9</code></td></tr><tr><td><code>ClusterConfig</code></td><td><code>epoch</code></td><td><code>u64</code></td><td>Membership generation. Incremented on a transition to Active.</td><td><code>types.rs:10</code>, <code>replica_status_change.rs:83-104</code></td></tr><tr><td><code>ClusterConfig</code></td><td><code>replicas</code></td><td><code>Vec<ReplicaConfig></code></td><td>Every replica known to the cluster, including Joining and Learning.</td><td><code>types.rs:11</code></td></tr><tr><td><code>ReplicaConfig</code></td><td><code>replica_id</code></td><td><code>ReplicaId</code></td><td>The datacenter label as a <code>u64</code>.</td><td><code>types.rs:16</code>, <code>coordinator/mod.rs:88</code></td></tr><tr><td><code>ReplicaConfig</code></td><td><code>status</code></td><td><code>ReplicaStatus</code></td><td>Membership and voting state.</td><td><code>types.rs:17</code></td></tr><tr><td><code>ReplicaConfig</code></td><td><code>api_peer_url</code></td><td><code>String</code></td><td>The peer API base URL. Consensus messages go here.</td><td><code>types.rs:18</code>, <code>http_client.rs:11-21</code></td></tr><tr><td><code>ReplicaConfig</code></td><td><code>guard_url</code></td><td><code>String</code></td><td>The datacenter public URL. The source stores it and compares it during reconfiguration. Consensus does not use it.</td><td><code>types.rs:19</code>, <code>reconfigure.rs:319-331</code></td></tr></table>
+<p>The source does not state why <code>guard_url</code> is in the cluster config. It is not in the consensus send path. <code>find_replica_address</code> reads <code>api_peer_url</code> and nothing else (<code>http_client.rs:11-21</code>). The coordinator compares both URLs during a configuration change (<code>reconfigure.rs:319-331</code>). This document does not infer a further purpose.</p>
+<p>The source also does not show a check that two datacenters have different labels. <code>initial_cluster_config</code> maps each datacenter to <code>datacenter_label as u64</code> with no uniqueness test (<code>coordinator/mod.rs:81-100</code>). A duplicate label would create two replicas with the same identifier. The source does not state a guard for this case.</p>
+<p>The topology diagram below shows one replica per datacenter. The control-plane process hosts the API peer routes, the replica workflow, the coordinator workflow in the leader datacenter, and the protocol version service.</p>
+<div class="mermaid">
+flowchart LR
+    subgraph DC1[Datacenter label 1, is_leader true]
+        P1[api-peer]
+        R1[epoxy_replica_v2]
+        C1[epoxy_coordinator_v2]
+        V1[epoxy_protocol_version]
+        U1[(UniversalDB replica 1)]
+        P1 --&gt; R1
+        R1 --&gt; U1
+        C1 --&gt; U1
+        V1 --&gt; P1
+    end
+    subgraph DC2[Datacenter label 2, is_leader false]
+        P2[api-peer]
+        R2[epoxy_replica_v2]
+        V2[epoxy_protocol_version]
+        U2[(UniversalDB replica 2)]
+        P2 --&gt; R2
+        R2 --&gt; U2
+        V2 --&gt; P2
+    end
+    subgraph DC3[Datacenter label 3, is_leader false]
+        P3[api-peer]
+        R3[epoxy_replica_v2]
+        V3[epoxy_protocol_version]
+        U3[(UniversalDB replica 3)]
+        P3 --&gt; R3
+        R3 --&gt; U3
+        V3 --&gt; P3
+    end
+    P1 &lt;--&gt;|POST /vN/epoxy/message| P2
+    P2 &lt;--&gt;|POST /vN/epoxy/message| P3
+    P1 &lt;--&gt;|POST /vN/epoxy/message| P3
+    V1 -.-&gt;|GET /epoxy/protocol-version| P2
+    V1 -.-&gt;|GET /epoxy/protocol-version| P3
+    V2 -.-&gt;|GET /epoxy/protocol-version| P1
+    V2 -.-&gt;|GET /epoxy/protocol-version| P3
+    V3 -.-&gt;|GET /epoxy/protocol-version| P1
+    V3 -.-&gt;|GET /epoxy/protocol-version| P2
+
+</div>
+<p>The solid peer links carry consensus messages at the negotiated version. <code>N</code> in the label is that version. The dotted links carry the unversioned version probe. Each replica probes every other replica, so the diagram shows two probes per datacenter (<code>protocol_version.rs:104-124</code>). The coordinator runs only in the leader datacenter (<code>bootstrap/src/lib.rs:53-57</code>). Each datacenter runs its own replica workflow (<code>bootstrap/src/lib.rs:77-88</code>). Bootstrap creates the replica before the coordinator (<code>bootstrap/src/lib.rs:17-22</code>).</p>
+<h2>5. Durable state and key layout</h2>
+<p>All Epoxy state lives under a per-replica subspace. The v2 subspace is <code>(RIVET, EPOXY_V2, REPLICA, replica_id)</code>. The legacy subspace is <code>(RIVET, EPOXY_V1, REPLICA, replica_id)</code> and is read-only except for the backfill migration.</p>
+<pre><code class="language-rust">// engine/packages/epoxy/src/keys/mod.rs:13-19
+pub fn subspace(replica_id: ReplicaId) -&gt; universaldb::utils::Subspace {
+	universaldb::utils::Subspace::new(&amp;(RIVET, EPOXY_V2, REPLICA, replica_id))
+}
+
+pub fn legacy_subspace(replica_id: ReplicaId) -&gt; universaldb::utils::Subspace {
+	universaldb::utils::Subspace::new(&amp;(RIVET, EPOXY_V1, REPLICA, replica_id))
+}
+</code></pre>
+<p>The tuple constants come from UDB. The numbers matter because they are durable bytes.</p>
+<table><tr><th>Symbol</th><th>Value</th><th>Source</th></tr><tr><td><code>RIVET</code></td><td>0</td><td><code>engine/packages/universaldb/src/utils/keys.rs:28</code></td></tr><tr><td><code>KV</code></td><td>2</td><td><code>keys.rs:30</code></td></tr><tr><td><code>EPOXY_V1</code></td><td>70</td><td><code>keys.rs:98</code></td></tr><tr><td><code>VALUE</code></td><td>79</td><td><code>keys.rs:107</code></td></tr><tr><td><code>COMMITTED_VALUE</code></td><td>80</td><td><code>keys.rs:108</code></td></tr><tr><td><code>REPLICA</code></td><td>89</td><td><code>keys.rs:117</code></td></tr><tr><td><code>CONFIG</code></td><td>90</td><td><code>keys.rs:118</code></td></tr><tr><td><code>BALLOT</code></td><td>120</td><td><code>keys.rs:148</code></td></tr><tr><td><code>ACCEPTED</code></td><td>121</td><td><code>keys.rs:149</code></td></tr><tr><td><code>CACHE</code></td><td>122</td><td><code>keys.rs:150</code></td></tr><tr><td><code>CHANGELOG</code></td><td>123</td><td><code>keys.rs:151</code></td></tr><tr><td><code>EPOXY_V2</code></td><td>124</td><td><code>keys.rs:152</code></td></tr><tr><td><code>ACCEPTED2</code></td><td>127</td><td><code>keys.rs:155</code></td></tr></table>
+<p>The full tuple path for a key is:</p>
+<pre><code class="language-text">/rivet/epoxy_v2/replica/{replica_id}/kv/{key}/value
+/rivet/epoxy_v2/replica/{replica_id}/kv/{key}/ballot
+/rivet/epoxy_v2/replica/{replica_id}/kv/{key}/accepted
+/rivet/epoxy_v2/replica/{replica_id}/kv/{key}/accepted2
+/rivet/epoxy_v2/replica/{replica_id}/kv/{key}/cache
+/rivet/epoxy_v2/replica/{replica_id}/changelog/{versionstamp}
+/rivet/epoxy_v2/replica/{replica_id}/config
+/rivet/epoxy/replica/{replica_id}/kv/{key}/committed_value
+/rivet/epoxy/replica/{replica_id}/kv/{key}/value
+</code></pre>
+<p>The last two paths are the read-only legacy layout. A raw legacy <code>committed_value</code> is version 0 and immutable. A legacy <code>value</code> uses the same versioned <code>KvValueKey</code> encoding as v2, but it lives under the old <code>(RIVET, EPOXY_V1, REPLICA, replica_id)</code> subspace (<code>ballot.rs:82-91</code>, <code>read_state.rs:34-50</code>).</p>
+<p>The <code>{key}</code> bytes are the caller’s packed key. For a Pegboard reservation, the caller packs a namespace key first (<code>actor2/keys.rs:214-227</code>). Epoxy treats the result as opaque bytes. The UDB tuple encoder writes the length and the bytes. The document shows the symbolic path, not a byte offset for every field.</p>
+<p>The following table lists every shared key type and its value encoding.</p>
+<table><tr><th>Key type</th><th>Tuple</th><th>Value type</th><th>Encoding</th><th>Source</th></tr><tr><td><code>ConfigKey</code></td><td><code>(CONFIG,)</code> under the replica subspace</td><td><code>protocol::ClusterConfig</code></td><td>BARE, unversioned. The source has a TODO that says this is “mistakenly not versioned.”</td><td><code>keys/replica.rs:5-29</code></td></tr><tr><td><code>KvValueKey</code></td><td><code>(KV, key, VALUE)</code></td><td><code>protocol::CommittedValue</code></td><td>Versioned BARE with embedded <code>STORAGE_VERSION = 3</code>.</td><td><code>keys/keys.rs:42-63</code></td></tr><tr><td><code>KvValueKey</code> (legacy placement)</td><td><code>(KV, key, VALUE)</code> under the legacy subspace</td><td><code>protocol::CommittedValue</code></td><td>Same versioned BARE. Read as the second legacy fallback.</td><td><code>ballot.rs:85,90,110-117</code>, <code>read_state.rs:39-42</code></td></tr><tr><td><code>LegacyCommittedValueKey</code></td><td><code>(KV, key, COMMITTED_VALUE)</code> under the legacy subspace</td><td><code>Vec<u8></code></td><td>Raw bytes. Read as version 0 and immutable.</td><td><code>keys/keys.rs:97-118</code></td></tr><tr><td><code>KvBallotKey</code></td><td><code>(KV, key, BALLOT)</code></td><td><code>protocol::Ballot</code></td><td>Bare BARE, no version.</td><td><code>keys/keys.rs:151-172</code></td></tr><tr><td><code>KvAcceptedKey</code></td><td><code>(KV, key, ACCEPTED)</code></td><td><code>KvAcceptedValue</code></td><td>Raw <code>serde_bare</code>. Deprecated.</td><td><code>keys/keys.rs:190-243</code></td></tr><tr><td><code>KvAccepted2Key</code></td><td><code>(KV, key, ACCEPTED2)</code></td><td><code>protocol::AcceptedValue</code></td><td>Versioned BARE. Current accepted state.</td><td><code>keys/keys.rs:245-298</code></td></tr><tr><td><code>KvOptimisticCacheKey</code></td><td><code>(KV, key, CACHE)</code></td><td><code>protocol::CachedValue</code></td><td>Versioned BARE.</td><td><code>keys/keys.rs:300-352</code></td></tr><tr><td><code>ChangelogKey</code></td><td><code>(CHANGELOG, versionstamp)</code></td><td><code>protocol::ChangelogEntry</code></td><td>Bare BARE, unversioned. The source has a TODO that says this is “mistakenly not versioned.”</td><td><code>keys/keys.rs:354-404</code></td></tr></table>
+<p>The accepted value is transient. It is cleared on every commit. The source explains why it uses raw <code>serde_bare</code> instead of the versioned path:</p>
+<pre><code class="language-rust">// engine/packages/epoxy/src/keys/keys.rs:8-25
+// v4 adds only read RPCs. Keep the unchanged persisted layouts readable by v3 binaries
+// throughout a rolling upgrade; wire-version negotiation must not advance storage formats.
+const STORAGE_VERSION: u16 = 3;
+
+/// In-flight accepted proposal state stored under `kv/{key}/accepted`.
+///
+/// This uses raw `serde_bare` serialization rather than the versioned protocol path because
+/// accepted state is transient. It is cleared on every commit and never survives a full
+/// consensus round, so forward-compatible deserialization is not needed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct KvAcceptedValue {
+	pub value: Vec&lt;u8&gt;,
+	pub ballot: protocol::Ballot,
+	#[serde(default)]
+	pub version: u64,
+	#[serde(default)]
+	pub mutable: bool,
+}
+</code></pre>
+<p>The committed value is versioned. The storage version stays 3 even though the runtime protocol is 4.</p>
+<pre><code class="language-rust">// engine/packages/epoxy/src/keys/keys.rs:42-64
+impl FormalKey for KvValueKey {
+	type Value = protocol::CommittedValue;
+
+	fn deserialize(&amp;self, raw: &amp;[u8]) -&gt; Result&lt;Self::Value&gt; {
+		versioned::CommittedValue::deserialize_with_embedded_version(raw)
+	}
+
+	fn serialize(&amp;self, value: Self::Value) -&gt; Result&lt;Vec&lt;u8&gt;&gt; {
+		versioned::CommittedValue::wrap_latest(value)
+			.serialize_with_embedded_version(STORAGE_VERSION)
+	}
+}
+
+impl TuplePack for KvValueKey {
+	fn pack&lt;W: std::io::Write&gt;(
+		&amp;self,
+		w: &amp;mut W,
+		tuple_depth: TupleDepth,
+	) -&gt; std::io::Result&lt;VersionstampOffset&gt; {
+		let t = (KV, &amp;self.key, VALUE);
+		t.pack(w, tuple_depth)
+	}
+}
+</code></pre>
+<p>The changelog key uses a versionstamp. A versionstamp is a version that UDB assigns at commit time. UDB orders entries by it, and every reader sees the same value. The tuple is <code>(CHANGELOG, versionstamp)</code> (<code>keys/keys.rs:383-392</code>). The value is <code>protocol::ChangelogEntry</code> in raw BARE. The source TODO says it is “mistakenly not versioned” (<code>keys/keys.rs:372-373</code>). The changelog is per replica, not global. See <a href="07-universaldb-and-buckets.html">07 UniversalDB and Buckets</a> for the versionstamp mechanics.</p>
+<p>The config key is stored outside the <code>KV</code> segment but under the same replica subspace. Its value is <code>protocol::ClusterConfig</code>, encoded as raw BARE with no version. The source has a TODO that calls this a mistake (<code>keys/replica.rs:11-12</code>). The tuple is <code>(CONFIG,)</code> (<code>keys/replica.rs:22-29</code>).</p>
+<p>The subspace rule is in the engine instructions. It is a common source of key bugs.</p>
+<p>All Epoxy durable state lives under per-replica subspaces (<code>engine/CLAUDE.md:37</code>). The v2 space is <code>keys::subspace(replica_id)</code>. The legacy space is <code>keys::legacy_subspace(replica_id)</code> and is read-only. Shared key types live in <code>engine/packages/epoxy/src/keys/keys.rs</code>. New tuple constants go in <code>engine/packages/universaldb/src/utils/keys.rs</code>.</p>
+<p>UniversalDB low-level <code>Transaction::get</code>, <code>set</code>, <code>clear</code>, and <code>get_ranges_keyvalues</code> do not apply the transaction subspace automatically (<code>engine/CLAUDE.md:38</code>). Pack the subspace bytes yourself, or use the higher-level range helpers.</p>
+<p>The code follows two styles. The message handlers call <code>tx.with_subspace(keys::subspace(replica_id))</code> and then <code>read_opt</code> or <code>write</code> (<code>prepare.rs:16</code>, <code>accept.rs:16</code>, <code>commit_kv.rs:32</code>). The ballot selection and local read paths pack the subspace manually with <code>subspace.pack(&key)</code> before a low-level <code>tx.get</code> (<code>ballot.rs:88-91</code>, <code>get_local.rs:58-62</code>). Both styles address the same bytes.</p>
+<h2>6. Ballots and epochs</h2>
+<p>A ballot is a pair of a counter and a replica identifier. The ordering is counter first, then replica identifier.</p>
+<pre><code class="language-rust">// engine/packages/epoxy/src/replica/ballot.rs:32-38
+impl Ord for Ballot {
+	fn cmp(&amp;self, other: &amp;Self) -&gt; Ordering {
+		self.counter
+			.cmp(&amp;other.counter)
+			.then_with(|| self.replica_id.cmp(&amp;other.replica_id))
+	}
+}
+</code></pre>
+<p>The BARE schema states the same shape: <code>Ballot { counter: u64, replicaId: ReplicaId }</code> (<code>v4.bare:4-7</code>). A ballot is per key. It is not global. The <code>KvBallotKey</code> is <code>(KV, key, BALLOT)</code> under the replica subspace (<code>keys/keys.rs:151-172</code>). Two keys can hold the same ballot without conflict.</p>
+<p>Ballot selection reads the committed value, the legacy committed value, the legacy versioned value, and the current ballot in one serializable transaction (<code>ballot.rs:93-126</code>). It then chooses one of the four outcomes.</p>
+<pre><code class="language-rust">// engine/packages/epoxy/src/replica/ballot.rs:128-157
+	if let Some(value) = committed_value
+		.or_else(|| {
+			legacy_committed_value.map(|value| CommittedValue {
+				value: Some(value),
+				version: 0,
+				mutable: false,
+			})
+		})
+		.or_else(|| legacy_v2_committed_value)
+	{
+		if !value.mutable || !mutable {
+			return Ok(BallotSelection::AlreadyCommitted(value.value));
+		}
+
+		let ballot = reserve_next_ballot(
+			tx,
+			replica_id,
+			ballot_key,
+			current_ballot.unwrap_or_else(|| Ballot::zero(replica_id)),
+		)?;
+		return Ok(BallotSelection::AlreadyCommittedMutable { value, ballot });
+	}
+
+	let current_ballot = current_ballot.unwrap_or_else(|| Ballot::zero(replica_id));
+	let ballot = reserve_next_ballot(tx, replica_id, ballot_key, current_ballot)?;
+	if current_ballot.is_zero() {
+		Ok(BallotSelection::FreshBallot(ballot))
+	} else {
+		Ok(BallotSelection::NeedsPrepare { ballot })
+	}
+</code></pre>
+<p><code>reserve_next_ballot</code> increments the counter with <code>checked_add</code> and writes <code>(next_counter, local_replica_id)</code> before the network round (<code>ballot.rs:174-189</code>). A counter overflow is an error. The only ceiling is <code>u64::MAX</code>, enforced by <code>checked_add</code> in <code>reserve_next_ballot</code> (<code>ballot.rs:180-183</code>) and in <code>next_ballot</code> (<code>propose.rs:1165-1173</code>).</p>
+<p>The ballot rules differ by message. The table below gives the exact comparison and the effect.</p>
+<table><tr><th>Message</th><th>Condition</th><th>Response</th><th>Source</th><th>Purpose</th></tr><tr><td>Prepare</td><td><code>request_ballot < current_ballot</code></td><td><code>HigherBallot(current_ballot)</code></td><td><code>prepare.rs:47-56</code></td><td>Fence a stale proposer.</td></tr><tr><td>Prepare</td><td><code>request_ballot == current_ballot</code></td><td>Promise and return accepted state.</td><td><code>prepare.rs:48-61</code></td><td>Idempotent retry. This lets the proposer include itself in the quorum.</td></tr><tr><td>Prepare</td><td><code>request_ballot > current_ballot</code></td><td>Write the ballot and return accepted state.</td><td><code>prepare.rs:59-107</code></td><td>Promise not to accept a lower ballot.</td></tr><tr><td>Accept</td><td><code>current_ballot > request_ballot</code></td><td><code>HigherBallot(current_ballot)</code></td><td><code>accept.rs:48-56</code></td><td>Fence a stale proposer.</td></tr><tr><td>Accept</td><td>Equal ballot and same value, version, and mutability</td><td><code>Ok</code></td><td><code>accept.rs:58-69</code></td><td>Idempotent retry.</td></tr><tr><td>Accept</td><td>Equal ballot and different value, version, or mutability</td><td><code>HigherBallot(existing_ballot)</code></td><td><code>accept.rs:70-76</code></td><td>Reject a same-ballot conflict.</td></tr><tr><td>Accept</td><td>Equal ballot and stored accepted state at a lower ballot</td><td>Write the ballot and the new accepted2 value.</td><td><code>accept.rs:58-110</code></td><td>Adopt the value at the new ballot after Prepare.</td></tr><tr><td>Accept</td><td><code>current_ballot < request_ballot</code></td><td>Write the ballot and the accepted value.</td><td><code>accept.rs:101-114</code></td><td>Normal Phase 2a.</td></tr><tr><td>Commit</td><td><code>request_ballot < current_ballot</code> and the accepted state does not match the request</td><td><code>StaleBallot</code></td><td><code>commit_kv.rs:70-78</code></td><td>Do not learn through a higher promise.</td></tr><tr><td>Commit</td><td><code>request_ballot < current_ballot</code> but the accepted state matches the request</td><td>Commit.</td><td><code>commit_kv.rs:70-79</code></td><td>Finish a value that this replica already accepted.</td></tr><tr><td>Read-state promise</td><td>Current promise is absent or <code><= request_ballot</code></td><td>Write the request ballot.</td><td><code>read_state.rs:59-68</code></td><td>Establish a read promise.</td></tr></table>
+<p>Two details are easy to miss.</p>
+<p>First, Prepare rejects only a strictly lower ballot. The README says it rejects <code>request.ballot <= current_ballot</code> (<code>README.md:358</code>). The source rejects only <code><</code> (<code>prepare.rs:50</code>). An equal ballot is idempotent. The source comment explains why: the proposer may already have reserved the ballot locally and must be able to include itself in the quorum (<code>prepare.rs:48-49</code>). The source wins.</p>
+<p>Second, Accept rejects an equal-ballot conflict, but it does not preserve a lower-ballot accepted value. If <code>current_ballot < request_ballot</code>, the code writes the new ballot and the new accepted value (<code>accept.rs:101-110</code>). The equal-ballot branch only compares the accepted value when the existing accepted ballot equals the request ballot (<code>accept.rs:58-77</code>). The test suite has a regression test for the equal-ballot case (<code>tests/consensus_regressions.rs:54-111</code>). This document does not find a test for the lower-ballot replacement case. A full safety proof is outside the source-reading scope. The code path is stated here so a reviewer can check it.</p>
+<p>The ballot state machine for one proposal is:</p>
+<div class="mermaid">
+stateDiagram-v2
+    [*] --&gt; BallotSelection: epoxy_propose
+    BallotSelection --&gt; ExpectedValueDoesNotMatch: CAS expectation fails
+    BallotSelection --&gt; AlreadyCommitted: committed immutable value
+    BallotSelection --&gt; AlreadyCommittedMutable: committed mutable value
+    BallotSelection --&gt; FreshBallot: no committed value and zero ballot
+    BallotSelection --&gt; NeedsPrepare: no committed value and nonzero ballot
+    FreshBallot --&gt; MutableSelfAccept: mutable CAS with expectation
+    FreshBallot --&gt; AcceptFast: immutable or plain mutable
+    MutableSelfAccept --&gt; AcceptFast: AcceptResponseOk
+    MutableSelfAccept --&gt; AlreadyCommitted: AcceptResponseAlreadyCommitted
+    MutableSelfAccept --&gt; Failed: AcceptResponseHigherBallot
+    AlreadyCommittedMutable --&gt; Prepare: run_prepare_phase
+    NeedsPrepare --&gt; Prepare: run_prepare_phase
+    Prepare --&gt; AcceptSlow: Promised
+    Prepare --&gt; AlreadyCommitted: AlreadyCommitted
+    Prepare --&gt; Prepare: Retry with higher ballot, max 10
+    Prepare --&gt; Failed: ConsensusFailed
+    AcceptFast --&gt; CommitLocal: Accepted
+    AcceptSlow --&gt; CommitLocal: Accepted
+    AcceptFast --&gt; Failed: AcceptPhaseConsensusFailed
+    AcceptSlow --&gt; Failed: AcceptPhaseConsensusFailed
+    CommitLocal --&gt; Committed: CommitKvOutcome Committed
+    CommitLocal --&gt; AlreadyCommitted: CommitKvOutcome AlreadyCommitted
+    CommitLocal --&gt; Failed: CommitKvOutcome StaleBallot
+    Committed --&gt; [*]
+    AlreadyCommitted --&gt; [*]
+    ExpectedValueDoesNotMatch --&gt; [*]
+    Failed --&gt; [*]
+
+</div>
+<p><code>MutableSelfAccept</code> is the local self-accept for a mutable CAS (<code>propose.rs:579-608</code>). The diagram uses <code>Promised</code> for <code>PrepareRoundOutcome::Promised</code>. <code>ExpectedValueDoesNotMatch</code> is the early result from <code>expectation_failure</code> (<code>propose.rs:360-371</code>, <code>:183-197</code>).</p>
+<p>The epoch is separate. It is a <code>u64</code> in <code>ClusterConfig</code> (<code>types.rs:10</code>). The coordinator increments it only when a replica becomes Active from a non-Active status (<code>replica_status_change.rs:78-84</code>). It does not increment when a replica is added as Joining (<code>reconfigure.rs:205-216</code>). The read-state message carries the epoch and rejects a mismatch:</p>
+<pre><code class="language-rust">// engine/packages/epoxy/src/replica/messages/read_state.rs:13-21
+	let config = crate::utils::read_config(tx, replica_id).await?;
+	ensure!(
+		config.epoch == request.epoch,
+		&quot;Epoxy read configuration changed&quot;
+	);
+	ensure!(
+		crate::utils::get_quorum_members(&amp;config).contains(&amp;replica_id),
+		&quot;Epoxy read replica is inactive&quot;
+	);
+</code></pre>
+<p>The source does not use the epoch in Prepare, Accept, or Commit. It does not fence a proposal with an epoch. A stale membership config can still propose if its replica is Active in its local config. The source does not state a reason for this split. The README says the epoch is not part of the per-key ballot (<code>README.md:579</code>).</p>
+<p><code>update_config</code> stores the supplied cluster config with no epoch comparison (<code>replica/update_config.rs:8-26</code>). The next config broadcast can overwrite a newer local config with an older one if messages arrive out of order. The source does not show an epoch check at this point. This document reports the code path and does not infer a guarantee.</p>
+<h2>7. The proposal input and result</h2>
+<p>The public proposal type is a wrapper around one command. The current path rejects more than one command with <code>bail!("epoxy v2 only supports single-command proposals")</code> (<code>propose.rs:150-154</code>).</p>
+<pre><code class="language-rust">// engine/packages/epoxy/src/ops/propose.rs:19-39
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Hash)]
+pub struct Proposal {
+	pub commands: Vec&lt;Command&gt;,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Hash)]
+pub struct Command {
+	pub kind: CommandKind,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Hash)]
+pub enum CommandKind {
+	SetCommand(SetCommand),
+	CheckAndSetCommand(CheckAndSetCommand),
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Hash)]
+pub struct SetCommand {
+	pub key: Vec&lt;u8&gt;,
+	pub value: Option&lt;Vec&lt;u8&gt;&gt;,
+}
+</code></pre>
+<p>The CAS command carries an expected predecessor set. Its comment is a design constraint, not just documentation.</p>
+<pre><code class="language-rust">// engine/packages/epoxy/src/ops/propose.rs:50-67
+#[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Hash)]
+pub struct CheckAndSetCommand {
+	pub key: Vec&lt;u8&gt;,
+	/// Mutable CAS is coordinator-authoritative: the coordinator checks this against its local
+	/// committed value before proposing, while consensus prevents overlapping proposals from
+	/// choosing different successors. A loser can observe either a value mismatch or a retryable
+	/// consensus failure, depending on whether it sees the winner before ballot contention rejects
+	/// it. This is sufficient only while one authoritative coordinator replica owns the key, as the
+	/// JWT key ring does in the leader datacenter.
+	///
+	/// TODO(epoxy): Before allowing independent coordinators to mutate the same key, make the
+	/// condition part of a new protocol version. Carry the expected predecessor through
+	/// prepare/accept/commit and evaluate it against the value selected during recovery, including
+	/// accepted-but-not-yet-learned values; do not compare each replica&#x27;s potentially stale local
+	/// snapshot independently. The versioned transport must also encode the negotiated schema.
+	pub expect_one_of: Vec&lt;Option&lt;Vec&lt;u8&gt;&gt;&gt;,
+	pub new_value: Option&lt;Vec&lt;u8&gt;&gt;,
+}
+</code></pre>
+<p>This is a real limitation. A mutable CAS is safe only when one authoritative coordinator owns the key. The JWT key ring meets that condition: writes are leader-only (<code>auth-jwt/src/ops/key_ring/compare_and_set.rs:38-41</code>). A caller that runs CAS from several datacenters at the same time is outside the current design. The TODO says the condition must become part of the protocol version first.</p>
+<p>The operation input carries the scope and two behavioral flags.</p>
+<pre><code class="language-rust">// engine/packages/epoxy/src/ops/propose.rs:128-140
+#[derive(Debug)]
+pub struct Input {
+	pub proposal: Proposal,
+	pub mutable: bool,
+	pub purge_cache: bool,
+	/// Optional active-replica scope for this proposal.
+	///
+	/// Epoxy only validates that the supplied replicas are active and include the local
+	/// replica. Callers are responsible for ensuring a given key stays on a stable scope over
+	/// time, or that any scope change is handled as an explicit reconfiguration at a higher
+	/// layer.
+	pub target_replicas: Option&lt;Vec&lt;ReplicaId&gt;&gt;,
+}
+</code></pre>
+<p>The result has two variants: <code>Committed</code> and <code>ConsensusFailed { reason }</code> (<code>propose.rs:79-83</code>). The table expands the four reasons of <code>ConsensusFailed</code> into their own rows.</p>
+<table><tr><th>Result</th><th>Meaning</th><th>Source</th></tr><tr><td><code>Committed</code></td><td>The local commit succeeded.</td><td><code>propose.rs:79-83</code></td></tr><tr><td><code>ConsensusFailed { reason: PreparePhaseConsensusFailed }</code></td><td>Prepare could not reach a slow quorum, or the expected-value retry limit expired.</td><td><code>propose.rs:91-93</code>, <code>:420-424</code>, <code>:502-506</code></td></tr><tr><td><code>ConsensusFailed { reason: AcceptPhaseConsensusFailed }</code></td><td>Accept could not reach its target quorum.</td><td><code>propose.rs:94-96</code>, <code>:626-632</code></td></tr><tr><td><code>ConsensusFailed { reason: StaleBallot }</code></td><td>A higher ballot fenced the local commit or the CAS self-accept.</td><td><code>propose.rs:97</code>, <code>:600-606</code>, <code>:702-706</code></td></tr><tr><td><code>ConsensusFailed { reason: ExpectedValueDoesNotMatch { current_value } }</code></td><td>The CAS expectation did not match, or an immutable set found a different value.</td><td><code>propose.rs:98-100</code>, <code>:183-197</code>, <code>:232-236</code></td></tr></table>
+<p><code>ProposalResult::resolve()</code> converts every failure to an error (<code>propose.rs:85-104</code>). Most callers match on the result instead. The tests import a <code>CommandError</code> type (<code>tests/kv.rs:3</code>). The current source has no such type, so those tests are stale against this result enum.</p>
+<p>One result mapping is subtle. <code>result_for_chosen_value</code> returns <code>Committed</code> for every plain <code>SetCommand</code>, even when the chosen value differs, because <code>expect_one_of</code> is <code>None</code> (<code>propose.rs:199-202</code>). It returns <code>ExpectedValueDoesNotMatch</code> only when <code>expect_one_of</code> is <code>Some</code> and the chosen value differs (<code>propose.rs:204-208</code>).</p>
+<p>A separate function, <code>result_for_already_committed</code>, handles a value that is already committed. It returns <code>Committed</code> for an identical value or a mutable overwrite. It returns <code>RetryExpectedCommit</code> for a mutable CAS whose expectation matches. It returns <code>ExpectedValueDoesNotMatch</code> otherwise (<code>propose.rs:211-236</code>). A plain Set therefore means “commit some value for this key,” not “commit exactly my value, or fail.” The set-if-absent behavior comes from this earlier branch, not from the chosen-value comparison. A CAS checks equality because <code>expect_one_of</code> is <code>Some</code>.</p>
+<h2>8. The write path from proposal to commit</h2>
+<p>The write path has seven stages. The table names each stage, its message, and the durable key it touches.</p>
+<table><tr><th>Stage</th><th>Function</th><th>Message</th><th>Durable key</th><th>Source</th></tr><tr><td>1. Read config</td><td><code>epoxy_propose</code></td><td>None</td><td><code>ConfigKey</code></td><td><code>propose.rs:327-334</code></td></tr><tr><td>2. Resolve scope</td><td><code>resolve_active_quorum_members</code></td><td>None</td><td><code>ConfigKey</code></td><td><code>propose.rs:336-340</code>, <code>utils.rs:45-79</code></td></tr><tr><td>3. Select ballot</td><td><code>ballot_selection</code></td><td>None</td><td><code>KvValueKey</code>, <code>KvBallotKey</code>, legacy keys</td><td><code>propose.rs:350-359</code>, <code>ballot.rs:74-158</code></td></tr><tr><td>4. Prepare (slow only)</td><td><code>run_prepare_phase</code></td><td><code>PrepareRequest</code> / <code>PrepareResponse</code></td><td><code>KvBallotKey</code>, <code>KvAccepted2Key</code></td><td><code>propose.rs:710-779</code>, <code>prepare.rs</code></td></tr><tr><td>5. Accept</td><td><code>run_fast_path</code> or <code>run_slow_path</code>, then <code>run_accept_path</code></td><td><code>AcceptRequest</code> / <code>AcceptResponse</code></td><td><code>KvBallotKey</code>, <code>KvAccepted2Key</code></td><td><code>propose.rs:520-633</code>, <code>accept.rs</code></td></tr><tr><td>6. Local commit</td><td><code>commit_kv</code></td><td>None</td><td><code>KvValueKey</code>, <code>ChangelogKey</code>; deletes accepted and accepted2; deletes ballot and cache only if mutable</td><td><code>propose.rs:635-652</code>, <code>commit_kv.rs:47-97</code></td></tr><tr><td>7. Broadcast</td><td><code>broadcast_commits</code></td><td><code>CommitRequest</code> / <code>CommitResponse</code></td><td><code>KvValueKey</code>, <code>ChangelogKey</code> at peers</td><td><code>propose.rs:655-697</code>, <code>:1062-1118</code></td></tr></table>
+<p><code>run_fast_path</code> and <code>run_slow_path</code> are thin wrappers. Both call <code>run_accept_path</code> and differ only in the <code>QuorumType</code> argument, <code>Fast</code> or <code>Slow</code> (<code>propose.rs:520-566</code>).</p>
+<h3>8.1 Read config and resolve the scope</h3>
+<p>The proposer reads its own replica’s config from its own UDB. A replica that the coordinator has not configured yet has no config, and <code>read_config</code> returns an error with a startup hint (<code>utils.rs:121-138</code>). The proposer then resolves the quorum members.</p>
+<pre><code class="language-rust">// engine/packages/epoxy/src/utils.rs:45-79
+pub fn resolve_active_quorum_members(
+	config: &amp;protocol::ClusterConfig,
+	replica_id: ReplicaId,
+	target_replicas: Option&lt;&amp;[ReplicaId]&gt;,
+) -&gt; Result&lt;Vec&lt;ReplicaId&gt;&gt; {
+	match target_replicas {
+		Some(target_replicas) =&gt; {
+			let active = get_quorum_members(config)
+				.into_iter()
+				.collect::&lt;HashSet&lt;_&gt;&gt;();
+			let validated = target_replicas.iter().copied().collect::&lt;BTreeSet&lt;_&gt;&gt;();
+
+			if validated.is_empty() {
+				bail!(&quot;target_replicas cannot be empty&quot;);
+			}
+
+			if !validated.contains(&amp;replica_id) {
+				bail!(&quot;target_replicas must include the local replica&quot;);
+			}
+
+			if !validated.iter().all(|replica| active.contains(replica)) {
+				bail!(&quot;target_replicas contains an inactive or unknown replica&quot;);
+			}
+
+			Ok(validated.into_iter().collect())
+		}
+		None =&gt; {
+			let replicas = get_quorum_members(config);
+			if !replicas.contains(&amp;replica_id) {
+				bail!(&quot;local replica is not active in the current epoxy config&quot;);
+			}
+			Ok(replicas)
+		}
+	}
+}
+</code></pre>
+<p>The scope rules are strict:</p>
+<ul><li>The scope must not be empty.</li><li>The scope must include the local replica.</li><li>Every scope member must be Active in the current config.</li><li>The function returns a sorted, deduplicated list.</li><li>A scope is not persisted. The caller must keep the same key on the same scope. The function comment says this explicitly (<code>utils.rs:42-44</code>).</li><li><code>engine/CLAUDE.md:42</code> adds the caller rule: validate the local replica is in scope or forward to an in-scope datacenter first.</li></ul>
+<p>The scope changes the quorum denominator. A key scoped to two replicas needs a fast quorum of two and a slow quorum of two. A key scoped to one replica needs one. The source does not enforce that two different scopes never write the same key. That is the caller’s invariant.</p>
+<h3>8.2 Select the ballot</h3>
+<p>Ballot selection is one serializable transaction. It reads the v2 committed value, the legacy raw committed value, the legacy versioned value, and the current ballot in parallel (<code>ballot.rs:93-126</code>). It then chooses the path from the table in section 2.1. The function writes the reserved ballot before any network call. That write is the durable trace of an in-flight proposal.</p>
+<h3>8.3 Prepare</h3>
+<p>Prepare is Phase 1. <code>send_prepare_round</code> computes the slow quorum from all members, sends <code>PrepareRequest</code> to every member including itself, and applies the 10-second <code>REQUEST_TIMEOUT</code> to each request (<code>propose.rs:781-816</code>). It stops counting when it has enough responses. It records the highest accepted value and the highest rejected ballot. If the target becomes impossible, it either retries with a higher ballot or returns <code>ConsensusFailed</code> (<code>propose.rs:887-908</code>).</p>
+<pre><code class="language-rust">// engine/packages/epoxy/src/ops/propose.rs:887-909
+		if ok_responses + remaining &lt; target {
+			return if let Some(rejected_ballot) = highest_rejected_ballot {
+				Ok(PrepareRoundOutcome::Retry {
+					next_ballot: next_ballot(rejected_ballot, from_replica_id)?,
+				})
+			} else {
+				Ok(PrepareRoundOutcome::ConsensusFailed)
+			};
+		}
+	}
+
+	if ok_responses &gt;= target {
+		Ok(PrepareRoundOutcome::Promised {
+			accepted_value: highest_accepted,
+		})
+	} else if let Some(rejected_ballot) = highest_rejected_ballot {
+		Ok(PrepareRoundOutcome::Retry {
+			next_ballot: next_ballot(rejected_ballot, from_replica_id)?,
+		})
+	} else {
+		Ok(PrepareRoundOutcome::ConsensusFailed)
+	}
+}
+</code></pre>
+<p>The Prepare handler on each replica is one serializable transaction. It reads committed, ballot, accepted, and accepted2 state. It returns <code>AlreadyCommitted</code> for a committed value that the request cannot replace. It fences a lower ballot. It permits an equal ballot. It writes the promise and returns the highest accepted value.</p>
+<pre><code class="language-rust">// engine/packages/epoxy/src/replica/messages/prepare.rs:47-61
+	if let Some(current_ballot) = current_ballot.map(Ballot::from) {
+		// Equal-ballot Prepare is idempotent. This allows a proposer that has already
+		// reserved a ballot locally to include itself in the prepare quorum.
+		if request_ballot &lt; current_ballot {
+			return Ok(protocol::PrepareResponse::PrepareResponseHigherBallot(
+				protocol::PrepareResponseHigherBallot {
+					ballot: current_ballot.into(),
+				},
+			));
+		}
+	}
+
+	// Promise not to accept lower ballots by persisting the request ballot.
+	// After this write, highest_ballot == request.ballot by construction.
+	tx.write(&amp;ballot_key, ballot.clone())?;
+</code></pre>
+<p>The proposer chooses the highest accepted value if any replica returns one. Otherwise it keeps the proposed value. <code>send_prepare_round</code> names this outcome <code>PrepareRoundOutcome::Promised</code> (<code>propose.rs:657-660</code>, <code>:862-864</code>). <code>run_prepare_phase</code> converts it to <code>PreparePhaseOutcome::Prepared</code> (<code>propose.rs:734-741</code>). This is the Paxos safety rule that prevents a previously accepted value from being lost (<code>README.md:374</code>). The retry delay is exponential with jitter: initial 10 milliseconds, cap 1,000 milliseconds, maximum 10 retries (<code>propose.rs:310-313</code> and <code>:1190-1212</code>).</p>
+<h3>8.4 Accept</h3>
+<p>Accept is Phase 2a. The fast path uses a fast quorum. The slow path uses a slow quorum. <code>send_accept_round</code> sends <code>AcceptRequest</code> to every member, including itself (<code>propose.rs:911-983</code>). An <code>AlreadyCommitted</code> response short-circuits the round. A <code>HigherBallot</code> or a failed request counts as not-ok. If the remaining responses cannot reach the target, the round fails immediately (<code>propose.rs:284-307</code>).</p>
+<p>The Accept handler returns <code>AlreadyCommitted</code> for a value that the request cannot replace. It fences a higher current ballot. It rejects an equal-ballot conflict. Otherwise it writes the ballot and the accepted value in one transaction.</p>
+<pre><code class="language-rust">// engine/packages/epoxy/src/replica/messages/accept.rs:48-77
+	if let Some(current_ballot) = current_ballot.map(Ballot::from) {
+		if current_ballot &gt; request_ballot {
+			return Ok(protocol::AcceptResponse::AcceptResponseHigherBallot(
+				protocol::AcceptResponseHigherBallot {
+					ballot: current_ballot.into(),
+				},
+			));
+		}
+	}
+
+	if let Some(existing_accepted) = accepted2_value {
+		let existing_ballot = Ballot::from(existing_accepted.ballot.clone());
+		if existing_ballot == request_ballot {
+			let same_value = existing_accepted.value == value;
+			let same_version = existing_accepted.version == version;
+			let same_mutability = existing_accepted.mutable == mutable;
+			if same_value &amp;&amp; same_version &amp;&amp; same_mutability {
+				tx.write(&amp;ballot_key, ballot.clone())?;
+				return Ok(protocol::AcceptResponse::AcceptResponseOk(
+					protocol::AcceptResponseOk { ballot },
+				));
+			}
+
+			return Ok(protocol::AcceptResponse::AcceptResponseHigherBallot(
+				protocol::AcceptResponseHigherBallot {
+					ballot: existing_ballot.into(),
+				},
+			));
+		}
+	}
+</code></pre>
+<p>A current ballot equal to the request does not block. If the stored accepted2 value is at a lower ballot, the handler falls through to <code>accept.rs:101-110</code>. It writes the request ballot and the new accepted2 value. That is the branch the retry in section 9 uses.</p>
+<p>There is one extra step for a mutable CAS. The proposer writes a local self-accept before it contacts peers. The comment explains why: the owner read must see an unresolved write.</p>
+<pre><code class="language-rust">// engine/packages/epoxy/src/ops/propose.rs:579-608
+	if proposal.mutable &amp;&amp; proposal.expect_one_of.is_some() {
+		// Mutable CAS is owned by its coordinator (including the JWT ring). Record acceptance
+		// locally before peers can choose a successor, so the owner read sees unresolved writes.
+		match tokio::time::timeout(
+			crate::consts::REQUEST_TIMEOUT,
+			send_accept_request(
+				ctx,
+				config,
+				replica_id,
+				replica_id,
+				proposal.key.clone(),
+				chosen_value.clone(),
+				ballot.clone(),
+			),
+		)
+		.await??
+		{
+			protocol::AcceptResponse::AcceptResponseOk(_) =&gt; {}
+			protocol::AcceptResponse::AcceptResponseAlreadyCommitted(value) =&gt; {
+				return Ok(proposal.result_for_already_committed(&amp;value.value));
+			}
+			protocol::AcceptResponse::AcceptResponseHigherBallot(_) =&gt; {
+				return Ok(ProposalAttemptResult::Complete(
+					ProposalResult::ConsensusFailed {
+						reason: ConsensusFailedReason::StaleBallot,
+					},
+				));
+			}
+		}
+	}
+</code></pre>
+<p><code>send_accept_request</code> takes a <code>CommittedValue</code>, not separate <code>mutable</code> and <code>version</code> arguments. It destructures the value at <code>propose.rs:1030-1034</code>. It encodes both fields in the <code>AcceptRequest</code> at <code>propose.rs:1041-1047</code>. The block above passes <code>chosen_value</code>, which already carries them.</p>
+<h3>8.5 Local commit</h3>
+<p>After the Accept quorum, the proposer commits locally in one UDB transaction named <code>epoxy_propose_commit_kv</code>. The transaction calls <code>commit_kv::commit_kv</code>. On <code>CommitKvOutcome::Committed</code>, the proposer maps the result and spawns a fire-and-forget <code>broadcast_commits</code>. It also spawns <code>broadcast_cache_purges</code> when <code>purge_cache</code> is true and the proposal is mutable. On <code>AlreadyCommitted</code>, it maps the existing value. On <code>StaleBallot</code>, it returns <code>ConsensusFailedReason::StaleBallot</code> (<code>propose.rs:635-707</code>). The broadcast is outside the commit transaction and cannot fail the proposal.</p>
+<p><code>commit_kv</code> performs the durable write. It reads committed, ballot, accepted, and accepted2 in one transaction. It returns <code>AlreadyCommitted</code> for a value that the request cannot replace. It checks whether the accepted state exactly matches the request. A lower request ballot is stale only when the accepted state does not match. It writes the committed value, deletes accepted and accepted2, deletes the ballot and cache for a mutable value, and appends a changelog entry.</p>
+<pre><code class="language-rust">// engine/packages/epoxy/src/replica/commit_kv.rs:47-97
+	if let Some(committed_value) = committed_value {
+		if !committed_value.mutable || !mutable || version &lt;= committed_value.version {
+			return Ok(CommitKvOutcome::AlreadyCommitted {
+				value: committed_value.value,
+				version: committed_value.version,
+			});
+		}
+	}
+
+	let accepted_matches_request = if let Some(accepted_value) = accepted2_value {
+		accepted_value.ballot == ballot
+			&amp;&amp; accepted_value.value == value
+			&amp;&amp; accepted_value.version == version
+			&amp;&amp; accepted_value.mutable == mutable
+	} else if let Some(accepted_value) = accepted_value {
+		accepted_value.ballot == ballot
+			&amp;&amp; Some(accepted_value.value) == value
+			&amp;&amp; accepted_value.version == version
+			&amp;&amp; accepted_value.mutable == mutable
+	} else {
+		false
+	};
+
+	if let Some(current_ballot) = current_ballot.map(Ballot::from) {
+		// Once a replica has accepted this exact value at this ballot, a later prepare can raise
+		// the promise without invalidating the already-chosen value. Allow the commit to finish in
+		// that case so quorum acceptance can still become learned state.
+		if request_ballot &lt; current_ballot &amp;&amp; !accepted_matches_request {
+			return Ok(CommitKvOutcome::StaleBallot {
+				current_ballot: current_ballot.into(),
+			});
+		}
+	}
+
+	tx.write(
+		&amp;value_key,
+		CommittedValue {
+			value: value.clone(),
+			version,
+			mutable,
+		},
+	)?;
+	tx.delete(&amp;accepted_key);
+	tx.delete(&amp;accepted2_key);
+	if mutable {
+		tx.delete(&amp;ballot_key);
+		tx.delete(&amp;cache_key);
+	}
+	crate::replica::changelog::append(replica_id, &amp;tx, key, value, version, mutable)?;
+
+	Ok(CommitKvOutcome::Committed)
+</code></pre>
+<p>The immutable path keeps the ballot. The mutable path deletes it. A fresh mutable key can use the fast path. A mutable overwrite cannot. The next ballot selection sees a committed mutable value and enters <code>AlreadyCommittedMutable</code>. That branch always runs Prepare in this source (<code>propose.rs:377-425</code>). The README says a mutable overwrite can use the fast path after the previous mutable commit clears the ballot (<code>README.md:329</code>). The source contradicts that sentence. The code always runs Prepare for a mutable overwrite because the branch calls <code>run_prepare_phase</code> before any path choice. The test suite also expects a fast path for a second mutable write (<code>tests/proposal.rs:107-122</code>), so that test is stale against the current source. The source wins.</p>
+<h3>8.6 Broadcast</h3>
+<p>The commit broadcast is fire-and-forget. The local commit is already durable. A failed broadcast does not fail the proposal. <code>broadcast_commits</code> sends <code>CommitRequest { key, value, ballot, mutable, version }</code> to <code>utils::get_all_replicas</code>, which returns every replica, not only Active replicas (<code>propose.rs:1062-1118</code>, <code>utils.rs:81-84</code>). The fanout target is <code>QuorumType::All</code>, but <code>fanout_to_replicas</code> is best-effort and does not fail the caller on a per-replica miss (<code>http_client.rs:23-31</code>). In practice, the broadcast returns after it collects the target number of successful responses or exhausts the list. A Joining replica receives commits despite the BARE comment that says it receives nothing.</p>
+<p>The peer path uses the negotiated protocol version in the URL: <code>/v{version}/epoxy/{endpoint}</code> (<code>http_client.rs:167-172</code>). The code sets that path after <code>protocol_version::negotiate</code> returns the lower of the local and peer versions. The routes are versioned except for the version probe:</p>
+<pre><code class="language-rust">// engine/packages/epoxy/src/http_routes.rs:14-26
+pub fn mount_routes(
+	router: axum::Router&lt;rivet_api_builder::GlobalApiCtx&gt;,
+) -&gt; axum::Router&lt;rivet_api_builder::GlobalApiCtx&gt; {
+	router
+		.route(&quot;/v{version}/epoxy/message&quot;, bin::post(message))
+		.route(
+			&quot;/v{version}/epoxy/changelog-read&quot;,
+			bin::post(changelog_read),
+		)
+		// Deliberately unversioned: a peer probes this to find out which versions we speak, so it
+		// has to stay reachable by a replica that shares no protocol version with us.
+		.route(&quot;/epoxy/protocol-version&quot;, get(protocol_version))
+}
+</code></pre>
+<h2>9. A concrete three-replica write with one failure</h2>
+<p>This example uses three datacenters with labels 1, 2, and 3. The replica identifiers are therefore 1, 2, and 3. Replica 1 (A) is the proposer. Replica 3 (C) is down. The key is a fresh immutable key K, and the requested value is V1. The key is not scoped, so the quorum members are all three Active replicas.</p>
+<p>The first attempt:</p>
+<ol><li>A reads its config and resolves members <code>[1, 2, 3]</code> (<code>propose.rs:327-340</code>).</li><li><code>ballot_selection</code> finds no committed value and no ballot. It reserves <code>(1, 1)</code> and returns <code>FreshBallot</code> (<code>ballot.rs:151-156</code>).</li><li>A calls <code>run_fast_path</code> with <code>QuorumType::Fast</code> (<code>propose.rs:427-444</code>).</li><li>The fast quorum for three members is three (<code>utils.rs:93-101</code>).</li><li>A sends <code>AcceptRequest { key: K, value: Some(V1), ballot: (1,1), mutable: false, version: 1 }</code> to A, B, and C (<code>propose.rs:1021-1059</code>).</li><li>A’s self-handler writes ballot <code>(1,1)</code> and accepted2 <code>{ value: Some(V1), ballot: (1,1), version: 1, mutable: false }</code> (<code>accept.rs:101-110</code>).</li><li>B’s handler writes the same state and returns <code>AcceptResponseOk</code>.</li><li>C does not answer. The request times out after 10 seconds (<code>consts.rs:3-4</code>, <code>propose.rs:930-932</code>).</li><li>A has two Ok responses and one failure. The target is three. <code>apply_accept_observation</code> sees that <code>ok_responses + remaining < target</code> and returns <code>AcceptPhaseConsensusFailed</code> (<code>propose.rs:303-307</code>).</li><li>A returns <code>ProposalResult::ConsensusFailed { reason: AcceptPhaseConsensusFailed }</code>. No commit occurs. The accepted state remains at A and B.</li></ol>
+<p>The caller must retry. Pegboard’s <code>actor2</code> proposal activity has <code>#[max_retries = 10]</code>, and it bails on a consensus failure to trigger the activity retry (<code>actor2/keys.rs:211-245</code>). A generic caller must implement its own retry.</p>
+<p>The second attempt, as a new <code>epoxy_propose</code> call:</p>
+<ol><li>A reads the config again.</li><li><code>ballot_selection</code> finds no committed value and a current ballot of <code>(1,1)</code>. It reserves <code>(2,1)</code> and returns <code>NeedsPrepare</code> (<code>ballot.rs:151-156</code>).</li><li>A calls <code>run_prepare_phase</code> with ballot <code>(2,1)</code>.</li><li>The slow quorum for three members is two (<code>utils.rs:86-91</code>).</li><li>A sends <code>PrepareRequest { key: K, ballot: (2,1), mutable: false, version: 1 }</code> to A, B, and C (<code>propose.rs:1001-1006</code>).</li><li>A’s handler sees current ballot <code>(2,1)</code> equal to the request. It treats the Prepare as idempotent and promises. It also returns A’s own accepted value V1 at ballot <code>(1,1)</code> (<code>prepare.rs:63-107</code>).</li><li>B’s handler sees current ballot <code>(1,1)</code>, which is lower. It writes <code>(2,1)</code> and returns the accepted value V1 at ballot <code>(1,1)</code> (<code>prepare.rs:59-107</code>).</li><li>A has two promises, which is the slow quorum. Both promises carry V1. It chooses the highest accepted value, V1 (<code>propose.rs:734-741</code>, <code>:830-851</code>).</li><li>A calls <code>run_slow_path</code> with ballot <code>(2,1)</code> and value V1.</li><li>A sends <code>AcceptRequest { key: K, value: Some(V1), ballot: (2,1), mutable: false, version: 1 }</code> to every member: A, B, and C. A and B return Ok. The round returns at the slow quorum of two, so C’s request is dropped. C is still down.</li><li>A calls <code>commit_kv</code> locally. It writes <code>KvValueKey { value: Some(V1), version: 1, mutable: false }</code>. It deletes accepted and accepted2. It keeps the ballot because the value is immutable, and it appends a changelog entry (<code>commit_kv.rs:81-97</code>).</li><li>A returns <code>Committed</code> and spawns <code>broadcast_commits</code> (<code>propose.rs:655-697</code>).</li><li>The broadcast sends <code>CommitRequest</code> to B and C. B commits. C fails. The failure is logged inside the spawned task and does not change A’s result (<code>propose.rs:1062-1118</code>).</li></ol>
+<p>The sequence diagram shows both attempts.</p>
+<div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant Caller
+    participant A as Replica 1 (A)
+    participant B as Replica 2 (B)
+    participant C as Replica 3 (C, down)
+    Caller-&gt;&gt;A: epoxy_propose with key K and value V1
+    A-&gt;&gt;A: read_config and resolve_active_quorum_members
+    A-&gt;&gt;A: ballot_selection returns FreshBallot (1,1)
+    A-&gt;&gt;A: AcceptRequest value V1 ballot (1,1) handled locally
+    A-&gt;&gt;B: AcceptRequest value V1 ballot (1,1)
+    A-&gt;&gt;C: AcceptRequest value V1 ballot (1,1)
+    Note over C: no response, 10 s timeout
+    B--&gt;&gt;A: AcceptResponseOk
+    Note over A: 2 of fast quorum 3, so AcceptPhaseConsensusFailed
+    A--&gt;&gt;Caller: ProposalResult ConsensusFailed
+    Caller-&gt;&gt;A: retry epoxy_propose
+    A-&gt;&gt;A: ballot_selection returns NeedsPrepare (2,1)
+    A-&gt;&gt;A: PrepareRequest ballot (2,1) handled locally
+    A-&gt;&gt;B: PrepareRequest ballot (2,1)
+    A-&gt;&gt;C: PrepareRequest ballot (2,1)
+    A--&gt;&gt;A: PrepareResponseOk with accepted V1 at (1,1)
+    B--&gt;&gt;A: PrepareResponseOk with accepted V1 at (1,1)
+    Note over C: no response; A and B reach slow quorum 2
+    A-&gt;&gt;A: choose V1 and handle AcceptRequest (2,1) locally
+    A-&gt;&gt;B: AcceptRequest value V1 ballot (2,1)
+    A-&gt;&gt;C: AcceptRequest value V1 ballot (2,1)
+    Note over C: no response; round returns at quorum 2
+    B--&gt;&gt;A: AcceptResponseOk
+    A-&gt;&gt;A: commit_kv writes KvValueKey and ChangelogKey
+    A--&gt;&gt;B: CommitRequest value V1 ballot (2,1)
+    A--&gt;&gt;C: CommitRequest value V1 ballot (2,1)
+    Note over C: commit broadcast fails and is logged
+    A--&gt;&gt;Caller: ProposalResult Committed
+
+</div>
+<p>The first attempt writes accepted state even though it fails. That state is not a commit. It is the evidence the retry uses to choose V1. If the retry chose a different value, the Prepare response from B would force it to re-propose V1. This is the Paxos safety rule in action.</p>
+<p>The first attempt also shows the cost of the design. For three replicas, the fast path is not a “two of three” path. It is a “three of three” path. A single slow datacenter turns the one-round path into a failed attempt plus a two-round retry. A five-replica cluster has a fast quorum of four and a slow quorum of three, so it tolerates one slow replica on the fast path (<code>README.md:482-487</code>). The source’s formula gives that result (<code>utils.rs:93-101</code>).</p>
+<h2>10. The read path</h2>
+<p>Epoxy exposes four read modes. Each mode states its guarantee. The module comment says no mode silently falls back to a weaker one (<code>ops/kv/get.rs:1</code>).</p>
+<p>A linearizable read returns the value of the latest completed write. It acts as if all operations ran in one global order, and the read takes effect after it starts. UniversalDB’s <code>Serializable</code> isolation makes one transaction read a consistent snapshot (<code>read_state.rs:7</code>). See <a href="07-universaldb-and-buckets.html">07 UniversalDB and Buckets</a> for the transaction model.</p>
+<pre><code class="language-rust">// engine/packages/epoxy/src/ops/kv/get.rs:11-28
+#[derive(Debug, Clone)]
+pub enum ReadMode {
+	/// Committed state at one replica. `pending_write` prevents an owner read from hiding
+	/// an unfinished proposal. This mode alone makes no freshness guarantee.
+	LocalCommitted { replica_id: ReplicaId },
+	/// Newest committed value among reachable replicas, possibly stale.
+	LatestReachable,
+	/// Resolve accepted state through consensus. Scope must match the key&#x27;s write scope.
+	Linearizable {
+		target_replicas: Option&lt;Vec&lt;ReplicaId&gt;&gt;,
+	},
+	/// Only for values that never change after creation.
+	OptimisticImmutable {
+		caching_behavior: protocol::CachingBehavior,
+		target_replicas: Option&lt;Vec&lt;ReplicaId&gt;&gt;,
+		save_empty: bool,
+	},
+}
+</code></pre>
+<p>The table gives the answer for “which replica answers” and “what happens when no leader is known.”</p>
+<table><tr><th>Mode</th><th>Which replica answers</th><th>Freshness</th><th>If no quorum or no leader</th><th>Source</th></tr><tr><td><code>LocalCommitted</code></td><td>The named replica only.</td><td>None. The value can be stale.</td><td>It still returns the local state. <code>pending_write</code> is true when an accepted value exists.</td><td><code>get.rs:64-74</code></td></tr><tr><td><code>LatestReachable</code></td><td>Every reachable Active replica. The newest committed version wins.</td><td>Best effort. It can return stale data.</td><td>If no replica is reachable, it errors.</td><td><code>get_latest.rs:18-23</code>, <code>:87-89</code></td></tr><tr><td><code>Linearizable</code></td><td>Any replica can coordinate. It asks the scope members for promises.</td><td>Linearizable if it succeeds.</td><td>It retries up to 8 times, then errors. There is no leader to find.</td><td><code>linearizable.rs:21-34</code>, <code>:184</code></td></tr><tr><td><code>OptimisticImmutable</code></td><td>The local replica first, then any replica with <code>QuorumType::Any</code>.</td><td>Only valid for values that never change.</td><td>One member returns <code>None</code> without fanout. All holders offline can return <code>None</code>.</td><td><code>get_optimistic.rs:34-58</code>, <code>:97-99</code></td></tr></table>
+<p>There is no leader to discover. A linearizable read does not forward to a leader. It runs the read-promise protocol from the local replica. If the local replica is outside a scoped key’s replica set, the caller must forward first, exactly as for a write (<code>engine/CLAUDE.md:42</code>).</p>
+<p>The local read path is a cascade across storage generations. The first value wins (<code>get_local.rs:34-45</code>):</p>
+<ol><li>V2 <code>kv/{key}/value</code>, the current write path.</li><li>Legacy <code>kv/{key}/committed_value</code>, read as raw bytes with version 0 and mutable false.</li><li>Legacy <code>kv/{key}/value</code>.</li><li>V2 <code>kv/{key}/cache</code>, only when <code>include_cache</code> is true.</li></ol>
+<p>The whole <code>epoxy_kv_get</code> operation has a 10-second bound (<code>get.rs:57-60</code>). Each remote read-state request has a 2-second timeout (<code>get.rs:126-142</code>). These two limits matter: a linearizable read can make several rounds inside the 10-second budget.</p>
+<h2>11. Linearizable read, step by step</h2>
+<p>A linearizable read is a read-promise quorum. The quorum intersects every write quorum. Each voter inspects committed and accepted state in the same transaction that installs the promise. The reader may need to finish an accepted value before it returns.</p>
+<pre><code class="language-rust">// engine/packages/epoxy/src/ops/kv/get/linearizable.rs:17-34
+/// A read promise quorum intersects every write quorum. Inspect accepted *and* committed
+/// state atomically at each voter; then complete acceptance of an unresolved value before
+/// returning it. A majority of ordinary KvGet responses cannot establish this guarantee.
+/// Like proposals, this requires a stable replica scope for the lifetime of the key.
+pub(super) async fn read(
+	ctx: &amp;OperationCtx,
+	key: &amp;[u8],
+	scope: Option&lt;&amp;[ReplicaId]&gt;,
+) -&gt; Result&lt;Option&lt;CommittedValue&gt;&gt; {
+	let config = ctx
+		.op(crate::ops::read_cluster_config::Input {})
+		.await?
+		.config;
+	let replica_id = ctx.config().epoxy_replica_id();
+	let members = utils::resolve_active_quorum_members(&amp;config, replica_id, scope)?;
+	let quorum = utils::calculate_quorum(members.len(), utils::QuorumType::Slow);
+	let mut minimum_counter = 0;
+	for _ in 0..8 {
+</code></pre>
+<p>The read performs these steps:</p>
+<ol><li>Read the cluster config and resolve the scope. The local replica must be in scope.</li><li>Reserve a local ballot <code>(max(current.counter, minimum_counter) + 1, local_replica_id)</code> and store it (<code>linearizable.rs:35-51</code>).</li><li>Send <code>KvReadStateRequest { key, ballot, epoch }</code> to every member with a 2-second timeout (<code>get.rs:119-142</code>).</li><li>For each response, update <code>minimum_counter</code> if the voter promised a higher ballot. Mark the read preempted if that promise is higher than the read ballot.</li><li>Count a vote only when the response promise equals the read ballot. Select the highest committed value and the highest accepted value.</li><li>Stop at the slow quorum. If votes are short, retry if preempted; otherwise error (<code>linearizable.rs:92-97</code>).</li><li>If the selected value is accepted-only, send Accept to the members and require a slow quorum of Ok responses (<code>linearizable.rs:101-137</code>). If it cannot reach the quorum, retry.</li><li>Commit the value locally with <code>commit_kv</code>. Accept <code>AlreadyCommitted</code> only when the version and value match; otherwise retry (<code>linearizable.rs:140-165</code>).</li><li>Broadcast the commit best-effort and return the value (<code>linearizable.rs:166-182</code>).</li><li>After 8 attempts, error with “Epoxy read contention exceeded retry limit” (<code>linearizable.rs:184</code>).</li></ol>
+<p>The re-accept step is the part that makes the read a possible write.</p>
+<pre><code class="language-rust">// engine/packages/epoxy/src/ops/kv/get/linearizable.rs:101-120
+		if !latest_committed {
+			// Re-propose the selected accepted value at this read&#x27;s ballot. AlreadyCommitted
+			// responses omit the version, so retry the read instead of counting them as votes.
+			let mut accepts = members
+				.iter()
+				.map(|&amp;member| {
+					tokio::time::timeout(
+						std::time::Duration::from_secs(2),
+						propose::send_accept_request(
+							ctx,
+							&amp;config,
+							replica_id,
+							member,
+							key.to_vec(),
+							value.clone(),
+							ballot.into(),
+						),
+					)
+				})
+				.collect::&lt;FuturesUnordered&lt;_&gt;&gt;();
+</code></pre>
+<p>It counts only <code>AcceptResponseOk</code> votes, and a short count retries the read (<code>linearizable.rs:122-137</code>).</p>
+<p>A value is chosen when a fast or slow quorum has accepted it at one ballot. A value is committed, or learned, when a replica writes it as final with <code>commit_kv</code>. A chosen value can exist before any replica commits it, because the commit broadcast can still be in flight.</p>
+<p><strong>Aha:</strong> A linearizable read is not read-only. If the promise quorum finds an accepted value with no committed value, the reader sends Accept and then commits the value locally. This finishes a crashed proposer’s work and returns a value that a write quorum already accepted. The cost is that read latency can include a write round and a local serializable transaction. The alternative is to return only committed values. That alternative can hide an already-chosen value and break the promise intersection, because a write can be chosen while its commit broadcast is still in flight. Source: <code>linearizable.rs:17-20</code> and <code>:101-165</code>.</p>
+<p>The read-state voter is one serializable transaction. It reads the local config and checks the epoch. It checks that the local replica is Active. It reads v2 committed, accepted2, legacy accepted, and the ballot in one <code>try_join!</code>. If the v2 committed value is absent, it reads the legacy raw committed value and the legacy v2 value (<code>read_state.rs:34-50</code>). It writes the promise when the stored promise is absent or not higher than the request ballot (<code>read_state.rs:59-71</code>).</p>
+<pre><code class="language-rust">// engine/packages/epoxy/src/replica/messages/read_state.rs:7-33
+/// Read both learned and in-flight state in the transaction that installs the promise.
+pub async fn read_state(
+	tx: &amp;Transaction,
+	replica_id: protocol::ReplicaId,
+	request: protocol::KvReadStateRequest,
+) -&gt; Result&lt;protocol::KvReadStateResponse&gt; {
+	let config = crate::utils::read_config(tx, replica_id).await?;
+	ensure!(
+		config.epoch == request.epoch,
+		&quot;Epoxy read configuration changed&quot;
+	);
+	ensure!(
+		crate::utils::get_quorum_members(&amp;config).contains(&amp;replica_id),
+		&quot;Epoxy read replica is inactive&quot;
+	);
+	let local = tx.with_subspace(keys::subspace(replica_id));
+	let key = request.key;
+	let value_key = keys::KvValueKey::new(key.clone());
+	let accepted_key = keys::KvAccepted2Key::new(key.clone());
+	let legacy_accepted_key = keys::KvAcceptedKey::new(key.clone());
+	let ballot_key = keys::KvBallotKey::new(key.clone());
+	let (committed, accepted, legacy_accepted, promised) = tokio::try_join!(
+		local.read_opt(&amp;value_key, Serializable),
+		local.read_opt(&amp;accepted_key, Serializable),
+		local.read_opt(&amp;legacy_accepted_key, Serializable),
+		local.read_opt(&amp;ballot_key, Serializable),
+	)?;
+</code></pre>
+<p>The promise write is conditional. The voter writes the request ballot only when the current promise is absent or <code><=</code> the request ballot; otherwise it returns the higher promise (<code>read_state.rs:59-71</code>). The response returns committed, accepted, and promised state (<code>read_state.rs:72-76</code>). The read-state request is gated on runtime protocol version 4. The handler checks the local negotiated version, not the compiled constant.</p>
+<pre><code class="language-rust">// engine/packages/epoxy/src/replica/message_request.rs:126-132
+		protocol::RequestKind::KvReadStateRequest(req) =&gt; {
+			// This also gates direct/local dispatch. An old writer in this datacenter may
+			// still omit coordinator acceptance, so its local state cannot certify freshness.
+			ensure!(
+				ctx.config().protocols().epoxy.version() &gt;= 4,
+				epoxy_protocol::READ_STATE_REQUIRES_V4_ERROR
+			);
+</code></pre>
+<p>The source comment states that version 4 adds only read remote procedure calls (<code>keys/keys.rs:8-9</code>). This gate is the behavior that enforces it. The storage formats remain version 3 (<code>keys/keys.rs:8-10</code>). The auth-jwt cache detects the specific error and treats it as a version gate (<code>auth-jwt/src/key_ring_cache/refresh.rs:26</code>). The source does not show a fallback to a weaker read mode. It returns the error.</p>
+<h2>12. Protocol version agreement</h2>
+<p>Rivet has a runtime protocol version mechanism that is fleet-wide within one UDB. Every process that shares a datacenter’s UDB writes a heartbeat for each protocol kind. The key is <code>(RIVET, VERSION, PROTOCOL, kind, version)</code>, and the value is a little-endian timestamp (<code>version-management/src/keys.rs:49-140</code>). The version manager scans the protocol subspace in ascending version order. It deletes entries older than 30 seconds. It refuses a rollback when the compiled version is lower than a live entry. It sets the override to the oldest live version. It then writes its own heartbeat with <code>MutationType::Max</code> and a little-endian timestamp.</p>
+<pre><code class="language-rust">// engine/packages/version-management/src/lib.rs:124-167
+		while let Some(entry) = stream.try_next().await? {
+			let (existing_key, update_ts) = tx.read_entry::&lt;keys::ProtocolVersionKey&gt;(&amp;entry)?;
+
+			// Check expired and delete
+			if update_ts &lt; now - PROTOCOL_VERSION_ENTRY_EXPIRED_THRESHOLD_MS {
+				tracing::debug!(
+					kind = %protocol.kind,
+					version = existing_key.version,
+					last_update_ts = update_ts,
+					age_ms = now - update_ts,
+					&quot;deleting expired protocol version entry&quot;
+				);
+
+				tx.delete(&amp;existing_key);
+				continue;
+			}
+
+			if protocol.compiled_version() &lt; existing_key.version {
+				bail!(
+					&quot;{}&quot;,
+					formatdoc!(
+						&quot;
+						Rivet Engine has been rolled back to a previous version:
+						- Last Used `{0}` Protocol Version: {1}
+						- Current `{0}` Protocol Version:   {2}
+						Cannot proceed without potential data corruption.
+						&quot;,
+						protocol.kind,
+						existing_key.version,
+						protocol.compiled_version(),
+					)
+				);
+			}
+
+			protocol.set_override_version(existing_key.version);
+			break;
+		}
+
+		// NOTE: Must write after reading to prevent RYOW
+		tx.atomic_op(
+			&amp;keys::ProtocolVersionKey::new(protocol.kind, protocol.compiled_version()),
+			&amp;now.to_le_bytes(),
+			MutationType::Max,
+		);
+</code></pre>
+<p>The constants are 30 seconds for expiry and 15 seconds for the check interval (<code>version-management/src/lib.rs:10-11</code>). The admission check runs before the services start and serializes on <code>EngineVersionKey</code> (<code>start.rs:73-76</code>, <code>version-management/src/lib.rs:54-104</code>). The new process holds back to the oldest live version because the scan stops at the first live entry and sets that as the override. The compiled <code>PROTOCOL_VERSION</code> is a ceiling, not the agreed fleet version (<code>engine/CLAUDE.md:78-80</code>). The timestamp codec must be little-endian because <code>MutationType::Max</code> compares values as little-endian integers (<code>engine/CLAUDE.md:79</code>).</p>
+<p>Epoxy cannot use this datacenter-local heartbeat for peer versions. Its peers are in other datacenters with separate databases. A peer’s heartbeat is never in the local UDB subspace. The two descriptions agree. The heartbeat is fleet-wide for every process on one UDB, and it is datacenter-local because each datacenter has its own UDB. The module comment states this directly:</p>
+<blockquote>Every other runtime protocol negotiates a fleet-wide version through the datacenter's UniversalDB heartbeat subspace. Epoxy cannot: its peers are replicas in <em>other</em> datacenters, which write to their own databases, so a peer's version is never in our subspace. Instead each replica publishes the version its own datacenter agreed on over HTTP, and we take the minimum of that and ours. (<code>protocol_version.rs:3-6</code>)</blockquote>
+<p>The <code>epoxy_protocol_version</code> core service probes every other replica every 60 seconds, with a 5-second timeout (<code>protocol_version.rs:21-28</code>). It stores the result in <code>PEER_VERSIONS</code>, keyed by the peer URL (<code>protocol_version.rs:35-40</code>). A probe failure keeps the old entry. The source says a datacenter never moves its version backwards, so the old entry remains safe (<code>protocol_version.rs:131-133</code>). A peer that the service has not reached falls back to the local version (<code>protocol_version.rs:47-49</code>). The negotiation itself does no I/O.</p>
+<pre><code class="language-rust">// engine/packages/epoxy/src/protocol_version.rs:50-60
+pub async fn negotiate(config: &amp;rivet_config::Config, replica_url: &amp;str) -&gt; u16 {
+	let local_version = config.protocols().epoxy.version();
+
+	match PEER_VERSIONS
+		.read_async(replica_url, |_, version| *version)
+		.await
+	{
+		Some(peer_version) =&gt; local_version.min(peer_version),
+		None =&gt; local_version,
+	}
+}
+</code></pre>
+<p>The probe endpoint is deliberately unversioned. A peer that shares no protocol version with the local replica must still be able to answer it (<code>http_routes.rs:23-25</code>). The response is the datacenter’s agreed Epoxy version, not the compiled constant (<code>http_routes.rs:31-39</code>). A new process therefore holds back in two steps. The local datacenter holds it back to the oldest live local process. Peer negotiation holds it back to the lower of the two datacenter versions. The code takes the minimum at request time (<code>protocol_version.rs:50-60</code>).</p>
+<h2>13. Recovery, backfill, replay, and a far-behind replica</h2>
+<p>Four different mechanisms are easy to confuse. Three are implemented in this commit: lazy recovery, local backfill, and manual local replay. New-replica catch-up is not implemented. Backfill and replay are not substitutes for catch-up. Backfill migrates legacy data on the same replica. Replay re-applies the local changelog.</p>
+<table><tr><th>Mechanism</th><th>What it does</th><th>Implemented?</th><th>Source</th></tr><tr><td>Lazy crash recovery</td><td>Another proposer or a linearizable read finds an accepted value and finishes it.</td><td>Yes</td><td><code>propose.rs:710-779</code>, <code>linearizable.rs:101-165</code></td></tr><tr><td>Legacy-to-v2 backfill</td><td>Scans the legacy per-replica keys and rebuilds v2 values and changelog entries.</td><td>Yes, local only</td><td><code>workflows/backfill.rs:33-60</code>, <code>:213-246</code></td></tr><tr><td>New-replica catch-up</td><td>Copies a peer’s changelog into a new replica before it becomes Active.</td><td>No. The activity is a stub.</td><td><code>workflows/replica/setup.rs:101-110</code></td></tr><tr><td>Manual local replay</td><td>Reads the local changelog and re-applies entries with <code>apply_entry</code>.</td><td>Yes, as a CLI repair command</td><td><code>engine/src/commands/udb/cli.rs:641-756</code></td></tr></table>
+<h3>13.1 Lazy crash recovery</h3>
+<p>There is no failure detector and no background recovery scan. The README states this design (<code>README.md:23</code> and <code>:58-64</code>). A search of <code>engine/packages/epoxy/src</code> finds no failure-detector task and no recovery loop. The only recovery entry points are <code>run_prepare_phase</code> inside a proposal (<code>propose.rs:389</code>, <code>:449</code>) and the re-accept inside a linearizable read (<code>linearizable.rs:101-136</code>). A proposal that crashes after Accept but before Commit leaves a nonzero ballot and an accepted value at the replicas that answered. The next proposer for that key sees the nonzero ballot and enters Prepare. Prepare collects the highest accepted value. The proposer re-proposes that value. This is why the retry in section 9 is safe.</p>
+<p>A linearizable read can also perform recovery. If the promise quorum finds an accepted value with no committed value, the reader accepts and commits it (<code>linearizable.rs:101-165</code>). This means a read can repair a key even if no writer retries. The source does not run a background repair.</p>
+<h3>13.2 Legacy-to-v2 backfill</h3>
+<p>The backfill workflow is <code>epoxy_backfill_v2</code>. Its name is <code>epoxy_backfill_v2</code>, and its default chunk size is 2,000 (<code>backfill.rs:18-19</code>). It scans the legacy <code>(KV,)</code> range under <code>legacy_subspace</code>. For each legacy key, it builds a v2 committed value. A raw legacy committed value becomes version 0 and immutable. A legacy versioned value keeps its version and mutability. It skips a key that already has a v2 value. It writes the v2 value and appends a v2 changelog entry.</p>
+<pre><code class="language-rust">// engine/packages/epoxy/src/workflows/backfill.rs:213-233
+async fn migrate_legacy_key(
+	tx: &amp;universaldb::Transaction,
+	replica_id: protocol::ReplicaId,
+	key: Vec&lt;u8&gt;,
+	legacy_value: Option&lt;Vec&lt;u8&gt;&gt;,
+	legacy_committed_value: Option&lt;Vec&lt;u8&gt;&gt;,
+) -&gt; Result&lt;bool&gt; {
+	let Some(committed_value) =
+		build_legacy_committed_value(key.clone(), legacy_value, legacy_committed_value)?
+	else {
+		return Ok(false);
+	};
+
+	let v2_tx = tx.with_subspace(keys::subspace(replica_id));
+	if v2_tx
+		.read_opt(&amp;KvValueKey::new(key.clone()), Serializable)
+		.await?
+		.is_some()
+	{
+		return Ok(false);
+	}
+</code></pre>
+<p>It then writes <code>KvValueKey</code> and appends a changelog entry (<code>backfill.rs:235-245</code>). This backfill runs on each replica against its own legacy data. It does not fetch a peer’s history. Bootstrap dispatches it once per replica if the backfill name is not complete (<code>bootstrap/src/backfill.rs:31-38</code>). The README says “There is no background migration” (<code>README.md:604</code>). That sentence is stale for this commit. The source has a background workflow for legacy-to-v2 migration. The workflow does not solve new-replica catch-up.</p>
+<h3>13.3 New-replica catch-up is a stub</h3>
+<p>The replica workflow waits for <code>BeginLearning</code>. It stores the config, records a removed-step marker for the old <code>CatchUpReplica</code> activity, runs a loop, and then sends <code>Active</code> to the coordinator. The removed-step marker keeps older workflow histories replayable (<code>setup.rs:31</code>; Gasoline <code>removed</code> at <code>gasoline/src/ctx/workflow.rs:1136-1157</code>). The loop then calls the new <code>CatchUpReplica</code> activity (<code>setup.rs:33-55</code>). That activity is a stub:</p>
+<pre><code class="language-rust">// engine/packages/epoxy/src/workflows/replica/setup.rs:101-110
+#[activity(CatchUpReplica)]
+async fn catch_up_replica(
+	_ctx: &amp;ActivityCtx,
+	_input: &amp;CatchUpReplicaInput,
+) -&gt; Result&lt;CatchUpReplicaOutput&gt; {
+	Ok(CatchUpReplicaOutput {
+		last_versionstamp: None,
+		applied_entries: 0,
+	})
+}
+</code></pre>
+<p>The loop breaks when <code>last_versionstamp</code> is <code>None</code> (<code>setup.rs:47-49</code>). The stub returns <code>None</code> on the first call. The replica therefore sends <code>Active</code> without copying any history (<code>setup.rs:57-61</code>). This is the most important accuracy finding in this document.</p>
+<p>The consequences are concrete:</p>
+<ul><li>A datacenter added after the cluster has data becomes Active with an empty local KV store.</li><li>It counts in quorums because <code>get_quorum_members</code> returns Active replicas (<code>utils.rs:27-34</code>).</li><li>A local read from that replica can return <code>None</code> for a key that exists elsewhere. <code>LocalCommitted</code> makes no freshness guarantee.</li><li>A linearizable read can recover the value from the other replicas if the promise quorum succeeds.</li><li>A fast write in a three-replica cluster now needs the empty replica to answer. It can accept a value even if it has no history, because Accept only writes accepted state.</li><li>The changelog at the new replica is empty. A later manual replay cannot reconstruct history from it.</li><li><code>http_client::read_changelog</code> exists, and <code>CHANGELOG_READ_COUNT</code> is declared as 1,000 (<code>consts.rs:6-10</code>). <code>changelog::read</code> uses the request’s <code>count</code>, not the constant (<code>changelog.rs:47-57</code>). A repository search finds no production call site for <code>read_changelog</code> and no read of <code>CHANGELOG_READ_COUNT</code>. The catch-up path is not wired.</li></ul>
+<p>The README describes a full learner flow: choose a source replica, page its changelog, apply entries, advance the cursor, and promote to Active (<code>README.md:541-579</code>). That flow is not in this commit. The stub is the proof. The README also describes changelog garbage collection and learner tracking (<code>README.md:581-589</code>). The source contains a changelog read handler (<code>changelog.rs:47-85</code>) and the <code>CHANGELOG_READ_COUNT</code> constant (<code>consts.rs:6-10</code>). A search of <code>engine/packages/epoxy/src</code> finds no learner cursor state, no garbage-collection watermark, and no changelog truncation code. The coordinator has a reconfigure path and a status path, but the replica-side catch-up is absent.</p>
+<h3>13.4 Manual local replay</h3>
+<p>The <code>rivet-engine udb</code> command line interface (CLI) has a <code>RepairEpoxyChangelog</code> subcommand. It scans the local v2 changelog, decodes each entry, and applies it with <code>apply_entry</code>. The command applies each entry with <code>apply_entry(&*tx, replica_id, entry, false, true, true)</code> (<code>cli.rs:743-756</code>). The signature is <code>apply_entry(tx, replica_id, entry, append_new_entry, ignore_version, ignore_immutable)</code> (<code>changelog.rs:87-95</code>). The call therefore clears <code>append_new_entry</code>, sets <code>ignore_version = true</code>, and sets <code>ignore_immutable = true</code>. The call runs with <code>buffer_unordered(64)</code>, so order is not preserved. <code>apply_entry</code> is idempotent and version-aware by default. It skips an immutable key with the same value. It warns on an immutable key with a different value. It skips a version that is not newer unless <code>ignore_version</code> is true. It writes the value, deletes accepted and accepted2, deletes ballot and cache for a mutable entry, and optionally appends a new changelog entry (<code>changelog.rs:88-149</code>).</p>
+<p>The CLI passes <code>ignore_version = true</code> and <code>ignore_immutable = true</code>. It passes <code>append_new_entry = false</code>, so it does not append a second changelog entry. It also applies entries with <code>buffer_unordered(64)</code>, so it does not preserve changelog order. The source does not document this as a safe repair for a divergent replica. It is a local replay tool, not a peer catch-up tool. A far-behind replica that has an empty changelog has nothing to replay.</p>
+<h2>14. Integration call sites</h2>
+<p>The assignment for this document asks for Depot, Pegboard, and the namespace service. The exploration plan also covers the durable write path and namespaces (<code>spec.md:66-69</code>, <code>spec.md:108</code>). The source supports Pegboard. It does not support direct Epoxy calls from Depot or the namespace service in this commit.</p>
+<table><tr><th>Package</th><th>Direct Epoxy call?</th><th>Evidence</th></tr><tr><td>Pegboard</td><td>Yes. Actor key reservation, runner configuration, reservation lookup, runner pool backfill.</td><td><code>pegboard/src/workflows/actor2/keys.rs</code>, <code>actor/keys.rs</code>, <code>ops/runner_config/<em></code>, <code>ops/runner/</em></code>, <code>workflows/runner_pool_backfill.rs</code></td></tr><tr><td>auth-jwt</td><td>Yes. Linearizable read and mutable CAS for the signing key ring.</td><td><code>auth-jwt/src/ops/key_ring/get_latest.rs:10-35</code>, <code>compare_and_set.rs:33-95</code></td></tr><tr><td>api-peer</td><td>Yes, for debug and internal endpoints.</td><td><code>api-peer/src/internal.rs:582-704</code></td></tr><tr><td>bootstrap</td><td>Yes, for workflow creation and backfill dispatch.</td><td><code>bootstrap/src/lib.rs:17-88</code>, <code>bootstrap/src/backfill.rs:31-38</code></td></tr><tr><td>engine CLI</td><td>Yes, for manual changelog repair.</td><td><code>engine/src/commands/udb/cli.rs:641-756</code></td></tr><tr><td>workflow-worker</td><td>Yes, it merges the Epoxy workflow registry.</td><td><code>workflow-worker/src/lib.rs:14-23</code></td></tr><tr><td>Depot</td><td>No. A repository search finds no <code>epoxy</code> reference in <code>depot/src</code> and no Epoxy dependency in <code>depot/Cargo.toml</code>.</td><td>Source search</td></tr><tr><td>namespace</td><td>No direct call. <code>namespace/Cargo.toml:11-12</code> lists <code>epoxy</code> and <code>epoxy-protocol</code>, but <code>namespace/src</code> contains no <code>epoxy</code> reference. The dependencies are unused in this commit.</td><td>Source search</td></tr><tr><td>test-snapshot-gen</td><td>Yes, in a test scenario.</td><td><code>test-snapshot-gen/src/scenarios/epoxy_keys.rs</code></td></tr></table>
+<p>The source has two Pegboard Actor key workflows. The older <code>actor::keys</code> path uses an optimistic read with <code>target_replicas: None</code>, which means all Active replicas (<code>actor/keys.rs:166-173</code>). Its proposal uses <code>target_replicas: Some(input.target_replicas)</code> (<code>actor/keys.rs:243-258</code>). It forwards when the local replica is outside the scope (<code>actor/keys.rs:52-58</code>). It has no activity retry annotation, and it returns the proposal result to its caller (<code>actor/keys.rs:234-260</code>). The newer <code>actor2::keys</code> path uses a scope. It forwards when the local replica is outside the scope. It puts a 10-attempt retry on the proposal activity (<code>actor2/keys.rs:45-54</code> and <code>:211-245</code>). This document does not map these two paths to the runner or envoy scheduling paths. See <a href="04-pegboard-scheduling.html">04 Pegboard</a> for that distinction.</p>
+<h3>14.1 A Pegboard call site with scope and error handling</h3>
+<p>The scope comes from the runner configuration. If the local replica is not in the scope, the workflow forwards to the first target datacenter instead of calling Epoxy.</p>
+<pre><code class="language-rust">// engine/packages/pegboard/src/workflows/actor2/keys.rs:45-54
+		LookupKeyOptimisticOutput::NotFound(new_reservation_id, target_replicas) =&gt; {
+			if !target_replicas.contains(&amp;ctx.config().epoxy_replica_id()) {
+				let replica_id = target_replicas
+					.into_iter()
+					.next()
+					.context(&quot;target_replicas is empty&quot;)?;
+				let dc_label = u16::try_from(replica_id)?;
+
+				return Ok(ReserveKeyOutput::ForwardToDatacenter { dc_label });
+			}
+</code></pre>
+<p>The proposal activity uses <code>mutable: false</code>, <code>purge_cache: false</code>, a scoped <code>target_replicas</code>, and a CAS that expects <code>None</code>. It treats a mismatch as a normal result. It bails on every other failure so the activity retry can run.</p>
+<pre><code class="language-rust">// engine/packages/pegboard/src/workflows/actor2/keys.rs:211-245
+#[activity(Propose)]
+#[max_retries = 10]
+pub async fn propose(ctx: &amp;ActivityCtx, input: &amp;ProposeInput) -&gt; Result&lt;ProposalResult&gt; {
+	let reservation_key = keys::epoxy::ns::ReservationByKeyKey::new(
+		input.namespace_id,
+		input.name.clone(),
+		input.key.clone(),
+	);
+	let reservation_value = reservation_key.serialize(input.new_reservation_id)?;
+
+	let proposal_result = ctx
+		.op(epoxy::ops::propose::Input {
+			proposal: Proposal {
+				commands: vec![Command {
+					kind: CommandKind::CheckAndSetCommand(CheckAndSetCommand {
+						key: keys::subspace().pack(&amp;reservation_key),
+						expect_one_of: vec![None],
+						new_value: Some(reservation_value),
+					}),
+				}],
+			},
+			mutable: false,
+			purge_cache: false,
+			target_replicas: Some(input.target_replicas.clone()),
+		})
+		.await?;
+
+	// Error inside the activity to invoke a retry
+	match &amp;proposal_result {
+		ProposalResult::Committed
+		| ProposalResult::ConsensusFailed {
+			reason: ConsensusFailedReason::ExpectedValueDoesNotMatch { .. },
+		} =&gt; {}
+		res =&gt; bail!(&quot;proposal failed: {res:?}&quot;),
+	}
+</code></pre>
+<p>The workflow handles <code>ExpectedValueDoesNotMatch</code> by deserializing the current value and returning the existing reservation (<code>actor2/keys.rs:84-107</code>). This is the correct behavior for a set-if-absent race: the other writer won, and the caller learns the winner. A consensus failure is retryable because no value was committed.</p>
+<h3>14.2 The auth-jwt call site</h3>
+<p>The JWT key ring is the clean example of a mutable CAS with explicit error mapping. The operation is leader-only. It reads the ring through a linearizable read before it plans a mutation (<code>auth-jwt/src/ops/key_ring/get_latest.rs:10-35</code>). It then proposes a mutable CAS with <code>purge_cache: true</code> and <code>target_replicas: None</code>.</p>
+<pre><code class="language-rust">// engine/packages/auth-jwt/src/ops/key_ring/compare_and_set.rs:63-94
+	match ctx
+		.op(epoxy::ops::propose::Input {
+			proposal: epoxy::ops::propose::Proposal {
+				commands: vec![epoxy::ops::propose::Command {
+					kind: epoxy::ops::propose::CommandKind::CheckAndSetCommand(
+						epoxy::ops::propose::CheckAndSetCommand {
+							key,
+							expect_one_of: vec![input.expected.clone()],
+							new_value: Some(new_value.clone()),
+						},
+					),
+				}],
+			},
+			mutable: true,
+			purge_cache: true,
+			target_replicas: None,
+		})
+		.await?
+	{
+		epoxy::ops::propose::ProposalResult::Committed =&gt; {
+			Ok(Output::Committed(Box::new(key_ring::Snapshot {
+				encoded: new_value,
+				ring: input.successor.clone(),
+			})))
+		}
+		epoxy::ops::propose::ProposalResult::ConsensusFailed {
+			reason: epoxy::ops::propose::ConsensusFailedReason::ExpectedValueDoesNotMatch { .. },
+		} =&gt; Ok(Output::Conflict),
+		epoxy::ops::propose::ProposalResult::ConsensusFailed { reason } =&gt; {
+			bail!(&quot;JWT signing-ring proposal failed: {reason:?}&quot;)
+		}
+	}
+</code></pre>
+<p>The <code>Conflict</code> result is not an error. The caller learns that another writer changed the ring. A prepare, accept, or stale-ballot failure is an error. This matches the semantics of the two result classes.</p>
+<p>The scope rule still applies even when <code>target_replicas</code> is <code>None</code>. <code>None</code> means “all Active replicas,” not “no scope.” The local replica must be Active (<code>utils.rs:71-76</code>). The JWT code relies on the default full-cluster scope.</p>
+<p><code>get_reservation_for_key</code> shows the caller-side scope check without forwarding. It errors when the local replica is outside the runner scope:</p>
+<pre><code class="language-rust">// engine/packages/pegboard/src/ops/actor/get_reservation_for_key.rs:37-42
+		ensure!(
+			res.replicas.contains(&amp;ctx.config().epoxy_replica_id()),
+			&quot;get_reservation_for_key called outside the scoped runner replica set&quot;
+		);
+
+		Some(res.replicas)
+</code></pre>
+<p>The caller must forward before it calls this operation. The operation does not forward. This is exactly the rule in <code>engine/CLAUDE.md:42</code>.</p>
+<h2>15. Failure cases</h2>
+<p>The table maps each failure to its detection point and its effect. The source citations are the basis for each row.</p>
+<table><tr><th>Failure</th><th>Detection</th><th>Effect</th><th>Recovery</th><th>Source</th></tr><tr><td>One replica down in a three-replica fast path</td><td>Accept timeout or missing response</td><td>Fast quorum 3 cannot be reached. <code>AcceptPhaseConsensusFailed</code>.</td><td>Caller retries. The retry sees the ballot and uses Prepare plus slow Accept.</td><td><code>propose.rs:911-984</code>, <code>consts.rs:3-4</code></td></tr><tr><td>One replica down in a three-replica slow path</td><td>Prepare or Accept response count</td><td>Slow quorum 2 can still succeed if the other two answer.</td><td>The write commits with two of three.</td><td><code>utils.rs:86-91</code></td></tr><tr><td>Minority network partition (unscoped three-replica cluster)</td><td>Prepare or Accept response count below the slow quorum</td><td>No proposal can commit. A linearizable read cannot get a promise quorum and errors after 8 attempts.</td><td>Heal the partition. Lazy recovery on the next write or linearizable read.</td><td><code>propose.rs:887-908</code>, <code>linearizable.rs:92-97</code>, <code>:184</code></td></tr><tr><td>Majority network partition (unscoped three-replica cluster)</td><td>Two of three answer</td><td>Slow path can commit. Fast path cannot, because it needs three.</td><td>The majority side commits. The minority side is stale after heal.</td><td><code>utils.rs:86-101</code></td></tr><tr><td>Proposer crash after Accept quorum, before Commit</td><td>No direct detection</td><td>Accepted state remains at the replicas. No committed value.</td><td>Another proposer’s Prepare adopts the accepted value. A linearizable read can also finish it.</td><td><code>README.md:58-64</code>, <code>propose.rs:710-779</code></td></tr><tr><td>Proposer crash after local Commit, before broadcast</td><td>No direct detection</td><td>One replica has the committed value. Other replicas may not.</td><td>A read from the committed replica sees it. A write on another replica takes the slow path and can learn it if the quorum intersects. The source does not run a repair scan.</td><td><code>propose.rs:655-697</code>, <code>:1062-1118</code></td></tr><tr><td>Commit broadcast fails to one replica</td><td>Per-replica error inside the fanout</td><td>The proposal still returns <code>Committed</code>. The missed replica stays stale.</td><td>No automatic repair. A later write or linearizable read can repair the key.</td><td><code>propose.rs:655-697</code>, <code>http_client.rs:23-31</code></td></tr><tr><td>Epoxy propose succeeds, local UDB write fails</td><td>A later read or list sees the two stores disagree</td><td>The two writes are not one transaction, so the local Pegboard copy can diverge from the Epoxy value.</td><td>The next write or list can observe the divergence. The source has a TODO.</td><td><code>pegboard/src/ops/runner_config/upsert.rs:183-185</code></td></tr><tr><td>Leader datacenter fails</td><td>The coordinator workflow is absent</td><td>Configuration changes stop. Key proposals continue on any Active replica.</td><td>Start the leader datacenter again. The source does not elect a new configuration coordinator.</td><td><code>bootstrap/src/lib.rs:53-57</code></td></tr><tr><td>Clock skew</td><td>No clock comparison in the ballot</td><td>No effect on ballots or commits. Ballots use counters, not wall-clock time.</td><td>None needed for safety. Version heartbeats use timestamps and are a separate mechanism.</td><td><code>ballot.rs:32-38</code>, <code>version-management/src/lib.rs:10-11</code></td></tr><tr><td>New replica joins with no history</td><td>No detection</td><td>It becomes Active with an empty store and counts in quorums.</td><td>No automatic catch-up in this commit. A manual replay of its own empty changelog cannot help.</td><td><code>setup.rs:101-110</code>, <code>utils.rs:27-34</code></td></tr><tr><td>Stale config update</td><td>No epoch check in <code>update_config</code></td><td>An older config can overwrite a newer local config.</td><td>A later config broadcast can correct it. The source does not show an epoch fence here.</td><td><code>update_config.rs:8-26</code></td></tr><tr><td>Same ballot, different Accept value</td><td>Accept handler</td><td><code>HigherBallot(existing_ballot)</code>. The conflicting value is rejected.</td><td>The proposer retries with a higher ballot.</td><td><code>accept.rs:58-76</code></td></tr><tr><td>Higher-ballot Accept arrives after a lower-ballot accepted value</td><td>Accept handler</td><td>The higher ballot overwrites the lower accepted2 value. The source does not preserve the lower-ballot accepted value.</td><td>The next Prepare collects from a slow quorum. This document does not prove safety for every interleaving.</td><td><code>accept.rs:101-110</code></td></tr></table>
+<p>Clock skew deserves a separate note. The ballot is a counter and a replica identifier, not a timestamp. Wall-clock time does not order proposals. The version heartbeat uses timestamps and a 30-second expiry, but that mechanism controls protocol versions, not key order. A clock skew can delay or advance a version heartbeat. It cannot reorder a key commit.</p>
+<p>The leader datacenter failure is also narrow. The source’s “leader” is the topology leader that runs the coordinator workflow. It is not a consensus leader. Key writes continue in other datacenters because any Active replica can propose. The coordinator’s absence blocks membership changes, not key agreement. The source does not elect a new coordinator.</p>
+<h2>16. Constants and limits</h2>
+<table><tr><th>Constant or value</th><th>Value</th><th>Meaning</th><th>Source</th></tr><tr><td><code>REQUEST_TIMEOUT</code></td><td>10 seconds</td><td>Timeout for one peer HTTP request.</td><td><code>consts.rs:3-4</code></td></tr><tr><td><code>CHANGELOG_READ_COUNT</code></td><td>1,000</td><td>Declared page size for catch-up. No call site in this commit.</td><td><code>consts.rs:6-10</code></td></tr><tr><td>Slow quorum</td><td><code>floor(n/2)+1</code></td><td>Majority.</td><td><code>utils.rs:86-91</code></td></tr><tr><td>Fast quorum</td><td><code>n - floor((slow-1)/2)</code></td><td>Fast Paxos quorum. Special cases: <code>n=0 -> 0</code>, <code>n=1 -> 1</code>.</td><td><code>utils.rs:93-101</code></td></tr><tr><td><code>All</code> quorum</td><td><code>n</code></td><td>Every replica.</td><td><code>utils.rs:104-110</code></td></tr><tr><td><code>Any</code> quorum</td><td>1 if <code>n > 0</code>, else 0</td><td>First successful response.</td><td><code>utils.rs:104-110</code></td></tr><tr><td>Sender-excluded fanout</td><td>Quorum minus one for Fast, Slow, All; Any stays 1</td><td>Fanout target after excluding the sender.</td><td><code>utils.rs:113-119</code></td></tr><tr><td>Prepare retry initial delay</td><td>10 milliseconds</td><td>First backoff base.</td><td><code>propose.rs:310</code></td></tr><tr><td>Prepare retry maximum delay</td><td>1,000 milliseconds</td><td>Backoff cap.</td><td><code>propose.rs:311</code></td></tr><tr><td>Prepare retry maximum attempts</td><td>10</td><td>Retries after contention.</td><td><code>propose.rs:312</code></td></tr><tr><td>Expected-commit retry maximum</td><td>3</td><td>Retries after <code>RetryExpectedCommit</code>.</td><td><code>propose.rs:313</code></td></tr><tr><td>Linearizable read attempts</td><td>8</td><td>Promise-quorum attempts.</td><td><code>linearizable.rs:34</code>, <code>:184</code></td></tr><tr><td>Whole get timeout</td><td>10 seconds</td><td>Bounds the entire read operation.</td><td><code>get.rs:57-60</code></td></tr><tr><td>Read-state request timeout</td><td>2 seconds</td><td>One voter request.</td><td><code>get.rs:126-142</code></td></tr><tr><td>Protocol version refresh</td><td>60 seconds</td><td>Peer probe interval.</td><td><code>protocol_version.rs:21-26</code></td></tr><tr><td>Protocol version probe timeout</td><td>5 seconds</td><td>One peer probe.</td><td><code>protocol_version.rs:28</code></td></tr><tr><td>Protocol version heartbeat expiry</td><td>30,000 milliseconds</td><td>Entries older than this are deleted.</td><td><code>version-management/src/lib.rs:10</code></td></tr><tr><td>Protocol version check interval</td><td>15 seconds</td><td>Version manager loop.</td><td><code>version-management/src/lib.rs:11</code></td></tr><tr><td>Backfill chunk size</td><td>2,000</td><td>Default legacy migration chunk.</td><td><code>backfill.rs:19</code></td></tr><tr><td>Ballot counter limit</td><td><code>u64::MAX</code></td><td><code>checked_add</code> fails on overflow; there is no other ceiling.</td><td><code>ballot.rs:174-189</code>, <code>propose.rs:1165-1173</code></td></tr><tr><td>Actor2 proposal activity retries</td><td>10</td><td>Pegboard retry on consensus failure.</td><td><code>actor2/keys.rs:212</code></td></tr><tr><td>Reconfigure health check retries</td><td><code>usize::MAX</code></td><td>Retries forever.</td><td><code>reconfigure.rs:147</code></td></tr><tr><td>Notify-all retries</td><td><code>usize::MAX</code></td><td>Retries forever.</td><td><code>replica_status_change.rs:150-151</code></td></tr><tr><td>CLI early transaction timeout</td><td>2,500 milliseconds</td><td>Manual replay batch time budget.</td><td><code>cli.rs:652</code></td></tr><tr><td>CLI transaction size cap</td><td>1 MiB</td><td>Manual replay batch size cap.</td><td><code>cli.rs:655</code></td></tr></table>
+<p>The quorum table for small clusters follows from the formulas:</p>
+<table><tr><th>n</th><th>Slow quorum</th><th>Fast quorum</th><th>One failure on fast path?</th><th>One failure on slow path?</th></tr><tr><td>1</td><td>1</td><td>1</td><td>No</td><td>No</td></tr><tr><td>2</td><td>2</td><td>2</td><td>No</td><td>No</td></tr><tr><td>3</td><td>2</td><td>3</td><td>No, the fast path fails</td><td>Yes, the slow path succeeds</td></tr><tr><td>4</td><td>3</td><td>3</td><td>Yes</td><td>Yes</td></tr><tr><td>5</td><td>3</td><td>4</td><td>Yes</td><td>Yes</td></tr><tr><td>6</td><td>4</td><td>5</td><td>Yes</td><td>Yes</td></tr><tr><td>7</td><td>4</td><td>6</td><td>Yes</td><td>Yes</td></tr></table>
+<p>The source’s tests assert the three-replica values: fast 3, slow 2 (<code>utils.rs:147-160</code>). The README table matches for n=3, 4, 5, and 7 (<code>README.md:482-487</code>). The source formulas also give n=2 fast 2 and slow 2. The README does not list n=2.</p>
+<p>There is no overall proposal timeout. Each peer request has a 10-second timeout (<code>consts.rs:3-4</code>). Prepare can retry 10 times with exponential backoff (<code>propose.rs:310-313</code>, <code>:746-772</code>). The expected-commit loop can retry 3 times (<code>propose.rs:490-506</code>). The proposal loop itself has no wall-clock deadline (<code>propose.rs:348-508</code>). A single <code>epoxy_propose</code> call can therefore take longer than 10 seconds. The caller’s activity or operation timeout is the outer bound.</p>
+<h2>17. Accuracy ledger</h2>
+<p>This section records where the source, the README, the tests, and the exploration plan disagree. The source wins.</p>
+<table><tr><th>Claim</th><th>Source of claim</th><th>What the source shows</th><th>Status</th></tr><tr><td>Epoxy is EPaxos.</td><td><code>spec.md:72</code>, <code>spec.md:103</code></td><td>Per-key single-decree Fast Paxos. EPaxos is ancestry and a cross-key reference only.</td><td>The plan label is wrong for this commit.</td></tr><tr><td>A mutable overwrite can use the fast path after the ballot is cleared.</td><td><code>README.md:329</code></td><td><code>AlreadyCommittedMutable</code> always calls <code>run_prepare_phase</code> and then the slow Accept path (<code>propose.rs:377-425</code>).</td><td>README is stale.</td></tr><tr><td>Prepare rejects <code>request.ballot <= current_ballot</code>.</td><td><code>README.md:358</code></td><td>Prepare rejects only <code><</code>; equal is idempotent (<code>prepare.rs:47-61</code>).</td><td>README is stale.</td></tr><tr><td>A higher replica identifier wins a same-ballot conflict in Accept.</td><td><code>README.md:182</code> and the ballot ordering in <code>ballot.rs:32-38</code>.</td><td>A higher ballot is <code>(same counter, higher replica_id)</code>. Accept rejects only a lower stored ballot (<code>accept.rs:48-56</code>). A higher ballot overwrites a lower accepted2 value (<code>accept.rs:101-110</code>). At exactly the same ballot with a different value, it returns <code>HigherBallot</code> (<code>accept.rs:58-76</code>).</td><td>The code follows ballot order in both phases.</td></tr><tr><td>Peer traffic uses fixed <code>/v2/epoxy/...</code> endpoints.</td><td><code>README.md:593-596</code></td><td><code>http_client</code> sets <code>/v{version}/epoxy/{endpoint}</code> from the negotiated version (<code>http_client.rs:167-172</code>).</td><td>README is stale.</td></tr><tr><td>There is no background migration.</td><td><code>README.md:604</code></td><td>There is an <code>epoxy_backfill_v2</code> workflow (<code>backfill.rs:33-60</code>).</td><td>README is stale.</td></tr><tr><td>Learner catch-up pages a peer’s changelog.</td><td><code>README.md:541-565</code></td><td><code>CatchUpReplica</code> is a stub (<code>setup.rs:101-110</code>). <code>read_changelog</code> has no production call site.</td><td>Not implemented in this commit.</td></tr><tr><td>Changelog garbage collection tracks learners.</td><td><code>README.md:581-589</code></td><td>The source has a changelog read handler (<code>changelog.rs:47-85</code>) and a stub catch-up (<code>setup.rs:101-110</code>). A search finds no learner cursor state, no GC watermark, and no truncation code.</td><td>Not implemented in this commit.</td></tr><tr><td>The second mutable write takes the fast path.</td><td><code>tests/proposal.rs:107-122</code></td><td>The source always runs Prepare for <code>AlreadyCommittedMutable</code> (<code>propose.rs:377-425</code>).</td><td>Test is stale.</td></tr><tr><td><code>CommandError</code> is part of the proposal result.</td><td><code>tests/kv.rs:3</code>, <code>tests/backfill_snapshot.rs:8</code>.</td><td>The current result type has <code>Committed</code> and <code>ConsensusFailed { reason }</code> (<code>propose.rs:79-112</code>).</td><td>Tests are stale.</td></tr><tr><td><code>ReplicaStatus::Learning</code> is used for catch-up.</td><td><code>README.md:543-587</code> describes learners catching up and a learner cursor.</td><td>The BARE comment says only “Receives commits, cannot propose, cannot vote” (<code>v4.bare:35-36</code>). No source workflow assigns <code>Learning</code>; the replica goes Joining to Active (<code>setup.rs:57-61</code>).</td><td>Declared, not used; the catch-up flow is not implemented.</td></tr><tr><td>Joining replicas receive nothing.</td><td><code>v4.bare:33-34</code></td><td><code>broadcast_commits</code> uses <code>get_all_replicas</code>, which includes Joining (<code>propose.rs:1070-1075</code>, <code>utils.rs:81-84</code>).</td><td>Comment is stale.</td></tr><tr><td>Depot and namespace call Epoxy.</td><td>This document’s assignment.</td><td>Depot has no reference or dependency. Namespace has unused dependencies and no source reference.</td><td>Not supported by this commit.</td></tr></table>
+<p>Two claims in this document are source observations that a running system could contradict:</p>
+<ul><li>The document says a new replica becomes Active with an empty store because <code>CatchUpReplica</code> returns <code>None</code>. This follows from the stub and the loop break. It assumes no other code path copies history. A repository search finds no such path.</li><li>The document says a lower-ballot accepted value can be replaced by a higher-ballot Accept. The code path is visible in <code>accept.rs:101-110</code>, but this document does not run a full model check of every interleaving. It reports the path, not a proof of a bug.</li></ul>
+<h2>What to read next</h2>
+<ul><li><a href="04-pegboard-scheduling.html">04 Pegboard</a> for the Actor key reservation workflow, the runner configuration scope, and the runner and envoy scheduling paths that call Epoxy.</li><li><a href="07-universaldb-and-buckets.html">07 UniversalDB and Buckets</a> for the transaction model, the tuple subspace, the versionstamp, and the storage drivers under Epoxy.</li><li><a href="13-auth-and-namespaces.html">13 Auth and Namespaces</a> for the JWT key ring that uses a linearizable read and a mutable CAS.</li></ul>
+<h2>Glossary</h2>
+<blockquote><strong>Glossary box.</strong> These terms have the meanings below in this document.</blockquote>
+<table><tr><th>Term</th><th>Meaning in this document</th></tr><tr><td>Ballot</td><td>A per-key pair <code>(counter, replica_id)</code>. Higher counter wins; equal counter is ordered by replica identifier.</td></tr><tr><td>Decree</td><td>One decision slot for one key. Single-decree means one slot per key, with no shared log.</td></tr><tr><td>Chosen</td><td>A value that a fast or slow quorum has accepted at one ballot. It may not yet be committed on any replica.</td></tr><tr><td>Fast quorum</td><td>The quorum for an Accept round that skips Prepare. For n=3 it is 3; for n=5 it is 4.</td></tr><tr><td>Slow quorum</td><td>The majority quorum for Prepare and for the Accept round after Prepare. <code>floor(n/2)+1</code>.</td></tr><tr><td>Promise</td><td>A replica’s durable statement that it will not accept a lower ballot. Stored in <code>KvBallotKey</code>.</td></tr><tr><td>Accepted</td><td>A value written by Phase 2a but not yet learned. Stored in <code>KvAccepted2Key</code>.</td></tr><tr><td>Committed</td><td>A value written as final. Stored in <code>KvValueKey</code>.</td></tr><tr><td>Linearizable read</td><td>A read that returns the latest completed write and takes effect after it starts.</td></tr><tr><td>Serializable</td><td>A UDB transaction mode that reads one consistent snapshot and rejects conflicts. See document 07.</td></tr><tr><td>Coordinator replica</td><td>The replica identified by <code>coordinator_replica_id</code>. It handles configuration and status messages, not key consensus.</td></tr><tr><td>Epoch</td><td>A membership generation in <code>ClusterConfig</code>. It increments when a replica becomes Active. It is not in the ballot.</td></tr><tr><td>Scope</td><td>The <code>target_replicas</code> list for a key. It must be non-empty, Active, and include the local replica.</td></tr><tr><td>Storage version</td><td>The version embedded in persisted values. It is 3 in this commit.</td></tr><tr><td>Runtime protocol version</td><td>The version negotiated for wire messages. It is 4 in this commit.</td></tr><tr><td>Changelog</td><td>A per-replica, versionstamped append-only record of committed values.</td></tr><tr><td>Versionstamp</td><td>A version that UDB assigns at commit time. It orders changelog entries.</td></tr><tr><td>Learning</td><td>A declared replica status. No source workflow assigns it in this commit.</td></tr><tr><td>Catch-up</td><td>The process of copying a peer’s changelog into a new replica. It is a stub in this commit.</td></tr><tr><td>Backfill</td><td>The local legacy-to-v2 migration. It is implemented and is not the same as catch-up.</td></tr></table>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

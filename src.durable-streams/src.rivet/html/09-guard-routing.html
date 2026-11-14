@@ -1,0 +1,1505 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>09 Guard: HTTP and WebSocket routing, TLS, and the reverse proxy -- src.rivet</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue('--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        toolbar.appendChild(mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); }));
+        toolbar.appendChild(mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); }));
+        toolbar.appendChild(mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); }));
+        toolbar.appendChild(mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); }));
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.rivet/docs</span>
+    <div class="nav-actions">
+      <a href="06-actor-sqlite-and-depot.html" class="nav-breadcrumb">06 Actor SQLite and Depot</a><a href="07-universaldb-and-buckets.html" class="nav-breadcrumb">07 UniversalDB and Buckets</a><a href="08-epoxy-multi-region.html" class="nav-breadcrumb">08 Epoxy and Multi-Datacenter Replication</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="08-epoxy-multi-region.html" class="nav-btn" title="Previous: 08 Epoxy and Multi-Datacenter Replication">← prev</a>
+      <a href="10-realtime-and-hibernation.html" class="nav-btn nav-btn-next" title="Next: 10 Realtime connections and hibernation">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>09 Guard: HTTP and WebSocket routing, TLS, and the reverse proxy</h1>
+<p>Guard is the public edge of Rivet. It accepts Hypertext Transfer Protocol (HTTP) requests and WebSocket connections. It decides which internal service receives a request, wakes a sleeping Actor when necessary, and then serves the request through a custom gateway handler or a reverse proxy. Guard also terminates Transport Layer Security (TLS) when an operator configures it. The certificate resolver in this commit is a stub. This document follows the call graph from <code>rivet_guard::start</code> to the point where Guard writes a response to the client. It explains the path grammar, the header grammar, the WebSocket subprotocols, the reverse proxy, the hibernation handshake, and the wake protocol. It also explains the cache that is never filled, and the exact status that a client sees for each failure. It states which behavior belongs to the legacy runner path and which behavior belongs to the newer envoy path.</p>
+<p>Three names recur in this document. An Actor is a keyed process that Pegboard schedules on a host. It keeps its state when it sleeps or moves. Pegboard is the scheduling service that owns the Actor workflows and allocates them to hosts; <a href="04-pegboard-scheduling.html">04 Pegboard</a> describes it. The source has two host paths. The legacy runner path uses a runner process, <code>runner_id</code>, and the version 1 Actor workflow. The newer envoy path uses an envoy process, <code>envoy_key</code>, and the version 2 Actor workflow. Both paths exist in this commit.</p>
+<p>The source of truth is commit <code>4a58441c50d1ce20d8803cfb1ab7c3285a5141d6</code>, version 2.3.31. All paths are relative to <code>/Users/darkvoid/GitSources/src.Rivet/rivet</code> unless the text says otherwise.</p>
+<h2>1. What Guard is and where it listens</h2>
+<p>Guard is one service in the engine binary. The engine registers it under the name <code>"guard"</code>, with <code>ServiceKind::ApiPublic</code>, and marks it critical.</p>
+<pre><code class="language-rust">// engine/packages/engine/src/run_config.rs:12-17
+Service::new(
+    &quot;guard&quot;,
+    ServiceKind::ApiPublic,
+    |config, pools| Box::pin(rivet_guard::start(config, pools)),
+    true,
+),
+</code></pre>
+<p><code>rivet_guard::start</code> runs in the <code>rivet-guard</code> package. The package name is <code>rivet-guard</code> and the library name is <code>rivet_guard</code> (<code>engine/packages/guard/Cargo.toml:1-10</code>). The lower-level server, proxy, and WebSocket code lives in the <code>rivet-guard-core</code> package.</p>
+<p>Guard binds a plain HTTP listener on the configured host and port. The default host is the unspecified Internet Protocol version 6 (IPv6) address <code>::</code>. The default port is 6420.</p>
+<pre><code class="language-rust">// engine/packages/config/src/defaults.rs:1-14
+pub mod hosts {
+    use std::net::{IpAddr, Ipv6Addr};
+
+    pub const GUARD: IpAddr = IpAddr::V6(Ipv6Addr::UNSPECIFIED);
+    pub const API_PEER: IpAddr = IpAddr::V6(Ipv6Addr::UNSPECIFIED);
+    pub const METRICS: IpAddr = IpAddr::V6(Ipv6Addr::UNSPECIFIED);
+}
+
+pub mod ports {
+    pub const GUARD: u16 = 6420;
+    pub const API_PEER: u16 = 6421;
+
+    pub const METRICS: u16 = 6430;
+}
+</code></pre>
+<p>The Kubernetes manifest confirms the public port. The container exposes port 6420 with the name <code>guard</code> and the Transmission Control Protocol (TCP) (<code>self-host/control-plane/kubernetes/03-rivet-engine-deployment.yaml:37-43</code>). The Application Programming Interface (API) peer service uses port 6421. The metrics endpoint uses port 6430.</p>
+<p>Guard can also bind a second listener for HTTPS (Hypertext Transfer Protocol Secure). That listener exists only when the configuration contains a <code>guard.https</code> block. Its address is always <code>0.0.0.0</code> and its port comes from <code>Https.port</code> (<code>engine/packages/guard-core/src/server.rs:42-52</code>).</p>
+<pre><code class="language-rust">// engine/packages/guard-core/src/server.rs:33-73
+	// Set up HTTP server
+	let http_addr: std::net::SocketAddr = (config.guard().host(), config.guard().port()).into();
+	let http_factory = Arc::new(ProxyServiceFactory::new(
+		config.clone(),
+		routing_fn.clone(),
+		cache_key_fn.clone(),
+	));
+	let http_listener = tokio::net::TcpListener::bind(http_addr).await?;
+
+	// Set up HTTPS server (if configured)
+	let (https_addr, https_factory, https_listener, https_acceptor) = if let Some(https) =
+		&amp;config.guard().https
+	{
+		let https_addr: std::net::SocketAddr = ([0, 0, 0, 0], https.port).into();
+		let https_factory = Arc::new(ProxyServiceFactory::new(
+			config.clone(),
+			routing_fn.clone(),
+			cache_key_fn.clone(),
+		));
+		let listener = tokio::net::TcpListener::bind(https_addr).await?;
+
+		// Configure TLS if resolver function is provided
+		let acceptor = if let Some(resolver_fn) = cert_resolver_fn {
+			// Create a TLS server config using our certificate resolver
+			let server_config = create_tls_config(resolver_fn);
+
+			Some(TlsAcceptor::from(Arc::new(server_config)))
+		} else {
+			tracing::warn!(&quot;No TLS certificate resolver provided, HTTPS will not work properly&quot;);
+			None
+		};
+
+		(
+			Some(https_addr),
+			Some(https_factory),
+			Some(listener),
+			acceptor,
+		)
+	} else {
+		(None, None, None, None)
+	};
+</code></pre>
+<p>The <code>Https</code> type has two fields. <code>port</code> is the listen port. <code>tls</code> is a <code>Tls</code> value with four paths: <code>actor_cert_path</code>, <code>actor_key_path</code>, <code>api_cert_path</code>, and <code>api_key_path</code> (<code>engine/packages/config/src/config/guard.rs:353-369</code>). Section 19 shows that the current resolver does not read these fields.</p>
+<table><tr><th>Listener</th><th>Default address</th><th>Port source</th><th>Protocol</th><th>State in this commit</th></tr><tr><td>Public HTTP</td><td><code>::</code></td><td><code>guard.port()</code>, default 6420</td><td>HTTP/1.1, HTTP/2, WebSocket</td><td>Always started</td></tr><tr><td>HTTPS</td><td><code>0.0.0.0</code></td><td><code>guard.https.port</code></td><td>TLS then HTTP</td><td>Only if <code>guard.https</code> is set</td></tr><tr><td>Metrics</td><td><code>::</code></td><td>6430</td><td>HTTP</td><td>Separate metrics service</td></tr><tr><td>API peer</td><td><code>::</code></td><td>6421</td><td>Internal HTTP</td><td>Separate service</td></tr></table>
+<p>Each accepted TCP connection gets one <code>ProxyService</code> instance from <code>ProxyServiceFactory::create_service(remote_addr)</code>. The connection uses <code>hyper_util</code>'s automatic HTTP/1 and HTTP/2 server builder with upgrade support (<code>engine/packages/guard-core/src/server.rs:86-135</code>). When the connection ends, Guard cancels the connection's <code>client_disconnect</code> token. A request handler can watch that token and stop work when the client goes away.</p>
+<h2>2. Startup and shared state</h2>
+<p><code>rivet_guard::start</code> creates a standalone context, one <code>SharedState</code>, the routing function, the cache-key function, and the certificate resolver. <code>PubSub</code> is the Publish-Subscribe (PubSub) service. It carries tunnel messages and workflow signals. The <code>ups</code> handle is the PubSub pool that <code>ctx.ups()</code> returns.</p>
+<pre><code class="language-rust">// engine/packages/guard/src/lib.rs:11-42
+#[tracing::instrument(skip_all)]
+pub async fn start(config: rivet_config::Config, pools: rivet_pools::Pools) -&gt; Result&lt;()&gt; {
+	let cache = rivet_cache::CacheInner::from_env(&amp;config, pools.clone())?;
+	let ctx = StandaloneCtx::new(
+		db::DatabaseKv::new(config.clone(), pools.clone()).await?,
+		config.clone(),
+		pools,
+		cache,
+		&quot;guard&quot;,
+		Id::new_v1(config.dc_label()),
+		Id::new_v1(config.dc_label()),
+	)?;
+
+	// Share shared context
+	let shared_state = shared_state::SharedState::new(&amp;ctx, ctx.ups()?)?;
+	shared_state.start().await?;
+
+	// Create handlers
+	let routing_fn = routing::create_routing_function(&amp;ctx, shared_state.clone());
+	let cache_key_fn = cache::create_cache_key_function();
+	let cert_resolver = tls::create_cert_resolver(&amp;ctx).await?;
+
+	if let Some(_) = &amp;cert_resolver {
+		tracing::info!(&quot;TLS certificate resolver configured&quot;);
+	} else {
+		tracing::info!(&quot;No TLS configuration found, HTTPS will not be enabled&quot;);
+	}
+
+	// Start the server
+	tracing::info!(&quot;starting proxy server&quot;);
+	rivet_guard_core::run_server(config, routing_fn, cache_key_fn, cert_resolver).await
+}
+</code></pre>
+<p><code>SharedState</code> is a cloneable wrapper around <code>Arc<SharedStateInner></code>. It holds three gateway state objects and an optional JavaScript Object Notation (JSON) Web Token (JWT) key-ring cache.</p>
+<pre><code class="language-rust">// engine/packages/guard/src/shared_state.rs:5-53
+#[derive(Clone)]
+pub struct SharedState(Arc&lt;SharedStateInner&gt;);
+
+impl SharedState {
+	pub fn new(ctx: &amp;gas::prelude::StandaloneCtx, pubsub: PubSub) -&gt; Result&lt;SharedState&gt; {
+		let config = ctx.config();
+		let jwt_key_ring_cache =
+			config
+				.auth
+				.as_ref()
+				.filter(|auth| auth.jwt.enabled())
+				.map(|auth| {
+					rivet_auth_jwt::key_ring_cache::KeyRingCache::new(
+						ctx.clone(),
+						if auth.jwt.issuance_enabled() {
+							rivet_auth_jwt::key_ring_cache::KeyRingCacheMode::SignAndVerify
+						} else {
+							rivet_auth_jwt::key_ring_cache::KeyRingCacheMode::VerifyOnly
+						},
+					)
+				});
+		let jwt_key_ring_cache = jwt_key_ring_cache.transpose()?;
+		Ok(SharedState(Arc::new(SharedStateInner {
+			pegboard_gateway: pegboard_gateway::shared_state::SharedState::new(
+				config,
+				pubsub.clone(),
+			),
+			pegboard_gateway2: pegboard_gateway2::shared_state::SharedState::new(
+				config,
+				pubsub.clone(),
+			),
+			pegboard_gateway3: pegboard_gateway3::shared_state::SharedState::new(config, pubsub),
+			jwt_key_ring_cache,
+		})))
+	}
+
+	pub async fn start(&amp;self) -&gt; Result&lt;()&gt; {
+		tokio::try_join!(
+			self.pegboard_gateway.start(),
+			self.pegboard_gateway2.start(),
+			self.pegboard_gateway3.start(),
+		)?;
+		if let Some(jwt_key_ring_cache) = &amp;self.jwt_key_ring_cache {
+			jwt_key_ring_cache.start().await?;
+		}
+
+		Ok(())
+	}
+}
+</code></pre>
+<p>The three gateways are different implementations of the same tunnel:</p>
+<table><tr><th>Field</th><th>Type</th><th>Purpose</th></tr><tr><td><code>pegboard_gateway</code></td><td><code>pegboard_gateway::shared_state::SharedState</code></td><td>Legacy runner path, version 1 Actor workflows</td></tr><tr><td><code>pegboard_gateway2</code></td><td><code>pegboard_gateway2::shared_state::SharedState</code></td><td>Envoy path, non-streaming HTTP and all WebSocket traffic</td></tr><tr><td><code>pegboard_gateway3</code></td><td><code>pegboard_gateway3::shared_state::SharedState</code></td><td>Envoy path with streaming HTTP responses</td></tr><tr><td><code>jwt_key_ring_cache</code></td><td><code>Option<Arc<KeyRingCache>></code></td><td>Key cache for token verification</td></tr></table>
+<p><code>start()</code> joins all three gateway start functions in one <code>tokio::try_join!</code>. A failure in any one gateway stops Guard startup. The JWT cache starts after the gateways and only when authentication is enabled.</p>
+<p>The <code>SharedState</code> object is passed by clone into every routing call. It carries no per-request data. Per-request data lives in <code>RequestContext</code>.</p>
+<h2>3. The request object and the proxy state</h2>
+<p><code>ProxyState</code> is shared by all connections. <code>RequestContext</code> is created once for each request.</p>
+<pre><code class="language-rust">// engine/packages/guard-core/src/proxy_service.rs:70-89
+// State shared across all request handlers
+pub struct ProxyState {
+	config: rivet_config::Config,
+	routing_fn: RoutingFn,
+	cache_key_fn: CacheKeyFn,
+	// NOTE: Using the hyper legacy client is the only option currently.
+	// This is what reqwest uses under the hood. Eventually we&#x27;ll migrate to h3 once it&#x27;s ready.
+	client: Client&lt;
+		hyper_rustls::HttpsConnector&lt;hyper_util::client::legacy::connect::HttpConnector&gt;,
+		Full&lt;Bytes&gt;,
+	&gt;,
+	route_cache: RouteCache,
+	// We use moka::Cache instead of scc::HashMap because it automatically handles TTL and capacity
+	client_states: Option&lt;Cache&lt;std::net::IpAddr, Arc&lt;parking_lot::Mutex&lt;ClientState&gt;&gt;&gt;&gt;,
+	// Entries are owned by an InFlightPermit for the lifetime of each active request, so live IDs
+	// cannot be evicted and handed out to a second concurrent request.
+	in_flight_requests: Arc&lt;scc::HashSet&lt;protocol::RequestId&gt;&gt;,
+
+	tasks: Arc&lt;TaskGroup&gt;,
+}
+</code></pre>
+<table><tr><th><code>ProxyState</code> field</th><th>Type</th><th>Purpose</th></tr><tr><td><code>config</code></td><td><code>rivet_config::Config</code></td><td>Guard, Pegboard, and feature configuration</td></tr><tr><td><code>routing_fn</code></td><td><code>RoutingFn</code></td><td>The routing function from <code>routing::create_routing_function</code></td></tr><tr><td><code>cache_key_fn</code></td><td><code>CacheKeyFn</code></td><td>The cache-key function from <code>cache::create_cache_key_function</code></td></tr><tr><td><code>client</code></td><td>hyper legacy <code>Client</code> over <code>hyper_rustls</code></td><td>Outbound HTTP client</td></tr><tr><td><code>route_cache</code></td><td><code>RouteCache</code></td><td>Lookup cache with no inserts in this commit</td></tr><tr><td><code>client_states</code></td><td><code>Option<Cache<IpAddr, Arc<Mutex<ClientState>>>></code></td><td>Per-address admission counters, created only when rate limiting or a maximum in-flight limit is configured</td></tr><tr><td><code>in_flight_requests</code></td><td><code>Arc<scc::HashSet<RequestId>></code></td><td>Unique protocol request identifiers</td></tr><tr><td><code>tasks</code></td><td><code>Arc<TaskGroup></code></td><td>Background tasks owned by Guard</td></tr></table>
+<p>The HTTP client is built with native trust roots first. If the native store fails to load, Guard falls back to the bundled webpki roots. It does not merge the two stores (<code>engine/packages/guard-core/src/proxy_service.rs:98-116</code>). The idle pool timeout is 30,000 milliseconds by default (<code>engine/packages/config/src/config/guard.rs:16</code>).</p>
+<p><code>RequestContext</code> carries every input that the routing and proxy layers need.</p>
+<pre><code class="language-rust">// engine/packages/guard-core/src/request_context.rs:16-45
+#[derive(Clone)]
+pub struct RequestContext {
+	pub(crate) remote_addr: SocketAddr,
+	pub(crate) ray_id: Id,
+	pub(crate) external_ray_id: String,
+	pub(crate) req_id: Id,
+	/// Entire host including port (if present)
+	pub(crate) host: String,
+	/// Only hostname, no port.
+	pub(crate) hostname: String,
+	/// Includes path and query.
+	pub(crate) path: String,
+	pub(crate) method: Method,
+	pub(crate) headers: HeaderMap,
+	pub(crate) is_websocket: bool,
+	pub(crate) client_ip: IpAddr,
+	pub(crate) start_time: Instant,
+	pub(crate) request_body_exact_size: Option&lt;u64&gt;,
+	pub(crate) request_body_is_end_stream: bool,
+	pub(crate) client_disconnect: CancellationToken,
+
+	pub(crate) retry: RetryConfig,
+	pub(crate) timeout: TimeoutConfig,
+
+	/// Holds the client&#x27;s in-flight slot and this request&#x27;s unique request id. Released when the
+	/// last clone of the context is dropped.
+	pub(crate) in_flight_permit: Option&lt;Arc&lt;InFlightPermit&gt;&gt;,
+	pub(crate) cors: Option&lt;CorsConfig&gt;,
+	pub(crate) auth_state: rivet_auth::RequestAuthState,
+}
+</code></pre>
+<table><tr><th><code>RequestContext</code> field</th><th>Type</th><th>Purpose</th></tr><tr><td><code>remote_addr</code></td><td><code>SocketAddr</code></td><td>Peer address of the TCP connection</td></tr><tr><td><code>ray_id</code></td><td><code>Id</code></td><td>Internal trace identifier for this request. Rivet calls this identifier a ray</td></tr><tr><td><code>external_ray_id</code></td><td><code>String</code></td><td>Client-supplied ray identifier from <code>x-rivet-ray-id</code>, bounded to 30 characters. The default is <code>ray_id</code> (<code>proxy_service.rs:46-60</code> and <code>381-390</code>)</td></tr><tr><td><code>req_id</code></td><td><code>Id</code></td><td>Internal request identifier</td></tr><tr><td><code>host</code></td><td><code>String</code></td><td>Full <code>Host</code> header value, including the port</td></tr><tr><td><code>hostname</code></td><td><code>String</code></td><td>Host value without the port</td></tr><tr><td><code>path</code></td><td><code>String</code></td><td>Path plus query string</td></tr><tr><td><code>method</code></td><td><code>Method</code></td><td>HTTP method</td></tr><tr><td><code>headers</code></td><td><code>HeaderMap</code></td><td>Cloned request headers</td></tr><tr><td><code>is_websocket</code></td><td><code>bool</code></td><td>Result of <code>hyper_tungstenite::is_upgrade_request</code></td></tr><tr><td><code>client_ip</code></td><td><code>IpAddr</code></td><td>First address in <code>x-forwarded-for</code>, or the peer address</td></tr><tr><td><code>start_time</code></td><td><code>Instant</code></td><td>Request arrival time</td></tr><tr><td><code>request_body_exact_size</code></td><td><code>Option<u64></code></td><td>Exact body size when known</td></tr><tr><td><code>request_body_is_end_stream</code></td><td><code>bool</code></td><td>True when the body is already complete</td></tr><tr><td><code>client_disconnect</code></td><td><code>CancellationToken</code></td><td>Cancelled when the connection drops</td></tr><tr><td><code>retry</code></td><td><code>RetryConfig</code></td><td><code>max_attempts</code> and <code>initial_interval</code></td></tr><tr><td><code>timeout</code></td><td><code>TimeoutConfig</code></td><td><code>request_timeout</code> for the upstream request</td></tr><tr><td><code>in_flight_permit</code></td><td><code>Option<Arc<InFlightPermit>></code></td><td>Admission slot and request-id ownership</td></tr><tr><td><code>cors</code></td><td><code>Option<CorsConfig></code></td><td>Cross-Origin Resource Sharing (CORS) response settings set by a routing module</td></tr><tr><td><code>auth_state</code></td><td><code>RequestAuthState</code></td><td>Per-request authentication state. It caches the credential for each token and publishes the token expiry as a watch value (<code>engine/packages/auth/src/check.rs:112-131</code>)</td></tr></table>
+<p><code>RequestContext::new</code> copies the retry and timeout defaults from the Guard configuration. The default maximum attempt count is 7. The default initial retry interval is 150 milliseconds. The default upstream request timeout is 30,000 milliseconds (<code>engine/packages/config/src/config/guard.rs:9-11</code> and <code>259-274</code>).</p>
+<p><code>ProxyService::process</code> creates the context and records the request identifiers (<code>engine/packages/guard-core/src/proxy_service.rs:376-469</code>). It reads the external ray identifier, sets tracing fields, extracts the host, path, method, user agent, and client address, and detects a WebSocket upgrade. It then stores the body size hints on the context.</p>
+<h2>4. The route resolution call graph</h2>
+<p><code>ProxyService::handle_request</code> resolves the route before it applies admission control (<code>engine/packages/guard-core/src/proxy_service.rs:748-769</code>). Route resolution runs inside <code>race_request_authorization_deadline</code>. That function subscribes to the token deadline that authentication publishes. If the deadline passes first, it returns <code>auth.token_expired</code> and drops the route future. The route work therefore stops even if it has not finished (<code>engine/packages/guard-core/src/utils.rs:634-692</code>). The request fails with status 401.</p>
+<p>Admission runs after the route and before the handler. <code>admit_request</code> gets or creates a <code>ClientState</code> for the client address. <code>ClientState</code> holds an optional <code>RateLimiter</code> with a fixed window and an optional <code>InFlightCounter</code>. <code>try_admit</code> takes a rate token first and an in-flight slot second. A rate token is still spent when the in-flight limit rejects the request. <code>AdmissionRejection::RateLimit</code> returns <code>guard.rate_limit</code> and status 429. <code>AdmissionRejection::MaxInFlight</code> returns <code>guard.max_in_flight</code> and status 400, because the pair is not in the status map (<code>engine/packages/guard-core/src/utils.rs:28-74</code> and <code>proxy_service.rs:766-801</code>). On success, Guard generates a unique 4-byte <code>protocol::RequestId</code> and stores an <code>InFlightPermit</code> on the context. The permit owns the slot, the request identifier, and the <code>guard_in_flight_request_count</code> gauge. <code>Drop</code> releases all three, so a cancelled request cannot leak them (<code>engine/packages/guard-core/src/utils.rs:76-143</code>).</p>
+<p>The route resolution itself is <code>ProxyService::resolve_route</code>.</p>
+<pre><code class="language-rust">// engine/packages/guard-core/src/proxy_service.rs:145-242
+	async fn resolve_route(
+		&amp;self,
+		req_ctx: &amp;mut RequestContext,
+		ignore_cache: bool,
+	) -&gt; Result&lt;ResolveRouteOutput&gt; {
+		tracing::debug!(
+			hostname = %req_ctx.hostname,
+			path = %req_ctx.path_for_logs(),
+			method = %req_ctx.method,
+			&quot;Resolving route for request&quot;
+		);
+
+		let cache_key = (self.cache_key_fn)(req_ctx)?;
+
+		// Check cache first
+		let cache_res = if !ignore_cache {
+			self.route_cache.get(&amp;cache_key).await
+		} else {
+			None
+		};
+
+		let res = if let Some(res) = cache_res {
+			res
+		} else {
+			// Not in cache, call routing function with a configured backstop timeout.
+			// Primary timeout signals live in per-phase fences inside each routing module.
+			let route_timeout = self.config.guard().route_timeout();
+			tracing::debug!(
+				hostname = %req_ctx.hostname,
+				path = %req_ctx.path_for_logs(),
+				cache_hit = false,
+				timeout_seconds = route_timeout.as_secs(),
+				&quot;Cache miss, calling routing function&quot;
+			);
+
+			let routing_res = timeout(route_timeout, (self.routing_fn)(req_ctx))
+				.await
+				.map_err(|_| {
+					errors::RequestTimeout {
+						phase: &quot;route_resolution&quot;.to_owned(),
+						timeout_seconds: route_timeout.as_secs(),
+					}
+					.build()
+				})??;
+
+			// TODO: Disable route caching for now, determine edge cases with gateway
+			// // Cache the result
+			// self.route_cache
+			// 	.insert(cache_key, routing_res.clone())
+			// 	.await;
+			// tracing::debug!(&quot;Added route to cache&quot;);
+
+			routing_res
+		};
+
+		match res {
+			RoutingOutput::Route(result) =&gt; {
+				tracing::debug!(
+					hostname = %req_ctx.hostname,
+					path = %req_ctx.path_for_logs(),
+					targets_count = result.targets.len(),
+					&quot;Received routing result&quot;
+				);
+
+				// Choose a random target
+				if let Some(target) = choose_random_target(&amp;result.targets) {
+					tracing::debug!(
+						hostname = %req_ctx.hostname,
+						path = %req_ctx.path_for_logs(),
+						target_host = %target.host,
+						target_port = target.port,
+						target_path = %utils::redact_path_for_logs(&amp;target.path),
+						&quot;Selected target for request&quot;
+					);
+					Ok(ResolveRouteOutput::Target(target.clone()))
+				} else {
+					tracing::warn!(
+						hostname = %req_ctx.hostname,
+						path = %req_ctx.path_for_logs(),
+						&quot;No route targets available from result&quot;
+					);
+					Err(errors::NoRouteTargets {
+						hostname: req_ctx.hostname.clone(),
+						path: req_ctx.path_for_logs(),
+					}
+					.build())
+				}
+			}
+			RoutingOutput::CustomServe(handler) =&gt; {
+				tracing::debug!(
+					hostname = %req_ctx.hostname,
+					path = %req_ctx.path_for_logs(),
+					&quot;Routing returned custom serve handler&quot;
+				);
+				Ok(ResolveRouteOutput::CustomServe(handler))
+			}
+		}
+	}
+</code></pre>
+<p><code>RoutingOutput</code> has two variants. <code>Route(RouteConfig)</code> contains a list of <code>RouteTarget</code> values. Guard chooses one target at random. <code>choose_random_target</code> uses <code>rand::thread_rng</code> and <code>SliceRandom::choose</code>, so each target has the same chance. The source does not state a load rule beyond this choice (<code>engine/packages/guard-core/src/proxy_service.rs:347-350</code>). <code>CustomServe(Arc<dyn CustomServeTrait>)</code> returns a handler object that owns the request or the WebSocket. Actor traffic normally uses <code>CustomServe</code>. Cross-datacenter traffic uses <code>Route</code>.</p>
+<table><tr><th>Type</th><th>Fields</th><th>Meaning</th></tr><tr><td><code>RouteTarget</code></td><td><code>host: String</code>, <code>port: u16</code>, <code>path: String</code></td><td>One upstream address</td></tr><tr><td><code>RouteConfig</code></td><td><code>targets: Vec<RouteTarget></code></td><td>Candidate addresses for a proxied request</td></tr><tr><td><code>RoutingOutput::Route</code></td><td><code>RouteConfig</code></td><td>Send the request through the reverse proxy</td></tr><tr><td><code>RoutingOutput::CustomServe</code></td><td><code>Arc<dyn CustomServeTrait></code></td><td>Run a custom handler</td></tr><tr><td><code>ResolveRouteOutput::Target</code></td><td><code>RouteTarget</code></td><td>The chosen proxy target</td></tr><tr><td><code>ResolveRouteOutput::CustomServe</code></td><td><code>Arc<dyn CustomServeTrait></code></td><td>The custom handler</td></tr></table>
+<p><code>RoutingFn</code> is <code>Arc<dyn Fn(&mut RequestContext) -> BoxFuture<Result<RoutingOutput>>></code>. <code>CacheKeyFn</code> is <code>Arc<dyn Fn(&mut RequestContext) -> Result<u64>></code> (<code>engine/packages/guard-core/src/route.rs:37-43</code>). The key function turns the routing inputs into a 64-bit key for the route cache. It runs for every request, even though no entry is inserted. Section 16 gives the key grammar.</p>
+<h2>5. The routing order</h2>
+<p><code>routing::create_routing_function</code> is the single entry point for all route decisions. The order is fixed. Path routes run before header routes. This order is the opposite of the order in <code>docs-internal/engine/GUARD.md</code>.</p>
+<pre><code class="language-rust">// engine/packages/guard/src/routing/mod.rs:197-254
+				if ws_health::matches_path(req_ctx.path()) {
+					if ctx.config().guard().enable_websocket_health_route() {
+						metrics::ROUTE_TOTAL.with_label_values(&amp;[&quot;ws_health&quot;]).inc();
+						return Ok(ws_health::route_request());
+					}
+
+					metrics::ROUTE_TOTAL.with_label_values(&amp;[&quot;none&quot;]).inc();
+
+					return Err(errors::NoRoute {
+						host: req_ctx.hostname().to_string(),
+						path: req_ctx.path_for_logs(),
+					}
+					.build());
+				}
+
+				// MARK: Path-based routing
+
+				// Route actor
+				if let Some(routing_output) = phase_timeout(
+					route_dispatch_phase(&quot;pegboard_path&quot;),
+					ctx.config().guard().route_dispatch_timeout(),
+					pegboard_gateway::route_request_path_based(&amp;ctx, &amp;shared_state, req_ctx),
+					|elapsed, timeout| route_dispatch_timeout(&quot;pegboard_path&quot;, elapsed, timeout),
+				)
+				.await?
+				{
+					metrics::ROUTE_TOTAL.with_label_values(&amp;[&quot;gateway&quot;]).inc();
+
+					return Ok(routing_output);
+				}
+
+				// Route runner
+				if let Some(routing_output) = phase_timeout(
+					route_dispatch_phase(&quot;runner_path&quot;),
+					ctx.config().guard().route_dispatch_timeout(),
+					runner::route_request_path_based(&amp;ctx, &amp;shared_state, req_ctx),
+					|elapsed, timeout| route_dispatch_timeout(&quot;runner_path&quot;, elapsed, timeout),
+				)
+				.await?
+				{
+					metrics::ROUTE_TOTAL.with_label_values(&amp;[&quot;runner&quot;]).inc();
+
+					return Ok(routing_output);
+				}
+
+				// Route envoy
+				if let Some(routing_output) = phase_timeout(
+					route_dispatch_phase(&quot;envoy_path&quot;),
+					ctx.config().guard().route_dispatch_timeout(),
+					envoy::route_request_path_based(&amp;ctx, &amp;shared_state, req_ctx),
+					|elapsed, timeout| route_dispatch_timeout(&quot;envoy_path&quot;, elapsed, timeout),
+				)
+				.await?
+				{
+					metrics::ROUTE_TOTAL.with_label_values(&amp;[&quot;envoy&quot;]).inc();
+
+					return Ok(routing_output);
+				}
+</code></pre>
+<p>The full order has ten steps:</p>
+<ol><li><code>/health/ws</code> and <code>/health/ws/</code>. If the health route is disabled, Guard</li></ol>
+<p>   returns <code>guard.no_route</code>.</p>
+<ol><li>Path-based Pegboard Actor route.</li><li>Path-based runner route, <code>/runners/connect</code> and <code>/runners/connect/</code>.</li><li>Path-based envoy route, <code>/envoys/connect</code> and <code>/envoys/connect/</code>.</li><li>Header or WebSocket-protocol target. For HTTP this is <code>x-rivet-target</code>. For</li></ol>
+<p>   WebSocket this is <code>rivet_target.<value></code> in <code>sec-websocket-protocol</code>.</p>
+<ol><li>Header target <code>"actor"</code> through <code>pegboard_gateway::route_request</code>.</li><li>Header target <code>"runner"</code> through <code>runner::route_request</code>.</li><li>Header target <code>"envoy"</code> through <code>envoy::route_request</code>.</li><li>Header target <code>"api-public"</code> through <code>api_public::route_request</code>.</li><li>No target. Guard sends the request to api-public by default.</li></ol>
+<p>If no step returns a route, Guard increments <code>guard_route_total</code> with the label <code>"none"</code> and returns <code>guard.no_route</code> (<code>engine/packages/guard/src/routing/mod.rs:358-365</code>).</p>
+<p>Every dispatch call is wrapped in <code>phase_timeout</code>. The default dispatch budget is 55,000 milliseconds. The outer route budget is 60,000 milliseconds (<code>engine/packages/config/src/config/guard.rs:189-199</code>).</p>
+<div class="mermaid">
+flowchart TD
+    R[RequestContext] --&gt; H{ws_health::matches_path}
+    H --&gt;|true, route enabled| WH[WebSocketHealthService]
+    H --&gt;|true, route disabled| NR[errors::NoRoute]
+    H --&gt;|false| P1[pegboard_gateway::route_request_path_based]
+    P1 --&gt;|Some| O[RoutingOutput]
+    P1 --&gt;|None| P2[runner::route_request_path_based]
+    P2 --&gt;|Some| O
+    P2 --&gt;|None| P3[envoy::route_request_path_based]
+    P3 --&gt;|Some| O
+    P3 --&gt;|None| T{X_RIVET_TARGET / WS_PROTOCOL_TARGET}
+    T --&gt;|actor| G1[pegboard_gateway::route_request]
+    T --&gt;|runner| R1[runner::route_request]
+    T --&gt;|envoy| E1[envoy::route_request]
+    T --&gt;|api-public| A1[api_public::route_request]
+    T --&gt;|absent| A2[api_public::route_request api-public]
+    G1 --&gt; O
+    R1 --&gt; O
+    E1 --&gt; O
+    A1 --&gt; O
+    A2 --&gt; O
+    O --&gt;|Route| RT[choose_random_target]
+    O --&gt;|CustomServe| CS[CustomServeTrait]
+    RT --&gt; HP[handle_http_request]
+    CS --&gt; REQ[handle_request]
+    CS --&gt; WS[handle_websocket]
+
+</div>
+<p>The <code>Route</code> branch enters <code>handle_http_request</code> and the reverse proxy. The <code>CustomServe</code> branch enters the handler's <code>handle_request</code> for HTTP (<code>engine/packages/guard-core/src/proxy_service.rs:1005-1060</code>) or <code>handle_websocket</code> for an upgrade (<code>engine/packages/guard-core/src/proxy_service.rs:1800-1830</code>).</p>
+<p><code>phase_timeout</code> records the phase duration. It wraps the future with <code>tokio::time::timeout</code>, maps a timeout through the supplied closure, and emits a <code>perf_start!</code> measurement (<code>engine/packages/guard/src/routing/mod.rs:69-99</code>). <code>route_dispatch_phase(router)</code> builds a <code>Phase::new("route_dispatch", &ROUTE_DISPATCH_DURATION)</code> with the router name. <code>Phase</code> also carries optional namespace and actor identifiers. <code>perf_start!</code> and <code>perf_finish!</code> record the <code>guard_route_phase</code> measurement with <code>phase</code>, <code>actor_id</code>, and <code>router</code> fields (<code>engine/packages/guard/src/routing/mod.rs:69-115</code>).</p>
+<h2>6. Path grammar for the Actor gateway</h2>
+<p>Guard accepts two families of Actor path: direct and query.</p>
+<table><tr><th>Shape</th><th>Example</th><th>Actor source</th><th>Token source</th></tr><tr><td>Direct</td><td><code>/gateway/{actor_id}/{...path}</code></td><td>First segment after <code>gateway</code></td><td>None</td></tr><tr><td>Direct with token</td><td><code>/gateway/{actor_id}@{token}/{...path}</code></td><td>Text before <code>@</code></td><td>Text after <code>@</code></td></tr><tr><td>Query <code>get</code></td><td><code>/gateway/{name}/{...path}?rvt-namespace=...&rvt-method=get</code></td><td>Name and key lookup</td><td><code>rvt-token</code> or header</td></tr><tr><td>Query <code>getOrCreate</code></td><td><code>/gateway/{name}/{...path}?rvt-namespace=...&rvt-method=getOrCreate</code></td><td>Key lookup or create</td><td><code>rvt-token</code> or header</td></tr></table>
+<p><code>parse_actor_path</code> first splits the path and the raw query without a Uniform Resource Locator (URL) parser. This preserves the query bytes exactly. A path with <code>//</code> is not a gateway path. The parser returns <code>Ok(None)</code>, so routing continues to the next step. A path whose first segment is not <code>gateway</code> also returns <code>Ok(None)</code>.</p>
+<pre><code class="language-rust">// engine/packages/guard/src/routing/actor_path.rs:104-156
+/// Parse actor routing information from path.
+/// Matches patterns:
+/// - /gateway/{actor_id}/{...path}
+/// - /gateway/{actor_id}@{token}/{...path}
+/// - /gateway/{name}/{...path}?rvt-namespace=...&amp;rvt-method=...
+///
+/// Returns `Ok(None)` for paths that are not gateway paths or for malformed
+/// direct paths (backwards-compatible silent fallthrough). Returns `Err` for
+/// malformed query paths so clients receive actionable error messages.
+pub fn parse_actor_path(path: &amp;str) -&gt; Result&lt;Option&lt;ParsedActorPath&gt;&gt; {
+	// Extract base path and raw query from the original path string directly,
+	// without running through a URL parser, to preserve actor query params
+	// byte-for-byte (no re-encoding of %20, +, etc.).
+	let (base_path, raw_query) = split_path_and_query(path);
+
+	if base_path.contains(&quot;//&quot;) {
+		return Ok(None);
+	}
+
+	let segments: Vec&lt;&amp;str&gt; = base_path
+		.split(&#x27;/&#x27;)
+		.filter(|segment| !segment.is_empty())
+		.collect();
+	if segments.first().copied() != Some(&quot;gateway&quot;) {
+		return Ok(None);
+	}
+
+	let raw_query_str = raw_query.unwrap_or(&quot;&quot;);
+
+	// Check if any raw query param key starts with rvt-.
+	let has_rvt = !raw_query_str.is_empty()
+		&amp;&amp; raw_query_str
+			.split(&#x27;&amp;&#x27;)
+			.any(|part| part.split(&#x27;=&#x27;).next().unwrap_or(&quot;&quot;).starts_with(RVT_PREFIX));
+
+	if has_rvt {
+		let rvt_params = extract_rvt_params_from_raw_query(raw_query_str)?;
+		let actor_query_string = strip_rvt_query_params(raw_query_str);
+		return parse_query_actor_path(base_path, &amp;segments, &amp;rvt_params, &amp;actor_query_string)
+			.map(|path| Some(ParsedActorPath::Query(path)));
+	}
+
+	// Direct path: pass the raw query string through unchanged.
+	let raw_query_string = match raw_query {
+		Some(q) =&gt; format!(&quot;?{q}&quot;),
+		None =&gt; String::new(),
+	};
+	Ok(parse_direct_actor_path(
+		base_path,
+		&amp;segments,
+		&amp;raw_query_string,
+	))
+}
+</code></pre>
+<p>A direct path splits the Actor segment at the first <code>@</code>. Both sides must be non-empty. Both sides are percent-decoded. The remaining path is built from the segments after the Actor segment plus the original query (<code>engine/packages/guard/src/routing/actor_path.rs:158-193</code>).</p>
+<p>The test file gives a concrete direct parse. The input is <code>/gateway/actor%2D123@tok%40en/api/v1/endpoint?foo=bar#section</code>. The parsed values are Actor identifier <code>actor-123</code>, token <code>tok@en</code>, and stripped path <code>/api/v1/endpoint?foo=bar</code> (<code>engine/packages/guard/tests/parse_actor_path.rs:8-21</code>). The fragment is dropped because <code>split_path_and_query</code> cuts the string at the first <code>#</code> before it looks for <code>?</code> (<code>engine/packages/guard/src/routing/actor_path.rs:369-378</code>).</p>
+<table><tr><th>Query parameter</th><th>Serde field</th><th>Meaning</th></tr><tr><td><code>rvt-namespace</code></td><td><code>namespace</code></td><td>Namespace name</td></tr><tr><td><code>rvt-method</code></td><td><code>method</code></td><td><code>get</code> or <code>getOrCreate</code></td></tr><tr><td><code>rvt-token</code></td><td><code>token</code></td><td>Gateway token</td></tr><tr><td><code>rvt-runner</code></td><td><code>runner</code></td><td>Legacy pool selector</td></tr><tr><td><code>rvt-pool</code></td><td><code>pool</code></td><td>Pool selector</td></tr><tr><td><code>rvt-key</code></td><td><code>key</code></td><td>Comma-separated Actor key parts</td></tr><tr><td><code>rvt-input</code></td><td><code>input</code></td><td>Base64url-encoded Concise Binary Object Representation (CBOR) value</td></tr><tr><td><code>rvt-region</code></td><td><code>region</code></td><td>Region constraint</td></tr><tr><td><code>rvt-crash-policy</code></td><td><code>crash-policy</code></td><td><code>restart</code>, <code>sleep</code>, or <code>destroy</code></td></tr><tr><td><code>rvt-skip-ready-wait</code></td><td><code>skip-ready-wait</code></td><td>Boolean</td></tr></table>
+<p><code>rvt-</code> is the reserved query prefix. The constant is <code>RVT_PREFIX = "rvt-"</code> (<code>engine/packages/guard/src/routing/actor_path.rs:11</code>). A query path rejects <code>@</code> in the Actor name. It requires <code>rvt-namespace</code> and <code>rvt-method</code>. It removes all <code>rvt-*</code> parameters from the stripped path. A duplicate parameter returns <code>guard.query_duplicate_param</code> (<code>engine/packages/guard/src/routing/actor_path.rs:195-269</code>).</p>
+<p><code>get</code> rejects <code>rvt-input</code>, <code>rvt-region</code>, <code>rvt-crash-policy</code>, and <code>rvt-runner</code>. The error text for that case says <code>rvt-pool</code>, but the code checks <code>rvt.runner</code> (<code>engine/packages/guard/src/routing/actor_path.rs:284-291</code>). The code wins. <code>getOrCreate</code> requires <code>rvt-pool</code> or <code>rvt-runner</code>. The input decoder accepts base64url CBOR bytes. The crash-policy decoder accepts <code>restart</code>, <code>sleep</code>, and <code>destroy</code> (<code>engine/packages/guard/src/routing/actor_path.rs:280-340</code>).</p>
+<p>A direct path with a malformed shape returns <code>None</code>. This is a deliberate backward-compatibility fallthrough. The request then continues to the next routing step. A query path with a malformed shape returns an error, because the client asked for a feature that must fail with a message (<code>engine/packages/guard/src/routing/actor_path.rs:110-112</code>).</p>
+<h2>7. Header and WebSocket-protocol grammar</h2>
+<p>The header names are exact lower-case constants. Hypertext Transfer Protocol (HTTP) header matching is case-insensitive, so <code>X-Rivet-Target</code> matches <code>x-rivet-target</code>. Header values are case-sensitive.</p>
+<pre><code class="language-rust">// engine/packages/guard/src/routing/mod.rs:20-29
+pub(crate) const X_RIVET_TARGET: HeaderName = HeaderName::from_static(&quot;x-rivet-target&quot;);
+pub(crate) const X_RIVET_TOKEN: HeaderName = HeaderName::from_static(&quot;x-rivet-token&quot;);
+pub(crate) const X_RIVET_SKIP_READY_WAIT: HeaderName =
+	HeaderName::from_static(&quot;x-rivet-skip-ready-wait&quot;);
+pub(crate) const SEC_WEBSOCKET_PROTOCOL: HeaderName =
+	HeaderName::from_static(&quot;sec-websocket-protocol&quot;);
+pub(crate) const WS_PROTOCOL_TARGET: &amp;str = &quot;rivet_target.&quot;;
+pub(crate) const WS_PROTOCOL_ACTOR: &amp;str = &quot;rivet_actor.&quot;;
+pub(crate) const WS_PROTOCOL_TOKEN: &amp;str = &quot;rivet_token.&quot;;
+pub(crate) const WS_PROTOCOL_SKIP_READY_WAIT: &amp;str = &quot;rivet_skip_ready_wait&quot;;
+</code></pre>
+<p>The table also lists <code>x-rivet-actor</code>. That name is not in the block above. It is a separate constant in the proxy layer, because the reverse proxy also removes it (<code>engine/packages/guard-core/src/utils.rs:24-26</code>).</p>
+<table><tr><th>Purpose</th><th>HTTP header</th><th>WebSocket subprotocol</th></tr><tr><td>Target service</td><td><code>x-rivet-target</code></td><td><code>rivet_target.{value}</code></td></tr><tr><td>Actor identifier</td><td><code>x-rivet-actor</code></td><td><code>rivet_actor.{actor_id}</code></td></tr><tr><td>Token</td><td><code>x-rivet-token</code></td><td><code>rivet_token.{token}</code></td></tr><tr><td>Skip ready wait</td><td><code>x-rivet-skip-ready-wait</code></td><td><code>rivet_skip_ready_wait</code></td></tr></table>
+<p>The WebSocket header is a comma-separated list. Guard trims each item and finds the item with the exact prefix. The suffix is the value. For the Actor identifier, Guard percent-decodes the suffix (<code>engine/packages/guard/src/routing/pegboard_gateway/mod.rs:222-261</code>).</p>
+<p>The header Actor route accepts only two kinds of request:</p>
+<ul><li>A WebSocket upgrade.</li><li>An HTTP request whose path is <code>/request</code> or starts with <code>/request/</code> or</li></ul>
+<p>  <code>/request?</code>.</p>
+<p>An HTTP request to another path returns <code>None</code> and continues down the routing order (<code>engine/packages/guard/src/routing/pegboard_gateway/mod.rs:307-313</code>). <code>is_actor_http_request_path</code> implements the test. The TypeScript engine client repeats the same test in <code>isActorHttpRequestPath</code>, so the two sides agree on the shape (<code>rivetkit-typescript/packages/rivetkit/src/engine-client/mod.ts:631-638</code>). The source does not state why the prefix is <code>/request</code>.</p>
+<p>For an <code>OPTIONS</code> request to a gateway path or with target <code>"actor"</code>, Guard returns <code>CorsPreflight</code>. The preflight handler does not look up the Actor and does not check authentication. The source explains that browsers cannot attach credentials to a preflight. The real request that follows is still authenticated (<code>engine/packages/guard/src/routing/pegboard_gateway/cors.rs:33-65</code>).</p>
+<table><tr><th>CORS field</th><th>Non-preflight value</th><th>Preflight value</th></tr><tr><td><code>allow_origin</code></td><td>Mirror <code>origin</code>, or <code>*</code></td><td>Mirror <code>origin</code>, or <code>*</code></td></tr><tr><td><code>allow_credentials</code></td><td><code>true</code></td><td><code>true</code></td></tr><tr><td><code>expose_headers</code></td><td><code>*</code></td><td><code>*</code></td></tr><tr><td><code>allow_methods</code></td><td>Not set</td><td><code>GET, POST, PUT, DELETE, OPTIONS, PATCH</code></td></tr><tr><td><code>allow_headers</code></td><td>Not set</td><td>Mirror <code>access-control-request-headers</code>, or <code>*</code></td></tr><tr><td><code>max_age</code></td><td>Not set</td><td>86,400 seconds</td></tr></table>
+<h2>8. The Actor gateway: subscribe, fetch, authorize, wake</h2>
+<p>All Actor routes converge on <code>route_request_inner</code>. The function receives the Actor identifier, the stripped path, the token, and the skip-ready-wait flag.</p>
+<p>The first check is the datacenter label. A Rivet <code>Id</code> carries a label. If the Actor label differs from the current datacenter label, Guard calls <code>config.dc_for_label</code>. That call returns the peer entry. <code>proxy_url_host</code> and <code>proxy_url_port</code> on the entry give the address. A missing label returns the datacenter-not-found error from <code>rivet_api_util</code>. Guard returns a <code>RoutingOutput::Route</code> to that address with the original request path. In this commit, this is the only use of the reverse proxy for Actor traffic (<code>engine/packages/guard/src/routing/pegboard_gateway/mod.rs:341-362</code>).</p>
+<p>Next, Guard creates subscriptions before it fetches the Actor. This order avoids a race where the Actor becomes ready between the fetch and the subscription.</p>
+<pre><code class="language-rust">// engine/packages/guard/src/routing/pegboard_gateway/mod.rs:364-405
+	// Create subs before checking if actor exists/is not destroyed
+	let (
+		ready_sub,
+		stopped_sub,
+		fail_sub,
+		destroy_sub,
+		migrate_sub,
+		ready_sub2,
+		stopped_sub2,
+		fail_sub2,
+		destroy_sub2,
+	) = phase_timeout(
+		Phase::new(
+			&quot;route_pegboard_subscribe&quot;,
+			&amp;metrics::ROUTE_PEGBOARD_SUBSCRIBE_DURATION,
+		)
+		.with_actor_id(actor_id),
+		ctx.config().guard().route_pegboard_subscribe_timeout(),
+		async {
+			tokio::try_join!(
+				ctx.subscribe::&lt;pegboard::workflows::actor::Ready&gt;((&quot;actor_id&quot;, actor_id)),
+				ctx.subscribe::&lt;pegboard::workflows::actor::Stopped&gt;((&quot;actor_id&quot;, actor_id)),
+				ctx.subscribe::&lt;pegboard::workflows::actor::Failed&gt;((&quot;actor_id&quot;, actor_id)),
+				ctx.subscribe::&lt;pegboard::workflows::actor::DestroyStarted&gt;((&quot;actor_id&quot;, actor_id)),
+				ctx.subscribe::&lt;pegboard::workflows::actor::MigratedToV2&gt;((&quot;actor_id&quot;, actor_id)),
+				ctx.subscribe::&lt;pegboard::workflows::actor2::Ready&gt;((&quot;actor_id&quot;, actor_id)),
+				ctx.subscribe::&lt;pegboard::workflows::actor2::Stopped&gt;((&quot;actor_id&quot;, actor_id)),
+				ctx.subscribe::&lt;pegboard::workflows::actor2::Failed&gt;((&quot;actor_id&quot;, actor_id)),
+				ctx.subscribe::&lt;pegboard::workflows::actor2::DestroyStarted&gt;((
+					&quot;actor_id&quot;, actor_id
+				)),
+			)
+		},
+		|elapsed, timeout| {
+			pegboard::errors::RouteSubscribeTimeout {
+				elapsed_ms: elapsed.as_millis() as u64,
+				timeout_ms: timeout.as_millis() as u64,
+			}
+			.build()
+		},
+	)
+	.await?;
+</code></pre>
+<p>The subscription budget is 2,000 milliseconds by default (<code>engine/packages/config/src/config/guard.rs:213-215</code>).</p>
+<p>Guard then fetches the Actor through <code>pegboard::ops::actor::get_for_gateway</code>. The fetch budget is 5,000 milliseconds. If the Actor does not exist, Guard returns <code>actor.not_found</code> (<code>engine/packages/guard/src/routing/pegboard_gateway/mod.rs:407-428</code>).</p>
+<p>Authentication runs next, unless the configuration field <code>auth.insecure_allow_unauthenticated</code> is true. The token comes from the path, the <code>x-rivet-token</code> header, or the WebSocket subprotocol. A missing token returns <code>auth.invalid_token</code>. <code>rivet_auth::check</code> verifies the token with the JWT key-ring cache in <code>SharedState</code>, and it caches the credential in <code>RequestAuthState</code> (<code>engine/packages/auth/src/check.rs:112-131</code>). The check uses the Actor's namespace identifier, <code>ResourceKind::ActorGateway</code>, the target Actor identifier, and <code>OperationKind::Read</code>. The budget is 5,000 milliseconds (<code>engine/packages/guard/src/routing/pegboard_gateway/mod.rs:430-463</code>).</p>
+<p>A destroyed Actor returns <code>actor.not_found</code>. The Actor <code>version</code> field then selects the workflow family. Version 2 calls <code>handle_actor_v2</code>. Version 1 calls <code>handle_actor_v1</code>. Any other value returns a plain <code>anyhow</code> error with the text <code>unknown actor version</code> (<code>engine/packages/guard/src/routing/pegboard_gateway/mod.rs:465-514</code>).</p>
+<h2>9. Waking a sleeping Actor</h2>
+<p>The version 2 path is the current path. It sends <code>pegboard::workflows::actor2::Wake</code> to the Actor workflow. The signal has no fields. The send budget is 5,000 milliseconds.</p>
+<pre><code class="language-rust">// engine/packages/guard/src/routing/pegboard_gateway/mod.rs:540-560
+		phase_timeout(
+			Phase::new(
+				&quot;route_pegboard_wake_signal&quot;,
+				&amp;metrics::ROUTE_PEGBOARD_WAKE_SIGNAL_DURATION,
+			)
+			.with_namespace_id(actor.namespace_id)
+			.with_actor_id(actor_id),
+			ctx.config().guard().route_pegboard_wake_signal_timeout(),
+			ctx.signal(pegboard::workflows::actor2::Wake {})
+				.to_workflow_id(actor.workflow_id)
+				.send(),
+			|elapsed, timeout| {
+				pegboard::errors::RouteWakeSignalTimeout {
+					actor_id: actor_id.to_string(),
+					elapsed_ms: elapsed.as_millis() as u64,
+					timeout_ms: timeout.as_millis() as u64,
+				}
+				.build()
+			},
+		)
+		.await?;
+</code></pre>
+<p>Guard does not always wait. It skips the wait when the Actor has an <code>envoy_key</code> and either <code>connectable</code> is true or the client sent the skip-ready-wait flag. In that case Guard uses the current <code>envoy_key</code> immediately (<code>engine/packages/guard/src/routing/pegboard_gateway/mod.rs:563-571</code>). <code>envoy_key</code> names the envoy host that holds the Actor, and it addresses that host's PubSub subject. <code>connectable</code> is a stored flag in the Actor gateway record. It says that the Actor can accept a tunnel connection now (<code>engine/packages/pegboard/src/ops/actor/get_for_gateway.rs:20</code> and <code>44</code>). If <code>envoy_key</code> is <code>None</code>, Guard waits even when <code>connectable</code> is true. The source does not state why this skip is safe. A tunnel error is retryable, and the retry re-resolves the route, so a stale key becomes a retry (<code>engine/packages/guard-core/src/utils.rs:505-520</code> and <code>engine/packages/guard-core/src/proxy_service.rs:1942-1945</code>).</p>
+<p>The wait loop listens to four events and two timers.</p>
+<pre><code class="language-rust">// engine/packages/guard/src/routing/pegboard_gateway/mod.rs:615-624
+		// Wait for ready, fail, or destroy
+		loop {
+			tokio::select! {
+				res = ready_sub.next() =&gt; {
+					let envoy_key = res?.into_body().envoy_key;
+					record_ready_wait(&quot;ready&quot;, wake_retries);
+					break envoy_key;
+				}
+				res = stopped_sub.next() =&gt; {
+					res?;
+</code></pre>
+<p><code>pegboard::workflows::actor2::Ready</code> has one field, <code>envoy_key: String</code> (<code>engine/packages/pegboard/src/workflows/actor2/mod.rs:1321-1324</code>). Guard uses that key, not a runner address, to select the envoy. The waiter function names its parameter <code>ready_sub</code>. The caller passes the <code>actor2</code> subscription to that parameter (<code>engine/packages/guard/src/routing/pegboard_gateway/mod.rs:477-489</code>).</p>
+<table><tr><th>Event</th><th>Guard action</th><th>Final error</th></tr><tr><td><code>Ready</code></td><td>Use <code>envoy_key</code> and continue</td><td>None</td></tr><tr><td><code>Stopped</code> before 8 retries</td><td>Send <code>actor2::Wake</code> again</td><td>None if a later <code>Ready</code> arrives</td></tr><tr><td><code>Stopped</code> after 8 retries</td><td>Stop</td><td><code>guard.actor_wake_retries_exceeded</code>, 503</td></tr><tr><td><code>Failed</code></td><td>Stop and carry the workflow error</td><td>The carried error</td></tr><tr><td><code>DestroyStarted</code></td><td>Stop</td><td><code>actor.destroyed_while_waiting_for_ready</code>, 400</td></tr><tr><td>Pool error check returns true</td><td>Stop</td><td><code>guard.actor_runner_failed</code>, 400</td></tr><tr><td>30,000 milliseconds elapse</td><td>Stop</td><td><code>guard.actor_ready_timeout</code>, 503</td></tr></table>
+<p>The rewake signal uses <code>graceful_not_found()</code>. That option makes a missing workflow return <code>None</code> instead of a send error. If the workflow no longer exists, Guard returns <code>actor.not_found</code> (<code>engine/packages/guard/src/routing/pegboard_gateway/mod.rs:636-668</code>).</p>
+<p>The pool error check waits 1,000 milliseconds before the first check. It then checks every 2,000 milliseconds. It returns true when the pool has an active error (<code>engine/packages/guard/src/routing/pegboard_gateway/mod.rs:31-34</code> and <code>1068-1101</code>).</p>
+<p>After a successful wait, Guard fetches the Actor again. If the Actor is now destroyed, or if the <code>envoy_key</code> changed, Guard returns <code>guard.actor_stopped_while_waiting</code> with status 503 (<code>engine/packages/guard/src/routing/pegboard_gateway/mod.rs:716-733</code>).</p>
+<p>The version 1 path uses <code>pegboard::workflows::actor::Wake</code> with <code>AllocationOverride::DontSleep</code> and a pending timeout of 60,000 milliseconds. <code>DontSleep</code> forces an Actor with <code>CrashPolicy::Sleep</code> to pend instead of sleep (<code>engine/packages/pegboard/src/workflows/actor/runtime.rs:621-629</code>). The wait loop is the same shape: 8 rewakes, a 30,000 millisecond ready timeout, a pool error check, and a <code>MigratedToV2</code> event that switches to <code>handle_actor_v2</code>. The ready message carries <code>runner_id: Id</code>, not <code>envoy_key</code> (<code>engine/packages/guard/src/routing/pegboard_gateway/mod.rs:808-978</code> and <code>engine/packages/pegboard/src/workflows/actor/mod.rs:1347-1350</code>).</p>
+<p>The client sees the result of the wait as an HTTP status or as a WebSocket close frame. Section 17 lists every status.</p>
+<h2>10. Gateway selection: legacy runner, envoy, and streaming envoy</h2>
+<p>After the Actor is ready, Guard chooses one of three gateway implementations.</p>
+<table><tr><th>Implementation</th><th>Type</th><th>Transport</th><th>Used for</th></tr><tr><td>Legacy runner gateway</td><td><code>PegboardGateway</code></td><td>Runner WebSocket protocol</td><td>Actor version 1</td></tr><tr><td>Envoy gateway 2</td><td><code>PegboardGateway2</code></td><td>Envoy tunnel over PubSub</td><td>All WebSocket traffic; non-streaming HTTP</td></tr><tr><td>Envoy gateway 3</td><td><code>PegboardGateway3</code></td><td>Envoy tunnel over PubSub with streaming HTTP</td><td>Server-Sent Events (SSE) and HTTP with unknown length, when sampled</td></tr></table>
+<p>The choice between gateway 2 and gateway 3 is <code>select_gateway</code>. It is a feature flag with a deterministic sample.</p>
+<pre><code class="language-rust">// engine/packages/guard/src/routing/pegboard_gateway/gateway3_selector.rs:146-164
+	let decision = if config.mode == GuardGatewayV3Mode::Off {
+		Decision::Disabled
+	} else if request_kind == RequestKind::WebSocket {
+		Decision::WebSocket
+	} else if protocol_version.is_none() {
+		Decision::ProtocolUnknown
+	} else if !protocol_version.is_some_and(|version| {
+		(MIN_GATEWAY3_PROTOCOL_VERSION..=PROTOCOL_VERSION).contains(&amp;version)
+	}) {
+		Decision::ProtocolIncompatible
+	} else if config.mode == GuardGatewayV3Mode::Opportunistic
+		&amp;&amp; !request_kind.is_opportunistic_candidate()
+	{
+		Decision::NotCandidate
+	} else if sampled_in(namespace_id, actor_id, config.percentage) {
+		Decision::SampledIn
+	} else {
+		Decision::SampledOut
+	};
+</code></pre>
+<p>The constants are exact:</p>
+<table><tr><th>Constant</th><th>Value</th><th>Meaning</th></tr><tr><td><code>MIN_GATEWAY3_PROTOCOL_VERSION</code></td><td>7</td><td>Lowest Envoy protocol for gateway 3</td></tr><tr><td><code>SAMPLE_BUCKETS</code></td><td>10,000</td><td>Sampling bucket count</td></tr><tr><td><code>SAMPLE_DOMAIN</code></td><td><code>b"pegboard-gateway3-rollout-v1\0"</code></td><td>Sampling domain separator</td></tr><tr><td><code>PROTOCOL_VERSION</code></td><td>8</td><td>Generated from <code>v8.bare</code>, the highest schema</td></tr></table>
+<p><code>GuardGatewayV3Mode</code> has three values: <code>Off</code>, <code>Opportunistic</code>, and <code>On</code>. <code>Off</code> sends every request to gateway 2. <code>Opportunistic</code> samples only Server-Sent Events (SSE) and unknown-length HTTP requests. <code>On</code> samples every non-WebSocket request that has a compatible protocol version. <code>RequestKind</code> classifies a request as <code>WebSocket</code>, <code>HttpSse</code>, <code>HttpUnknownLength</code>, or <code>HttpOther</code> (<code>engine/packages/guard/src/routing/pegboard_gateway/gateway3_selector.rs:15-35</code> and <code>174-198</code>). The default mode is <code>Off</code>. The default percentage is 0. The <code>Off</code> value is the default of <code>GuardGatewayV3Mode</code> (<code>engine/packages/config/src/config/features.rs:47-54</code>). With the default configuration, every request uses gateway 2.</p>
+<p>The seven <code>Decision</code> values map to the final choice as follows.</p>
+<table><tr><th><code>Decision</code></th><th><code>use_gateway3()</code></th><th>Cause</th></tr><tr><td><code>Disabled</code></td><td>false</td><td>Mode is <code>Off</code></td></tr><tr><td><code>WebSocket</code></td><td>false</td><td>The request is a WebSocket upgrade</td></tr><tr><td><code>ProtocolUnknown</code></td><td>false</td><td>The Actor has no envoy protocol version</td></tr><tr><td><code>ProtocolIncompatible</code></td><td>false</td><td>The version is outside 7 through 8</td></tr><tr><td><code>NotCandidate</code></td><td>false</td><td>Mode is <code>Opportunistic</code> and the kind is not SSE or unknown length</td></tr><tr><td><code>SampledOut</code></td><td>false</td><td>The hash bucket is at or above the threshold</td></tr><tr><td><code>SampledIn</code></td><td>true</td><td>The hash bucket is below the threshold</td></tr></table>
+<p>A WebSocket always produces <code>Decision::WebSocket</code>, before the sample. Therefore a WebSocket never uses gateway 3 in this commit, even when the mode is <code>On</code>. The selector records the decision with <code>selection.record()</code> (<code>engine/packages/guard/src/routing/pegboard_gateway/mod.rs:748-755</code>).</p>
+<p><code>sample_bucket</code> concatenates the domain, the namespace identifier string, a NUL byte, and the Actor identifier string. <code>xxh3_128_with_seed</code> with seed 0 returns 128 bits. The modulo 10,000 reduces that value to one of 10,000 buckets. <code>sampled_in</code> compares the bucket with <code>percentage * 100</code>. A percentage of 0 is always false. A percentage of 100 is always true (<code>engine/packages/guard/src/routing/pegboard_gateway/gateway3_selector.rs:231-246</code>).</p>
+<p>Gateway 3 requires an Actor generation. The generation is the <code>u32</code> that the actor2 workflow returns in the <code>Allocated</code> signal when it places the Actor on an envoy. It identifies one placement (<code>engine/packages/pegboard/src/workflows/actor2/mod.rs:1345-1349</code>). A missing generation returns a plain <code>anyhow</code> error with the text <code>gateway3 actor is missing its generation</code>. Gateway 3 gets the generation, the <code>envoy_key</code>, the protocol version, the Actor identifier, the Actor key, the path, and one gateway-3 <code>SharedState</code> (<code>engine/packages/guard/src/routing/pegboard_gateway/mod.rs:762-784</code>).</p>
+<h2>11. The reverse proxy</h2>
+<p>The reverse proxy path handles <code>RoutingOutput::Route</code>. In this commit, the only <code>Route</code> outputs in <code>rivet-guard</code> are the two cross-datacenter handoffs, one for a direct Actor path and one for a query path. Actor traffic normally uses <code>CustomServe</code> and the tunnel.</p>
+<p><code>handle_http_request</code> buffers the request body first. The body is wrapped in <code>Limited</code> with the Guard body limit. The default limit is 20 Mebibytes (MiB), which is 20 × 1024 × 1024 bytes. A larger body returns <code>guard.invalid_request_body</code>, status 413 (<code>engine/packages/guard-core/src/proxy_service.rs:843-856</code> and <code>engine/packages/config/src/config/guard.rs:323-325</code>).</p>
+<pre><code class="language-rust">// engine/packages/guard-core/src/proxy_service.rs:844-856
+				// Read the request body before proceeding with retries
+				let (req_parts, body) = req.into_parts();
+				let req_body =
+					Limited::new(body, self.state.config.guard().http_max_request_body_size())
+						.collect()
+						.await
+						.map_err(|err| {
+							errors::InvalidRequestBody {
+								reason: err.to_string(),
+							}
+							.build()
+						})?
+						.to_bytes();
+</code></pre>
+<p>Guard then loops up to <code>max_attempts</code> times. The default is 7. Each attempt builds a new upstream request from the stored parts and a clone of the buffered bytes. The clone is cheap because the type is <code>Bytes</code> (<code>engine/packages/guard-core/src/proxy_service.rs:858-873</code>).</p>
+<p>The upstream request has a per-attempt timeout. The default is 30,000 milliseconds. A timeout produces <code>guard.request_timeout</code> with the phase <code>upstream_request</code> (<code>engine/packages/guard-core/src/proxy_service.rs:875-884</code>).</p>
+<p>A response is retryable when its status is 503 or 504 and its <code>x-rivet-error</code> header has the group <code>guard</code> and a retryable code (<code>engine/packages/guard-core/src/utils.rs:495-502</code>). The retryable codes are <code>service_unavailable</code>, <code>actor_ready_timeout</code>, <code>actor_wake_retries_exceeded</code>, <code>actor_stopped_while_waiting</code>, <code>tunnel_request_aborted</code>, <code>tunnel_message_timeout</code>, <code>tunnel_response_closed</code>, and <code>gateway_response_start_timeout</code> (<code>engine/packages/guard-core/src/utils.rs:480-492</code>). On a retry, Guard reads the last status and last error code, sleeps for <code>initial_interval × 2^(attempt - 1)</code>, and resolves the route again with <code>ignore_cache = true</code> (<code>engine/packages/guard-core/src/proxy_service.rs:886-920</code>).</p>
+<table><tr><th>Retry constant</th><th>Default</th><th>Source</th></tr><tr><td>Maximum attempts</td><td>7</td><td><code>engine/packages/config/src/config/guard.rs:9</code></td></tr><tr><td>Initial interval</td><td>150 milliseconds</td><td><code>engine/packages/config/src/config/guard.rs:10</code></td></tr><tr><td>First retry sleep</td><td>150 milliseconds</td><td><code>150 × 2^0</code></td></tr><tr><td>Second retry sleep</td><td>300 milliseconds</td><td><code>150 × 2^1</code></td></tr><tr><td>Third retry sleep</td><td>600 milliseconds</td><td><code>150 × 2^2</code></td></tr><tr><td>Upstream request timeout</td><td>30,000 milliseconds</td><td><code>engine/packages/config/src/config/guard.rs:11</code></td></tr></table>
+<p>A connection error is retried while attempts remain. <code>err.is_connect()</code> is true only when the Transmission Control Protocol (TCP) or TLS connection attempt failed. Any other error stops the loop and becomes <code>guard.upstream_error</code> or <code>guard.retry_attempts_exceeded</code> (<code>engine/packages/guard-core/src/proxy_service.rs:957-1010</code>).</p>
+<p>The response streaming decision is hardcoded. The code comments show a content-type test, but the test is disabled and <code>is_streaming</code> is <code>true</code> for every successful response.</p>
+<pre><code class="language-rust">// engine/packages/guard-core/src/proxy_service.rs:922-937
+							let (parts, body) = resp.into_parts();
+
+							// Check if this is a streaming response by examining headers
+							// let is_streaming = parts.headers.get(&quot;content-type&quot;)
+							// 	.and_then(|ct| ct.to_str().ok())
+							// 	.map(|ct| ct.contains(&quot;text/event-stream&quot;) || ct.contains(&quot;application/stream&quot;))
+							// 	.unwrap_or(false);
+							let is_streaming = true;
+
+							if is_streaming {
+								// For streaming responses, pass through the body without buffering
+								tracing::debug!(&quot;Detected streaming response, preserving stream&quot;);
+
+								let streaming_body = ResponseBody::Incoming(body);
+								return Ok(Response::from_parts(parts, streaming_body));
+							} else {
+</code></pre>
+<p>The non-streaming branch is therefore unreachable in this commit. The branch still exists and would buffer with the same 20 MiB limit and return <code>guard.invalid_response_body</code> on failure (<code>engine/packages/guard-core/src/proxy_service.rs:937-955</code>).</p>
+<p><code>proxied_request_builder</code> builds an empty header map, then calls <code>headers.remove</code> for <code>x-rivet-target</code>, <code>x-rivet-actor</code>, and <code>x-rivet-token</code>. The map is empty at that moment, so the three calls remove nothing. The builder then calls <code>add_proxy_headers_with_addr</code>, which copies the client headers into the same map. The copy skips three groups:</p>
+<ul><li><code>Host</code>.</li><li>Eight hop-by-hop headers from the HTTP specification: <code>Connection</code>,</li></ul>
+<p>  <code>keep-alive</code>, <code>Proxy-Authenticate</code>, <code>Proxy-Authorization</code>, <code>TE</code>, <code>Trailer</code>,   <code>Transfer-Encoding</code>, and <code>Upgrade</code>.</p>
+<ul><li>Two client handshake headers: <code>Sec-WebSocket-Key</code> and <code>Sec-WebSocket-Version</code>.</li></ul>
+<p>The filter checks only those groups. It does not list the three routing headers. A client that sends <code>x-rivet-target</code>, <code>x-rivet-actor</code>, or <code>x-rivet-token</code> therefore has them forwarded to the upstream service on this path (<code>engine/packages/guard-core/src/utils.rs:181-190</code> and <code>297-313</code>). The source does not state whether this is intended.</p>
+<p>Guard appends <code>x-forwarded-for</code> with the peer address unless the chain already contains that address (<code>engine/packages/guard-core/src/utils.rs:315-332</code>). The builder sets the Uniform Resource Locator (URL) scheme to <code>https</code> when <code>target.port == 443</code>. It sets <code>http</code> for every other port (<code>engine/packages/guard-core/src/utils.rs:157</code>).</p>
+<pre><code class="language-rust">// engine/packages/guard-core/src/utils.rs:244-265
+/// Headers that are scoped to a single connection and must not be forwarded to the upstream
+/// service. See RFC 9110 section 7.6.1. The outgoing request generates its own versions of these
+/// where they are needed, including the `Connection` and `Upgrade` headers of a websocket
+/// handshake.
+const HOP_BY_HOP_HEADERS: [HeaderName; 8] = [
+	hyper::header::CONNECTION,
+	HeaderName::from_static(&quot;keep-alive&quot;),
+	hyper::header::PROXY_AUTHENTICATE,
+	hyper::header::PROXY_AUTHORIZATION,
+	hyper::header::TE,
+	hyper::header::TRAILER,
+	hyper::header::TRANSFER_ENCODING,
+	hyper::header::UPGRADE,
+];
+
+/// Headers belonging to the client&#x27;s websocket handshake with guard. Guard terminates that
+/// handshake and opens its own to the upstream service, so the outgoing request keeps the key it
+/// generated for itself rather than echoing the client&#x27;s.
+const CLIENT_HANDSHAKE_HEADERS: [HeaderName; 2] = [
+	hyper::header::SEC_WEBSOCKET_KEY,
+	hyper::header::SEC_WEBSOCKET_VERSION,
+];
+</code></pre>
+<p>The reverse proxy does not remove <code>Authorization</code>. It does not remove cookies. It does not rewrite the path except to add a leading slash when the configured target path lacks one.</p>
+<p>A <code>CustomServe</code> HTTP handler has a different retry shape. Guard calls <code>prepare_streaming_request</code> once before it gives the body to the handler. That phase is retryable. After <code>handle_streaming_request</code> starts, the body and side effects belong to the selected handler, so Guard does not retry (<code>engine/packages/guard-core/src/custom_serve.rs:21-48</code>).</p>
+<h2>12. One concrete request, step by step</h2>
+<p>This walk uses a query path from the parser test. The path is exact.</p>
+<pre><code class="language-">/gateway/lobby/inspect?rvt-namespace=prod&amp;rvt-method=get&amp;rvt-key=region-west%2F1,shard-2,alpha%40beta&amp;rvt-token=guard%2Ftoken&amp;watch=1
+</code></pre>
+<p>Assume the client sends this as <code>GET</code> to <code>api.example.com:6420</code> with no <code>x-rivet-target</code> header.</p>
+<ol><li><code>ProxyService::process</code> creates a <code>RequestContext</code>. The host is</li></ol>
+<p>   <code>api.example.com:6420</code>. The hostname is <code>api.example.com</code>. The path is the    full string above. The method is <code>GET</code>. <code>is_websocket</code> is false. The body    size is 0 and the body is already complete.</p>
+<ol><li><code>handle_request</code> calls <code>resolve_route</code> with <code>ignore_cache = false</code>.</li><li><code>create_cache_key_function</code> calls <code>parse_actor_path</code>. The query contains</li></ol>
+<p>   <code>rvt-*</code> keys, so the query parser runs before the cache key is built.</p>
+<ol><li><code>parse_query_actor_path</code> decodes the name <code>lobby</code>. It extracts the token</li></ol>
+<p>   <code>guard/token</code>. It splits the key into <code>region-west/1</code>, <code>shard-2</code>, and    <code>alpha@beta</code>. It builds a <code>QueryActorQuery::Get</code> with namespace <code>prod</code>,    name <code>lobby</code>, and <code>skip_ready_wait = false</code>. The stripped path is    <code>/inspect?watch=1</code> (<code>engine/packages/guard/tests/parse_actor_path.rs:40-65</code>).</p>
+<ol><li>The cache key uses the query builder. For this <code>Get</code> query the builder hashes</li></ol>
+<p>   the string <code>get</code>, the namespace, the name, the key, the stripped path, and the    HTTP method. The <code>GetOrCreate</code> variant also hashes the pool name, the input,    the region, and the crash policy. The token is excluded, because the token    does not change the Actor choice    (<code>engine/packages/guard/src/cache/pegboard_gateway.rs:104-143</code>).</p>
+<ol><li>The route cache lookup misses. Insertion is disabled, so every request misses.</li><li><code>create_routing_function</code> runs <code>/health/ws</code> first. The path is not a health</li></ol>
+<p>   path.</p>
+<ol><li>Path-based Actor routing sees <code>gateway</code>. <code>parse_actor_path</code> returns a query</li></ol>
+<p>   path. <code>auth_query_actor_path</code> checks the token for namespace <code>prod</code> with    <code>OperationKind::Read</code> and <code>ResourceKind::Actor</code>. The budget is 5,000    milliseconds. This is a name-level check. It runs before the Actor exists, so    it cannot use the Actor identifier.</p>
+<ol><li><code>resolve_query</code> resolves the namespace name <code>prod</code> to a namespace identifier.</li></ol>
+<p>   It looks up the Actor by name <code>lobby</code> and the serialized key. If no Actor    exists, it returns <code>actor.not_found</code>, status 404    (<code>engine/packages/guard/src/routing/pegboard_gateway/resolve_actor_query.rs:60-117</code>).</p>
+<ol><li><code>route_request_inner</code> compares the Actor label with the current datacenter</li></ol>
+<p>    label. If they differ, Guard returns a <code>Route</code> to the peer proxy URL and the     reverse proxy takes over. If they match, Guard continues.</p>
+<ol><li>Guard subscribes to the nine workflow messages. The budget is 2,000</li></ol>
+<p>    milliseconds.</p>
+<ol><li>Guard fetches the Actor. The budget is 5,000 milliseconds.</li><li>Guard checks authentication again with <code>ResourceKind::ActorGateway</code>, the</li></ol>
+<p>    Actor identifier, and <code>OperationKind::Read</code>. The budget is 5,000     milliseconds. Step 8 could not name the Actor. This step checks the gateway     resource for the resolved Actor identifier.</p>
+<ol><li>Guard sends <code>actor2::Wake</code> with a 5,000 millisecond budget. It does not test</li></ol>
+<p>    the sleep flag first. It then decides whether to wait for     <code>pegboard::workflows::actor2::Ready</code>.</p>
+<ol><li>The <code>Ready</code> message supplies <code>envoy_key</code>. Guard re-fetches the Actor and</li></ol>
+<p>    confirms the key did not change.</p>
+<ol><li><code>select_gateway</code> sees an HTTP request, the default mode <code>Off</code>, and returns</li></ol>
+<p>    <code>Decision::Disabled</code>. Guard builds <code>PegboardGateway2</code>.</p>
+<ol><li><code>RoutingOutput::CustomServe</code> returns the gateway. <code>ProxyService::handle_request</code></li></ol>
+<p>    calls the gateway's <code>handle_request</code>, not <code>handle_http_request</code>.</p>
+<ol><li><code>PegboardGateway2</code> sends the request over the tunnel to the envoy that owns</li></ol>
+<p>    <code>envoy_key</code>. The envoy sends it to the Actor.</p>
+<ol><li>The Actor response returns over the tunnel. The gateway converts it to a</li></ol>
+<p>    <code>Response<ResponseBody></code>. <code>err_into_response</code> is not used on success.</p>
+<ol><li>If any phase times out, Guard returns the error listed in section 17. The</li></ol>
+<p>    response body is JSON with <code>x-rivet-error: group.code</code>.</p>
+<p>Step 3 and step 8 both call <code>parse_actor_path</code>. The cache-key callback and the routing callback are separate functions, so Guard parses the path twice. The source does not state a reason for the second parse.</p>
+<p>The token value in this example is <code>guard/token</code>. It is percent-encoded in the path as <code>guard%2Ftoken</code>. The parser decodes it. The token is not part of the cache key.</p>
+<h2>13. WebSocket upgrade and message forwarding</h2>
+<p>A WebSocket request first passes through the same routing function. The difference is the upgrade at the end.</p>
+<p><code>handle_websocket_upgrade</code> calls <code>hyper_tungstenite::upgrade</code> with Guard's WebSocket configuration. The default maximum message size is 32 MiB. The default maximum frame size is 32 MiB (<code>engine/packages/config/src/config/guard.rs:6-7</code>).</p>
+<pre><code class="language-rust">// engine/packages/guard-core/src/proxy_service.rs:1119-1137
+		// Handle WebSocket upgrade properly with hyper_tungstenite
+		tracing::debug!(path=%req_ctx.path_for_logs(), &quot;Upgrading client connection to WebSocket&quot;);
+		let (client_response, client_ws) = match hyper_tungstenite::upgrade(
+			req,
+			Some(websocket_config(self.state.config.guard())),
+		) {
+			Ok(x) =&gt; {
+				tracing::debug!(&quot;Client WebSocket upgrade successful&quot;);
+				x
+			}
+			Err(err) =&gt; {
+				tracing::error!(?err, &quot;Failed to upgrade client WebSocket&quot;);
+				return Err(errors::ConnectionError {
+					error_message: format!(&quot;Failed to upgrade client WebSocket: {}&quot;, err),
+					remote_addr: req_ctx.remote_addr.to_string(),
+				}
+				.build());
+			}
+		};
+</code></pre>
+<p>Guard adds <code>sec-websocket-protocol: rivet</code> to every successful upgrade response. The comment says many clients, including node-ws and Cloudflare, require a protocol in the response (<code>engine/packages/guard-core/src/proxy_service.rs:2036-2041</code>).</p>
+<p>For a <code>Route</code> target, Guard opens its own upstream WebSocket with <code>tokio_tungstenite::connect_async_with_config</code>. The connect attempt timeout is 5,000 milliseconds. The attempt count is the same maximum of 7. Guard copies the proxy headers, including <code>x-forwarded-for</code>, but not the client handshake key (<code>engine/packages/guard-core/src/proxy_service.rs:1216-1320</code>).</p>
+<p>After both sides are open, Guard splits the client stream and the upstream stream. A <code>tokio::sync::watch</code> channel coordinates shutdown. Guard forwards in both directions manually, converts between the two tungstenite message types, and sends each message with a 5,000 millisecond timeout. Each flush has a 2,000 millisecond timeout. A close frame from either side signals the other direction to stop (<code>engine/packages/guard-core/src/proxy_service.rs:1482-1560</code>).</p>
+<table><tr><th>WebSocket constant</th><th>Default</th><th>Source</th></tr><tr><td>Maximum message size</td><td>33,554,432 bytes (32 MiB)</td><td><code>engine/packages/config/src/config/guard.rs:6</code></td></tr><tr><td>Maximum frame size</td><td>33,554,432 bytes (32 MiB)</td><td><code>engine/packages/config/src/config/guard.rs:7</code></td></tr><tr><td>Setup timeout</td><td>30,000 milliseconds</td><td><code>engine/packages/config/src/config/guard.rs:12</code></td></tr><tr><td>Connect attempt timeout</td><td>5,000 milliseconds</td><td><code>engine/packages/config/src/config/guard.rs:13</code></td></tr><tr><td>Send timeout</td><td>5,000 milliseconds</td><td><code>engine/packages/config/src/config/guard.rs:14</code></td></tr><tr><td>Flush timeout</td><td>2,000 milliseconds</td><td><code>engine/packages/config/src/config/guard.rs:15</code></td></tr></table>
+<p>When the upstream WebSocket closes, Guard maps the close frame and forwards it. The mapping is:</p>
+<table><tr><th>Upstream condition</th><th>Client close code</th></tr><tr><td><code>ws.connection_closed</code> or <code>ws.eviction</code></td><td><code>CloseCode::Normal</code></td></tr><tr><td>Any error in group <code>auth</code></td><td><code>CloseCode::Policy</code></td></tr><tr><td>Any other error</td><td><code>CloseCode::Error</code></td></tr></table>
+<p>The close reason is <code>group.code#ray_id</code>. Guard truncates it to 123 bytes, which is the WebSocket protocol limit (<code>engine/packages/guard-core/src/utils.rs:530-588</code>).</p>
+<p>If Guard cannot open the upstream WebSocket after all attempts, it sends a close frame to the client. The error is <code>guard.retry_attempts_exceeded</code> or the last connection error (<code>engine/packages/guard-core/src/proxy_service.rs:1400-1465</code>).</p>
+<p>For a <code>CustomServe</code> handler, Guard creates one <code>WebSocketHandle</code> and calls <code>handle_websocket(req_ctx, ws_handle.clone(), after_hibernation)</code>. If the handler returns a close frame, Guard sends it, flushes, sleeps for <code>WEBSOCKET_CLOSE_LINGER</code> (5 milliseconds, <code>engine/packages/guard-core/src/proxy_service.rs:45</code>), and stops. If the handler returns an error, Guard checks <code>is_ws_hibernate</code>. A hibernation error sets the attempt count to 0 and calls <code>handle_websocket_hibernation</code>. Any other retryable error increments the count, backs off, and resolves the route again. A non-retryable error or an exhausted count sends a close frame (<code>engine/packages/guard-core/src/proxy_service.rs:1800-1998</code>). A hibernation is not a failure, so it must not spend the retry budget. The source does not state this reason; it only sets <code>attempts = 0</code> (<code>engine/packages/guard-core/src/proxy_service.rs:1868-1874</code>).</p>
+<p>The <code>CustomServeTrait</code> contract is small.</p>
+<pre><code class="language-rust">// engine/packages/guard-core/src/custom_serve.rs:13-76
+pub enum HibernationResult {
+	Continue,
+	Close,
+}
+
+/// Trait for custom request serving logic that can handle both HTTP and WebSocket requests
+#[async_trait]
+pub trait CustomServeTrait: Send + Sync {
+	/// Returns true when this service wants the original request body stream.
+	/// The default buffered path keeps retry semantics for existing custom routes.
+	fn streams_request_body(&amp;self) -&gt; bool {
+		false
+	}
+
+	/// Revalidate a streaming route while Guard still owns the untouched body.
+	/// Only this phase is retryable; once `handle_streaming_request` begins, the
+	/// body and any upstream side effects belong to that selected handler.
+	async fn prepare_streaming_request(&amp;self, _req_ctx: &amp;mut RequestContext) -&gt; Result&lt;()&gt; {
+		Ok(())
+	}
+
+	/// Handle a regular HTTP request
+	async fn handle_request(
+		&amp;self,
+		req: Request&lt;Full&lt;Bytes&gt;&gt;,
+		req_ctx: &amp;mut RequestContext,
+	) -&gt; Result&lt;Response&lt;ResponseBody&gt;&gt;;
+
+	/// Handle a regular HTTP request with the original inbound body stream.
+	async fn handle_streaming_request(
+		&amp;self,
+		_req: Request&lt;BodyIncoming&gt;,
+		_req_ctx: &amp;mut RequestContext,
+	) -&gt; Result&lt;Response&lt;ResponseBody&gt;&gt; {
+		bail!(&quot;service does not support streaming request bodies&quot;);
+	}
+
+	/// Handle a WebSocket connection after upgrade. Supports connection retries.
+	async fn handle_websocket(
+		&amp;self,
+		_req_ctx: &amp;mut RequestContext,
+		_websocket: WebSocketHandle,
+		// True if this websocket is reconnecting after hibernation.
+		_after_hibernation: bool,
+	) -&gt; Result&lt;Option&lt;CloseFrame&gt;&gt; {
+		Err(errors::WebSocketNotSupported.build())
+	}
+
+	/// Terminate downstream state after Guard drops an in-flight WebSocket handler.
+	/// Implementations that register a downstream request must keep this operation bounded.
+	async fn terminate_websocket(&amp;self, _req_ctx: &amp;RequestContext) -&gt; Result&lt;()&gt; {
+		Ok(())
+	}
+
+	// TODO: Combine into handle_websocket, remove hibernation from guard
+	/// Returns true if the websocket should close.
+	async fn handle_websocket_hibernation(
+		&amp;self,
+		_req_ctx: &amp;mut RequestContext,
+		_websocket: WebSocketHandle,
+	) -&gt; Result&lt;HibernationResult&gt; {
+		Err(errors::WebSocketHibernationNotSupported.build())
+	}
+}
+</code></pre>
+<h2>14. Hibernatable WebSockets</h2>
+<p>A hibernatable WebSocket keeps the client connection open while the Actor sleeps. The gateway keeps the tunnel request identifier. The Actor runtime keeps no live handler. The next client message or the next Actor wake restores the request.</p>
+<div class="mermaid">
+sequenceDiagram
+    participant C as Client
+    participant P as ProxyService
+    participant R as create_routing_function
+    participant G as PegboardGateway2
+    participant W as actor2 workflow
+    participant E as Envoy
+    participant A as Actor
+    C-&gt;&gt;P: WebSocket upgrade
+    P-&gt;&gt;R: resolve_route
+    R-&gt;&gt;W: subscribe actor2::Ready and actor2::Stopped
+    R-&gt;&gt;W: actor2::Wake
+    R--&gt;&gt;P: RoutingOutput::CustomServe
+    P-&gt;&gt;G: handle_websocket
+    G-&gt;&gt;E: ToEnvoyWebSocketOpen
+    E-&gt;&gt;A: start or attach Actor
+    E--&gt;&gt;G: ToRivetWebSocketOpen can_hibernate=true
+    G--&gt;&gt;C: 101 Switching Protocols
+    C-&gt;&gt;G: binary or text
+    G-&gt;&gt;E: ToEnvoyWebSocketMessage
+    E-&gt;&gt;A: message
+    A--&gt;&gt;E: ToRivetWebSocketClose hibernate=true
+    E--&gt;&gt;G: close
+    G-&gt;&gt;G: start_hibernation
+    Note over C,G: client socket stays open
+    alt client message during sleep
+        C-&gt;&gt;G: message during sleep
+        G-&gt;&gt;G: hibernation_task returns Continue
+        P-&gt;&gt;R: resolve_route(ignore_cache=true)
+        R-&gt;&gt;W: actor2::Wake
+        W-&gt;&gt;E: CommandStartActor
+        E-&gt;&gt;A: start or attach Actor
+        R--&gt;&gt;P: new CustomServe handler
+        P-&gt;&gt;G: handle_websocket(after_hibernation=true)
+        G-&gt;&gt;E: reconnect without ToEnvoyWebSocketOpen
+        E-&gt;&gt;A: message
+        G--&gt;&gt;C: message delivered
+    else external wake
+        W-&gt;&gt;E: CommandStartActor
+        E-&gt;&gt;A: start or attach Actor
+        G-&gt;&gt;E: reconnect after actor2::Ready
+        G--&gt;&gt;C: pending messages delivered
+    end
+
+</div>
+<p>The diagram uses the envoy-path names. <code>R</code> is the routing function, not a separate service. <code>R</code> creates the subscriptions and sends the wake before <code>P</code> selects a gateway. On the client-message branch, <code>P</code> runs <code>resolve_route</code> again with <code>ignore_cache = true</code>. That second resolution sends the second <code>actor2::Wake</code>. <code>W</code> is the actor2 workflow runtime that builds <code>CommandStartActor</code>. The envoy hydrates that command with the active hibernating request identifiers (section 14.5). <code>G</code> sends the open message only when its in-flight entry does not exist. A reconnect after hibernation sends no open message.</p>
+<p>The source document <code>docs-internal/engine/HIBERNATING_WS.md</code> gives the intended lifecycle in nine steps. The message names in that document belong to the legacy runner protocol; section 20 compares the names.</p>
+<table><tr><th>Step</th><th>Action in <code>HIBERNATING_WS.md</code></th></tr><tr><td>1</td><td>The client opens a WebSocket through Guard</td></tr><tr><td>2</td><td>Guard checks whether the Actor is awake</td></tr><tr><td>3</td><td>If not, Guard sends a wake signal to the Actor workflow</td></tr><tr><td>4</td><td>Guard sends <code>ToClientWebSocketOpen</code> on the runner protocol</td></tr><tr><td>5</td><td>The runner replies <code>ToServerWebSocketOpen</code> with <code>canHibernate = true</code></td></tr><tr><td>6</td><td>The connection is open and Guard proxies messages</td></tr><tr><td>7</td><td>The Actor sleeps and the runner sends <code>ToServerWebSocketClose</code> with <code>hibernate = true</code></td></tr><tr><td>8</td><td>Guard starts hibernation</td></tr><tr><td>9</td><td>An external wake, a client message, or a client close ends hibernation</td></tr></table>
+<p>The source of these steps is <code>docs-internal/engine/HIBERNATING_WS.md:3-17</code>.</p>
+<h3>14.1 The exact close condition</h3>
+<p>This subsection describes how hibernation starts. Section 14.8 describes the result after the hibernation task ends. The envoy sends <code>ToRivetWebSocketClose</code> with <code>hibernate = true</code>. The gateway's <code>tunnel_to_ws_task</code> checks <code>can_hibernate</code> and the close flag.</p>
+<pre><code class="language-rust">// engine/packages/pegboard-gateway2/src/tunnel_to_ws_task.rs:73-82
+						protocol::ToRivetTunnelMessageKind::ToRivetWebSocketClose(close) =&gt; {
+							tracing::debug!(?close, &quot;server closed websocket&quot;);
+
+							if can_hibernate &amp;&amp; close.hibernate {
+								return Err(WebSocketServiceHibernate.build());
+							} else {
+								// Successful closure
+								return Ok(LifecycleResult::ServerClose(close));
+							}
+						}
+</code></pre>
+<p><code>WebSocketServiceHibernate</code> is a guard error with the code <code>websocket_service_hibernate</code> (<code>engine/packages/guard-core/src/errors.rs:283-289</code>). Guard detects it with <code>is_ws_hibernate</code> and calls <code>handle_websocket_hibernation</code> instead of closing the client (<code>engine/packages/guard-core/src/utils.rs:522-528</code>).</p>
+<p>If the Actor stops while the WebSocket handler is active, the gateway does the same. It returns <code>WebSocketServiceHibernate</code> when <code>can_hibernate</code> is true. Otherwise it returns a normal close with code 1000 and reason <code>actor.stopped</code> (<code>engine/packages/pegboard-gateway2/src/tunnel_to_ws_task.rs:93-105</code>).</p>
+<h3>14.2 State machine</h3>
+<p>The gateway stores each in-flight request in one of three states.</p>
+<div class="mermaid">
+stateDiagram-v2
+    [*] --&gt; Active: create_or_wake_in_flight_request
+    Active --&gt; PendingHibernation: start_hibernation
+    PendingHibernation --&gt; Hibernating: hibernate
+    PendingHibernation --&gt; Active: create_or_wake_in_flight_request
+    Hibernating --&gt; Active: create_or_wake_in_flight_request
+    Active --&gt; Active: create_or_wake_in_flight_request (retry)
+    Active --&gt; [*]: stop
+    PendingHibernation --&gt; [*]: stop
+    Hibernating --&gt; [*]: expired (garbage collection)
+
+</div>
+<p>The transitions are exact:</p>
+<ol><li>A new request enters <code>Active</code> from <code>create_or_wake_in_flight_request</code>.</li><li><code>start_hibernation</code> moves <code>Active</code> to <code>PendingHibernation</code>.</li><li><code>hibernate</code> moves <code>PendingHibernation</code> to <code>Hibernating</code>.</li><li><code>create_or_wake_in_flight_request</code> moves <code>PendingHibernation</code> or <code>Hibernating</code></li></ol>
+<p>   back to <code>Active</code>.</p>
+<ol><li>A retry on <code>Active</code> keeps <code>Active</code> and replaces the channels.</li><li><code>stop(result)</code> removes an <code>Active</code> or <code>PendingHibernation</code> entry.</li><li>The garbage collector removes an expired entry directly with</li></ol>
+<p>   <code>retain_async</code>. It sends <code>MsgGcReason</code> on <code>drop_tx</code> first    (<code>engine/packages/pegboard-gateway3/src/shared_state.rs:570-615</code>).</p>
+<p>There is no <code>delete</code> method on the state object. The <code>hibernating_request::delete</code> operation in section 14.8 deletes the UniversalDB record, not the state enum.</p>
+<p>A retry can call <code>create_or_wake_in_flight_request</code> on an <code>Active</code> request. The function replaces the channels, keeps <code>hibernation_state</code>, and resets <code>last_pong</code> (<code>engine/packages/pegboard-gateway3/src/shared_state.rs:2229-2237</code>). The same function moves <code>PendingHibernation</code> or <code>Hibernating</code> back to <code>Active</code> (<code>engine/packages/pegboard-gateway3/src/shared_state.rs:2239-2255</code>).</p>
+<table><tr><th>State</th><th>Stored data with types</th><th>Meaning</th></tr><tr><td><code>Active</code></td><td><code>msg_tx: mpsc::UnboundedSender<InFlightTunnelMessage></code>, <code>drop_tx: watch::Sender<Option<MsgGcReason>></code>, <code>http_response_queue_budget: Option<Arc<HttpResponseQueueBudget>></code>, <code>last_pong: i64</code>, <code>hibernation_state: Option<HibernationState></code></td><td>A live handler owns the request. <code>last_pong</code> is a millisecond timestamp, and <code>hibernation_state</code> exists only for a hibernatable request</td></tr><tr><td><code>PendingHibernation</code></td><td><code>hibernation_state: HibernationState</code></td><td>The handler stopped and hibernation has not started</td></tr><tr><td><code>Hibernating</code></td><td><code>msg_tx</code>, <code>drop_tx</code>, <code>http_response_queue_budget</code>, <code>hibernation_state: HibernationState</code></td><td>No live handler; the client socket is open. <code>msg_tx</code> and <code>drop_tx</code> serve the hibernation task</td></tr></table>
+<p>The type source is <code>engine/packages/pegboard-gateway3/src/shared_state.rs:2390-2410</code>.</p>
+<p><code>HibernationState</code> holds four fields:</p>
+<table><tr><th>Field</th><th>Type</th><th>Purpose</th></tr><tr><td><code>total_pending_ws_msgs_size</code></td><td><code>u64</code></td><td>Total bytes of unacknowledged client messages</td></tr><tr><td><code>pending_ws_msgs</code></td><td><code>Vec<PendingWebsocketMessage></code></td><td>Client messages that the envoy has not acknowledged</td></tr><tr><td><code>pending_tunnel_msgs</code></td><td><code>Vec<protocol::ToRivetTunnelMessage></code></td><td>Envoy messages that cannot reach the client yet</td></tr><tr><td><code>last_ping</code></td><td><code>Instant</code></td><td>Last keepalive time, used by garbage collection</td></tr></table>
+<p><code>PendingWebsocketMessage</code> has <code>payload: Vec<u8></code>, <code>send_instant: Instant</code>, and <code>message_index: protocol::MessageIndex</code>. The acknowledgement deadline uses <code>send_instant</code>. The cumulative acknowledgement uses <code>message_index</code> (<code>engine/packages/pegboard-gateway3/src/shared_state.rs:2422-2426</code>).</p>
+<p>The gateway 3 source shows the same state types and transitions (<code>engine/packages/pegboard-gateway3/src/shared_state.rs:2390-2426</code>). Gateway 2 uses the same design for the WebSocket path.</p>
+<h3>14.3 Starting hibernation</h3>
+<p><code>start_hibernation</code> moves <code>Active</code> to <code>PendingHibernation</code>. It fails with <code>request not in flight</code> when the request is absent. If the request is already <code>PendingHibernation</code> or <code>Hibernating</code>, it logs a warning and does nothing (<code>engine/packages/pegboard-gateway3/src/shared_state.rs:1518-1544</code>).</p>
+<p><code>hibernate</code> moves <code>PendingHibernation</code> to <code>Hibernating</code>. It takes the pending tunnel messages from the hibernation state and stores the new channels. An <code>Active</code> request or an already <code>Hibernating</code> request causes a warning (<code>engine/packages/pegboard-gateway3/src/shared_state.rs:2280-2316</code>).</p>
+<h3>14.4 The hibernation task</h3>
+<p><code>hibernation_task</code> does five things:</p>
+<ol><li>Subscribes to <code>pegboard::workflows::actor2::Ready</code>.</li><li>Fetches the Actor after the subscription. If the Actor already has an</li></ol>
+<p>   <code>envoy_key</code>, it returns <code>Continue</code>.</p>
+<ol><li>Peeks the client WebSocket.</li><li>Forwards tunnel messages to the client and processes acknowledgements.</li><li>Watches for the Actor <code>Ready</code> event, the drop channel, and the abort channel.</li></ol>
+<pre><code class="language-rust">// engine/packages/pegboard-gateway3/src/hibernation_task.rs:130-150
+#[tracing::instrument(level = &quot;debug&quot;, skip_all)]
+async fn peek_ws_during_hibernation(
+	ws_rx: &amp;mut Pin&lt;&amp;mut WebSocketReceiver&gt;,
+) -&gt; Result&lt;HibernationLifecycleResult&gt; {
+	loop {
+		if let Some(msg) = ws_rx.as_mut().peek().await {
+			match msg {
+				Ok(Message::Binary(_)) | Ok(Message::Text(_)) =&gt; {
+					return Ok(HibernationLifecycleResult::Continue);
+				}
+				Ok(Message::Close(_)) =&gt; return Ok(HibernationLifecycleResult::Close),
+				// Ignore rest
+				_ =&gt; {
+					ws_rx.try_next().await?;
+				}
+			}
+		} else {
+			return Ok(HibernationLifecycleResult::Close);
+		}
+	}
+}
+</code></pre>
+<table><tr><th>Client event during hibernation</th><th>Result</th></tr><tr><td>Text or binary message</td><td><code>Continue</code></td></tr><tr><td>Close frame</td><td><code>Close</code></td></tr><tr><td>Stream ends</td><td><code>Close</code></td></tr><tr><td>Ping or pong</td><td>Consumed and ignored</td></tr></table>
+<p>A <code>Continue</code> means the gateway must reconnect to the Actor so it can deliver the message. A <code>Close</code> means the gateway must reconnect to the Actor so the Actor learns that the client closed. <code>PegboardGateway2::handle_websocket_hibernation</code> returns the result to <code>handle_websocket</code>. That caller sets <code>after_hibernation = true</code>. On <code>Close</code> it also sets <code>ws_hibernation_close = true</code> (section 14.8).</p>
+<h3>14.5 Keepalive and the Actor start command</h3>
+<p>The keepalive task runs only for hibernating requests. The source uses <code>hws</code> as the short prefix for a hibernating WebSocket, as in <code>hws_message_ack_timeout</code> and <code>hws_max_pending_size</code>. The task writes a keepalive record so that <code>hibernating_request::list</code> can find the connection. Its interval is half of <code>hibernating_request_eligible_threshold</code>. The default threshold is 90,000 milliseconds, so the interval is 45,000 milliseconds. The task adds a random jitter from 0 to 127 milliseconds to avoid synchronized writes (<code>engine/packages/pegboard-gateway3/src/keepalive_task.rs:24-43</code> and <code>engine/packages/config/src/config/pegboard.rs:271-274</code>).</p>
+<pre><code class="language-rust">// engine/packages/pegboard-gateway3/src/keepalive_task.rs:24-61
+	let mut ping_interval = tokio::time::interval(Duration::from_millis(
+		(ctx.config()
+			.pegboard()
+			.hibernating_request_eligible_threshold()
+			/ 2)
+		.try_into()?,
+	));
+	ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+	loop {
+		tokio::select! {
+			_ = ping_interval.tick() =&gt; {}
+			_ = keepalive_abort_rx.changed() =&gt; {
+				return Ok(LifecycleResult::Aborted);
+			}
+		}
+
+		// Jitter sleep to prevent stampeding herds
+		let jitter = { rand::thread_rng().gen_range(0..128) };
+		tokio::time::sleep(Duration::from_millis(jitter)).await;
+
+		tracing::debug!(
+			%actor_id,
+			gateway_id=%protocol::util::id_to_string(&amp;gateway_id),
+			request_id=%protocol::util::id_to_string(&amp;request_id),
+			&quot;updating hws keepalive&quot;
+		);
+
+		tokio::try_join!(
+			ctx.op(pegboard::ops::actor::hibernating_request::upsert::Input {
+				actor_id,
+				gateway_id,
+				request_id
+			}),
+			// Keep alive in flight req during hibernation
+			in_flight_req.keepalive_hws(),
+		)?;
+	}
+</code></pre>
+<p><code>hibernating_request::upsert</code> deletes the old timestamp key, writes the new timestamp key, and writes the Actor hibernating-request key. The ping key stores the current timestamp as its value. The Actor hibernating-request key uses the current timestamp as a key component (<code>engine/packages/pegboard/src/ops/actor/hibernating_request/upsert.rs:19-51</code>).</p>
+<p><code>hibernating_request::list</code> reads keys newer than the configured threshold. The query cutoff is <code>now - hibernating_request_eligible_threshold</code>. The default threshold is 90,000 milliseconds. The function returns the gateway identifier and the request identifier (<code>engine/packages/pegboard/src/ops/actor/hibernating_request/list.rs:25-65</code>).</p>
+<p>When Pegboard sends <code>CommandStartActor</code>, the envoy hydrates the command with the active hibernating requests. The code does this immediately before the command reaches the envoy.</p>
+<pre><code class="language-rust">// engine/packages/pegboard-envoy/src/hibernating_requests.rs:5-27
+/// Hydrates ephemeral hibernating request ids before a start command reaches envoy.
+/// Stored serverful commands keep this empty because request ids can change while
+/// queued commands wait for envoy reconnect.
+pub(crate) async fn hydrate_command_wrapper(
+	ctx: &amp;StandaloneCtx,
+	command_wrapper: &amp;mut protocol::CommandWrapper,
+) -&gt; Result&lt;()&gt; {
+	if let protocol::Command::CommandStartActor(start) = &amp;mut command_wrapper.inner {
+		let actor_id =
+			Id::parse(&amp;command_wrapper.checkpoint.actor_id).context(&quot;invalid command actor id&quot;)?;
+		start.hibernating_requests = ctx
+			.op(pegboard::ops::actor::hibernating_request::list::Input { actor_id })
+			.await?
+			.into_iter()
+			.map(|request| protocol::HibernatingRequest {
+				gateway_id: request.gateway_id,
+				request_id: request.request_id,
+			})
+			.collect();
+	}
+
+	Ok(())
+}
+</code></pre>
+<p>The comment states why stored serverful commands keep the list empty. A queued command can wait for an envoy reconnect, and the request identifiers can change in that time. The source does not define the word "serverful". The mechanism is clear: the list is filled at send time, not at store time.</p>
+<h3>14.6 Reconnect and <code>on_open</code></h3>
+<p>The gateway 2 open path shows the reconnect rule. <code>resumed_from_hibernation</code> is true only when <code>after_hibernation</code> is true and the in-flight request already exists. In that case Guard does not send <code>ToEnvoyWebSocketOpen</code>. It sends the open message only when the envoy has no record of the request.</p>
+<pre><code class="language-rust">// engine/packages/pegboard-gateway2/src/lib.rs:408-462
+		// Start listening for WebSocket messages
+		let InFlightRequestCtx {
+			mut msg_rx,
+			mut drop_rx,
+			created,
+			handle: in_flight_req,
+		} = self
+			.shared_state
+			.create_or_wake_in_flight_request(
+				self.namespace_id,
+				self.pool_name.as_str(),
+				self.actor_key.clone(),
+				self.actor_generation,
+				self.envoy_protocol_version,
+				RequestProtocol::WebSocket,
+				tunnel_subject.clone(),
+				request_id,
+				self.lifecycle.clone(),
+				after_hibernation,
+			)
+			.await?;
+
+		// Guard keeps `after_hibernation` set for the rest of the connection, so a retry that
+		// happens after a hibernation can land here once the in flight entry is already gone. The
+		// envoy has no record of the request in that case, so the websocket has to be opened again.
+		let resumed_from_hibernation = after_hibernation &amp;&amp; !created;
+
+		let res = async {
+			// If we are reconnecting after hibernation, don&#x27;t send an open message
+			let can_hibernate = if resumed_from_hibernation {
+				true
+			} else {
+				// Send WebSocket open message
+				let open_message = protocol::ToEnvoyTunnelMessageKind::ToEnvoyWebSocketOpen(
+					protocol::ToEnvoyWebSocketOpen {
+						actor_id: self.actor_id.to_string(),
+						actor_generation: None,
+						path: self.path.clone(),
+						headers: request_headers,
+					},
+				);
+
+				tokio::select! {
+					// Prefer quick stop path
+					biased;
+					_ = stopped_sub.next() =&gt; {
+						tracing::debug!(&quot;actor stopped while waiting for websocket open&quot;);
+						return Err(ActorStoppedWhileWaitingForWebSocketOpen {
+							actor_id: self.actor_id.to_string(),
+							phase: PHASE_PRE_WEBSOCKET_OPEN.to_owned(),
+						}
+						.build());
+					}
+					res = in_flight_req.send_message(open_message, false) =&gt; res?,
+				}
+</code></pre>
+<p>The <code>async</code> block then waits on <code>msg_rx</code>. A <code>ToRivetWebSocketOpen</code> message returns the message to the caller. The caller reads <code>can_hibernate</code> from it. A <code>ToRivetWebSocketClose</code> message returns <code>WebSocketClosedBeforeOpen</code>. Any other message is logged and ignored (<code>engine/packages/pegboard-gateway2/src/lib.rs:477-545</code>). <code>created</code> is false when <code>create_or_wake_in_flight_request</code> finds an existing entry, so <code>resumed_from_hibernation</code> is true only for an existing entry on a reconnect.</p>
+<p>The envoy replies with <code>ToRivetWebSocketOpen</code>. The message carries <code>can_hibernate</code>. The gateway stores that flag with <code>toggle_hibernatable</code>. That method adds or removes <code>hibernation_state</code> on an <code>Active</code> request. It does nothing on a request that is already hibernating (<code>engine/packages/pegboard-gateway2/src/shared_state.rs:931-963</code> and <code>engine/packages/pegboard-gateway2/src/lib.rs:664-670</code>).</p>
+<p>On the runtime side, the exact rule is in <code>engine/CLAUDE.md</code>. NAPI is the Node-API (NAPI) interface that the TypeScript runtime uses to call Rust.</p>
+<blockquote>Restored hibernatable WebSockets must rebuild runtime WebSocket handlers from
+callbacks and call <code>on_open</code>; pre-sleep NAPI callbacks are not reusable after
+actor wake.</blockquote>
+<p>></p>
+<blockquote><code>engine/CLAUDE.md:119</code></blockquote>
+<p>The rule has two parts. The runtime must rebuild the handler from callbacks. The old NAPI callback objects from before sleep are not valid after wake. The rebuilt handler then calls <code>on_open</code>. The source states the rule but not the reason.</p>
+<p>This runtime <code>on_open</code> is not the same as the client-visible TypeScript <code>onOpen</code> event. The TypeScript hibernation test is named "onOpen is not emitted again after hibernation wake" (<code>rivetkit-typescript/packages/rivetkit/tests/driver/actor-conn-hibernation.test.ts:100</code>). The runtime callback rebuilds server state. The client connection does not emit a second open event.</p>
+<h3>14.7 Garbage collection</h3>
+<p>The gateway garbage-collects hibernating requests on two conditions. The first is an unacknowledged client message older than <code>hws_message_ack_timeout</code>. The default is 30,000 milliseconds. The second is a <code>last_ping</code> older than <code>hibernation_timeout</code>, which comes from <code>hibernating_request_eligible_threshold</code>, default 90,000 milliseconds.</p>
+<pre><code class="language-rust">// engine/packages/pegboard-gateway3/src/shared_state.rs:2340-2378
+	fn expired(
+		&amp;self,
+		hws_message_ack_timeout: &amp;Duration,
+		now: &amp;Instant,
+		hibernation_timeout: &amp;Duration,
+	) -&gt; Option&lt;MsgGcReason&gt; {
+		match &amp;self.state {
+			InFlightRequestState::Active {
+				hibernation_state: Some(hibernation_state),
+				..
+			}
+			| InFlightRequestState::PendingHibernation { hibernation_state }
+			| InFlightRequestState::Hibernating {
+				hibernation_state, ..
+			} =&gt; {
+				if let Some(earliest_pending_ws_msg) = hibernation_state.pending_ws_msgs.first() {
+					if &amp;now.duration_since(earliest_pending_ws_msg.send_instant)
+						&gt; hws_message_ack_timeout
+					{
+						return Some(MsgGcReason::WebSocketMessageNotAcked {
+							first_msg_index: earliest_pending_ws_msg.message_index,
+							last_msg_index: self.message_index,
+						});
+					}
+				}
+
+				let hs_elapsed = hibernation_state.last_ping.elapsed();
+				tracing::debug!(
+					hs_elapsed=%hs_elapsed.as_secs_f64(),
+					timeout=%hibernation_timeout.as_secs_f64(),
+					&quot;checking hibernating state elapsed time&quot;
+				);
+
+				if &amp;hs_elapsed &gt; hibernation_timeout {
+					return Some(MsgGcReason::HibernationTimeout);
+				}
+
+				None
+			}
+</code></pre>
+<p>The garbage collection (GC) interval is 15,000 milliseconds (<code>engine/packages/config/src/config/pegboard.rs:323-325</code>). The GC task calls <code>expired</code> for each in-flight request. <code>message_index</code> in the GC reason is the <code>protocol::MessageIndex</code> of the oldest unacknowledged client message. The maximum pending size is not a GC condition. It is a separate admission check. <code>gateway_hws_max_pending_size</code> defaults to 128 MiB. The gateway returns <code>WebsocketPendingLimitReached</code> when the pending buffer is too large (<code>engine/packages/config/src/config/pegboard.rs:335-338</code> and <code>engine/packages/pegboard-gateway3/src/lib.rs:49-55</code>).</p>
+<h3>14.8 Closing during hibernation</h3>
+<p>This subsection starts after the hibernation task and the keepalive task return. <code>PegboardGateway2</code> joins the two results at <code>engine/packages/pegboard-gateway2/src/lib.rs:1181-1219</code>. <code>Continue</code> keeps the request. <code>Close</code> or an error stops it. The close code 1000 in section 14.1 is the Actor-stop path when hibernation is not allowed. It is not the client-close path here.</p>
+<p>If the hibernation task returns <code>Close</code>, the gateway reconnects to the Actor and then closes. The gateway 2 code sets <code>ws_hibernation_close = true</code> when <code>handle_websocket_hibernation</code> returns <code>Close</code>. The next handler iteration reconnects and sends the close through the tunnel. The source comment says this reconnect is necessary so the Actor knows that the connection closed (<code>engine/packages/guard-core/src/proxy_service.rs:1897-1903</code>).</p>
+<p>If <code>handle_websocket_hibernation</code> returns <code>Continue</code>, the gateway does not stop the in-flight request. It reconnects and keeps the same request identifier. If it returns <code>Close</code> or an error, the gateway calls <code>in_flight_req.stop(...)</code> and deletes the UniversalDB (UDB) hibernating-request entry (<code>engine/packages/pegboard-gateway2/src/lib.rs:1195-1214</code>).</p>
+<h2>15. Gateway 3 and streaming HTTP</h2>
+<p>Gateway 3 is the streaming Envoy gateway. In this commit the selector sends only SSE and unknown-length HTTP requests to it, and only when sampled and when the Envoy protocol is 7 or 8. It never receives a WebSocket.</p>
+<p><code>PegboardGateway3</code> has these fields:</p>
+<table><tr><th>Field</th><th>Type</th><th>Purpose</th></tr><tr><td><code>ctx</code></td><td><code>StandaloneCtx</code></td><td>Database, PubSub, and configuration context</td></tr><tr><td><code>shared_state</code></td><td><code>SharedState</code></td><td>In-flight requests, tunnel subjects, limits</td></tr><tr><td><code>lifecycle</code></td><td><code>PegboardGatewayLifecycle</code></td><td>Metrics lifecycle</td></tr><tr><td><code>namespace_id</code></td><td><code>Id</code></td><td>Namespace identifier</td></tr><tr><td><code>pool_name</code></td><td><code>String</code></td><td>Pool name, or <code>"unknown"</code></td></tr><tr><td><code>envoy_key</code></td><td><code>String</code></td><td>Envoy tunnel key</td></tr><tr><td><code>envoy_protocol_version</code></td><td><code>Option<u16></code></td><td>Protocol version</td></tr><tr><td><code>actor_id</code></td><td><code>Id</code></td><td>Actor identifier</td></tr><tr><td><code>actor_key</code></td><td><code>Option<String></code></td><td>Actor key</td></tr><tr><td><code>actor_generation</code></td><td><code>u32</code></td><td>Actor generation</td></tr><tr><td><code>path</code></td><td><code>String</code></td><td>Stripped request path</td></tr><tr><td><code>prepared_http_request</code></td><td><code>Mutex<Option<PreparedHttpRequest>></code></td><td>Prepared streaming request</td></tr></table>
+<p>The source is <code>engine/packages/pegboard-gateway3/src/lib.rs:71-84</code>. <code>PreparedHttpRequest</code> holds the channels and handles for one streaming exchange: <code>msg_rx: mpsc::UnboundedReceiver<InFlightTunnelMessage></code>, <code>drop_rx: watch::Receiver<Option<MsgGcReason>></code>, <code>http_response_abort_rx: watch::Receiver<Option<protocol::HttpStreamAbortReason>></code>, <code>in_flight_req: InFlightRequestHandle</code>, <code>stopped_sub: message::SubscriptionHandle<actor2::Stopped></code>, <code>client_disconnect_guard: HttpClientDisconnectGuard</code>, <code>request_id: protocol::RequestId</code>, and <code>request_stream: bool</code>. <code>prepare_http_exchange</code> builds it before the response starts (<code>engine/packages/pegboard-gateway3/src/http_stream/handler.rs:40-52</code>).</p>
+<p><code>SharedStateInner</code> for gateway 3 holds the PubSub handle (<code>ups</code>), <code>gateway_id</code>, <code>receiver_subject</code>, <code>in_flight_requests</code>, <code>hibernation_timeout</code>, four configuration values (<code>gc_interval</code>, <code>tunnel_ping_timeout</code>, <code>hws_message_ack_timeout</code>, <code>hws_max_pending_size</code>), and three response queue limits: <code>buffered_http_response_max_bytes</code>, <code>http_response_queue_max_messages</code>, and <code>streaming_http_response_queue_max_bytes</code> (<code>engine/packages/pegboard-gateway3/src/shared_state.rs:185-199</code>). <code>receiver_subject</code> is the <code>GatewayReceiverSubject</code> for this gateway. The envoy sends replies there. <code>tunnel_ping_timeout</code> defaults to 30,000 milliseconds. The gateway closes a tunnel whose <code>last_pong</code> is older than that value (<code>engine/packages/config/src/config/pegboard.rs:327-329</code> and <code>engine/packages/pegboard-gateway3/src/shared_state.rs:1346-1360</code>).</p>
+<p>The HTTP stream handler checks the body size hint against the 20 MiB limit. It waits up to 300,000 milliseconds for the response to start. That value is <code>gateway_response_start_timeout_ms</code>, default 5 minutes (<code>engine/packages/config/src/config/pegboard.rs:310-313</code>). It streams response chunks through a channel. It selects on client disconnect. A disconnect sends <code>protocol::HttpStreamAbortReasonKind::Cancelled</code> to the Actor and stops the in-flight request with <code>RequestStopResult::ClientDisconnect</code> (<code>engine/packages/pegboard-gateway3/src/http_stream/handler.rs:230-427</code>). <code>Cancelled</code> is an abort reason, not a <code>RequestStopResult</code> value.</p>
+<p><code>RequestStopResult</code> has five values: <code>Success</code>, <code>ClientDisconnect</code>, <code>ActorReadyTimeout</code>, <code>RequestTimeout</code>, and <code>EnvoyError</code> (<code>engine/packages/pegboard-gateway3/src/shared_state.rs:153-160</code>).</p>
+<p>Gateway 3 uses the same hibernation task and keepalive task as gateway 2. The difference is the HTTP streaming path, not the WebSocket path.</p>
+<h2>16. The routing cache and cache keys</h2>
+<p>The cache key function is always called. It runs before the cache lookup and before the routing function. The key precedence is:</p>
+<ol><li>Direct Actor path.</li><li>Query Actor path.</li><li>Target-based Actor key.</li><li>Host, path, and method fallback.</li></ol>
+<pre><code class="language-rust">// engine/packages/guard/src/cache/mod.rs:20-45
+		// MARK: Path-based cache key
+		// Check for path-based actor routing
+		if let Some(actor_path_info) = actor_path::parse_actor_path(req_ctx.path())? {
+			match actor_path_info {
+				actor_path::ParsedActorPath::Direct(actor_path_info) =&gt; {
+					tracing::debug!(&quot;using path-based cache key for actor&quot;);
+
+					if let Ok(cache_key) =
+						pegboard_gateway::build_cache_key_path_based(req_ctx, &amp;actor_path_info)
+					{
+						return Ok(cache_key);
+					}
+				}
+				actor_path::ParsedActorPath::Query(query_path_info) =&gt; {
+					// Hash only the routing-relevant query fields (namespace,
+					// name, method, key, input, region, crashPolicy). The token
+					// is excluded because it does not affect which actor the
+					// request routes to.
+					tracing::debug!(&quot;using query-path cache key for actor&quot;);
+					return Ok(pegboard_gateway::build_cache_key_query_based(
+						&amp;query_path_info,
+						req_ctx,
+					));
+				}
+			}
+		}
+</code></pre>
+<table><tr><th>Key builder</th><th>Hashes</th><th>Excludes</th></tr><tr><td>Direct path</td><td><code>"actor"</code>, Actor identifier, stripped path, method</td><td>Token</td></tr><tr><td>Query path</td><td><code>get</code> or <code>getOrCreate</code>, namespace, name, key, stripped path, HTTP method; the <code>GetOrCreate</code> variant also hashes pool, input, region, and crash policy</td><td>Token</td></tr><tr><td>Target path</td><td>Target, Actor identifier, path, method</td><td>Token</td></tr><tr><td>Fallback</td><td>Hostname, path, method</td><td>Headers</td></tr></table>
+<p><code>build_cache_key_target_based</code> implements the target row. The cache-key function calls it only when it finds a target value. For an HTTP request, the value comes from the <code>x-rivet-target</code> header. For a WebSocket request, the value comes from the <code>rivet_target.</code> subprotocol (<code>engine/packages/guard/src/cache/pegboard_gateway.rs:38-99</code> and <code>engine/packages/guard/src/cache/mod.rs:47-79</code>).</p>
+<p>The cache type is a <code>moka::future::Cache<u64, RoutingOutput></code>. Its capacity is 10,000. Its time to live (TTL) comes from <code>guard.route_cache_ttl()</code>. The default TTL is <code>60 <em> 10 </em> 1000</code> milliseconds, which is 600,000 milliseconds (<code>engine/packages/guard-core/src/route.rs:50-58</code> and <code>engine/packages/config/src/config/guard.rs:189-191</code>).</p>
+<p>The critical finding is that <code>insert</code> is never called. The comment in the resolution function says <code>TODO: Disable route caching for now, determine edge cases with gateway</code>, and the insert call is commented out (<code>engine/packages/guard-core/src/proxy_service.rs:190-195</code>, shown in the section 4 excerpt). The insert method itself is marked <code>#[allow(dead_code)]</code> and has the same TODO (<code>engine/packages/guard-core/src/route.rs:65-72</code>).</p>
+<p>Consequences:</p>
+<ul><li>Every request performs a cache lookup that misses.</li><li>The TTL never matters because the cache is empty.</li><li>There is no invalidation code, because there are no entries to invalidate.</li><li>Retry re-resolution with <code>ignore_cache = true</code> cannot hit a cached route.</li><li><code>guard_route_cache_count</code> is only set when <code>insert</code> runs, so it stays 0.</li></ul>
+<p>The code still uses the cache key for a possible future cache. The key work is a few hash operations and one path parse. The source does not state a reason for the disablement beyond the TODO text.</p>
+<h2>17. Failure cases and the status the client sees</h2>
+<p><code>err_into_response</code> first searches the error chain for a <code>RivetError</code>. It maps the <code>(group, code)</code> pair to an HTTP status. If no pair matches, the status is 400. If the error is not a <code>RivetError</code> and not a <code>RawErrorResponse</code>, the status is 500.</p>
+<pre><code class="language-rust">// engine/packages/guard-core/src/utils.rs:391-451
+pub(crate) fn err_into_response(err: anyhow::Error) -&gt; Result&lt;Response&lt;ResponseBody&gt;&gt; {
+	let (status, error_response) =
+		if let Some(rivet_err) = err.chain().find_map(|x| x.downcast_ref::&lt;RivetError&gt;()) {
+			let status = match (rivet_err.group(), rivet_err.code()) {
+				(&quot;api&quot;, &quot;not_found&quot;) =&gt; StatusCode::NOT_FOUND,
+				(&quot;api&quot;, &quot;unauthorized&quot;) =&gt; StatusCode::UNAUTHORIZED,
+				(&quot;api&quot;, &quot;forbidden&quot;) =&gt; StatusCode::FORBIDDEN,
+				(&quot;auth&quot;, &quot;invalid_token&quot;) =&gt; StatusCode::UNAUTHORIZED,
+				(&quot;auth&quot;, &quot;token_expired&quot;) =&gt; StatusCode::UNAUTHORIZED,
+				(&quot;auth&quot;, &quot;insufficient_permissions&quot;) =&gt; StatusCode::FORBIDDEN,
+				(&quot;auth&quot;, &quot;verification_unavailable&quot;) =&gt; StatusCode::SERVICE_UNAVAILABLE,
+				(&quot;auth&quot;, &quot;issuance_unavailable&quot;) =&gt; StatusCode::SERVICE_UNAVAILABLE,
+				(&quot;auth&quot;, &quot;issuance_disabled&quot;) =&gt; StatusCode::SERVICE_UNAVAILABLE,
+				(&quot;guard&quot;, &quot;rate_limit&quot;) =&gt; StatusCode::TOO_MANY_REQUESTS,
+				(&quot;guard&quot;, &quot;upstream_error&quot;) =&gt; StatusCode::BAD_GATEWAY,
+				(&quot;guard&quot;, &quot;routing_error&quot;) =&gt; StatusCode::BAD_GATEWAY,
+				(&quot;guard&quot;, &quot;request_timeout&quot;) =&gt; StatusCode::GATEWAY_TIMEOUT,
+				(&quot;guard&quot;, &quot;route_dispatch_timeout&quot;) =&gt; StatusCode::GATEWAY_TIMEOUT,
+				(&quot;guard&quot;, &quot;route_api_public_timeout&quot;) =&gt; StatusCode::GATEWAY_TIMEOUT,
+				(&quot;guard&quot;, &quot;route_compute_timeout&quot;) =&gt; StatusCode::GATEWAY_TIMEOUT,
+				(&quot;guard&quot;, &quot;route_auth_check_timeout&quot;) =&gt; StatusCode::GATEWAY_TIMEOUT,
+				(&quot;guard&quot;, &quot;retry_attempts_exceeded&quot;) =&gt; StatusCode::BAD_GATEWAY,
+				(&quot;pegboard&quot;, &quot;route_subscribe_timeout&quot;) =&gt; StatusCode::GATEWAY_TIMEOUT,
+				(&quot;pegboard&quot;, &quot;route_fetch_actor_timeout&quot;) =&gt; StatusCode::GATEWAY_TIMEOUT,
+				(&quot;pegboard&quot;, &quot;route_auth_check_timeout&quot;) =&gt; StatusCode::GATEWAY_TIMEOUT,
+				(&quot;pegboard&quot;, &quot;route_wake_signal_timeout&quot;) =&gt; StatusCode::GATEWAY_TIMEOUT,
+				(&quot;pegboard&quot;, &quot;route_resolve_query_timeout&quot;) =&gt; StatusCode::GATEWAY_TIMEOUT,
+				(&quot;guard&quot;, &quot;service_unavailable&quot;) =&gt; StatusCode::SERVICE_UNAVAILABLE,
+				(&quot;guard&quot;, &quot;actor_wake_retries_exceeded&quot;) =&gt; StatusCode::SERVICE_UNAVAILABLE,
+				(&quot;guard&quot;, &quot;actor_stopped_while_waiting&quot;) =&gt; StatusCode::SERVICE_UNAVAILABLE,
+				(&quot;guard&quot;, &quot;tunnel_request_aborted&quot;) =&gt; StatusCode::SERVICE_UNAVAILABLE,
+				(&quot;guard&quot;, &quot;tunnel_message_timeout&quot;) =&gt; StatusCode::GATEWAY_TIMEOUT,
+				(&quot;guard&quot;, &quot;request_delivery_unconfirmed&quot;) =&gt; StatusCode::SERVICE_UNAVAILABLE,
+				(&quot;guard&quot;, &quot;tunnel_response_closed&quot;) =&gt; StatusCode::SERVICE_UNAVAILABLE,
+				(&quot;guard&quot;, &quot;gateway_response_start_timeout&quot;) =&gt; StatusCode::GATEWAY_TIMEOUT,
+				(&quot;guard&quot;, &quot;actor_ready_timeout&quot;) =&gt; StatusCode::SERVICE_UNAVAILABLE,
+				(&quot;guard&quot;, &quot;no_route&quot;) =&gt; StatusCode::NOT_FOUND,
+				(&quot;guard&quot;, &quot;invalid_request_body&quot;) =&gt; StatusCode::PAYLOAD_TOO_LARGE,
+				(&quot;guard&quot;, &quot;invalid_response_body&quot;) =&gt; StatusCode::BAD_GATEWAY,
+				(&quot;actor&quot;, &quot;creation_rate_limit&quot;) =&gt; StatusCode::TOO_MANY_REQUESTS,
+				(&quot;actor&quot;, &quot;not_found&quot;) =&gt; StatusCode::NOT_FOUND,
+				_ =&gt; StatusCode::BAD_REQUEST,
+			};
+
+			(status, ErrorResponse::from(rivet_err))
+		} else if let Some(raw_err) = err
+			.chain()
+			.find_map(|x| x.downcast_ref::&lt;RawErrorResponse&gt;())
+		{
+			(raw_err.0, raw_err.1.clone())
+		} else {
+			(
+				StatusCode::INTERNAL_SERVER_ERROR,
+				ErrorResponse::from(&amp;RivetError {
+					kind: rivet_error::RivetErrorKind::Static(&amp;rivet_error::INTERNAL_ERROR),
+					meta: None,
+					message: None,
+					actor: None,
+				}),
+			)
+		};
+</code></pre>
+<p>The response headers are <code>content-type: application/json</code> and <code>x-rivet-error: group.code</code>. The body is the JSON form of <code>ErrorResponse</code> (<code>engine/packages/guard-core/src/utils.rs:453-462</code>). <code>RawErrorResponse</code> is <code>pub struct RawErrorResponse(pub StatusCode, pub ErrorResponse)</code> in <code>engine/packages/api-builder/src/error_response.rs:105</code>. A handler that already knows the status returns it, so Guard does not map the group and code again.</p>
+<p>The following table lists each required failure case. A row that says "Not in the status map" matches the <code>_ => StatusCode::BAD_REQUEST</code> arm in the code above.</p>
+<table><tr><th>Failure case</th><th>Error and code</th><th>HTTP status</th><th>Notes</th></tr><tr><td>No route matches</td><td><code>guard.no_route</code></td><td>404</td><td>Returned at the end of <code>create_routing_function</code></td></tr><tr><td>Actor not found</td><td><code>actor.not_found</code></td><td>404</td><td>Fetch returned <code>None</code>, or Actor is destroyed</td></tr><tr><td>Actor failed to start</td><td>The error carried by <code>actor2::Failed</code></td><td>Depends on the carried error</td><td>Guard returns the carried error unchanged, and <code>err_into_response</code> maps it</td></tr><tr><td>Actor ready timeout</td><td><code>guard.actor_ready_timeout</code></td><td>503</td><td>30,000 millisecond wait</td></tr><tr><td>Wake retries exceeded</td><td><code>guard.actor_wake_retries_exceeded</code></td><td>503</td><td>8 <code>Stopped</code> events</td></tr><tr><td>Actor stopped after ready</td><td><code>guard.actor_stopped_while_waiting</code></td><td>503</td><td>Destroyed or <code>envoy_key</code> changed</td></tr><tr><td>Actor destroyed while waiting</td><td><code>actor.destroyed_while_waiting_for_ready</code></td><td>400</td><td>Not in the status map</td></tr><tr><td>Runner pool error</td><td><code>guard.actor_runner_failed</code></td><td>400</td><td>Not in the status map</td></tr><tr><td>Runner lost mid-request</td><td><code>guard.tunnel_response_closed</code></td><td>503</td><td>Tunnel closed before a response</td></tr><tr><td>Tunnel message timeout</td><td><code>guard.tunnel_message_timeout</code></td><td>504</td><td>No message within the phase timeout</td></tr><tr><td>Request delivery unconfirmed</td><td><code>guard.request_delivery_unconfirmed</code></td><td>503</td><td>No response to request start</td></tr><tr><td>Upstream connect failure</td><td><code>guard.upstream_error</code></td><td>502</td><td>Non-retryable connect error</td></tr><tr><td>Upstream request timeout</td><td><code>guard.request_timeout</code></td><td>504</td><td>30,000 milliseconds</td></tr><tr><td>Retry attempts exhausted</td><td><code>guard.retry_attempts_exceeded</code></td><td>502</td><td>7 attempts</td></tr><tr><td>Response start timeout</td><td><code>guard.gateway_response_start_timeout</code></td><td>504</td><td>300,000 milliseconds</td></tr><tr><td>Request body too large</td><td><code>guard.invalid_request_body</code></td><td>413</td><td>20 MiB limit</td></tr><tr><td>Response body too large</td><td><code>guard.invalid_response_body</code></td><td>502</td><td>Non-stream branch only</td></tr><tr><td>Rate limit</td><td><code>guard.rate_limit</code></td><td>429</td><td>Per-client-address fixed window</td></tr><tr><td>Maximum in flight</td><td><code>guard.max_in_flight</code></td><td>400</td><td>Not in the status map</td></tr><tr><td>Missing routing header</td><td><code>guard.missing_header</code></td><td>400</td><td>Not in the status map</td></tr><tr><td>Invalid token</td><td><code>auth.invalid_token</code></td><td>401</td></tr><tr><td>Expired token</td><td><code>auth.token_expired</code></td><td>401</td></tr><tr><td>Insufficient permissions</td><td><code>auth.insufficient_permissions</code></td><td>403</td></tr><tr><td>Auth verifier unavailable</td><td><code>auth.verification_unavailable</code></td><td>503</td></tr><tr><td>Invalid Actor identifier in path or header</td><td>Plain <code>anyhow</code> error from <code>Id::parse(...).context(...)</code></td><td>500</td><td>No <code>RivetError</code> in the chain</td></tr><tr><td>No route targets</td><td><code>guard.no_route_targets</code></td><td>400</td><td>Not in the status map</td></tr><tr><td>Invalid regional host</td><td><code>guard.must_use_regional_host</code></td><td>400</td><td>Not in the status map</td></tr></table>
+<p>A client disconnect has no HTTP status. Guard cancels <code>client_disconnect</code>, the request future is dropped, and the connection ends. The gateway metrics record <code>client_disconnect</code>. For a WebSocket, the close frame may not reach the client because the client is gone.</p>
+<p>A WebSocket failure does not use the HTTP status table after the upgrade. Guard sends a close frame with a code from <code>err_to_close_frame</code>. It also uses the close path when the upgrade itself fails. In that case Guard builds a mock request from the original parts and calls <code>hyper_tungstenite::upgrade</code> on it. It then sends the mapped close frame from a spawned task, so the client receives a WebSocket close instead of an HTTP error (<code>engine/packages/guard-core/src/proxy_service.rs:524-585</code>).</p>
+<h2>18. Shared state, metrics, and health</h2>
+<p>Guard has two metric registries in practice: the routing metrics in <code>rivet-guard</code> and the connection and proxy metrics in <code>rivet-guard-core</code>. All use the shared <code>rivet_metrics::REGISTRY</code>.</p>
+<h3>18.1 <code>guard/src/metrics.rs</code></h3>
+<table><tr><th>Metric</th><th>Type</th><th>Labels</th><th>Meaning</th></tr><tr><td><code>guard_route_total</code></td><td>counter</td><td><code>router</code></td><td>Routing results by router: <code>ws_health</code>, <code>gateway</code>, <code>runner</code>, <code>envoy</code>, <code>api</code>, <code>none</code>. The <code>api</code> value covers both the <code>api-public</code> target and the default target (<code>routing/mod.rs:336</code> and <code>352</code>)</td></tr><tr><td><code>pegboard_gateway_route_total</code></td><td>counter</td><td><code>gateway</code>, <code>envoy_protocol</code>, <code>request_kind</code>, <code>mode</code>, <code>decision</code></td><td>Gateway 2 or 3 selection decisions</td></tr><tr><td><code>guard_route_dispatch_duration</code></td><td>histogram</td><td><code>namespace_id</code></td><td>Time to dispatch to one routing module</td></tr><tr><td><code>guard_route_api_public_duration</code></td><td>histogram</td><td><code>namespace_id</code></td><td>Time to build the api-public router</td></tr><tr><td><code>guard_route_compute_duration</code></td><td>histogram</td><td><code>namespace_id</code></td><td>Registered, but no call site found in this commit</td></tr><tr><td><code>guard_route_auth_check_duration</code></td><td>histogram</td><td><code>namespace_id</code></td><td>Time to check route authorization</td></tr><tr><td><code>guard_route_pegboard_subscribe_duration</code></td><td>histogram</td><td><code>namespace_id</code></td><td>Time to create Actor workflow subscriptions</td></tr><tr><td><code>guard_route_pegboard_fetch_actor_duration</code></td><td>histogram</td><td><code>namespace_id</code></td><td>Time to fetch Actor routing state</td></tr><tr><td><code>guard_route_pegboard_auth_check_duration</code></td><td>histogram</td><td><code>namespace_id</code></td><td>Time to check Actor gateway authorization</td></tr><tr><td><code>guard_route_pegboard_wake_signal_duration</code></td><td>histogram</td><td><code>namespace_id</code></td><td>Time to send a wake signal</td></tr><tr><td><code>guard_route_pegboard_resolve_query_duration</code></td><td>histogram</td><td><code>namespace_id</code></td><td>Time to resolve a query Actor path</td></tr><tr><td><code>guard_route_pegboard_ready_wait_duration</code></td><td>histogram</td><td><code>namespace_id</code>, <code>pool_name</code>, <code>was_sleeping</code>, <code>wake_retries_bucket</code>, <code>outcome</code></td><td>Time spent waiting for <code>actor2::Ready</code></td></tr></table>
+<p>The ready-wait outcome values are <code>ready</code>, <code>stopped</code>, <code>failed</code>, <code>destroyed</code>, <code>pool_error</code>, <code>timeout</code>, and <code>rewake_not_found</code>. The retry bucket is <code>0</code>, <code>1</code>, <code>2</code>, or <code>3+</code> (<code>engine/packages/guard/src/routing/pegboard_gateway/mod.rs:589-605</code>).</p>
+<h3>18.2 <code>guard-core/src/metrics.rs</code></h3>
+<table><tr><th>Metric</th><th>Type</th><th>Labels</th><th>Meaning</th></tr><tr><td><code>guard_route_cache_count</code></td><td>gauge</td><td>none</td><td>Entries in the route cache; stays 0 because insert is dead</td></tr><tr><td><code>guard_rate_limiter_count</code></td><td>gauge</td><td>none</td><td>Active rate limiters</td></tr><tr><td><code>guard_in_flight_counter_count</code></td><td>gauge</td><td>none</td><td>Active in-flight counters</td></tr><tr><td><code>guard_in_flight_request_count</code></td><td>gauge</td><td>none</td><td>Active in-flight requests</td></tr><tr><td><code>pegboard_gateway_request_total</code></td><td>counter</td><td><code>gateway</code>, <code>envoy_protocol</code>, <code>request_kind</code>, <code>result</code></td><td>Completed gateway requests</td></tr><tr><td><code>pegboard_gateway_request_duration_seconds</code></td><td>histogram</td><td>same</td><td>Full gateway request duration</td></tr><tr><td><code>guard_tcp_connection_total</code></td><td>counter</td><td>none</td><td>TCP connections ever accepted</td></tr><tr><td><code>guard_tcp_connection_pending</code></td><td>gauge</td><td>none</td><td>Open TCP connections</td></tr><tr><td><code>guard_tcp_connection_duration</code></td><td>histogram</td><td>none</td><td>TCP connection lifetime</td></tr><tr><td><code>guard_resolve_route_duration</code></td><td>histogram</td><td>none</td><td>Route resolution time</td></tr><tr><td><code>guard_proxy_request_total</code></td><td>counter</td><td>none</td><td>Requests to an upstream target</td></tr><tr><td><code>guard_proxy_request_pending</code></td><td>gauge</td><td>none</td><td>Pending upstream requests</td></tr><tr><td><code>guard_proxy_request_duration</code></td><td>histogram</td><td><code>status</code></td><td>Upstream request duration</td></tr><tr><td><code>guard_proxy_request_errors_total</code></td><td>counter</td><td><code>error</code></td><td>Upstream request errors</td></tr><tr><td><code>guard_websocket_active</code></td><td>gauge</td><td>none</td><td>Open client WebSocket connections</td></tr><tr><td><code>guard_websocket_close_errors_total</code></td><td>counter</td><td><code>error</code></td><td>WebSocket closes caused by an error</td></tr><tr><td><code>guard_websocket_send_duration</code></td><td>histogram</td><td><code>message_kind</code></td><td>Time to send through a shared <code>WebSocketHandle</code></td></tr><tr><td><code>guard_core_websocket_send_lock_wait_duration_seconds</code></td><td>histogram</td><td><code>message_kind</code></td><td>Time waiting for the send mutex</td></tr><tr><td><code>guard_core_websocket_send_write_duration_seconds</code></td><td>histogram</td><td><code>message_kind</code></td><td>Time inside the network write</td></tr><tr><td><code>guard_websocket_write_would_block_total</code></td><td>counter</td><td><code>message_kind</code></td><td>Write or flush attempts that hit <code>WouldBlock</code></td></tr><tr><td><code>guard_websocket_write_buffer_full_total</code></td><td>counter</td><td><code>message_kind</code></td><td>Messages rejected because the write buffer was full</td></tr><tr><td><code>guard_websocket_write_backpressure_events_total</code></td><td>counter</td><td><code>message_kind</code></td><td>Transitions from write-ready to write-backpressured</td></tr></table>
+<p>The last three WebSocket pressure metrics are never incremented. The method <code>record_write_pressure_metrics</code> takes the message kind and discards it: <code>let _ = message_kind;</code> (<code>engine/packages/guard-core/src/websocket_handle.rs:83-85</code>). The metrics are registered so that dashboards can exist, but the code does not update them in this commit.</p>
+<p>The gateway result labels are <code>success</code>, <code>client_disconnect</code>, <code>actor_ready_timeout</code>, <code>request_timeout</code>, <code>envoy_error</code>, and <code>pre_dispatch_failure</code>. The last one is recorded by the <code>Drop</code> implementation if the lifecycle is dropped before <code>finish</code> (<code>engine/packages/guard-core/src/metrics.rs:51-106</code>).</p>
+<h3>18.3 Health</h3>
+<p>Guard has a WebSocket health route at <code>/health/ws</code> and <code>/health/ws/</code>. It is disabled by default. The configuration field is <code>enable_websocket_health_route</code>, default false (<code>engine/packages/config/src/config/guard.rs:29-31</code> and <code>185-187</code>).</p>
+<p>When enabled, an HTTP request receives status 426 with the body <code>WebSocket-only endpoint</code>. A WebSocket text message <code>"ping"</code> receives <code>"pong"</code>. A WebSocket ping frame receives a pong frame. A close frame ends the handler (<code>engine/packages/guard/src/routing/ws_health.rs:14-60</code>).</p>
+<p>The source comment says the route is for debug and latency testing and should stay disabled in normal deployments (<code>engine/packages/config/src/config/guard.rs:29-30</code>).</p>
+<h2>19. TLS and trust roots</h2>
+<p>Inbound TLS is configured but not implemented in this commit.</p>
+<p><code>create_cert_resolver</code> has a long doc comment. The comment says the resolver serves an Actor certificate for Actor hostnames and an API certificate for all other hostnames. The body returns <code>Ok(None)</code>. The loading and Server Name Indication (SNI) selection code in the resolver body is commented out from line 89 to line 224. The separate certificate loader at lines 5 through 73 is also commented out. <code>CertResolverFn</code> is a function from a server name to a <code>CertifiedKey</code> (<code>engine/packages/guard-core/src/cert_resolver.rs:5-9</code>).</p>
+<pre><code class="language-rust">// engine/packages/guard/src/tls.rs:75-87
+/// Create a certificate resolver function for TLS
+///
+/// This function sets up a certificate resolver that will serve:
+/// - Actor certificate for hostnames that match the actor routing logic
+/// - API certificate for all other hostnames
+///
+/// It follows the same routing logic as the main routing function to ensure
+/// consistent behavior between routing and certificate selection.
+#[tracing::instrument(level = &quot;debug&quot;, skip_all)]
+pub async fn create_cert_resolver(
+	_ctx: &amp;gas::prelude::StandaloneCtx,
+) -&gt; Result&lt;Option&lt;CertResolverFn&gt;&gt; {
+	return Ok(None);
+</code></pre>
+<p>The four certificate paths in <code>Tls</code> are therefore unused (<code>engine/packages/config/src/config/guard.rs:361-369</code>). Guard logs "No TLS configuration found, HTTPS will not be enabled" even when an <code>https</code> block is present, because the resolver is always <code>None</code> (<code>engine/packages/guard/src/lib.rs:33-37</code>).</p>
+<p>The server still binds the HTTPS port when <code>guard.https</code> is set. It then takes the fallback branch: it logs "HTTPS port configured but no TLS acceptor available" and calls <code>process_connection</code> with the label <code>"HTTPS (unsecured)"</code>. The byte stream on that port is plain HTTP (<code>engine/packages/guard-core/src/server.rs:232-245</code>).</p>
+<p>No self-signed certificate path exists in Guard or in the Guard configuration in this commit. The <code>Tls</code> type has only the four file paths. A search of the Guard and configuration packages finds no self-signed generator.</p>
+<table><tr><th>TLS concern</th><th>State in this commit</th><th>Source</th></tr><tr><td>Inbound certificate resolver</td><td>Stub, always <code>None</code></td><td><code>engine/packages/guard/src/tls.rs:83-87</code></td></tr><tr><td>Actor certificate selection</td><td>Commented out</td><td><code>engine/packages/guard/src/tls.rs:89-224</code></td></tr><tr><td>Certificate file loading</td><td>Commented out</td><td><code>engine/packages/guard/src/tls.rs:1-73</code></td></tr><tr><td>HTTPS listener</td><td>Created when <code>guard.https</code> is set</td><td><code>engine/packages/guard-core/src/server.rs:42-73</code></td></tr><tr><td>HTTPS without resolver</td><td>Plaintext fallback with a warning</td><td><code>engine/packages/guard-core/src/server.rs:232-245</code></td></tr><tr><td>Self-signed path</td><td>Not found</td><td>Guard and <code>rivet-config</code> search</td></tr></table>
+<p>Outbound TLS uses two different client stacks.</p>
+<p>The HTTP proxy uses <code>hyper-rustls</code>. It calls <code>with_native_roots()</code> first. On a load error it calls <code>with_webpki_roots()</code>. The two stores are alternatives, not a union (<code>engine/packages/guard-core/src/proxy_service.rs:98-113</code>). <code>webpki</code> means Web Public Key Infrastructure. The <code>webpki-roots</code> crate is a compiled copy of the Mozilla root certificate set.</p>
+<p>The workspace enables both root features for <code>tokio-tungstenite</code> and <code>reqwest</code>. The <code>hyper-rustls</code> dependency lists <code>native-tokio</code>, <code>webpki-tokio</code>, and <code>ring</code> (<code>Cargo.toml:197-200</code>, <code>206-208</code>, and <code>351-354</code>).</p>
+<p>The internal document <code>docs-internal/engine/tls-trust-roots.md</code> makes three claims. The code agrees with one and disagrees with two.</p>
+<table><tr><th>Internal document claim</th><th>Code in this commit</th><th>Verdict</th></tr><tr><td>rustls clients always union native and webpki roots</td><td><code>tokio-tungstenite</code> and <code>reqwest</code> enable both features; the exact runtime union is inside those crates and was not opened</td><td>Not verified here</td></tr><tr><td>The Guard HTTP proxy stays on OpenSSL through <code>hyper-tls</code> or <code>native-tls</code></td><td>Guard uses <code>hyper-rustls</code>, not <code>hyper-tls</code> or <code>native-tls</code></td><td>Contradicted by code</td></tr><tr><td>Engine clients run in operator containers and use the system trust store</td><td>The HTTP proxy uses native roots when they load, otherwise webpki</td><td>Partly supported</td></tr></table>
+<p>The source does not state why the resolver is a stub. This document does not invent a reason.</p>
+<h2>20. Documentation versus code</h2>
+<p><code>docs-internal/engine/GUARD.md</code> is a useful map, but several details are stale. The code wins.</p>
+<table><tr><th>Topic</th><th><code>GUARD.md</code> claim</th><th>Code in this commit</th></tr><tr><td>Retry attempts</td><td>3 total attempts</td><td>7 total attempts (<code>guard.rs:9</code>)</td></tr><tr><td>Initial backoff</td><td>100 milliseconds</td><td>150 milliseconds (<code>guard.rs:10</code>)</td></tr><tr><td>Backoff formula</td><td><code>100ms × 2^(attempt-2)</code></td><td><code>initial × 2^(attempt-1)</code> (<code>utils.rs:147-149</code>)</td></tr><tr><td>Routing priority</td><td>Target header first</td><td>Path routes first, then target header (<code>routing/mod.rs:212-340</code>)</td></tr><tr><td>Cache use</td><td>Cache-first routing with invalidation on failure</td><td>Lookup runs, insert is disabled (<code>proxy_service.rs:190-195</code>)</td></tr><tr><td>Actor address header</td><td><code>x-rivet-addr</code></td><td>No such header in the source</td></tr><tr><td>Upstream runner target</td><td><code>pegboard.lan_host:pegboard.port</code></td><td>Actor traffic uses a tunnel handler, not a host and port</td></tr><tr><td>Upstream API target</td><td><code>api_public.lan_host:api_public.port</code></td><td>api-public is an in-process <code>ApiPublicService</code> handler</td></tr></table>
+<p>The retry semantics in the document also say a retry ignores the cache. That statement matches the code, but the cache is empty, so the effect is the same as a normal resolution.</p>
+<p><code>docs-internal/engine/HIBERNATING_WS.md</code> is closer to the code. It names the open messages <code>ToClientWebSocketOpen</code> and <code>ToServerWebSocketOpen</code>. Those names belong to the legacy runner protocol. The envoy path uses <code>ToEnvoyWebSocketOpen</code> and <code>ToRivetWebSocketOpen</code>. Its step 8 says "During hibernation nothing happens". In the code, the hibernation task is active. It peeks the client socket, forwards tunnel messages, and processes acknowledgements. The document describes the intended external behavior, not the task structure.</p>
+<p><code>docs-internal/engine/tls-trust-roots.md</code> is stale for Guard, as section 19 shows.</p>
+<h2>21. What the design costs</h2>
+<p><strong>Aha:</strong> Guard routes path-first and keeps the Actor location out of the client. The client sends <code>/gateway/{actor_id}/...</code> or a query path. Guard looks up the Actor, waits for readiness, and then hands the request to a gateway object that owns a tunnel request identifier. The obvious alternative is to return the runner address to the client, or to put the runner address in a redirect. That alternative would remove the wake wait and the tunnel lookup from Guard. It would also make the client responsible for retries, for the Actor move, and for the sleep state. Every client would need the scheduling logic. The cost of the Guard design is that Guard holds the request during a cold start. The wait can last 30,000 milliseconds, and the whole route has a 60,000 millisecond backstop. A sleeping Actor therefore costs a held connection and a long tail. The source does not state a reason for the path-first order. The order is visible in the call graph.</p>
+<p>The second cost is the tunnel. Guard does not connect to the Actor directly. It publishes to <code>EnvoyReceiverSubject::new(namespace_id, envoy_key)</code>. It subscribes to its own <code>GatewayReceiverSubject::new(gateway_id)</code>. The envoy replies on that subject. The <code>protocol::RequestId</code> selects the in-flight entry, so many requests share one gateway subscription (<code>engine/packages/pegboard-gateway2/src/lib.rs:185-190</code> and <code>engine/packages/pegboard-gateway2/src/shared_state.rs:236-300</code>). A lost envoy becomes a tunnel error, not a TCP reset. The client sees 503 or 504. The benefit is that the Actor can move between envoys without a new client address.</p>
+<h2>22. What to read next</h2>
+<ul><li><a href="04-pegboard-scheduling.html">04 Pegboard</a> explains the Actor workflow, the</li></ul>
+<p>  <code>Ready</code> and <code>Stopped</code> messages, and the envoy allocation that Guard waits for.</p>
+<ul><li><a href="10-realtime-and-hibernation.html">10 Realtime and hibernation</a> explains the</li></ul>
+<p>  connection model, the hibernation restore, and the runtime callback rebuild in   more detail.</p>
+<ul><li><a href="13-auth-and-namespaces.html">13 Auth and namespaces</a> explains the token</li></ul>
+<p>  scopes, <code>ResourceKind::ActorGateway</code>, and the namespace resolution that Guard   calls.</p>
+<h2>Glossary for this document</h2>
+<table><tr><th>Term</th><th>Meaning in this document</th></tr><tr><td>Actor</td><td>A keyed Rivet process that Pegboard schedules on a host and that keeps its state across sleep and move</td></tr><tr><td>Actor gateway</td><td>The Guard route family under <code>/gateway/...</code> or the <code>"actor"</code> target</td></tr><tr><td><code>connectable</code></td><td>A stored flag that says the Actor can accept a tunnel connection now</td></tr><tr><td>CustomServe</td><td>A <code>RoutingOutput</code> variant that returns a handler object instead of an address</td></tr><tr><td>Envoy</td><td>The newer host process that runs Actor tasks and answers on a PubSub tunnel</td></tr><tr><td><code>envoy_key</code></td><td>The string that names the envoy host and addresses its <code>EnvoyReceiverSubject</code></td></tr><tr><td>Envoy path</td><td>The newer Actor host path, with <code>envoy_key</code>, gateway 2, and gateway 3</td></tr><tr><td>Gateway</td><td>The route family in prose. A capitalized <code>PegboardGateway*</code> name means one tunnel implementation</td></tr><tr><td>Gateway 2</td><td><code>PegboardGateway2</code>, the envoy gateway for WebSocket and non-streaming HTTP</td></tr><tr><td>Gateway 3</td><td><code>PegboardGateway3</code>, the envoy gateway for streaming HTTP</td></tr><tr><td>Generation</td><td>The <code>u32</code> placement identifier that the actor2 workflow returns in <code>Allocated</code></td></tr><tr><td>Hibernation</td><td>The state where the client WebSocket stays open and the Actor is asleep</td></tr><tr><td><code>hws</code></td><td>The source's short prefix for a hibernating WebSocket</td></tr><tr><td>Legacy runner path</td><td>The version 1 Actor path with <code>runner_id</code> and <code>PegboardGateway</code></td></tr><tr><td>Pegboard</td><td>The scheduling service that owns Actor workflows and allocates them to hosts</td></tr><tr><td>Pool</td><td>The runner pool name that selects hosts for an Actor</td></tr><tr><td>PubSub</td><td>The Publish-Subscribe message service. The <code>ups</code> handle is its pool</td></tr><tr><td>Ray</td><td>Rivet's name for a request trace identifier</td></tr><tr><td>Route target</td><td>A <code>RouteTarget</code> with a host, a port, and a path</td></tr><tr><td>Runner</td><td>The legacy host process that speaks the version 1 runner WebSocket protocol</td></tr><tr><td>Tunnel</td><td>The PubSub message path between Guard and an envoy</td></tr><tr><td>Wake</td><td>The <code>actor2::Wake</code> signal, or <code>actor::Wake</code> on the legacy path</td></tr></table>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
