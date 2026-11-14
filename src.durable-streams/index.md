@@ -19,6 +19,7 @@ which one is better at what, and how can they work together.
 | [celld](src.celld/html/README.html) | A self-hosted Workers runtime: the fleet, the cell, the bucket, Durable Objects, every service, ownership, security, and limits | [Overview](src.celld/html/00-overview.html), then [Resonate S3 and celld](src.celld/html/11-resonate-s3-and-celld.html) |
 | [TanStack DB](tanstackdb/html/README.html) | Collections, live queries, optimistic mutations, sync adapters, and framework bindings | [README](tanstackdb/html/README.html) |
 | [Rivet](src.rivet/html/README.html) | Actors as durable processes: the control plane, Pegboard scheduling, Gasoline durable execution, per-Actor SQLite in Depot, UniversalDB, Epoxy replication, Guard, RivetKit, and the seven sibling repositories | [Overview](src.rivet/html/00-overview.html), then [Pegboard scheduling](src.rivet/html/04-pegboard-scheduling.html) |
+| [VoidZero](src.voidzero/html/README.html) | Seven repositories: the Vite+ toolchain (`vp`), Vite Task with its `fspy` file-system proxy and cache, `setup-vp` for Continuous Integration, the Void full-stack framework for Cloudflare Workers, its self-hosted platform, `void-fbtee`, `chrome-capture`, and `lite-youtube-embed` | [Overview](src.voidzero/html/00-overview.html), then [the Vite+ toolchain](src.voidzero/html/02-vite-plus-toolchain.html) |
 
 ## The short answer
 
@@ -623,6 +624,32 @@ The rules of the architecture are:
 | [Tests and limits](src.rivet/html/16-tests-benchmarks-and-limits.html) | The harness, the benchmarks, the limits, and the risks |
 | [Comparison](src.rivet/html/18-comparisons.html) | Durable Objects, Kubernetes, and the durable promise systems |
 | [Glossary](src.rivet/html/19-glossary.html) | Every term, spelled out |
+
+### VoidZero
+
+| Document | What it covers |
+|----------|----------------|
+| [README](src.voidzero/html/README.html) | The thesis, the seven repositories, and the reading order |
+| [Overview](src.voidzero/html/00-overview.html) | The problem, the seven repositories, and the central claims |
+| [Repository map](src.voidzero/html/01-repository-map.html) | Every repository, workspace, package, and crate |
+| [Vite+ toolchain](src.voidzero/html/02-vite-plus-toolchain.html) | The `vp` command, dispatch, NAPI bindings, and the Rust crates |
+| [Package management](src.voidzero/html/03-vite-plus-package-management.html) | Installs, lock files, catalogs, and supply-chain checks |
+| [JavaScript runtime](src.voidzero/html/04-vite-plus-js-runtime.html) | Node.js versions, environment setup, shims, and the trampoline |
+| [Development, test, and build](src.voidzero/html/05-vite-plus-dev-test-build.html) | Dev server, check, test, build, pack, format, lint, and configuration |
+| [Task scheduler](src.voidzero/html/06-vite-task-scheduler.html) | The task graph, selection, workspaces, and concurrency |
+| [Task caching](src.voidzero/html/07-vite-task-caching.html) | Materialized artifacts, local and remote cache, and cache keys |
+| [`fspy`](src.voidzero/html/08-fspy-file-system-proxy.html) | How the runner observes file access on Linux, macOS, and Windows |
+| [Client and Inter-Process Communication](src.voidzero/html/09-vite-task-client-and-ipc.html) | The client, the NAPI layer, messages, pseudo-terminals, shell, and terminal user interface |
+| [`setup-vp`](src.voidzero/html/10-setup-vp-ci.html) | GitHub Actions, GitLab CI/CD, and Azure Pipelines setup and caching |
+| [Void routing](src.voidzero/html/11-void-framework-routing.html) | File-based routing, pages, server routes, and binding inference |
+| [Render adapters](src.voidzero/html/12-void-render-adapters.html) | React, Vue, Solid, Svelte, Markdown, SSR, SSG, and islands |
+| [Resources and bindings](src.voidzero/html/13-void-resources-and-bindings.html) | Database, key-value store, object storage, queues, and Artificial Intelligence |
+| [Command line and deployment](src.voidzero/html/14-void-cli-and-deployment.html) | The `void` commands, deploy-core, deploy-cloudflare, and migrations |
+| [Void Platform](src.voidzero/html/15-void-platform.html) | The self-hosted team platform and its packages |
+| [`void-fbtee`](src.voidzero/html/16-void-fbtee.html) | The internationalization add-on |
+| [Browser tools](src.voidzero/html/17-browser-tools.html) | `chrome-capture` and `lite-youtube-embed` |
+| [Comparisons](src.voidzero/html/18-comparisons.html) | pnpm, Nx, Turborepo, Bazel, and Next.js on Cloudflare Workers |
+| [Glossary](src.voidzero/html/19-glossary.html) | Every term, spelled out |
 
 ### TanStack DB
 

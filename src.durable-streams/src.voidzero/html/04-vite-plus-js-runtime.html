@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>04 — How Vite+ supplies and starts a Node.js runtime -- src.voidzero</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue('--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        toolbar.appendChild(mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); }));
+        toolbar.appendChild(mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); }));
+        toolbar.appendChild(mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); }));
+        toolbar.appendChild(mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); }));
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.voidzero/docs</span>
+    <div class="nav-actions">
+      <a href="01-repository-map.html" class="nav-breadcrumb">01 Repository map</a><a href="02-vite-plus-toolchain.html" class="nav-breadcrumb">02 Vite+ Toolchain</a><a href="03-vite-plus-package-management.html" class="nav-breadcrumb">03 Vite+ Package Management</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="03-vite-plus-package-management.html" class="nav-btn" title="Previous: 03 Vite+ Package Management">← prev</a>
+      <a href="05-vite-plus-dev-test-build.html" class="nav-btn nav-btn-next" title="Next: 05 — Development, test, and build commands">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>04 — How Vite+ supplies and starts a Node.js runtime</h1>
+<p>Vite+ has two command surfaces. The global Command-Line Interface (CLI) is a standalone Rust executable named <code>vp</code>. The local CLI is the Node Package Manager (NPM) package <code>vite-plus</code>. The build configuration compiles <code>src/bin.ts</code> into <code>dist/bin.js</code> (<code>vite-plus/packages/cli/tsdown.config.ts:69</code>). The package manifest maps the <code>vp</code>, <code>vpr</code>, and <code>vpx</code> names to files in <code>bin/</code> (<code>vite-plus/packages/cli/package.json:16-20</code>). The <code>bin/vp</code> file enables the Node.js compile cache and imports <code>../dist/bin.js</code> (<code>vite-plus/packages/cli/bin/vp:1-7</code>). Vite+ does not assume that a suitable Node.js installation already exists. It treats Node.js as an installable asset. The <code>vp_js_runtime</code> crate downloads the asset, verifies it, and stores it in a cache keyed by version. A version resolver selects the asset for each project. The <code>vp_setup</code> crate installs the global CLI and its dependencies. A shim is an executable or a symbolic link with a tool name, such as <code>node</code> or <code>npm</code>. A shim starts the correct binary. On Windows, each shim is a copy of a small executable called the trampoline. The JavaScript package locates the real tool, such as Vite or Vitest. It passes resolver functions into the Rust core through the Node.js native addon interface, called NAPI. NAPI is an application programming interface (API) between JavaScript and native code. The Rust core calls a resolver and starts the binary that the resolver returns. This document follows each step in that chain and names the code that performs it.</p>
+<h2>1. The four layers of runtime supply</h2>
+<p>Vite+ has more than one runtime concern. The layers are separate on purpose, and each layer has its own failure mode.</p>
+<table><tr><th>Layer</th><th>Crate or package</th><th>Question that it answers</th></tr><tr><td>Runtime acquisition</td><td><code>vite-plus/crates/vp_js_runtime</code></td><td>Which Node.js version does this project need, and where is its verified archive?</td></tr><tr><td>Global installation</td><td><code>vite-plus/crates/vp_setup</code></td><td>How does the standalone <code>vp</code> binary and its global JavaScript dependencies reach the machine?</td></tr><tr><td>Startup</td><td><code>vite-plus/crates/vp_trampoline</code>, <code>vite-plus/crates/vp_global_cli/src/shim</code></td><td>Which executable must run for this command name and this project?</td></tr><tr><td>Tool resolution</td><td><code>vite-plus/packages/cli/src/resolve-*.ts</code> (resolvers), <code>vite-plus/packages/cli/binding</code> (NAPI bridge)</td><td>Which JavaScript file implements Vite, Vitest, Oxlint, or Oxfmt, and which command starts it?</td></tr></table>
+<p>The table shows a deliberate split. The runtime crate knows how to obtain Node.js. It does not know how a shell finds <code>vp</code>. The setup crate knows how to install the global CLI. It does not parse project version files. The shim layer knows the command name. It does not resolve Semantic Versioning (SemVer) ranges. The JavaScript resolvers know package layout. They do not download Node.js. The binding directory is the NAPI bridge between the Rust core and those resolvers. Oxlint is a linter and Oxfmt is a formatter.</p>
+<h2>2. What <code>vp_js_runtime</code> downloads</h2>
+<p>The crate downloads a Node.js distribution archive. The default sources are <code>https://nodejs.org/dist</code> for systems with the GNU C Library (glibc) and <code>https://unofficial-builds.nodejs.org/download/release</code> for systems with the musl C library (<code>vite-plus/crates/vp_js_runtime/src/providers/node.rs:20-26</code>). The selection is a compile-time target property, not a runtime check. The crate tests <code>target_env</code> with <code>#[cfg(target_env = "musl")]</code> (<code>vite-plus/crates/vp_js_runtime/src/providers/node.rs:20-26</code>). The setup installer uses the same test to select the NPM package suffix (<code>vite-plus/crates/vp_setup/src/platform.rs:31-36</code>). The archive name is <code>node-v<version>-<os>-<arch>.<extension></code> (<code>vite-plus/crates/vp_js_runtime/src/providers/node.rs:630-639</code>). The operating system string is <code>linux</code>, <code>darwin</code>, or <code>win</code>. The architecture string is <code>x64</code> or <code>arm64</code>. A musl build appends <code>-musl</code> (<code>vite-plus/crates/vp_js_runtime/src/providers/node.rs:611-628</code>).</p>
+<p>The archive format follows the platform. Windows uses a ZIP archive. Linux and macOS use a gzip-compressed tar archive (<code>vite-plus/crates/vp_js_runtime/src/providers/node.rs:171-176</code>, <code>vite-plus/crates/vp_js_runtime/src/provider.rs:10-28</code>). The crate extracts the archive into a temporary directory. It then renames the extracted tree into the cache. The rename is atomic on the same file system, and the temporary directory lives under the cache for that reason (<code>vite-plus/crates/vp_js_runtime/src/runtime.rs:238-242</code>).</p>
+<h3>2.1 The cache path</h3>
+<p>The cache root is <code><DATA>/js_runtime</code> (<code>vite-plus/crates/vp_js_runtime/src/cache.rs:7-12</code>). A runtime for version <code>24.22.2</code> therefore lives at <code><DATA>/js_runtime/node/24.22.2/</code>. The Windows binary is <code>node.exe</code> at the root of that directory. The Unix binary is <code>bin/node</code> (<code>vite-plus/crates/vp_js_runtime/src/providers/node.rs:667-672</code>).</p>
+<p>The following block shows the cache object and the fast path that skips all network work.</p>
+<pre><code class="language-rust">// vite-plus/crates/vp_js_runtime/src/runtime.rs:209-223
+    // Cache path: &lt;DATA&gt;/js_runtime/{runtime}/{version}/
+    let runtime = JsRuntime {
+        runtime_type,
+        version: version.into(),
+        install_dir: cache_dir.join(provider.name()).join(version),
+        binary_relative_path: provider.binary_relative_path(platform),
+        bin_dir_relative_path: provider.bin_dir_relative_path(platform),
+    };
+    let install_dir = &amp;runtime.install_dir;
+    let binary_path = runtime.get_binary_path();
+
+    if tokio::fs::try_exists(&amp;binary_path).await.unwrap_or(false) {
+        tracing::debug!(&quot;{} {version} already cached at {install_dir:?}&quot;, provider.name());
+        return Ok(runtime);
+    }
+</code></pre>
+<p>The check occurs after <code>ensure_managed_node_allowed()</code> (<code>vite-plus/crates/vp_js_runtime/src/runtime.rs:202-205</code>). The order matters. When <code>VP_ENV_FORBIDDEN=1</code> is set, Vite+ must not use a cached runtime either. The operator sets this variable, and only the exact value <code>1</code> enables it (<code>vite-plus/crates/vp_shared/src/env_config.rs:218-225</code>, <code>vite-plus/crates/vp_shared/src/env_config.rs:293</code>). It forbids all Vite+ management of Node.js and package managers. The environment check rejects every managed Node.js use before the cache can hide it (<code>vite-plus/crates/vp_js_runtime/src/runtime.rs:177-185</code>). The version-index fetch repeats the same check, so a cached index cannot bypass the rule either (<code>vite-plus/crates/vp_js_runtime/src/providers/node.rs:187-190</code>).</p>
+<p>The placeholder <code><DATA></code> is the data root. It holds CLI versions, managed runtimes, and package managers (<code>vite-plus/crates/vp_shared/src/dirs.rs:78-92</code>). Four other roots have separate jobs. <code><BIN></code> holds executables and shims. <code><CACHE></code> holds disposable caches. <code><CONFIG></code> holds user configuration. <code><STATE></code> holds state files such as the session version (<code>vite-plus/crates/vp_shared/src/dirs.rs:78-92</code>).</p>
+<h3>2.2 The download lock and the retry loop</h3>
+<p>Two <code>vp</code> processes can request the same missing version at the same time. The crate creates a lock file named <code><version>.lock</code> beside the install directory. The full path is <code><DATA>/js_runtime/node/<version>.lock</code> (<code>vite-plus/crates/vp_js_runtime/src/download.rs:440-447</code>). The primitive is the standard-library advisory file lock on an opened file. The crate takes it inside <code>spawn_blocking</code>, so it waits without blocking the asynchronous runtime (<code>vite-plus/crates/vp_js_runtime/src/download.rs:449-459</code>). The lock is advisory and shared by every process that opens the same path. The operating system releases it when the file handle closes or the process exits. The source does not state this contract; it relies on the standard-library lock. After the lock is held, the code checks the binary again. A peer process may have completed the installation while this process waited.</p>
+<pre><code class="language-rust">// vite-plus/crates/vp_js_runtime/src/runtime.rs:225-230
+    // Lock before downloading so concurrent commands share one download and
+    // extraction. A peer may finish installing while we wait for the lock.
+    let _lock = lock_installation(install_dir, version).await?;
+    if tokio::fs::try_exists(&amp;binary_path).await.unwrap_or(false) {
+        return Ok(runtime);
+    }
+</code></pre>
+<p>The download, checksum check, and extraction form one retryable unit. The backoff builder receives <code>.with_max_times(3)</code> (<code>vite-plus/crates/vp_js_runtime/src/runtime.rs:280-285</code>). The repository does not contain the <code>backon</code> crate source or its documentation. It therefore does not state whether this number counts retries or total attempts. The unit uses jitter and a minimum delay of 200 milliseconds (<code>vite-plus/crates/vp_js_runtime/src/runtime.rs:266-287</code>). The retry predicate accepts only a hash mismatch, an extraction failure, or an input/output error (<code>vite-plus/crates/vp_js_runtime/src/runtime.rs:297-307</code>). A network failure is not retried here. The lower-level <code>download_file</code> function already retries the network (<code>vite-plus/crates/vp_js_runtime/src/runtime.rs:257-265</code>). Inside <code>download_file</code>, the request and the body stream form one retried unit. That loop keeps partial bytes, resumes with a Range header, falls back to a full request on <code>416</code>, and treats a short read as <code>UnexpectedEof</code>. It uses a 500-millisecond minimum delay and the same <code>.with_max_times(3)</code> (<code>vite-plus/crates/vp_js_runtime/src/download.rs:38-191</code>).</p>
+<pre><code class="language-rust">// vite-plus/crates/vp_js_runtime/src/runtime.rs:266-287
+    (|| async {
+        download_file(&amp;download_info.archive_url, &amp;archive_path, &amp;download_message).await?;
+
+        if let Some(expected_hash) = &amp;expected_hash {
+            verify_file_hash(&amp;archive_path, expected_hash, &amp;download_info.archive_filename).await?;
+        }
+
+        if tokio::fs::try_exists(&amp;extracted_path).await.unwrap_or(false) {
+            tokio::fs::remove_dir_all(&amp;extracted_path).await?;
+        }
+        extract_archive(&amp;archive_path, &amp;temp_path, download_info.archive_format).await?;
+
+        Ok::&lt;(), Error&gt;(())
+    })
+    .retry(
+        ExponentialBuilder::default()
+            .with_jitter()
+            .with_min_delay(Duration::from_millis(200))
+            .with_max_times(3),
+    )
+    .when(is_retryable_runtime_error)
+    .await?;
+</code></pre>
+<p>The temporary directory sits under the cache. <code>archive_path</code> is the downloaded archive inside that directory. <code>extracted_path</code> is the tree that <code>extract_archive</code> creates beside it (<code>vite-plus/crates/vp_js_runtime/src/runtime.rs:238-258</code>, <code>vite-plus/crates/vp_js_runtime/src/runtime.rs:276</code>).</p>
+<p>The publication step is also race-safe. <code>move_to_cache</code> checks the binary, not only the directory. A directory without a binary is a partial install, so the function removes it and renames the new tree into place (<code>vite-plus/crates/vp_js_runtime/src/download.rs:461-485</code>).</p>
+<h3>2.3 Verification</h3>
+<p>Vite+ verifies two things. The first is the authenticity of the checksum list. The second is the integrity of the archive.</p>
+<p>For official Node.js releases, Vite+ downloads <code>SHASUMS256.txt.asc</code>. That file is a Pretty Good Privacy (PGP) clearsigned message. Vite+ verifies it against a bundled set of Node.js release keys (<code>vite-plus/crates/vp_js_runtime/src/providers/node.rs:641-654</code>, <code>vite-plus/crates/vp_js_runtime/src/pgp_verify.rs:64-72</code>). The verifier accepts a valid primary-key signature. It also accepts a valid signing-subkey signature, but only when that subkey is bound to the primary key and is allowed to sign (<code>vite-plus/crates/vp_js_runtime/src/pgp_verify.rs:88-116</code>).</p>
+<p>The bundled keys are ASCII-armored public keys. They are concatenated from the <code>nodejs/release-keys</code> repository and embedded in the binary at build time (<code>vite-plus/crates/vp_js_runtime/src/pgp_verify.rs:48-50</code>). The snapshot covers current and historical releasers. An update requires a new Vite+ build; the module documentation states that the keyring must be refreshed as the releaser set changes (<code>vite-plus/crates/vp_js_runtime/src/pgp_verify.rs:10-36</code>). Key expiry is not enforced. Revocation is enforced. A signing subkey is accepted only when it is not revoked, its binding signature has the sign key flag, the binding is valid, and the embedded primary-key back-signature is valid (<code>vite-plus/crates/vp_js_runtime/src/pgp_verify.rs:118-160</code>).</p>
+<pre><code class="language-rust">// vite-plus/crates/vp_js_runtime/src/pgp_verify.rs:95-113
+    for key in trusted_keys {
+        // A revoked primary key (and, with it, all its subkeys) is never trusted.
+        if primary_key_revoked(key) {
+            continue;
+        }
+
+        // Primary-key signing path: a valid signature from a trusted, non-revoked
+        // primary key is accepted, as gpgv trusts keys present in the keyring.
+        if message.verify(key).is_ok() {
+            return Ok(message.signed_text());
+        }
+
+        // Subkey signing path (some releasers sign with a signing subkey).
+        for subkey in &amp;key.public_subkeys {
+            if message.verify(subkey).is_ok() &amp;&amp; subkey_is_valid_signer(key, subkey) {
+                return Ok(message.signed_text());
+            }
+        }
+    }
+</code></pre>
+<p>The verified plaintext of the signed file supplies the expected checksum. Vite+ finds the line for the archive name and reads its Secure Hash Algorithm 256-bit (SHA-256) value (<code>vite-plus/crates/vp_js_runtime/src/providers/node.rs:681-695</code>). The archive check compares the full file digest with that value (<code>vite-plus/crates/vp_js_runtime/src/download.rs:363-387</code>).</p>
+<pre><code class="language-rust">// vite-plus/crates/vp_js_runtime/src/download.rs:377-383
+    if actual_hash != expected_hash {
+        return Err(Error::HashMismatch {
+            filename: filename.into(),
+            expected: expected_hash.into(),
+            actual: actual_hash,
+        });
+    }
+</code></pre>
+<p>A mirror is set with <code>VP_NODE_DIST_MIRROR</code>, which replaces the distribution base Uniform Resource Locator (URL) after a trailing slash is removed (<code>vite-plus/crates/vp_js_runtime/src/providers/node.rs:578-587</code>). The only classification in the source is <code>is_official_dist_host</code>. That function parses the authority, removes user information and a port, removes a trailing dot, and compares the host with <code>nodejs.org</code> without case (<code>vite-plus/crates/vp_js_runtime/src/providers/node.rs:590-604</code>). A mirror on that host is official. Every other host is non-official. The source does not use a separate "unofficial" category. The musl default host is the unofficial builds site. Custom mirrors can publish only the plain <code>SHASUMS256.txt</code>. In that case Vite+ falls back to checksum-only verification and writes a debug message (<code>vite-plus/crates/vp_js_runtime/src/runtime.rs:121-158</code>). The official source requires the signature. The unofficial musl builds publish no signature, so they also use the plain checksum list (<code>vite-plus/crates/vp_js_runtime/src/providers/node.rs:641-654</code>). A custom mirror that does publish an <code>.asc</code> file still has that signature checked, and an invalid signature is a hard error (<code>vite-plus/crates/vp_js_runtime/src/provider.rs:47-58</code>). The verifier uses the Node.js release keys that the binary carries (<code>vite-plus/crates/vp_js_runtime/src/pgp_verify.rs:64-72</code>). The operator can set <code>VP_NODE_SKIP_SIGNATURE_VERIFY</code> to skip the signature check. The SHA-256 check still runs (<code>vite-plus/crates/vp_js_runtime/src/runtime.rs:133-143</code>).</p>
+<p>The guarantee therefore has three scopes. The official host requires a valid signature. A non-official mirror may publish no signature, and then only SHA-256 protects the archive. <code>VP_NODE_SKIP_SIGNATURE_VERIFY</code> removes the signature check for every source, and SHA-256 still runs. An <code>.asc</code> file that is present on a non-official mirror is always checked, and an invalid signature always fails.</p>
+<p><strong>Aha:</strong> The signature protects the checksum list, not the archive directly. A valid archive digest from a forged checksum list would not pass, because the list itself must first carry a trusted Node.js signature. This is why the fallback is a deliberate security downgrade, and why the official source refuses it.</p>
+<h3>2.4 Version discovery and the index cache</h3>
+<p>An exact version needs no index. A range, a partial version such as <code>22</code>, or an alias needs the Node.js release index. Vite+ fetches <code><dist>/index.json</code>, where <code><dist></code> is the selected mirror base from section 2, and caches it at <code><DATA>/js_runtime/node/index_cache.json</code> (<code>vite-plus/crates/vp_js_runtime/src/providers/node.rs:187-191</code>). The cache entry lives for 3600 seconds by default (<code>vite-plus/crates/vp_js_runtime/src/providers/node.rs:30-31</code>). <code>DEFAULT_CACHE_TTL_SECS</code> is the fallback. The <code>max-age</code> value from the HTTP <code>Cache-Control</code> header replaces it when present (<code>vite-plus/crates/vp_js_runtime/src/providers/node.rs:244-262</code>, <code>vite-plus/crates/vp_js_runtime/src/providers/node.rs:568-572</code>). The source reads no environment variable for this lifetime, so the default is not configurable through the <code>VP_*</code> variables. After expiry, Vite+ sends a conditional request with the stored HyperText Transfer Protocol (HTTP) entity tag. A <code>304 Not Modified</code> response refreshes the cache time to live without a new body (<code>vite-plus/crates/vp_js_runtime/src/providers/node.rs:232-269</code>). If the network fails, an expired cache is still usable (<code>vite-plus/crates/vp_js_runtime/src/providers/node.rs:213-229</code>).</p>
+<p>Each index entry has two fields, <code>version</code> and <code>lts</code> (<code>vite-plus/crates/vp_js_runtime/src/providers/node.rs:35-52</code>). The <code>lts</code> value is either a Boolean or a code name, because the parser uses an untagged enumeration (<code>vite-plus/crates/vp_js_runtime/src/providers/node.rs:54-66</code>). Only a code-name string counts as a Long-Term Support (LTS) release. <code>false</code> and an absent value do not. The source does not state why LTS is preferred. It states only the rule to prefer LTS (<code>vite-plus/crates/vp_js_runtime/src/providers/node.rs:531-532</code>). The resolver filters all releases that satisfy the range. It takes the highest LTS match first. Only when no LTS release matches does it take the highest non-LTS release (<code>vite-plus/crates/vp_js_runtime/src/providers/node.rs:513-547</code>).</p>
+<pre><code class="language-rust">// vite-plus/crates/vp_js_runtime/src/providers/node.rs:531-546
+    // Prefer LTS versions: find highest LTS first
+    let lts_max = matching_versions
+        .iter()
+        .filter(|(_, _, is_lts)| *is_lts)
+        .max_by(|(a, _, _), (b, _, _)| a.cmp(b));
+
+    if let Some((_, version_str, _)) = lts_max {
+        return Ok((*version_str).into());
+    }
+
+    // Fallback to highest non-LTS version
+    matching_versions
+        .into_iter()
+        .max_by(|(a, _, _), (b, _, _)| a.cmp(b))
+        .map(|(_, version_str, _)| version_str.into())
+        .ok_or_else(|| Error::NoMatchingVersion { version_req: version_req.into() })
+</code></pre>
+<h2>3. How Vite+ selects the version</h2>
+<p>The selection has two entry paths. The project path reads files. The shim path adds session overrides and a disk cache.</p>
+<h3>3.1 Project files</h3>
+<p><code>resolve_node_version</code> walks from the starting directory toward the root. At each directory it checks four sources in a fixed order. The first match returns immediately. Only then does the function move to the parent (<code>vite-plus/crates/vp_js_runtime/src/runtime.rs:368-447</code>). <code>resolve_node_version</code> does not call <code>resolve_version_from_files</code>. In the global CLI the call direction is the reverse. <code>resolve_version_from_files</code> calls <code>resolve_project_version_source</code>, which calls <code>resolve_node_version</code> (<code>vite-plus/crates/vp_global_cli/src/commands/env/config.rs:390-408</code>, <code>vite-plus/crates/vp_global_cli/src/commands/env/config.rs:489-496</code>).</p>
+<table><tr><th>Order</th><th>Source</th><th>Code</th></tr><tr><td>1</td><td><code>.node-version</code></td><td><code>vite-plus/crates/vp_js_runtime/src/runtime.rs:378-387</code></td></tr><tr><td>2</td><td><code>devEngines.runtime</code> in <code>package.json</code></td><td><code>vite-plus/crates/vp_js_runtime/src/runtime.rs:394-406</code></td></tr><tr><td>3</td><td><code>engines.node</code> in <code>package.json</code></td><td><code>vite-plus/crates/vp_js_runtime/src/runtime.rs:408-419</code></td></tr><tr><td>4</td><td><code>.nvmrc</code></td><td><code>vite-plus/crates/vp_js_runtime/src/runtime.rs:423-432</code></td></tr></table>
+<p>The nearest directory always wins. A <code>package.json</code> in a child directory therefore beats a <code>.node-version</code> file in a parent directory. The test <code>test_resolve_node_version_child_package_json_over_parent_node_version</code> states this rule (<code>vite-plus/crates/vp_js_runtime/src/runtime.rs:1795-1817</code>). Within one directory, <code>.node-version</code> has the highest priority. The documentation states the same order (<code>vite-plus/docs/guide/env.md:35-42</code>).</p>
+<p>The sources do not hold the same kind of value. <code>.node-version</code> and <code>.nvmrc</code> hold a version string. <code>devEngines.runtime</code> is a <code>package.json</code> field with the shape that the devEngines specification defines. It is one entry or an array of entries (<code>vite-plus/crates/vp_shared/src/package_json.rs:100-140</code>). Each entry has a <code>name</code>, an optional <code>version</code>, and an optional <code>onFail</code> (<code>vite-plus/crates/vp_shared/src/package_json.rs:60-84</code>). An array can list several runtimes. Vite+ reads only the first entry whose name is <code>node</code> (<code>vite-plus/crates/vp_shared/src/package_json.rs:115-119</code>). Vite+ does not parse the <code>os</code>, <code>cpu</code>, and <code>libc</code> sub-fields (<code>vite-plus/crates/vp_shared/src/package_json.rs:141-142</code>). <code>engines.node</code> holds a SemVer range. The <code>walk_up</code> parameter enables the parent walk (<code>vite-plus/crates/vp_js_runtime/src/runtime.rs:368-376</code>).</p>
+<pre><code class="language-rust">// vite-plus/crates/vp_js_runtime/src/runtime.rs:378-387
+        // 1. Check .node-version file
+        if let Some(version) = read_node_version_file(current).await {
+            let node_version_path = current.join(&quot;.node-version&quot;);
+            return Ok(Some(VersionResolution {
+                version,
+                source: VersionSource::NodeVersionFile,
+                source_path: Some(node_version_path),
+                project_root: Some(current.to_absolute_path_buf()),
+            }));
+        }
+</code></pre>
+<p>The walk to the parent is explicit. It stops when <code>walk_up</code> is false or when the current directory has no parent (<code>vite-plus/crates/vp_js_runtime/src/runtime.rs:434-442</code>).</p>
+<pre><code class="language-rust">// vite-plus/crates/vp_js_runtime/src/runtime.rs:434-442
+        // Move to parent directory if walk_up is enabled
+        if !walk_up {
+            break;
+        }
+
+        match current.parent() {
+            Some(parent) =&gt; current = parent.to_owned(),
+            None =&gt; break,
+        }
+</code></pre>
+<p>The repository itself uses this mechanism. Its <code>.node-version</code> file contains <code>24.22.2</code> (<code>vite-plus/.node-version:1</code>). The setup crate embeds that exact string at build time as <code>DEFAULT_INSTALL_NODE_VERSION</code> (<code>vite-plus/crates/vp_setup/src/lib.rs:26-27</code>). This is why the global installer uses the same Node.js version that development and Continuous Integration (CI) use.</p>
+<h3>3.2 Session overrides and the user default</h3>
+<p>The shim path adds two overrides before it reads project files. <code>resolve_version</code> checks <code>VP_NODE_VERSION</code> first. This variable is set by <code>vp env use</code> through the shell wrapper. The wrapper sets <code>VP_ENV_USE_EVAL_ENABLE=1</code> before it starts <code>vp</code> (<code>vite-plus/crates/vp_global_cli/src/commands/env/setup.rs:900-905</code>). The command reads that variable through <code>env_use_eval_enable</code>; it does not inspect the parent shell (<code>vite-plus/crates/vp_global_cli/src/commands/env/use.rs:55-59</code>, <code>vite-plus/crates/vp_shared/src/env_config.rs:275</code>). It then checks the session file <code>.session-node-version</code>. This file supports shells that cannot keep a wrapper function, including Continuous Integration (CI) jobs (<code>vite-plus/crates/vp_global_cli/src/commands/env/config.rs:337-376</code>, <code>vite-plus/docs/guide/env.md:179</code>).</p>
+<pre><code class="language-rust">// vite-plus/crates/vp_global_cli/src/commands/env/config.rs:348-376
+pub async fn resolve_version(cwd: &amp;AbsolutePath) -&gt; Result&lt;VersionResolution, Error&gt; {
+    // Session override via environment variable (set by `vp env use`)
+    if let Some(env_version) = vp_shared::EnvConfig::get().node_version.as_deref() {
+        let env_version = env_version.trim();
+        if !env_version.is_empty() {
+            let version = resolve_version_alias(env_version, &amp;NodeProvider::new()).await?;
+            return Ok(VersionResolution {
+                version,
+                source: VERSION_ENV_VAR.into(),
+                source_path: None,
+                project_root: None,
+                is_range: false,
+            });
+        }
+    }
+
+    // Session override via file (written by `vp env use` for shell-wrapper-less environments)
+    if let Some(session_version) = read_session_version().await {
+        return Ok(VersionResolution {
+            version: session_version,
+            source: SESSION_VERSION_FILE.into(),
+            source_path: get_session_version_path().ok(),
+            project_root: None,
+            is_range: false,
+        });
+    }
+
+    resolve_version_from_files(cwd).await
+}
+</code></pre>
+<p>The command-line override is <code>vp env use <version></code>. It does not attach a flag to a later command. With an active shell wrapper, it prints the shell command that sets <code>VP_NODE_VERSION</code>. Without a wrapper, it writes the session file (<code>vite-plus/crates/vp_global_cli/src/commands/env/use.rs:1-9</code>, <code>vite-plus/crates/vp_global_cli/src/commands/env/use.rs:55-64</code>).</p>
+<p><code>resolve_version_from_files</code> reads the project sources. When none exists, it reads <code>default_node_version</code> from <code>config.json</code>, a JavaScript Object Notation (JSON) file in the configuration root. When that value is also absent, it uses the latest LTS release (<code>vite-plus/crates/vp_global_cli/src/commands/env/config.rs:489-536</code>). The shim adds a disk cache in front of this resolver. The cache file is <code><CACHE>/resolve_cache.json</code> (<code>vite-plus/crates/vp_global_cli/src/shim/dispatch.rs:1189-1289</code>, <code>vite-plus/crates/vp_global_cli/src/shim/cache.rs:42-43</code>). A cache hit needs two checks. First, <code>ResolveCache::get</code> compares the stored modification time of the source file with the current time. A range entry also expires after one hour (<code>vite-plus/crates/vp_global_cli/src/shim/cache.rs:92-175</code>). Second, <code>cached_project_source_still_current</code> compares the stored source kind and source path with a fresh project-source lookup (<code>vite-plus/crates/vp_global_cli/src/shim/dispatch.rs:1273-1291</code>). An entry without a source path is valid for one hour. The source does not say why the second check repeats the source identity after the modification-time check. Critically, the environment and session fast paths run before the cache, so a session override never waits for disk state (<code>vite-plus/crates/vp_global_cli/src/shim/dispatch.rs:1191-1223</code>).</p>
+<p>The shell wrapper is a <code>vp()</code> function that <code>vp env setup</code> writes into the environment file. It intercepts <code>vp env use</code> and evaluates the assignment that the command prints (<code>vite-plus/crates/vp_global_cli/src/commands/env/setup.rs:828-884</code>). This is how a child <code>vp</code> process changes its parent shell. The session file covers shells where such a function is not available (<code>vite-plus/docs/guide/env.md:147-179</code>). The two session paths are not identical. The environment variable path resolves an alias through <code>resolve_version_alias</code>, but the session file path returns its content unchanged (<code>vite-plus/crates/vp_global_cli/src/commands/env/config.rs:348-376</code>). <code>vp env use</code> resolves an alias to an exact version before it writes the session file (<code>vite-plus/crates/vp_global_cli/src/commands/env/use.rs:136-140</code>, <code>vite-plus/crates/vp_global_cli/src/commands/env/use.rs:273-275</code>). A hand-written alias in the session file is therefore treated as an exact version downstream. The shim does not resolve it again.</p>
+<h3>3.3 The provable precedence</h3>
+<p>The source supports this order for a command that runs through a global shim:</p>
+<ol><li><code>VP_NODE_VERSION</code>, set by <code>vp env use</code> with a shell wrapper.</li><li><code><STATE>/.session-node-version</code>, written by <code>vp env use</code> without a wrapper.</li><li>Project files, nearest directory first, in the order <code>.node-version</code>, <code>devEngines.runtime</code>, <code>engines.node</code>, <code>.nvmrc</code>.</li><li>The user default in <code>config.json</code>.</li><li>The latest LTS release.</li></ol>
+<p>The order is explicit in <code>vite-plus/crates/vp_global_cli/src/commands/env/config.rs:339-347</code> and <code>vite-plus/docs/guide/env.md:35-42</code>. The code enforces it at <code>vite-plus/crates/vp_global_cli/src/commands/env/config.rs:348-375</code>, <code>vite-plus/crates/vp_global_cli/src/commands/env/config.rs:492-536</code>, and <code>vite-plus/crates/vp_js_runtime/src/runtime.rs:368-447</code>.</p>
+<p>The resolution names have separate jobs. <code>resolve_node_version</code> finds the first non-empty project source (<code>vite-plus/crates/vp_js_runtime/src/runtime.rs:368-447</code>). <code>resolve_project_version_source</code> validates that value and tries lower-priority declarations in the same directory (<code>vite-plus/crates/vp_global_cli/src/commands/env/config.rs:390-474</code>). <code>resolve_version_from_files</code> adds the user default and the LTS fallback (<code>vite-plus/crates/vp_global_cli/src/commands/env/config.rs:489-536</code>). <code>resolve_version</code> adds the two session overrides and then calls <code>resolve_version_from_files</code> (<code>vite-plus/crates/vp_global_cli/src/commands/env/config.rs:348-376</code>). <code>resolve_version_for_project</code> is a private function in the runtime crate. It turns one requirement string into one exact version. <code>download_runtime_for_project</code> calls it (<code>vite-plus/crates/vp_js_runtime/src/runtime.rs:524-535</code>, <code>vite-plus/crates/vp_js_runtime/src/runtime.rs:540-579</code>).</p>
+<p>One qualification is important. The runtime crate function <code>download_runtime_for_project</code> does not read <code>VP_NODE_VERSION</code> or the session file. It starts from <code>resolve_node_version</code> (<code>vite-plus/crates/vp_js_runtime/src/runtime.rs:474-535</code>). The overrides belong to the global CLI path. A caller that calls <code>download_runtime_for_project</code> directly gets the project-file order only. The source does not define a single universal order for every caller. It defines the order in each entry path.</p>
+<p>A third entry path has a different first step. <code>JsExecutor::ensure_project_runtime</code> first uses a system Node.js runtime when <code>find_system_node_runtime</code> finds one. Only when no system runtime exists does it apply the session overrides, then the project files (<code>vite-plus/crates/vp_global_cli/src/js_executor.rs:198-245</code>). <code>find_system_node_runtime</code> checks two conditions. The configuration must select system-first mode. The first <code>node</code> on the search path must not be a Vite+ shim (<code>vite-plus/crates/vp_global_cli/src/js_executor.rs:521-529</code>). It does not read <code>VP_NODE_VERSION</code>, the session file, or a recorded executable. This path serves the global CLI when it delegates to the local package. When a system Node.js exists, the project pin does not control that path.</p>
+<h3>3.4 Ranges, aliases, and the absence of a version</h3>
+<p><code>resolve_version_for_project</code> turns the selected requirement into one exact version (<code>vite-plus/crates/vp_js_runtime/src/runtime.rs:540-579</code>). An empty requirement fetches the latest LTS release. An <code>lts/*</code>, <code>lts/<codename></code>, or <code>lts/-1</code> alias goes to the LTS resolver. <code>lts/iron</code> names a codename. <code>lts/-1</code> names the second-highest LTS line, because offset zero is the highest line (<code>vite-plus/crates/vp_js_runtime/src/providers/node.rs:332-339</code>, <code>vite-plus/crates/vp_js_runtime/src/providers/node.rs:425-448</code>). The <code>latest</code> alias selects the newest stable release, including a non-LTS release. An exact version is used after a leading <code>v</code> is removed. A range or partial version first checks the local cache for a satisfying installed version. The cache check prefers the highest installed LTS that satisfies the range and otherwise the highest installed version (<code>vite-plus/crates/vp_js_runtime/src/providers/node.rs:113-168</code>). Only when no installed version satisfies the range does it query the network (<code>vite-plus/crates/vp_js_runtime/src/runtime.rs:570-578</code>). A cached choice can therefore override a newer LTS release that is not installed.</p>
+<p>When no version source exists, the project path does not fail. It uses the latest LTS release (<code>vite-plus/crates/vp_js_runtime/src/runtime.rs:545-549</code>). When a source exists but its value is invalid, <code>resolve_node_version</code> has already returned that value. Validation then rejects it, and <code>resolve_project_version_source</code> tries the lower-priority declarations in the same directory: <code>devEngines.runtime</code>, then <code>engines.node</code>, then <code>.nvmrc</code> (<code>vite-plus/crates/vp_global_cli/src/commands/env/config.rs:390-474</code>). An invalid <code>.nvmrc</code> returns no source. The walk does not continue to a parent directory after a source was found. In the runtime crate, <code>download_runtime_for_project</code> repeats a similar fallback and ends with an empty requirement (<code>vite-plus/crates/vp_js_runtime/src/runtime.rs:510-521</code>). <code>normalize_version</code> prints a warning for an invalid non-empty value (<code>vite-plus/crates/vp_js_runtime/src/runtime.rs:661-673</code>). The mismatch warning compares the selected version with the lower-priority <code>engines.node</code> and <code>devEngines.runtime</code> declarations in the project <code>package.json</code>. The selected version wins, and the warning goes to standard error (<code>vite-plus/crates/vp_js_runtime/src/runtime.rs:583-633</code>). A valid exact version that has no release is different again. It fails at download (section 3.5).</p>
+<p>The documentation adds a useful rule about aliases. <code>lts</code> selects the newest LTS release. <code>latest</code> selects the newest stable release and skips pre-releases (<code>vite-plus/docs/guide/env.md:42-46</code>). To use a pre-release, the project must name its exact version.</p>
+<h3>3.5 When the requested version is absent</h3>
+<p>An exact version is not checked against the release index. The resolver removes a leading <code>v</code> and returns the string. The download then constructs the archive Uniform Resource Locator (URL) and requests it (<code>vite-plus/crates/vp_js_runtime/src/runtime.rs:563-568</code>, <code>vite-plus/crates/vp_js_runtime/src/providers/node.rs:630-639</code>). A missing release therefore appears as a failed archive download, not as a resolution error.</p>
+<p>A range that matches no release produces <code>Error::NoMatchingVersion</code> from the list resolver (<code>vite-plus/crates/vp_js_runtime/src/providers/node.rs:542-546</code>). The shim prints the failure as <code>Failed to install Node <version>: <error></code> and exits with code 1 (<code>vite-plus/crates/vp_global_cli/src/shim/dispatch.rs:812-815</code>, <code>vite-plus/crates/vp_global_cli/src/shim/dispatch.rs:929-933</code>). The content-integrity retry does not apply to a download failure (<code>vite-plus/crates/vp_js_runtime/src/runtime.rs:297-307</code>). The network layer inside <code>download_file</code> has already retried that failure.</p>
+<p>The source does not add a project-file fallback after a selected exact version fails to download. The fallback chain applies when a source is missing or invalid, before resolution (<code>vite-plus/crates/vp_js_runtime/src/runtime.rs:510-521</code>). A valid but unavailable exact version stops the command with an error.</p>
+<h2>4. What "setup" means</h2>
+<p>The word "setup" names two different operations. The source uses the same word for both, so this section separates them.</p>
+<h3>4.1 <code>vp_setup</code>: install the global CLI</h3>
+<p><code>vp_setup</code> installs the standalone <code>vp</code> binary and the JavaScript dependencies that the binary needs. It does not select a runtime from project files. It does populate the shared runtime cache with the Node.js version that its private pnpm requires (<code>vite-plus/crates/vp_setup/src/install.rs:508-559</code>).</p>
+<p>Three names describe the on-disk layout. <code><DATA></code> is the data root from section 2.1. <code><install></code> is the same data root; this document uses <code><install></code> only when it discusses the installer. <code><VERSION></code> is the directory <code><DATA>/<version></code>, for example <code><DATA>/24.22.2</code>. The installer forms it with <code>install_dir.join(version)</code> (<code>vite-plus/crates/vp_setup/src/install.rs:667</code>). <code><DATA>/current</code> is a link to the active <code><VERSION></code> directory. The payload is <code><DATA>/current/bin/vp</code>, or <code>vp.exe</code> on Windows (<code>vite-plus/crates/vp_trampoline/src/main.rs:86-91</code>).</p>
+<p>The install starts from an NPM platform package named <code>@voidzero-dev/vite-plus-cli-<suffix></code> (<code>vite-plus/crates/vp_setup/src/registry.rs:145-160</code>). The suffix comes from the operating system, the architecture, and, on Linux, the C library: <code>darwin-arm64</code>, <code>linux-x64-gnu</code>, <code>linux-arm64-musl</code>, or <code>win32-x64-msvc</code> (<code>vite-plus/crates/vp_setup/src/platform.rs:8-40</code>). The installer reads the package metadata from the configured NPM registry and takes the <code>dist.tarball</code> URL (<code>vite-plus/crates/vp_setup/src/registry.rs:145-198</code>). The package is a gzip-compressed tar archive. The installer extracts <code>vp</code>, <code>vp.exe</code>, or <code>vp-shim.exe</code> into <code><VERSION>/bin/</code>. It also extracts the release install lockfile to <code><VERSION>/bin/vp-install-lock.yaml</code> unless <code>VP_SETUP_SKIP_INSTALL_LOCKFILE</code> is set (<code>vite-plus/crates/vp_setup/src/install.rs:40-121</code>). It rejects path traversal in archive entries (<code>vite-plus/crates/vp_setup/src/install.rs:69-72</code>). It sets mode <code>0755</code> on Unix binaries (<code>vite-plus/crates/vp_setup/src/install.rs:100-105</code>).</p>
+<p><code>vp-shim.exe</code> is the Windows trampoline from the <code>vp_trampoline</code> crate, whose binary name is <code>vp-shim</code> (<code>vite-plus/crates/vp_trampoline/Cargo.toml:30-32</code>). Only Windows uses it. The installer extracts it beside <code>vp.exe</code>. Self-setup copies it when the file is absent (<code>vite-plus/crates/vp_global_cli/src/self_setup.rs:389-410</code>).</p>
+<p><code>vp-install-lock.yaml</code> is the release's pnpm lockfile. It pins the exact dependency tree of <code>vite-plus</code> for a frozen install. A successful install writes <code>node_modules/.vp-install-complete</code>. That receipt contains the SHA-256 digest of the lockfile, or the text <code>unlocked</code> when the bypass is active (<code>vite-plus/crates/vp_setup/src/lockfile.rs:13-16</code>, <code>vite-plus/crates/vp_setup/src/lockfile.rs:48-72</code>). <code>VP_SETUP_SKIP_INSTALL_LOCKFILE=1</code> stops extraction and restoration. It changes the receipt to <code>unlocked</code>, and a later run reuses only that unlocked receipt (<code>vite-plus/crates/vp_setup/src/lockfile.rs:114-123</code>).</p>
+<p>The installer then provides a package manager. It downloads a pinned pnpm <code>10.34.9</code> from the registry metadata <code>dist.tarball</code> URL (<code>vite-plus/crates/vp_setup/src/install.rs:125</code>, <code>vite-plus/crates/vp_pm_cli/src/package_manager/bootstrap.rs:35-81</code>). It checks the archive against a SHA-512 value in the <code>packageManager</code> hash format (<code>vite-plus/crates/vp_setup/src/install.rs:127-137</code>). That format is <code>sha512.<hex></code>. A Subresource Integrity (SRI) value uses <code>sha512-<base64></code> instead (<code>vite-plus/crates/vp_pm_cli/src/request.rs:660-704</code>). The <code>bootstrap_pnpm</code> function returns a directory, and the entry point is <code>bin/pnpm.cjs</code> in that directory (<code>vite-plus/crates/vp_setup/src/install.rs:508-517</code>). <code>prepare_install_runtime</code> then reads pnpm's <code>engines.node</code> field through <code>supports_pnpm_node</code>. It downloads that Node.js runtime through <code>vp_js_runtime::download_runtime</code> (<code>vite-plus/crates/vp_setup/src/install.rs:508-559</code>).</p>
+<p><code>install_production_deps</code> receives a <code>NodeVersion</code> value (<code>vite-plus/crates/vp_setup/src/install.rs:398-403</code>, <code>vite-plus/crates/vp_setup/src/install.rs:286-294</code>). The upgrade path marks the platform package's <code>vpNodeVersion</code> as <code>Required</code> (<code>vite-plus/crates/vp_global_cli/src/commands/upgrade/mod.rs:274-280</code>). Self-setup marks <code>VP_SETUP_NODE_VERSION</code> as <code>Preferred</code> when <code>supports_cli</code> accepts it (<code>vite-plus/crates/vp_global_cli/src/self_setup.rs:356-375</code>). A <code>Required</code> version that pnpm does not support is an error. A <code>Preferred</code> version that pnpm does not support falls back to <code>DEFAULT_INSTALL_NODE_VERSION</code> (<code>vite-plus/crates/vp_setup/src/install.rs:529-545</code>). The source does not state a second fallback when the default is also unsupported. The code uses the default without another check.</p>
+<p>The dependency install runs pnpm through the selected Node.js binary with a carefully built search-path (<code>PATH</code>) environment variable (<code>vite-plus/crates/vp_setup/src/install.rs:399-447</code>). The path contains the Node.js binary directory first, then the pnpm directory, then the existing path (<code>vite-plus/crates/vp_setup/src/install.rs:579-600</code>). The installer writes a generated wrapper <code>package.json</code> and a <code>.npmrc</code> that sets <code>minimum-release-age=0</code>. The wrapper has the name <code>vp-global</code>, the CLI version, <code>private: true</code>, a <code>packageManager</code> field that pins pnpm, and a dependency on <code>vite-plus</code> at the same version (<code>vite-plus/crates/vp_setup/src/install.rs:148-177</code>). Under <code>VP_ENV_FORBIDDEN</code>, it omits <code>packageManager</code> so the system pnpm does not download the pin. The <code>.npmrc</code> value disables pnpm's minimum release age. That guard blocks packages published very recently. Setup needs the bypass because the <code>vite-plus</code> version that it installs may be newer than the guard allows (<code>vite-plus/crates/vp_setup/src/install.rs:169-173</code>, <code>vite-plus/crates/vp_setup/src/install.rs:179-185</code>).</p>
+<h3>4.2 The <code>current</code> link</h3>
+<p>Each installed version lives in its own directory. A <code>current</code> link selects the active version. On Unix, the installer creates a temporary symbolic link and renames it over <code>current</code>. The rename is atomic. On Windows, it removes the old junction (a Windows directory link) and creates a new junction; that operation is not atomic (<code>vite-plus/crates/vp_setup/src/install.rs:661-706</code>).</p>
+<pre><code class="language-rust">// vite-plus/crates/vp_setup/src/install.rs:676-686
+    #[cfg(unix)]
+    {
+        // Atomic symlink swap: create temp link, then rename over current
+        let temp_link = install_dir.join(&quot;current.new&quot;);
+
+        // Remove temp link if it exists from a previous failed attempt
+        let _ = tokio::fs::remove_file(&amp;temp_link).await;
+
+        tokio::fs::symlink(version, &amp;temp_link).await?;
+        tokio::fs::rename(&amp;temp_link, &amp;current_link).await?;
+    }
+</code></pre>
+<p>The installer keeps at most three versions (<code>vite-plus/crates/vp_setup/src/lib.rs:29-30</code>). <code>vp upgrade --rollback</code> relies on this retention, and the active and previous versions are never pruned (<code>vite-plus/docs/guide/upgrade.md:78-86</code>).</p>
+<p>Activation means two things: the version directory is complete, and the <code>current</code> link points to it. After activation, the setup crate does not recreate the shims itself. <code>vp_setup::install::refresh_shims</code> starts <code><install>/current/bin/vp</code> with <code>env setup --refresh</code> (<code>vite-plus/crates/vp_setup/src/install.rs:758-777</code>). The flag has two effects. It permits replacement of existing entrypoint wrappers and shims, and it suppresses the "skipped shims" list (<code>vite-plus/crates/vp_global_cli/src/commands/env/setup.rs:175-217</code>). The setup crate calls this invocation "the legacy refresh command" (<code>vite-plus/crates/vp_setup/src/install.rs:758</code>). A new binary intercepts the invocation as self-setup. Setup writes a marker file beside the installed binary. <code>maybe_run</code> checks for <code>SELF_SETUP_MARKER</code> in the directory of the running executable. When the marker is absent, it runs full setup before command dispatch (<code>vite-plus/crates/vp_global_cli/src/self_setup.rs:30-42</code>, <code>vite-plus/crates/vp_global_cli/src/main.rs:416-425</code>). A legacy rollback target already has the marker, so it executes <code>env setup --refresh</code> normally (<code>vite-plus/crates/vp_setup/src/install.rs:759-760</code>). This is the boundary between the two meanings of setup. <code>vp_setup</code> installs the version directory. The new binary performs the environment setup.</p>
+<h3>4.3 <code>vp env setup</code>: write files and shims</h3>
+<p><code>vp env setup</code> creates environment files in the configuration directory. <code>create_env_files</code> writes <code>vp.ps1</code>, <code>env</code>, <code>env.fish</code>, <code>env.nu</code>, and <code>env.ps1</code> (<code>vite-plus/crates/vp_global_cli/src/commands/env/setup.rs:1465-1492</code>). The <code>env</code> file is the Portable Operating System Interface (POSIX) shell file for Bash and Zsh (<code>vite-plus/crates/vp_global_cli/src/commands/env/setup.rs:1468</code>). The PowerShell files <code>vp.ps1</code> and <code>env.ps1</code> receive a Byte Order Mark (BOM) when needed for non-ASCII paths (<code>vite-plus/crates/vp_global_cli/src/commands/env/setup.rs:1474-1488</code>).</p>
+<p>The same command writes shell profile entries. <code>configure</code> appends a <code>source</code> or <code>.</code> line to the profiles for the shells that it finds (<code>vite-plus/crates/vp_global_cli/src/self_setup/shell.rs:15-116</code>). The line has a stable marker, <code># Vite+ bin (https://viteplus.dev)</code> (<code>vite-plus/crates/vp_global_cli/src/self_setup/shell.rs:56-58</code>). The function skips a shell that is not on the <code>PATH</code> environment variable. It never rewrites the main Fish configuration. For Nushell it writes <code>vite-plus.nu</code> into the vendor autoload directory (<code>vite-plus/crates/vp_global_cli/src/self_setup/shell.rs:17-49</code>). On Windows it updates the user <code>PATH</code> through PowerShell (<code>vite-plus/crates/vp_global_cli/src/self_setup/shell.rs:93-114</code>).</p>
+<p><code>vp_global_cli::commands::env::setup::refresh_shims</code> reconciles the shim directories. It iterates <code>DEFAULT_SHIM_TOOLS</code>. Ownership means that the file is a Vite+ shim for the running <code>vp</code> binary. <code>is_owned_shim</code> accepts a target that <code>is_vp_shim_target</code> approves, or a symbolic link that resolves to the current executable (<code>vite-plus/crates/vp_global_cli/src/commands/env/setup.rs:280-286</code>). On Unix, the first check requires a link to <code><DATA>/current/bin/vp</code>; on Windows, a trampoline is owned only when its sidecar records this installation's data root (<code>vite-plus/crates/vp_global_cli/src/commands/global/install.rs:64-103</code>). A foreign core shim is an existing core shim at the destination that fails the ownership test. A bin directory from an explicit override group can hold unrelated executables such as <code>node.exe</code> (<code>vite-plus/crates/vp_global_cli/src/commands/global/install.rs:70-74</code>). The function never replaces a foreign core shim (<code>vite-plus/crates/vp_global_cli/src/commands/env/setup.rs:317-321</code>). An owned stale shim is a shim in the other bin directory, the one that the current mode does not use, that passes the ownership test. The function removes it (<code>vite-plus/crates/vp_global_cli/src/commands/env/setup.rs:327-338</code>). The <code>vp env setup</code> documentation promises exactly this behaviour (<code>vite-plus/docs/guide/env.md:138-145</code>). The setup crate and the global command-line crate each define a function named <code>refresh_shims</code>. The names are the same, but the work is different. One starts the new binary; the other reconciles the shims.</p>
+<h2>5. Shims and the <code>PATH</code> search</h2>
+<h3>5.1 The shim names</h3>
+<p><code>DEFAULT_SHIM_TOOLS</code> contains <code>node</code>, <code>npm</code>, <code>npx</code>, <code>pnpm</code>, <code>pnpx</code>, <code>pn</code>, <code>pnx</code>, <code>yarn</code>, <code>yarnpkg</code>, <code>bun</code>, <code>bunx</code>, <code>vpx</code>, and <code>vpr</code> (<code>vite-plus/crates/vp_global_cli/src/shim/mod.rs:22-26</code>). The list does not contain <code>vp</code>. The <code>vp</code> entrypoint is a separate wrapper created by <code>setup_vp_wrapper</code> (<code>vite-plus/crates/vp_global_cli/src/commands/env/setup.rs:182-183</code>). The local <code>vpx</code> and <code>vpr</code> files in a project come from the npm package, not from this list (<code>vite-plus/packages/cli/bin/vpx:1-9</code>, <code>vite-plus/packages/cli/bin/vpr:1-10</code>).</p>
+<pre><code class="language-rust">// vite-plus/crates/vp_global_cli/src/shim/mod.rs:22-26
+/// Default shims created by `vp env setup`.
+pub const DEFAULT_SHIM_TOOLS: &amp;[&amp;str] = &amp;[
+    &quot;node&quot;, &quot;npm&quot;, &quot;npx&quot;, &quot;pnpm&quot;, &quot;pnpx&quot;, &quot;pn&quot;, &quot;pnx&quot;, &quot;yarn&quot;, &quot;yarnpkg&quot;, &quot;bun&quot;, &quot;bunx&quot;, &quot;vpx&quot;,
+    &quot;vpr&quot;,
+];
+</code></pre>
+<p>The names are not arbitrary aliases. Each name is a command that a build script or a user can call. A project that runs <code>npm ci</code> must receive a managed npm when managed mode is active. A project that runs <code>node</code> must receive the selected Node.js. The shim list is the set of interception points for that policy.</p>
+<p>Managed mode is the default. The managed core shims are in <code><BIN></code>, which the generated environment file puts first on the search path. System-first mode puts the system tools first and keeps the managed shims as a fallback. <code>shim_dir</code> implements this by placing a system-first tool's shim in <code><DATA>/fallback-bin</code> instead of <code><BIN></code> (<code>vite-plus/crates/vp_global_cli/src/commands/env/setup.rs:289-295</code>). The environment file puts <code><DATA>/fallback-bin</code> last, so a system tool earlier on the path wins (<code>vite-plus/crates/vp_global_cli/src/commands/env/setup.rs:877</code>). <code>vp env off</code> selects the system-first preference (<code>vite-plus/docs/guide/env.md:107-134</code>). The two directories are described in section 5.4.</p>
+<h3>5.2 How a shim knows its tool</h3>
+<p>On Unix a shim is a symbolic link to the active <code>vp</code> binary. A symbolic link preserves <code>argv[0]</code>, so the invoked name is still available to the program. The <code>vp</code> binary reads that name and learns which tool the user invoked (<code>vite-plus/crates/vp_global_cli/src/commands/env/setup.rs:579-594</code>). This is the same technique that Volta uses, and the source says so (<code>vite-plus/crates/vp_global_cli/src/commands/env/setup.rs:582</code>).</p>
+<p>On Windows a shim is a copy of a tiny executable named <code><tool>.exe</code>. A copy cannot preserve the invoked name through <code>argv[0]</code> alone, because the process starts the real <code>vp.exe</code>. The trampoline sets <code>VP_SHIM_TOOL</code> to the tool name before it starts <code>vp.exe</code> (<code>vite-plus/crates/vp_trampoline/src/main.rs:139-141</code>). <code>peek_shim_tool</code> reads that variable first (<code>vite-plus/crates/vp_global_cli/src/shim/mod.rs:159-192</code>). From the variable, it accepts any tool name except <code>vp</code>. From <code>argv[0]</code>, it accepts only a known shim name. That second path serves the Unix symbolic links (<code>vite-plus/crates/vp_global_cli/src/shim/mod.rs:176-192</code>).</p>
+<h3>5.3 The sidecar file</h3>
+<p>A Windows shim copies one executable into a bin directory. The executable is identical for every tool and every installation. The bin directory can be shared. A copied executable therefore cannot prove which Vite+ data root owns it.</p>
+<p>Vite+ writes a sidecar next to every copied trampoline. The file is <code><name>.shim</code>. Its first line is the format marker <code>vite-plus-shim-v1</code>. The remaining lines record the layout, the data root, the cache root, and the bin root (<code>vite-plus/crates/vp_shared/src/dirs.rs:151-169</code>, <code>vite-plus/crates/vp_shared/src/dirs.rs:26-45</code>).</p>
+<pre><code class="language-rust">// vite-plus/crates/vp_shared/src/dirs.rs:161-168
+        let contents = format!(
+            &quot;{SHIM_POINTER_HEADER}\nlayout={}\ndata={}\ncache={}\nbin={}\n&quot;,
+            self.layout.as_str(),
+            self.data.as_path().to_string_lossy(),
+            self.cache.as_path().to_string_lossy(),
+            self.bin.as_path().to_string_lossy()
+        );
+        std::fs::write(exe_path.with_extension(SHIM_POINTER_EXTENSION), contents)
+</code></pre>
+<p>The trampoline parses this file with no allocator and no external crates. The parser accepts a UTF-8 BOM and Carriage Return and Line Feed (CRLF) line endings. It requires the versioned header. It accepts <code>single-root</code> and <code>split</code> layouts. A <code>single-root</code> layout records one root in <code>data</code>. A <code>split</code> layout records independent data, cache, and bin roots. A split layout requires a cache root and may omit the bin root (<code>vite-plus/crates/vp_trampoline/src/cmdline.rs:20-71</code>). The parser accepts the keys in any order, so the write order in the format string is not part of the format (<code>vite-plus/crates/vp_trampoline/src/cmdline.rs:52-62</code>). A split layout requires a cache root and may omit the bin root (<code>vite-plus/crates/vp_trampoline/src/cmdline.rs:20-71</code>). When <code>bin=</code> is absent, <code>read_shim_pointer</code> uses the directory of the executable. The comment states that old sidecars occur only beside the main bin entrypoints (<code>vite-plus/crates/vp_trampoline/src/main.rs:96-106</code>). The trampoline then sets <code>VP_BIN_DIR</code> to that directory. It does not unset the variable and does not set it to an empty string (<code>vite-plus/crates/vp_trampoline/src/main.rs:131-136</code>).</p>
+<pre><code class="language-rust">// vite-plus/crates/vp_trampoline/src/cmdline.rs:40-71
+pub fn parse_shim_pointer(bytes: &amp;[u8]) -&gt; Option&lt;ShimPointer&lt;&#x27;_&gt;&gt; {
+    let bytes = bytes.strip_prefix(&amp;[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
+    let text = core::str::from_utf8(bytes).ok()?.trim();
+    let mut lines = text.lines();
+    if lines.next()? != SHIM_POINTER_HEADER {
+        return None;
+    }
+
+    let mut layout = None;
+    let mut data = None;
+    let mut cache = None;
+    let mut bin = None;
+    for line in lines {
+        if let Some(value) = line.strip_prefix(&quot;layout=&quot;) {
+            layout = Some(value);
+        } else if let Some(value) = line.strip_prefix(&quot;data=&quot;) {
+            data = (!value.is_empty()).then_some(value);
+        } else if let Some(value) = line.strip_prefix(&quot;bin=&quot;) {
+            bin = (!value.is_empty()).then_some(value);
+        } else if let Some(value) = line.strip_prefix(&quot;cache=&quot;) {
+            cache = (!value.is_empty()).then_some(value);
+        }
+    }
+
+    let data = data?;
+    let layout = match layout? {
+        &quot;single-root&quot; =&gt; ShimLayout::SingleRoot,
+        &quot;split&quot; =&gt; ShimLayout::Split { cache: cache?, bin },
+        _ =&gt; return None,
+    };
+    Some(ShimPointer { data, layout })
+}
+</code></pre>
+<p><strong>Aha:</strong> The sidecar is not metadata that repeats the executable. It is the ownership proof. <code>owns_windows_trampoline</code> compares the data root in the sidecar with the current installation before Vite+ updates or deletes an executable (<code>vite-plus/crates/vp_shared/src/dirs.rs:171-180</code>). Without it, a shared bin directory would let one installation delete another installation's shim.</p>
+<p>The running <code>vp</code> process learns its own data root from <code>EnvConfig::get().dirs</code>. That value comes from the environment that launched the process: <code>VP_HOME</code> for a single-root sidecar, or <code>VP_DATA_DIR</code> for a split sidecar (<code>vite-plus/crates/vp_trampoline/src/main.rs:127-137</code>). When no override is present, the platform default applies (<code>vite-plus/crates/vp_shared/src/dirs.rs:94-118</code>). <code>owns_windows_trampoline</code> then compares this value with the <code>data=</code> line of the candidate shim's sidecar (<code>vite-plus/crates/vp_shared/src/dirs.rs:178-180</code>).</p>
+<h3>5.4 The two bin directories and ownership</h3>
+<p>A split installation stores the data, cache, bin, and configuration roots in different directories. The sidecar names this layout <code>split</code>. The alternative, single-root, stores the roots under one directory; the sidecar records that directory in <code>data</code> (<code>vite-plus/crates/vp_shared/src/dirs.rs:50-67</code>). The trampoline passes <code>VP_HOME</code> for a single-root sidecar and the <code>VP_DATA_DIR</code>, <code>VP_BIN_DIR</code>, and <code>VP_CACHE_DIR</code> group for a split sidecar (<code>vite-plus/crates/vp_trampoline/src/main.rs:127-137</code>).</p>
+<p>A split installation has a main bin directory and a fallback bin directory. Managed shims go to <code><BIN></code>. System-first shims go to <code><DATA>/fallback-bin</code> (<code>vite-plus/docs/guide/global-cli.md:169-181</code>, <code>vite-plus/crates/vp_global_cli/src/commands/env/setup.rs:289-295</code>). For each tool, only one of the two directories holds its shim; the global command-line <code>refresh_shims</code> removes an owned shim from the other directory (<code>vite-plus/crates/vp_global_cli/src/commands/env/setup.rs:297-353</code>). The generated <code>env</code> file sets the search path with <code><BIN></code> first and <code><DATA>/fallback-bin</code> last (<code>vite-plus/crates/vp_global_cli/src/commands/env/setup.rs:877</code>). A Windows setup command in the same module uses the same order (<code>vite-plus/crates/vp_global_cli/src/commands/env/setup.rs:1604-1608</code>).</p>
+<p>A shim also prepares the search path of its child. It prepends the selected Node.js bin directory. When a package manager applies, it also prepends that package manager's bin directory (<code>vite-plus/crates/vp_global_cli/src/shim/dispatch.rs:832-850</code>). This ordering lets a nested command find the same Node.js and package-manager versions as its parent.</p>
+<p>The installer claims only empty or newly created roots. To claim a root means to create it and write the <code>.vp-owned</code> marker into it (<code>vite-plus/crates/vp_global_cli/src/install_dirs.rs:14-15</code>, <code>vite-plus/crates/vp_global_cli/src/install_dirs.rs:92-130</code>). A non-empty root without the marker is never claimed. This rule prevents the installer from deleting an unrelated directory that happens to use the same name. The self-setup path is the only production caller. It calls <code>install_dirs::prepare</code> before it takes the setup lock (<code>vite-plus/crates/vp_global_cli/src/self_setup.rs:69-71</code>). Only four roots are claimable: data, cache, config, and state (<code>vite-plus/crates/vp_global_cli/src/install_dirs.rs:31-33</code>, <code>vite-plus/crates/vp_global_cli/src/install_dirs.rs:70-82</code>). The bin root is not in that set. A shared bin directory can contain files from other tools, so the installer does not mark it as owned.</p>
+<pre><code class="language-rust">// vite-plus/crates/vp_global_cli/src/install_dirs.rs:94-110
+pub(crate) fn prepare(dirs: &amp;VpDirs) -&gt; Result&lt;(), Error&gt; {
+    validate_root_normalization(dirs)?;
+    let mut empty_roots = Vec::new();
+    // Preflight all roots before creating directories or ownership markers.
+    for root in roots(dirs) {
+        if is_owned(&amp;root)? {
+            continue;
+        }
+        let is_empty = match fs::read_dir(&amp;root) {
+            Ok(mut entries) =&gt; entries.next().transpose()?.is_none(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound =&gt; true,
+            Err(error) =&gt; return Err(error.into()),
+        };
+        if is_empty {
+            empty_roots.push(root);
+        }
+    }
+</code></pre>
+
+<pre><code class="language-rust">// vite-plus/crates/vp_global_cli/src/install_dirs.rs:111-130
+    for root in empty_roots {
+        // An earlier root may have created the marker through a filesystem alias.
+        if is_owned(&amp;root)? {
+            continue;
+        }
+        fs::create_dir_all(&amp;root)?;
+        let marker =
+            fs::OpenOptions::new().write(true).create_new(true).open(root.join(OWNERSHIP_MARKER));
+        let mut marker = match marker {
+            Ok(marker) =&gt; marker,
+            // Concurrent first launches can claim the same empty root before taking the setup lock.
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists &amp;&amp; is_owned(&amp;root)? =&gt; {
+                continue;
+            }
+            Err(error) =&gt; return Err(error.into()),
+        };
+        marker.write_all(OWNERSHIP_CONTENT)?;
+    }
+    Ok(())
+}
+</code></pre>
+<p>The installer also rejects a <code>..</code> component when lexical normalization would cross a symbolic link and change the target (<code>vite-plus/crates/vp_global_cli/src/install_dirs.rs:31-68</code>). The check is necessary because an absolute path with <code>..</code> is not necessarily a simple path. An example shows the rejected shape. Suppose <code>/home/u/link</code> is a symbolic link to <code>/srv/other</code>. The root <code>/home/u/link/../data</code> normalizes lexically to <code>/home/u/data</code>. Filesystem traversal follows the link first, so <code>..</code> resolves to <code>/srv</code>, and the real path is <code>/srv/data</code>. The two results differ. <code>validate_parent_traversal</code> detects that the resolved parent of <code>link</code> is not the lexical parent, and it refuses the root (<code>vite-plus/crates/vp_global_cli/src/install_dirs.rs:49-67</code>). The error asks the user to specify the directory without <code>..</code> (<code>vite-plus/crates/vp_global_cli/src/install_dirs.rs:62-64</code>).</p>
+<h2>6. The Windows trampoline</h2>
+<p>The trampoline exists for one reason. A Windows <code>.cmd</code> wrapper leaves <code>cmd.exe</code> waiting at the "Terminate batch job?" prompt after Ctrl+C. A native executable returns control cleanly and passes the exit code to the caller (<code>vite-plus/crates/vp_global_cli/src/commands/env/setup.rs:596-621</code>). The trampoline is also a real process, so a console signal reaches it directly.</p>
+<p>The trampoline is deliberately small. Its release profile uses <code>opt-level = "z"</code>, fat Link Time Optimization, one code-generation unit, stripped symbols, and immediate abort on panic (<code>vite-plus/crates/vp_trampoline/Cargo.toml:46-54</code>). The measurements refer to the <code>x86_64-pc-windows-msvc</code> target. The current executable is 14 KiB. The earlier implementation, which linked a precompiled standard library, was approximately 222 KiB (<code>vite-plus/crates/vp_trampoline/Cargo.toml:14-19</code>). The build recompiles the standard library from source with <code>build-std = ["std", "panic_abort"]</code> and the features <code>optimize_for_size</code> and <code>compiler-builtins-mem</code> (<code>vite-plus/crates/vp_trampoline/.cargo/config.toml:5-15</code>). <code>compiler-builtins-mem</code> supplies the memory functions that the C runtime would normally provide. The <code>#![no_main]</code> entry point needs these functions, and the raw Win32 code does not link the C runtime (<code>vite-plus/crates/vp_trampoline/.cargo/config.toml:13-14</code>, <code>vite-plus/crates/vp_trampoline/Cargo.toml:18</code>). It declares <code>#![no_main]</code> and the Windows console subsystem, so the normal C runtime startup is absent (<code>vite-plus/crates/vp_trampoline/src/main.rs:25-41</code>).</p>
+<p>The portable path in <code>main.rs</code> performs four steps. It reads its own file name. It locates <code>vp.exe</code> through the sidecar. It pins the directory layout in the child environment. It starts the child and propagates the exit code. The following block shows the first three steps.</p>
+<pre><code class="language-rust">// vite-plus/crates/vp_trampoline/src/main.rs:109-141
+    pub fn run() {
+        // 1. Determine the tool name from our own executable filename.
+        let exe_path = env::current_exe().unwrap_or_else(|_| process::exit(1));
+        let tool_name =
+            exe_path.file_stem().and_then(|s| s.to_str()).unwrap_or_else(|| process::exit(1));
+
+        // 2. Locate vp.exe via `&lt;name&gt;.shim` (written next to every trampoline).
+        let Some(location) = resolve_vp_exe(&amp;exe_path) else {
+            use std::io::Write;
+            let stderr = std::io::stderr();
+            let mut handle = stderr.lock();
+            let _ = handle.write_all(b&quot;vite-plus: could not locate vp.exe through .shim\n&quot;);
+            process::exit(1);
+        };
+
+        // 3. Spawn vp.exe with the directory layout pinned by the sidecar.
+        let mut cmd = Command::new(&amp;location.exe);
+        cmd.args(env::args_os().skip(1));
+        match &amp;location.pointer.layout {
+            ShimLayout::SingleRoot =&gt; {
+                cmd.env(&quot;VP_HOME&quot;, &amp;location.pointer.data);
+            }
+            ShimLayout::Split { cache, bin } =&gt; {
+                cmd.env_remove(&quot;VP_HOME&quot;);
+                cmd.env(&quot;VP_DATA_DIR&quot;, &amp;location.pointer.data);
+                cmd.env(&quot;VP_BIN_DIR&quot;, bin);
+                cmd.env(&quot;VP_CACHE_DIR&quot;, cache);
+            }
+        }
+
+        if tool_name != &quot;vp&quot; {
+            cmd.env(&quot;VP_SHIM_TOOL&quot;, tool_name);
+        }
+</code></pre>
+<p>The single-root layout passes <code>VP_HOME</code>. The split layout removes <code>VP_HOME</code> and passes <code>VP_DATA_DIR</code>, <code>VP_BIN_DIR</code>, and <code>VP_CACHE_DIR</code> (<code>vite-plus/crates/vp_trampoline/src/main.rs:127-137</code>). The sidecar decides which layout applies. <code>VP_HOME</code> is an absolute-path override that selects the single-root mapping. Every category then derives from that one root: <code>bin</code> is <code><root>/bin</code>, <code>cache</code> is <code><root>/cache</code>, and data, config, and state are <code><root></code> (<code>vite-plus/crates/vp_shared/src/dirs/resolution.rs:95-128</code>, <code>vite-plus/crates/vp_shared/src/dirs/resolution.rs:144-151</code>). A single root needs one variable because one value determines all five directories. The split mapping needs three because bin, data, and cache have independent parents. Config and state still come from the platform defaults, so the group has no variables for them (<code>vite-plus/crates/vp_shared/src/dirs/resolution.rs:53-93</code>).</p>
+<p>The fourth step starts the child and propagates its status. <code>exit_code_from_status</code> returns <code>128 + signal</code> for a Unix signal, and the child code otherwise (<code>vite-plus/crates/vp_trampoline/src/main.rs:74-84</code>). The following block shows the start and the exit.</p>
+<pre><code class="language-rust">// vite-plus/crates/vp_trampoline/src/main.rs:143-156
+        // 4. Execute and propagate the exit code.
+        match cmd.status() {
+            Ok(status) =&gt; process::exit(exit_code_from_status(status)),
+            Err(_) =&gt; {
+                use std::io::Write;
+                let stderr = std::io::stderr();
+                let mut handle = stderr.lock();
+                let _ = handle.write_all(b&quot;vite-plus: could not execute &quot;);
+                let _ = handle.write_all(location.exe.as_os_str().as_encoded_bytes());
+                let _ = handle.write_all(b&quot;\n&quot;);
+                process::exit(1);
+            }
+        }
+    }
+</code></pre>
+<p>The Windows implementation does not use <code>std::process::Command</code>, and the Rust standard library does not initialize. The module declares its own KERNEL32 functions in an <code>extern</code> block with <code>#[link(name = "kernel32")]</code> (<code>vite-plus/crates/vp_trampoline/src/win.rs:1-7</code>, <code>vite-plus/crates/vp_trampoline/src/win.rs:72-114</code>). The production entry point is <code>mainCRTStartup</code>, and it calls this module directly (<code>vite-plus/crates/vp_trampoline/src/main.rs:33-41</code>). The command-line rebuild explains the quoting claim. <code>GetCommandLineW</code> returns the complete line that started the shim. <code>skip_program_argument</code> scans to the first space or tab outside quotation marks and returns the index after the program name (<code>vite-plus/crates/vp_trampoline/src/cmdline.rs:81-94</code>). The code takes that tail without changes, encloses only the <code>vp.exe</code> path in quotation marks, and passes the buffer to <code>CreateProcessW</code> (<code>vite-plus/crates/vp_trampoline/src/win.rs:489-511</code>). The caller's quotation marks are never parsed and never re-quoted, so the child receives the same argument text. It installs a console control handler that ignores Ctrl+C, because the child must receive the signal and perform its own cleanup (<code>vite-plus/crates/vp_trampoline/src/win.rs:513-518</code>). It makes the standard handles inheritable before <code>CreateProcessW</code> (<code>vite-plus/crates/vp_trampoline/src/win.rs:520-553</code>). The payload path is <code><DATA>/current/bin/vp.exe</code> (<code>vite-plus/crates/vp_trampoline/src/main.rs:86-91</code>).</p>
+<p>The portable path is compiled only for a target that is not Windows (<code>vite-plus/crates/vp_trampoline/src/main.rs:43-46</code>). The crate documentation states that it exists for portable tests and that Vite+ does not ship this binary for Unix shims, because Unix shims are symbolic links (<code>vite-plus/crates/vp_trampoline/src/main.rs:19-21</code>). It is not the production Windows path. The production path avoids the C runtime and its startup code, which is where most of the 14 KiB budget would otherwise go.</p>
+<h2>7. What happens when a shim runs a managed tool</h2>
+<p>The global CLI receives the tool name from <code>VP_SHIM_TOOL</code> or from <code>argv[0]</code>. <code>dispatch</code> routes <code>vpx</code> and <code>vpr</code> to their own command modules. It handles the environment-forbidden case. It handles <code>VP_BYPASS</code>. <code>VP_BYPASS</code> selects the system tool from the search path and skips the Vite+ shim directories (<code>vite-plus/docs/guide/global-cli.md:319-328</code>, <code>vite-plus/crates/vp_global_cli/src/shim/dispatch.rs:905-909</code>). It sends non-core names to package-binary dispatch. A core name goes to <code>select_core_tool</code> (<code>vite-plus/crates/vp_global_cli/src/shim/dispatch.rs:855-995</code>).</p>
+<p>Package-binary dispatch serves a name that belongs to an installed package, not to a core tool. Each global install writes a metadata record at <code><DATA>/packages/<name>.json</code> (<code>vite-plus/crates/vp_global_cli/src/commands/env/config.rs:183-185</code>, <code>vite-plus/crates/vp_global_cli/src/commands/env/package_metadata.rs:130-133</code>). The record holds the package name and version, an install identifier, the platform versions used at install time, the binary names, the set of JavaScript binary names, the version spec, the package manager, and the installation time (<code>vite-plus/crates/vp_global_cli/src/commands/env/package_metadata.rs:26-53</code>). The <code>platform.node</code> field is the per-package runtime model. A package keeps the Node.js version that installed it. Dispatch ensures that version is installed and runs the package binary with it, not with the project's selected version (<code>vite-plus/crates/vp_global_cli/src/shim/dispatch.rs:1059-1098</code>). It finds the package that provides the binary and uses the Node.js version that installed that package. If no package provides the name, it prints an instruction to run <code>vp install -g <package></code> and exits with code 1 (<code>vite-plus/crates/vp_global_cli/src/shim/dispatch.rs:1017-1055</code>).</p>
+<p><code>select_core_tool</code> decides whether to use a system Node.js or a managed one. A package-manager shim can inherit a system <code>node</code> from its parent path. Otherwise, system-first mode can select the system Node.js. If neither applies, <code>resolve_with_cache</code> selects a version and <code>ensure_installed</code> obtains the binary (<code>vite-plus/crates/vp_global_cli/src/shim/dispatch.rs:776-830</code>). <code>ensure_installed</code> checks the binary at <code><DATA>/js_runtime/node/<version></code>. If it is missing, it calls <code>vp_js_runtime::download_runtime</code> for that exact version (<code>vite-plus/crates/vp_global_cli/src/shim/dispatch.rs:1297-1324</code>). <code>download_runtime</code> is the exact-version entry point. <code>download_runtime_for_project</code> selects a version first and then calls the same function (<code>vite-plus/crates/vp_js_runtime/src/runtime.rs:526-535</code>).</p>
+<p>The final start is an <code>exec</code> on Unix. <code>exec_tool</code> replaces the shim process with the target process. The caller's process identifier, signal handlers, and terminal belong to the target (<code>vite-plus/crates/vp_global_cli/src/shim/exec.rs:53-81</code>). Windows uses <code>spawn_tool</code> and waits, because Windows has no <code>exec</code>. The Windows path also rewrites a <code>.cmd</code> target to PowerShell. Without that rewrite, an interactive package-manager shim leaves <code>cmd.exe</code> at its batch termination prompt after Ctrl+C (<code>vite-plus/crates/vp_global_cli/src/shim/exec.rs:22-51</code>).</p>
+<pre><code class="language-rust">// vite-plus/crates/vp_global_cli/src/shim/exec.rs:56-81
+pub fn exec_tool(path: &amp;AbsolutePath, args: &amp;[String], env: ToolPathEnv) -&gt; i32 {
+    #[cfg(unix)]
+    {
+        exec_unix(path, args, env)
+    }
+
+    #[cfg(windows)]
+    {
+        exec_windows(path, args, env)
+    }
+}
+
+/// Unix: Use exec to replace the current process.
+#[cfg(unix)]
+fn exec_unix(path: &amp;AbsolutePath, args: &amp;[String], env: ToolPathEnv) -&gt; i32 {
+    use std::os::unix::process::CommandExt;
+
+    let mut cmd = std::process::Command::new(path.as_path());
+    cmd.args(args).envs(env.into_envs());
+    sync_child_pwd(&amp;mut cmd);
+
+    // exec replaces the current process - this only returns on error
+    let err = cmd.exec();
+    output::error(&amp;format!(&quot;Failed to exec {}: {}&quot;, path.as_path().display(), err));
+    1
+}
+</code></pre>
+<h3>7.1 The version-selection and download flow</h3>
+<p>The following diagram shows one <code>node</code> shim invocation in managed mode. Function names in the diagram match the source. Participant labels describe roles, not files. <code>resolve_with_cache</code> is the shim helper that reads <code>VP_NODE_VERSION</code>, the session file, the resolution cache, and the project files in precedence order, then returns a version (<code>vite-plus/crates/vp_global_cli/src/shim/dispatch.rs:1189-1291</code>). <code>verify_signed_shasums</code> is the runtime-crate function that verifies the clearsigned checksum list with the bundled PGP keys (<code>vite-plus/crates/vp_js_runtime/src/pgp_verify.rs:64-72</code>).</p>
+<div class="mermaid">
+sequenceDiagram
+    participant U as User
+    participant S as node shim
+    participant G as vp global CLI
+    participant C as resolve_with_cache
+    participant E as ensure_installed
+    participant R as vp_js_runtime
+    participant M as Node.js mirror
+    U-&gt;&gt;S: node --version
+    S-&gt;&gt;G: start vp as node (argv[0] on Unix, VP_SHIM_TOOL on Windows)
+    G-&gt;&gt;C: select_core_tool calls resolve_with_cache(cwd)
+    C-&gt;&gt;C: check VP_NODE_VERSION, session file, resolve_cache.json, project files
+    alt exact version
+        C-&gt;&gt;C: keep the exact version
+    else range or alias
+        C-&gt;&gt;R: resolve_version_string
+        R-&gt;&gt;M: GET dist/index.json (ETag, 1-hour cache)
+        M--&gt;&gt;R: release index
+        R-&gt;&gt;R: resolve_version_from_list
+        R--&gt;&gt;C: exact version
+    end
+    C--&gt;&gt;G: exact version and source
+    G-&gt;&gt;E: ensure_installed(exact version)
+    E-&gt;&gt;E: check &lt;DATA&gt;/js_runtime/node/&lt;version&gt;
+    alt binary exists
+        E--&gt;&gt;G: binary path
+    else binary missing
+        E-&gt;&gt;R: download_runtime(Node, exact version)
+        R-&gt;&gt;R: lock &lt;DATA&gt;/js_runtime/node/&lt;version&gt;.lock
+        R-&gt;&gt;M: GET SHASUMS256.txt.asc
+        M--&gt;&gt;R: clearsigned checksum list
+        R-&gt;&gt;R: verify_signed_shasums
+        R-&gt;&gt;M: GET node-v&lt;version&gt;-&lt;platform&gt;.tar.gz or .zip
+        M--&gt;&gt;R: archive
+        R-&gt;&gt;R: verify_file_hash and extract_archive
+        R-&gt;&gt;R: move_to_cache
+        R--&gt;&gt;E: installed JsRuntime
+        E--&gt;&gt;G: binary path
+    end
+    G-&gt;&gt;G: exec_tool(node)
+
+</div>
+<p>For a range or alias, <code>resolve_version_string</code> fetches the release index through <code>fetch_version_index</code>. It resolves the requirement with <code>resolve_version_from_list</code> (<code>vite-plus/crates/vp_global_cli/src/commands/env/config.rs:539-561</code>, <code>vite-plus/crates/vp_js_runtime/src/providers/node.rs:504-547</code>). The index fetch uses an Entity Tag (ETag) and a one-hour cache (section 2.4). A cached matching version is not preferred on this path. <code>download_runtime_for_project</code> has that preference, and the JavaScript executor uses that function (section 3.4, section 7.2).</p>
+<p><code>ensure_installed</code> and <code>resolve_with_cache</code> do different jobs. <code>resolve_with_cache</code> returns the exact version and a source. It reads <code>VP_NODE_VERSION</code>, the session file, the resolution cache, and the project files. <code>ensure_installed</code> receives that exact version, checks <code><DATA>/js_runtime/node/<version></code>, and calls <code>download_runtime</code> when the binary is absent (<code>vite-plus/crates/vp_global_cli/src/shim/dispatch.rs:1297-1324</code>). It never reads project files and never resolves a range. The diagram omits the checksum-only mirror path and the <code>VP_NODE_SKIP_SIGNATURE_VERIFY</code> path from section 2.3. <code>ensure_installed</code> belongs to the global CLI shim module and calls the runtime crate (<code>vite-plus/crates/vp_global_cli/src/shim/dispatch.rs:1297-1324</code>). <code>resolve_cache.json</code> is the file in <code><CACHE></code> that section 3.2 describes (<code>vite-plus/crates/vp_global_cli/src/shim/cache.rs:42-43</code>). On Windows the archive is <code>node-v<version>-win-x64.zip</code>, and <code>extract_archive</code> sends it to <code>extract_zip</code>. On Linux and Darwin the archive is a gzip-compressed tar file, and <code>extract_tar_gz</code> handles it (<code>vite-plus/crates/vp_js_runtime/src/providers/node.rs:170-176</code>, <code>vite-plus/crates/vp_js_runtime/src/download.rs:390-400</code>).</p>
+<h3>7.2 The shim startup flow from <code>vp</code> to the JavaScript runtime</h3>
+<p>The next diagram starts at the <code>vp</code> command and ends at the tool process that the JavaScript resolver selected. It shows the two entry styles. The local <code>vp</code> script loads <code>dist/bin.js</code> and calls the NAPI <code>run</code> function. The Rust core invokes a TypeScript resolver through a thread-safe function. The resolver returns a binary path and environment. The Rust core starts that binary under the Node.js executable that is already running the CLI.</p>
+<div class="mermaid">
+flowchart TD
+    A[&quot;vp&quot;] --&gt; B[&quot;packages/cli/bin/vp&quot;]
+    B --&gt; C[&quot;dist/bin.js (project-local)&quot;]
+    C --&gt; D[&quot;run() in binding/src/lib.rs&quot;]
+    D --&gt; E[&quot;SubcommandResolver::resolve&quot;]
+    E --&gt; F[&quot;vite / test / lint / fmt / pack / doc resolver&quot;]
+    F --&gt; G[&quot;JsCommandResolvedResult&quot;]
+    G --&gt; H[&quot;ResolvedSubcommand&quot;]
+    H --&gt; I[&quot;vp_command::resolve_bin&quot;]
+    I --&gt; J[&quot;vp_command::build_command&quot;]
+    J --&gt; K[&quot;tool process under node_exec_path&quot;]
+    L[&quot;global vp binary&quot;] --&gt; N[&quot;JsExecutor::ensure_project_runtime&quot;]
+    N --&gt; O[&quot;selected Node.js: system node or download_runtime_for_project&quot;]
+    O --&gt; M[&quot;JsExecutor::delegate_to_local_cli&quot;]
+    M --&gt; P[&quot;&lt;DATA&gt;/&lt;version&gt;/node_modules/vite-plus/dist/bin.js&quot;]
+    P --&gt; D
+
+</div>
+<p>The diagram has two entry points. The local path starts at <code>packages/cli/bin/vp</code> (<code>vite-plus/packages/cli/bin/vp:1-7</code>). The global path starts at the global <code>vp</code> binary. <code>JsExecutor::ensure_project_runtime</code> selects the project runtime. It uses a system Node.js in system-first mode; otherwise it resolves the project version and downloads it (<code>vite-plus/crates/vp_global_cli/src/js_executor.rs:198-245</code>). <code>delegate_to_local_cli</code> then runs the JavaScript command-line interface (<code>vite-plus/crates/vp_global_cli/src/js_executor.rs:268-278</code>). The entry is the project-local <code>vite-plus</code> when one resolves. When none resolves, the entry is <code><DATA>/<version>/node_modules/vite-plus/dist/bin.js</code> for the global installation (<code>vite-plus/crates/vp_global_cli/src/js_executor.rs:82-116</code>, <code>vite-plus/crates/vp_global_cli/src/js_executor.rs:363-382</code>). The comment at <code>js_executor.rs:104-106</code> states this relative path. Both entries continue at an NAPI <code>run</code> function.</p>
+<p>Three names in the diagram need a short gloss here. <code>JsCommandResolvedResult</code> is the object that a resolver returns, with a binary path and an environment map (<code>vite-plus/packages/cli/binding/src/lib.rs:109-123</code>). <code>ResolvedSubcommand</code> is the Rust value that holds the program and its arguments (<code>vite-plus/packages/cli/binding/src/cli/types.rs:186-191</code>). <code>node_exec_path</code> is the Node.js executable that is already running the CLI (<code>vite-plus/packages/cli/binding/src/lib.rs:75-100</code>). The tool process is a child of that Node.js process. It is not a replacement in the same process. The last three nodes are the process-creation step. <code>resolve_bin</code> applies the Windows executable-extension rules, <code>build_command</code> installs the resolved environment, and the terminal guard starts and waits for the child (<code>vite-plus/packages/cli/binding/src/cli/execution.rs:12-57</code>).</p>
+<h2>8. The JavaScript tool resolver and the Rust callback</h2>
+<h3>8.1 The NAPI contract</h3>
+<p>The JavaScript package passes resolver functions into Rust at startup. A synthesizable command is a built-in subcommand that Rust resolves to one concrete tool before it starts the process: <code>lint</code>, <code>fmt</code>, <code>build</code>, <code>test</code>, <code>pack</code>, <code>dev</code>, <code>preview</code>, and <code>doc</code> (<code>vite-plus/packages/cli/binding/src/cli/types.rs:33-111</code>). <code>check</code> is composite and cannot resolve to one subcommand (<code>vite-plus/packages/cli/binding/src/cli/resolver.rs:274-278</code>). <code>CliOptions</code> holds one <code>ThreadsafeFunction</code> for each synthesizable command: <code>lint</code>, <code>fmt</code>, <code>vite</code>, <code>test</code>, <code>pack</code>, and <code>doc</code>. It also holds a resolver for the universal Vite configuration (<code>vite-plus/packages/cli/binding/src/lib.rs:75-100</code>). The input to each command resolver is a <code>JsCommandContext</code> with a working directory and arguments. The output is a <code>JsCommandResolvedResult</code> with a binary path and an environment map (<code>vite-plus/packages/cli/binding/src/lib.rs:102-123</code>).</p>
+<pre><code class="language-rust">// vite-plus/packages/cli/binding/src/lib.rs:76-100
+#[napi(object, object_to_js = false)]
+pub struct CliOptions {
+    /// The current JavaScript runtime (`process.execPath`).
+    pub node_exec_path: String,
+    pub lint: Arc&lt;ThreadsafeFunction&lt;JsCommandContext, Promise&lt;JsCommandResolvedResult&gt;&gt;&gt;,
+    pub fmt: Arc&lt;ThreadsafeFunction&lt;JsCommandContext, Promise&lt;JsCommandResolvedResult&gt;&gt;&gt;,
+    pub vite: Arc&lt;ThreadsafeFunction&lt;JsCommandContext, Promise&lt;JsCommandResolvedResult&gt;&gt;&gt;,
+    pub test: Arc&lt;ThreadsafeFunction&lt;JsCommandContext, Promise&lt;JsCommandResolvedResult&gt;&gt;&gt;,
+    pub pack: Arc&lt;ThreadsafeFunction&lt;JsCommandContext, Promise&lt;JsCommandResolvedResult&gt;&gt;&gt;,
+    pub doc: Arc&lt;ThreadsafeFunction&lt;JsCommandContext, Promise&lt;JsCommandResolvedResult&gt;&gt;&gt;,
+    pub cwd: Option&lt;String&gt;,
+    /// Whether the user supplied the global `-C` option.
+    pub explicit_chdir: Option&lt;bool&gt;,
+    /// CLI arguments (should be process.argv.slice(2) from JavaScript)
+    pub args: Option&lt;Vec&lt;String&gt;&gt;,
+    /// Host Node.js version (`process.version`), used for the package-manager
+    /// lifecycle env user agent.
+    pub node_version: Option&lt;String&gt;,
+    /// Generated toolchain manifest shipped with this vite-plus package.
+    pub toolchain_manifest_path: String,
+    /// Root directory of this vite-plus package.
+    pub vite_plus_package_path: String,
+    /// Read the vite.config.ts in the Node.js side and return the `lint` and `fmt` config JSON string back to the Rust side
+    pub resolve_universal_vite_config: Arc&lt;ThreadsafeFunction&lt;String, Promise&lt;String&gt;&gt;&gt;,
+}
+</code></pre>
+<p><code>create_resolver</code> turns each thread-safe function into a boxed asynchronous resolver. It clones the function handle, calls it on the Node.js event loop, awaits the returned promise, and converts the result (<code>vite-plus/packages/cli/binding/src/lib.rs:125-150</code>). The conversion is a plain <code>From</code> implementation (<code>vite-plus/packages/cli/binding/src/lib.rs:116-123</code>). The Rust core never parses JavaScript. It receives a path and a map.</p>
+<p>The conversion uses generated NAPI code. <code>#[napi(object)]</code> generates a conversion from the JavaScript object to the Rust struct and back. For a resolver result, the JavaScript promise resolves to an object with <code>binPath</code> and <code>envs</code>. NAPI builds <code>JsCommandResolvedResult</code>, and the <code>From</code> implementation turns it into <code>ResolveCommandResult</code> with <code>envs</code> as a vector of pairs (<code>vite-plus/packages/cli/binding/src/lib.rs:109-123</code>). A rejected promise becomes a <code>napi::Error</code> at <code>promise.await</code>. <code>create_resolver</code> maps that error to <code>anyhow::Error</code> with a command-specific message (<code>vite-plus/packages/cli/binding/src/lib.rs:138-147</code>). <code>run</code> then returns a <code>napi::Error</code> with the full source chain to JavaScript (<code>vite-plus/packages/cli/binding/src/lib.rs:263-268</code>).</p>
+<p><code>run</code> is the NAPI entry point. Its signature is <code>pub async fn run(options: CliOptions) -> Result<i32></code> (<code>vite-plus/packages/cli/binding/src/lib.rs:195-196</code>). It copies the resolver handles and arguments into a new thread, because the CLI futures are not <code>Send</code>. That thread builds a current-thread Tokio runtime and a <code>LocalSet</code>, calls <code>crate::cli::main</code>, and sends the result back through a oneshot channel (<code>vite-plus/packages/cli/binding/src/lib.rs:218-256</code>). On success, <code>run</code> returns the process exit code as an <code>i32</code>. On an error, it returns a <code>napi::Error</code> that joins the error chain with <code>* </code> lines (<code>vite-plus/packages/cli/binding/src/lib.rs:173-188</code>, <code>vite-plus/packages/cli/binding/src/lib.rs:259-269</code>).</p>
+<p>The toolchain manifest is a generated file. <code>syncToolchainExports</code> in <code>packages/cli/build.ts</code> reads <code>toolchain.config.json</code> and writes <code>dist/toolchain.json</code>, <code>dist/toolchain.js</code>, <code>dist/toolchain.d.ts</code>, and the <code>versions</code> exports (<code>vite-plus/packages/cli/build.ts:851-934</code>). The manifest has <code>schemaVersion: 1</code>, an array of <code>nodes</code>, and an array of <code>edges</code> (<code>vite-plus/packages/cli/build.ts:868-873</code>). A node has an <code>id</code>, a <code>name</code>, optional <code>version</code>, <code>revision</code>, and <code>builtAt</code>, a <code>kind</code> (<code>package</code>, <code>tool</code>, or <code>engine</code>), a <code>delivery</code> list (<code>dependency</code>, <code>bundled</code>, or <code>compiled</code>), and <code>aliases</code>. An edge has <code>from</code>, <code>to</code>, and a <code>relationship</code> (<code>depends-on</code>, <code>bundles</code>, <code>uses</code>, or <code>compiles</code>) (<code>vite-plus/packages/cli/build.ts:882-899</code>). <code>bin.ts</code> passes <code>dist/toolchain.json</code> as <code>toolchainManifestPath</code> (<code>vite-plus/packages/cli/src/bin.ts:168-191</code>). Consumers include <code>vp toolchain</code>, which reads the manifest, <code>vp version</code>, and the sync-versions protocol, which requires exactly one version for <code>vite-plus</code> and one for <code>vitest</code> (<code>vite-plus/crates/vp_global_cli/src/commands/toolchain.rs:24</code>, <code>vite-plus/crates/vp_global_cli/src/commands/version.rs:86</code>, <code>vite-plus/packages/cli/src/sync-versions/protocol.ts:34-40</code>).</p>
+<p>The binding is a napi-rs native addon. <code>binding/index.js</code> re-exports <code>binding/index.cjs</code> (<code>vite-plus/packages/cli/binding/index.js:1</code>). The generated <code>index.cjs</code> selects a platform file such as <code>vite-plus.darwin-arm64.node</code> and loads it with <code>require</code> (<code>vite-plus/packages/cli/binding/index.cjs:92-537</code>). The release publishes those platform files as optional dependencies of the <code>vite-plus</code> package (<code>vite-plus/packages/cli/publish-native-addons.ts:124-137</code>). <code>bin.ts</code> imports <code>run</code> from <code>../binding/index.js</code> (<code>vite-plus/packages/cli/src/bin.ts:16</code>).</p>
+<p>The JavaScript side registers the functions in <code>bin.ts</code>. <code>run</code> receives <code>nodeExecPath: process.execPath</code> and the six resolver functions. It also receives the toolchain manifest path, the package root, the configuration resolver, the host Node.js version, the explicit change-directory flag, and the remaining arguments (<code>vite-plus/packages/cli/src/bin.ts:168-191</code>). The call happens after <code>bin.ts</code> handles the global-only commands; those commands do not enter the NAPI path (<code>vite-plus/packages/cli/src/bin.ts:132-191</code>). The import list at <code>vite-plus/packages/cli/src/bin.ts:16-24</code> shows the exact resolver modules.</p>
+<h3>8.2 One resolver in detail: Vitest</h3>
+<p>The Vitest resolver shows the general shape. It resolves <code>vitest/package.json</code> through <code>resolveBundled</code>, a helper that finds a bundled package, and reads the <code>bin</code> field. It joins the package root with the relative binary path. The function returns an absolute path and an environment object (<code>vite-plus/packages/cli/src/resolve-test.ts:37-62</code>). The environment object contains <code>DEFAULT_ENVS</code> and, when set, passes through <code>DEBUG_DISABLE_SOURCE_MAP</code> (<code>vite-plus/packages/cli/src/resolve-test.ts:50-61</code>).</p>
+<p><code>resolveBundled</code> lives in <code>packages/cli/src/utils/constants.ts</code> (<code>vite-plus/packages/cli/src/utils/constants.ts:89-93</code>). "Bundled" means the copy that is installed inside the <code>vite-plus</code> package, at <code>import.meta.dirname</code>. <code>resolveBundled</code> calls <code>require.resolve</code> with <code>[import.meta.dirname, process.cwd()]</code>, so it searches the CLI's own copy first and the project only as a fallback. Normal Node.js resolution starts from the importing module and walks up the <code>node_modules</code> chain; it does not put the CLI's copy first. The source gives the reason: the runner must match the Vitest that <code>vite-plus/test</code> imports, or two physical copies produce internal-state and mock-hoisting mismatches (<code>vite-plus/packages/cli/src/utils/constants.ts:75-88</code>).</p>
+<p><code>DEFAULT_ENVS</code> has three entries. <code>JS_RUNTIME_VERSION</code> is <code>process.versions.node</code>. <code>JS_RUNTIME_NAME</code> is <code>process.release.name</code>. <code>NODE_PACKAGE_MANAGER</code> is the string <code>vite-plus</code> (<code>vite-plus/packages/cli/src/utils/constants.ts:107-113</code>). They tell a child tool the running Node.js version, the runtime name, and the package manager. <code>DEBUG_DISABLE_SOURCE_MAP</code> is copied into the child environment only when it is already set (<code>vite-plus/packages/cli/src/resolve-test.ts:50-61</code>, <code>vite-plus/packages/cli/src/resolve-vite.ts:48-51</code>). These files do not define what the child does with that variable.</p>
+<pre><code class="language-ts">// vite-plus/packages/cli/src/resolve-test.ts:41-48
+  const pkgJsonPath = resolveBundled(&#x27;vitest/package.json&#x27;);
+  const pkgRoot = dirname(pkgJsonPath);
+  const pkgJson = JSON.parse(readFileSync(pkgJsonPath, &#x27;utf-8&#x27;)) as VitestPackageJson;
+  const binRel = typeof pkgJson.bin === &#x27;string&#x27; ? pkgJson.bin : pkgJson.bin?.vitest;
+  if (!binRel) {
+    throw new Error(`Could not find &#x27;vitest&#x27; bin entry in ${pkgJsonPath}`);
+  }
+  const binPath = join(pkgRoot, binRel);
+</code></pre>
+<p>The other resolvers follow the same contract. <code>resolve-vite.ts</code> parses the Vite root with <code>cac</code>, a command-line argument parsing library, and resolves <code>bin/vite.js</code> from the core package (<code>vite-plus/packages/cli/src/resolve-vite.ts:10-53</code>). It declares Vite's boolean options to <code>cac</code> so that the parser does not consume the root argument as an option value (<code>vite-plus/packages/cli/src/resolve-vite.ts:13-30</code>). <code>resolve-lint.ts</code> resolves the <code>oxlint</code> package and sets <code>OXLINT_TSGOLINT_PATH</code> (<code>vite-plus/packages/cli/src/resolve-lint.ts:31-59</code>). TSGOLINT is the type-aware checker that Oxlint uses; the executable comes from the <code>oxlint-tsgolint</code> package (<code>vite-plus/docs/guide/lint.md:52</code>). The resolver sets the variable to that executable so Oxlint can find the checker. On Windows it prefers a <code>.exe</code> and then a <code>.cmd</code> in the local and project bin directories (<code>vite-plus/packages/cli/src/utils/tsgolint-path.ts:29-54</code>). <code>resolve-fmt.ts</code> resolves <code>oxfmt</code> (<code>vite-plus/packages/cli/src/resolve-fmt.ts:1-50</code>).</p>
+<p><code>resolveCore</code> validates that the resolved <code>vite</code> package is the expected core package. The expected package is <code>@voidzero-dev/vite-plus-core</code> at the exact version of the CLI's own <code>vite-plus</code> package (<code>vite-plus/packages/cli/src/resolve-core.ts:7-20</code>, <code>vite-plus/packages/cli/src/resolve-core.ts:55-76</code>). If the project declares <code>vite</code>, <code>resolveCore</code> also checks the project's resolved copy (<code>vite-plus/packages/cli/src/resolve-core.ts:22-52</code>). A mismatch means that the project alias still points at an upstream Vite copy. The alias is stale, so <code>vp migrate</code> must rewrite it. The installed dependencies then must match the new alias, so <code>vp install</code> must run. The error text states this order (<code>vite-plus/packages/cli/src/resolve-core.ts:14-18</code>).</p>
+<h3>8.3 From a resolved path to a process</h3>
+<p><code>SubcommandResolver::resolve</code> turns a subcommand into a program and arguments. For lint, the program is <code>cli_options.node_exec_path</code>; the arguments are Node.js' <code>--disable-warning=MODULE_TYPELESS_PACKAGE_JSON</code>, the resolved Oxlint path, and the user arguments (<code>vite-plus/packages/cli/binding/src/cli/resolver.rs:79-104</code>). The resolver also records <code>OXLINT_TSGOLINT_PATH</code> in a cache configuration (<code>vite-plus/packages/cli/binding/src/cli/resolver.rs:96-102</code>). The source does not describe how the task cache uses that record.</p>
+<pre><code class="language-rust">// vite-plus/packages/cli/binding/src/cli/resolver.rs:79-105
+            SynthesizableSubcommand::Lint { args } =&gt; {
+                let cli_options = self.cli_options()?;
+                let resolved = (cli_options.lint)(cwd, &amp;args).await?;
+                let js_path = resolved.bin_path;
+                let js_path_str = js_path
+                    .to_str()
+                    .ok_or_else(|| anyhow::anyhow!(&quot;lint JS path is not valid UTF-8&quot;))?;
+
+                Ok(ResolvedSubcommand {
+                    program: Arc::clone(&amp;cli_options.node_exec_path),
+                    args: [
+                        Str::from(&quot;--disable-warning=MODULE_TYPELESS_PACKAGE_JSON&quot;),
+                        Str::from(js_path_str),
+                    ]
+                    .into_iter()
+                    .chain(args.into_iter().map(Str::from))
+                    .collect(),
+                    cache_config: UserCacheConfig::with_config(EnabledCacheConfig {
+                        env: Some(Box::new([Str::from(&quot;OXLINT_TSGOLINT_PATH&quot;)])),
+                        untracked_env: None,
+                        input: None,
+                        output: None,
+                        remote: None,
+                    }),
+                    envs: merge_resolved_envs_with_version(envs, resolved.envs),
+                })
+            }
+</code></pre>
+<p><code>resolve_and_build_command</code> resolves the program through <code>vp_command::resolve_bin</code>, which applies the Windows <code>PATHEXT</code> executable-extension rules. It builds the command with <code>vp_command::build_command</code>, clears the inherited environment, and installs only the resolved environment (<code>vite-plus/packages/cli/binding/src/cli/execution.rs:12-33</code>).</p>
+<p>The phrase "clears the inherited environment" needs its context. The CLI copies the full process environment into an <code>EnvMap</code> at startup (<code>vite-plus/packages/cli/binding/src/cli/mod.rs:80-95</code>). A resolver adds its entries with <code>or_insert_with</code>, so an existing variable is not replaced (<code>vite-plus/packages/cli/binding/src/cli/resolver.rs:311-318</code>). The map also receives <code>VP_VERSION</code> for commands that use the version-branded path (<code>vite-plus/packages/cli/binding/src/cli/resolver.rs:320-330</code>). <code>resolve_and_build_command</code> then calls <code>env_clear()</code> and installs that map (<code>vite-plus/packages/cli/binding/src/cli/execution.rs:28-31</code>). The child therefore sees the inherited environment plus the resolver entries. It does not see a minimal environment. Section 5.4 is consistent: a shim builds the child path by prepending directories to the same inherited value.</p>
+<p><code>UserCacheConfig</code> is the task-cache request for one subcommand. <code>with_config(EnabledCacheConfig { ... })</code> enables the cache with explicit fields, and <code>disabled()</code> turns the cache off (<code>vite-plus/packages/cli/binding/src/cli/resolver.rs:96-102</code>, <code>vite-plus/packages/cli/binding/src/cli/resolver.rs:229</code>). The block on the lint path sets <code>env</code> to the single variable <code>OXLINT_TSGOLINT_PATH</code>. <code>input</code> and <code>output</code> list input and output patterns. <code>UserInputEntry::Auto(AutoTracking { auto: true })</code> enables automatic input inference. <code>GlobWithBase</code> adds a pattern with a base of <code>Package</code> or <code>Workspace</code>. The test path excludes <code>!node_modules/.vite/vitest/**/results.json</code> (<code>vite-plus/packages/cli/binding/src/cli/resolver.rs:179-185</code>). <code>untracked_env</code> and <code>remote</code> are <code>None</code> in every block in this file. Their type and meaning come from the external <code>vt</code> crate, and this repository does not define them. The source therefore does not state their semantics.</p>
+<p>The execution path uses a terminal guard for interactive <code>dev</code> and <code>preview</code>; the guard restores terminal state when the child exits. <code>resolve_and_execute</code> marks only <code>Dev</code> and <code>Preview</code> as interactive (<code>vite-plus/packages/cli/binding/src/cli/execution.rs:42-45</code>). For those two, <code>execute_with_terminal_guard</code> saves the terminal state and ignores <code>SIGINT</code> on Unix, or installs a console control guard on Windows, until the child exits (<code>vite-plus/crates/vp_command/src/lib.rs:126-143</code>). A long-running server can leave the terminal in a non-standard state when the user interrupts it. The guard restores the saved state. Other commands use a plain spawn and wait (<code>vite-plus/packages/cli/binding/src/cli/execution.rs:47-55</code>). The source does not state another reason for the narrower selection.</p>
+<p>This is the point where the JavaScript runtime and the Rust core exchange control. JavaScript owns package layout and Vite configuration. Rust owns process creation, environment construction, and task integration. Neither side duplicates the other's knowledge.</p>
+<h2>9. <code>vpr</code> and <code>vpx</code></h2>
+<h3>9.1 <code>vpr</code></h3>
+<p><code>vpr</code> is a thin entrypoint for <code>vp run</code>. A named project task is a <code>package.json</code> script or a task declared in <code>vite.config.ts</code>, addressed by its name (<code>vite-plus/docs/guide/run.md:3</code>, <code>vite-plus/docs/guide/run.md:47-60</code>). <code>vp run <name></code> runs the script or task with that name; <code>vp run</code> without a name opens an interactive selector (<code>vite-plus/docs/guide/run.md:36-43</code>). A task name is not a built-in subcommand. <code>vp dev</code> runs the built-in Vite server, while <code>vp run dev</code> runs the project's <code>dev</code> script or task (<code>vite-plus/docs/guide/run.md:47-58</code>). The npm bin file loads <code>dist/bin.js</code>, and the TypeScript entry rewrites the arguments to insert <code>run</code> when the process was started as <code>vpr</code> (<code>vite-plus/packages/cli/bin/vpr:1-10</code>, <code>vite-plus/packages/cli/src/bin.ts:115-118</code>). The Rust core then receives a normal <code>vp run</code> argument vector. The global <code>vpr</code> shim follows the same rule. <code>dispatch</code> sends the name to <code>execute_vpr</code> with <code>VP_SHIM_TOOL</code> as the signal (<code>vite-plus/crates/vp_global_cli/src/shim/dispatch.rs:875-884</code>).</p>
+<h3>9.2 <code>vpx</code></h3>
+<p><code>vpx</code> has two implementations that must agree. Three files matter. <code>vite-plus/packages/cli/src/vpx-bin.ts</code> is the project-local entry point that runs. <code>vite-plus/packages/cli/src/vpx-script.ts</code> holds argument parsing, script detection, and package invocation. Its module comment states that it mirrors the global Rust module <code>crates/vp_global_cli/src/commands/vpx_script.rs</code> (<code>vite-plus/packages/cli/src/vpx-script.ts:1-4</code>). The global implementation is that Rust command module. The rest of this subsection describes the project-local implementation in <code>vpx-bin.ts</code> and <code>vpx-script.ts</code>.</p>
+<p>The local binary never hands off to the global CLI. It first decides between script mode and package mode. A script is a file with a known JavaScript or TypeScript extension. A package is a name that must resolve in <code>node_modules/.bin</code>, or a specifier that needs <code>vp dlx</code>, the command that downloads and runs a package (<code>vite-plus/packages/cli/src/vpx-script.ts:224-321</code>, <code>vite-plus/packages/cli/src/vpx-bin.ts:259-335</code>). A missing explicit script path is an error. It never becomes a remote package download (<code>vite-plus/packages/cli/src/vpx-script.ts:300-320</code>).</p>
+<p>Script mode runs Node.js with one preload module and one import hook. <code>script-preload.cjs</code> is the build output of <code>script-preload.ts</code>. It runs before any user <code>--require</code> or <code>--import</code>. It checks the Node.js range <code>^22.18.0 || ^24.11.0 || >=26.0.0</code> and stops when the version is unsupported (<code>vite-plus/packages/cli/src/script-preload.ts:39-44</code>, <code>vite-plus/packages/cli/src/script-hooks.ts:68-79</code>). It installs a CommonJS transform hook with <code>pirates.addHook</code> and, where the version allows, in-thread ESM hooks with <code>module.registerHooks</code> (<code>vite-plus/packages/cli/src/script-preload.ts:81-148</code>). <code>script-register.js</code> is the build output of <code>script-register.ts</code>. It handles the older releases where the in-thread hook is unavailable. On those releases it calls <code>module.register()</code> with <code>script-esm-hooks.js</code>, which runs the hooks on a separate hooks thread. "Off-thread" means that separate thread (<code>vite-plus/packages/cli/src/script-register.ts:19-35</code>). Node.js 22 cannot run <code>module.register()</code> from a <code>--require</code> entry, so the second file is necessary (<code>vite-plus/packages/cli/src/script-register.ts:4-8</code>). On every version, the <code>--import</code> entry also makes Node.js run the entry point through the ECMAScript Module loader (<code>vite-plus/packages/cli/src/script-register.ts:6-8</code>).</p>
+<pre><code class="language-ts">// vite-plus/packages/cli/src/vpx-bin.ts:303-314
+    runAndExit(
+      process.execPath,
+      [
+        &#x27;--require&#x27;,
+        fileURLToPath(new URL(&#x27;./script-preload.cjs&#x27;, import.meta.url)),
+        &#x27;--import&#x27;,
+        new URL(&#x27;./script-register.js&#x27;, import.meta.url).href,
+        ...invocation.nodeArgs,
+      ],
+      env,
+      { relayIpc: true },
+    );
+</code></pre>
+<p>On Unix, <code>runAndExit</code> replaces the current process with <code>process.execve</code> when there is no Inter-Process Communication (IPC) channel. It restores default signal dispositions and blocking standard input/output first, because Node.js changes both (<code>vite-plus/packages/cli/src/vpx-bin.ts:67-103</code>). If the target cannot be executed directly, it runs <code>/bin/sh -c 'exec "$0" "$@"'</code> and lets the shell report the error. The IPC mode exists because <code>exec</code> would close an inherited channel. <code>runAndExit</code> detects the channel with <code>process.send !== undefined</code>. With <code>relayIpc</code>, it spawns the child with an <code>ipc</code> stdio entry and relays messages in both directions (<code>vite-plus/packages/cli/src/vpx-bin.ts:105-129</code>, <code>vite-plus/packages/cli/src/vpx-bin.ts:151-179</code>). The process that starts <code>vpx</code> creates the channel: <code>fork()</code>, or a parent that passes an <code>ipc</code> stdio entry (<code>vite-plus/packages/cli/src/vpx-bin.ts:111-114</code>). The relay carries <code>process.send()</code> messages and uses the default JSON serialization. A handle or a message that cannot be serialized is not relayed (<code>vite-plus/packages/cli/src/vpx-bin.ts:112-114</code>). The mode lets <code>process.send()</code> in the script reach the process that started <code>vpx</code>. The global <code>vpx</code> has a separate Rust implementation. The local file mirrors its script detection, as its module comment states (<code>vite-plus/packages/cli/src/vpx-script.ts:1-4</code>).</p>
+<h2>10. Documented behaviour and the implementing code</h2>
+<p>The guide pages describe the user-visible contract. The table maps each statement to the code that implements it. It also covers two topics that earlier sections do not use: <code>vp implode</code>, which removes managed data, and <code>VP_USER_AGENT</code>, which names the running CLI version.</p>
+<table><tr><th>Documented behaviour</th><th>Documentation</th><th>Implementing code</th></tr><tr><td>The project version comes from <code>.node-version</code>, then <code>devEngines.runtime</code>, then <code>engines.node</code>, then <code>.nvmrc</code></td><td><code>vite-plus/docs/guide/env.md:35-42</code></td><td><code>vite-plus/crates/vp_js_runtime/src/runtime.rs:368-447</code></td></tr><tr><td><code>lts</code> selects the newest LTS release; <code>latest</code> selects the newest stable release</td><td><code>vite-plus/docs/guide/env.md:42-46</code></td><td><code>vite-plus/crates/vp_js_runtime/src/runtime.rs:545-578</code></td></tr><tr><td><code>devEngines.runtime</code> outranks <code>engines.node</code>; the guide states a reason</td><td><code>vite-plus/docs/guide/env.md:46</code></td><td><code>vite-plus/crates/vp_js_runtime/src/runtime.rs:394-419</code> (the order only; the code does not record the reason)</td></tr><tr><td>The global CLI includes a toolchain and does not need Node.js first</td><td><code>vite-plus/docs/guide/global-cli.md:44-56</code></td><td><code>vite-plus/crates/vp_setup/src/install.rs:40-121</code>, <code>vite-plus/crates/vp_setup/src/install.rs:508-559</code></td></tr><tr><td>The installer uses the <code>.node-version</code> version embedded at build time</td><td><code>vite-plus/docs/guide/global-cli.md:76</code></td><td><code>vite-plus/crates/vp_setup/src/lib.rs:26-27</code></td></tr><tr><td>Split installations use separate data, bin, cache, config, and state roots</td><td><code>vite-plus/docs/guide/global-cli.md:169-181</code></td><td><code>vite-plus/crates/vp_shared/src/dirs.rs:51-131</code></td></tr><tr><td><code>VP_BYPASS</code> selects the system tool and excludes the Vite+ shims</td><td><code>vite-plus/docs/guide/global-cli.md:319-328</code></td><td><code>vite-plus/crates/vp_global_cli/src/shim/dispatch.rs:910-915</code>, <code>vite-plus/crates/vp_global_cli/src/shim/dispatch.rs:1156-1167</code></td></tr><tr><td><code>VP_USER_AGENT</code> is set for <code>vp</code>, <code>vpr</code>, and <code>vpx</code> children</td><td><code>vite-plus/docs/guide/global-cli.md:338-342</code></td><td><code>vite-plus/packages/cli/src/bin.ts:28</code>, <code>vite-plus/packages/cli/src/utils/user-agent.ts:1-8</code></td></tr><tr><td>Managed mode is the default; <code>vp env off</code> prefers system tools</td><td><code>vite-plus/docs/guide/env.md:107-134</code></td><td><code>vite-plus/crates/vp_global_cli/src/shim/dispatch.rs:776-830</code></td></tr><tr><td><code>vp env setup</code> creates shims and shell setup scripts</td><td><code>vite-plus/docs/guide/env.md:138-145</code></td><td><code>vite-plus/crates/vp_global_cli/src/commands/env/setup.rs:140-224</code></td></tr><tr><td>A CI job can use <code>vp env use</code> without shell initialization because it writes a session file</td><td><code>vite-plus/docs/guide/env.md:179</code></td><td><code>vite-plus/crates/vp_global_cli/src/commands/env/config.rs:253-335</code></td></tr><tr><td>A custom mirror can use checksum-only verification</td><td><code>vite-plus/docs/guide/env.md:309-328</code></td><td><code>vite-plus/crates/vp_js_runtime/src/runtime.rs:121-158</code></td></tr><tr><td><code>VP_NODE_SKIP_SIGNATURE_VERIFY</code> skips PGP but keeps SHA-256</td><td><code>vite-plus/docs/guide/env.md:330-334</code></td><td><code>vite-plus/crates/vp_js_runtime/src/runtime.rs:133-143</code></td></tr><tr><td>The global CLI delegates development commands to the project-local package</td><td><code>vite-plus/docs/guide/global-cli.md:476-491</code></td><td><code>vite-plus/crates/vp_global_cli/src/js_executor.rs:256-278</code></td></tr><tr><td>The local package requires an existing Node.js runtime and package manager</td><td><code>vite-plus/docs/guide/local-cli.md:1-5</code></td><td><code>vite-plus/packages/cli/bin/vp:1-7</code>, <code>vite-plus/packages/cli/package.json:430-432</code></td></tr><tr><td><code>vp upgrade</code> keeps three versions and supports rollback</td><td><code>vite-plus/docs/guide/upgrade.md:78-86</code></td><td><code>vite-plus/crates/vp_setup/src/lib.rs:29-30</code></td></tr><tr><td><code>vp implode</code> removes managed runtimes, global packages, configuration, shims, and shell entries</td><td><code>vite-plus/docs/guide/implode.md:1-3</code>, <code>vite-plus/docs/guide/implode.md:29-40</code></td><td><code>vite-plus/crates/vp_global_cli/src/commands/implode.rs:69-163</code></td></tr><tr><td>The global and local CLIs share the <code>vp</code> command name</td><td><code>vite-plus/docs/guide/local-cli.md:122-158</code></td><td><code>vite-plus/crates/vp_global_cli/src/js_executor.rs:423-452</code></td></tr></table>
+<p>One row needs a caveat. <code>VP_USER_AGENT</code> is set in JavaScript, not in the Rust core. <code>setUserAgent</code> writes <code>vp/<version></code> when the CLI module loads (<code>vite-plus/packages/cli/src/bin.ts:28</code>, <code>vite-plus/packages/cli/src/utils/user-agent.ts:3-8</code>). The guide also states that the local version takes over when the global CLI delegates (<code>vite-plus/docs/guide/global-cli.md:340</code>).</p>
+<p>The guide gives the reason for the rank between the two package fields. <code>devEngines.runtime</code> declares the development-environment requirement. <code>engines.node</code> is a consumer-facing support range (<code>vite-plus/docs/guide/env.md:46</code>).</p>
+<h2>11. Why the split matters</h2>
+<p>The split has three practical effects.</p>
+<p>First, a project can change its Node.js version without changing the global CLI. The runtime cache is keyed by version, so two projects can use different runtimes at the same time. The cache lock prevents duplicate downloads. The <code>current</code> link belongs to the global installation, not to a project.</p>
+<p>Second, a project can change its toolchain version without changing Node.js. The local <code>vite-plus</code> package supplies Vite, Vitest, Oxlint, Oxfmt, and the core. The global CLI delegates to that package when it exists. The runtime that executes the package comes from <code>ensure_project_runtime</code>. That function uses a system Node.js when it finds one, and otherwise applies the session overrides and the project files (<code>vite-plus/crates/vp_global_cli/src/js_executor.rs:198-245</code>). The global install has a separate runtime path for its own bundled scripts (<code>vite-plus/crates/vp_global_cli/src/js_executor.rs:168-187</code>).</p>
+<p>Third, the failure modes stay separate. A range with no matching release produces <code>NoMatchingVersion</code> (<code>vite-plus/crates/vp_js_runtime/src/providers/node.rs:542-546</code>). An exact release with no archive produces a download error (section 3.5). A missing local package produces a fallback to the global package: <code>delegate_to_local_cli</code> resolves the local package and uses the global <code>dist/bin.js</code> when none exists (<code>vite-plus/crates/vp_global_cli/src/js_executor.rs:256-278</code>, <code>vite-plus/packages/cli/src/bin.ts:7-10</code>). A missing tool binary produces a resolver error; the Vitest resolver names the missing <code>bin</code> entry (<code>vite-plus/packages/cli/src/resolve-test.ts:44-46</code>). The <code>vp install</code> instruction comes from the core-version check (<code>vite-plus/packages/cli/src/resolve-core.ts:9-20</code>). A shim that cannot find its sidecar prints a short message on standard error and exits with code 1 (<code>vite-plus/crates/vp_trampoline/src/main.rs:115-121</code>). Each failure names its own layer.</p>
+<h2>12. Limits</h2>
+<p>This document describes the source at commit <code>794a96acd52e12216b3fe4eb02026637962cd315</code>. Several facts remain outside the source or are not stated by it.</p>
+<p>The source does not state why the project order puts <code>.node-version</code> above <code>devEngines.runtime</code>. The documentation gives a reason for the order between <code>devEngines.runtime</code> and <code>engines.node</code>, but not for the first position. The code is the only authority for the order.</p>
+<p>The source does not define one global precedence for every caller. <code>download_runtime_for_project</code> reads project files only. The global shim path adds session overrides and a cache. A direct caller of the runtime crate therefore gets a different order from a shell user. This document states both paths and does not merge them into one rule.</p>
+<p>The source does not state why <code>JsExecutor::ensure_project_runtime</code> prefers a system Node.js over the project pin. The code checks for a system runtime first (<code>vite-plus/crates/vp_global_cli/src/js_executor.rs:198-206</code>). This document reports the behaviour and does not infer a reason.</p>
+<p>The source does not state how long an expired version index remains usable after a network failure. The code falls back to the expired cache, but the source sets no maximum age for that fallback (<code>vite-plus/crates/vp_js_runtime/src/providers/node.rs:220-228</code>).</p>
+<p>The source does not state whether the Windows trampoline is signed. The build profile and the KERNEL32 calls are visible, but code signing is a release step outside this tree.</p>
+<p>The source does not state the exact effect of every <code>VP_*</code> variable on every command. The guide documents the main variables, and the code reads them in several modules. This document cites the variables that affect runtime selection and shim startup. It does not claim a complete environment-variable contract.</p>
+<p>This document does not trace the full output path of <code>vp env current</code>, which the guide names as the way to see the resolved environment (<code>vite-plus/docs/guide/env.md:31</code>).</p>
+<h2>13. Related documents</h2>
+<p>Document 02, <a href="02-vite-plus-toolchain.html">The Vite+ toolchain and command dispatch</a>, follows a command from the shell to the TypeScript handler or the Rust core. Document 03, <a href="03-vite-plus-package-management.html">Package management and supply chain</a>, covers pnpm, lockfiles, and registry verification. Document 05, <a href="05-vite-plus-dev-test-build.html">Development, test, and build</a>, covers the dev server, checks, tests, and builds that use the resolved tools. Document 10, <a href="10-setup-vp-ci.html">setup-vp for Continuous Integration</a>, covers the action that installs <code>vp</code> in GitHub Actions, GitLab Continuous Integration and Continuous Delivery (CI/CD), and Azure Pipelines.</p>
+<p>The runtime layer is the base for all four. A command cannot start a tool until a Node.js binary exists. A build cannot run until the tool resolver returns a path. A CI job cannot reproduce a local result until it selects the same runtime version. The chain in this document is therefore the first chain that a reader must understand.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
