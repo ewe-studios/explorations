@@ -16,37 +16,39 @@ contract and compares the contracts where they touch.
 
 ## How the set is organised
 
-Each project gets its own directory with a `spec.md` and a `markdown/` tree. The depth follows the
-size of the project, because a ten-file skill does not carry fifteen documents of substance.
+Each project gets its own directory with a `spec.md` and a `markdown/` tree. Every project
+receives the same full exploration: six documents that cover the overview, the architecture, the
+core mechanism, the workflow and quality checks, and the limits. Depth does not follow size. A
+small skill divides a small surface into those five parts.
 
-| Tier | Size | Documents |
-|------|------|-----------|
-| A | 1,000 files or more | README plus five deep dives |
-| B | 300 to 999 files | README plus three |
-| C | 100 to 299 files | README plus two |
-| D | under 100 files | README profile plus spec |
+| Level | Documents |
+|-------|-----------|
+| Every package | README plus five deep dives |
+
+One package, `src.leonnix`, is itself a container of nineteen separate Git checkouts. It holds one
+index and one specification at its top level, and every nested project has its own package of six
+documents.
 
 The full inventory, the order, and the per-package pins are in the [spec](spec.md).
 
 ```mermaid
 flowchart LR
-    C["Container: 34 projects"] --> A["Tier A: 8 projects<br/>1,000+ files"]
-    C --> B["Tier B: 6 projects<br/>300-999 files"]
-    C --> Cc["Tier C: 6 projects<br/>100-299 files"]
-    C --> D["Tier D: 14 projects<br/>under 100 files"]
-    A --> Docs["6 documents each"]
-    B --> Docs2["4 documents each"]
-    Cc --> Docs3["3 documents each"]
-    D --> Docs4["2 documents each"]
+    C["Container: 34 top-level packages"] --> D["Each package: 6 documents"]
+    C --> N["src.leonnix: 19 nested projects"]
+    N --> ND["Each nested project: 6 documents"]
+    D --> V["Byte-exact snippets<br/>source citations<br/>fresh-reader review"]
+    ND --> V
 ```
 
 ## Package explorations
 
-One package is published. The table fills one row at a time, in the order given in the spec.
+Two packages are open. `open-design` is complete. `src.leonnix` is in progress and holds nineteen
+nested projects. The table fills in the order given in the spec.
 
-| Package | Tier | Start here |
-|---------|------|------------|
-| [open-design](open-design/html/README.html) | A | [Overview](open-design/html/00-overview.html), then [core mechanism](open-design/html/02-core-mechanism.html) |
+| Package | Start here |
+|---------|------------|
+| [open-design](open-design/html/README.html) | [Overview](open-design/html/00-overview.html), then [core mechanism](open-design/html/02-core-mechanism.html) |
+| [src.leonnix](src.leonnix/html/README.html) | In progress: 1 of 19 projects. Start with [tastecode](src.leonnix/tastecode/html/README.html) |
 
 ## Reading order
 
@@ -68,7 +70,7 @@ limit and names the file.
 ```mermaid
 flowchart TB
     Read["Read each project at its pin"] --> Cite["Cite file and line"]
-    Cite --> Tier["Write at the tier depth"]
+    Cite --> Write["Write the six documents"]
     Tier --> Fresh["Fresh-reader review"]
     Fresh --> Fix["Fix every reported gap"]
     Fix --> Build["Build HyperText Markup Language (HTML)"]

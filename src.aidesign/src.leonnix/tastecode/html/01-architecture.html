@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Architecture: processes, protocol, state, and recovery -- tastecode</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue('--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        toolbar.appendChild(mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); }));
+        toolbar.appendChild(mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); }));
+        toolbar.appendChild(mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); }));
+        toolbar.appendChild(mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); }));
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/tastecode/docs</span>
+    <div class="nav-actions">
+      <a href="00-overview.html" class="nav-breadcrumb">TasteCode: product, workspaces, and vocabulary</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="00-overview.html" class="nav-btn" title="Previous: TasteCode: product, workspaces, and vocabulary">← prev</a>
+      <a href="02-core-mechanism.html" class="nav-btn nav-btn-next" title="Next: Core mechanism: the Design Mode phase pipeline">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Architecture: processes, protocol, state, and recovery</h1>
+<p>This document explains how TasteCode keeps one coherent state while several clients and several agent engines operate at the same time. The source is static. No runtime was observed.</p>
+<p>The architecture has one central rule. A local server owns all state and orchestration. Every client is a thin renderer over a typed WebSocket protocol. The rule is a decision, not a slogan. It decides where a provider process starts, where a credential lives, where a checkpoint is written, and how a client recovers after a network gap.</p>
+<h2>The shape and the process boundary</h2>
+<p>The architecture document opens with the rule.</p>
+<pre><code class="language-text"># docs/ARCHITECTURE.md:11-12
+**A local server owns all state and orchestration. Every client is a thin renderer over a
+typed WebSocket protocol.**
+</code></pre>
+<p>The rule covers thread, project, and turn state. It does not cover renderer-only interface preferences. The browser preview keeps its recently used pages in renderer storage, per origin, capped at 50 (<code>docs/ARCHITECTURE.md:281-288</code>). That list is not thread state, and no other client reads it.</p>
+<p>The server is a long-lived local Node.js process. The desktop host is an Electron shell. The web client is a browser application. The phone client is an Expo application. The desktop and web clients open a WebSocket to the server. The phone uses an encrypted link.</p>
+<p>The next diagram shows the main processes. Arrows show who starts whom. A client does not start a provider. The server does.</p>
+<div class="mermaid">
+flowchart TB
+  subgraph Clients
+    E[Electron renderer]
+    B[Browser client]
+    M[Phone client]
+  end
+  subgraph Local machine
+    S[Core server]
+    DB[(SQLite event log)]
+    CP[Checkpoint service]
+    WT[Worktree manager]
+    PTY[Terminal manager]
+    PV[Preview server]
+  end
+  subgraph Provider processes
+    CX[Codex app-server]
+    CL[Claude Code]
+    GR[Grok]
+    OT[Other adapters]
+  end
+  E --&gt;|typed WebSocket| S
+  B --&gt;|typed WebSocket| S
+  M --&gt;|encrypted link| S
+  S --&gt; DB
+  S --&gt; CP
+  S --&gt; WT
+  S --&gt; PTY
+  S --&gt; PV
+  S --&gt; CX
+  S --&gt; CL
+  S --&gt; GR
+  S --&gt; OT
+
+</div>
+<p>The architecture document records two rejected alternatives at <code>docs/ARCHITECTURE.md:48-49</code>. The first alternative put all orchestration in the Electron main process. That choice would remove the web client. The second alternative used tRPC on the wire. That choice would tie the protocol to a TypeScript client. The project kept a plain typed WebSocket instead.</p>
+<p>A normal turn starts in the orchestrator. The orchestrator is a large module in <code>apps/server/src/orchestrator.ts</code>. It starts a provider session through the adapter registry. It records events in the store. It takes a checkpoint before the agent writes. It sends pushes to every connected client.</p>
+<h2>The typed protocol</h2>
+<p>The protocol has two shapes. The first shape is a request/response exchange. A client sends one request frame, and the server sends one response frame. A request frame has an identifier, a method, and parameters. The second shape is a push frame, which the server sends unprompted. Each frame is validated at the boundary in both directions.</p>
+<p>The protocol version and error codes are fixed values.</p>
+<pre><code class="language-text"># packages/contracts/src/protocol.ts:60-70
+export const PROTOCOL_VERSION = 2
+
+/** Bumped whenever a client and server can no longer understand each other. */
+export const ErrorCode = {
+  BAD_REQUEST: &#x27;bad_request&#x27;,
+  FORBIDDEN: &#x27;forbidden&#x27;,
+  NOT_FOUND: &#x27;not_found&#x27;,
+  PROVIDER_UNAVAILABLE: &#x27;provider_unavailable&#x27;,
+  STALE_SNAPSHOT: &#x27;stale_snapshot&#x27;,
+  INTERNAL: &#x27;internal&#x27;,
+} as const
+</code></pre>
+<p>A request has an identifier, a method, and parameters. The identifier lets the client match a response to a request. The method selects one schema in the contracts package.</p>
+<pre><code class="language-text"># packages/contracts/src/protocol.ts:85-90
+export const RequestSchema = z.object({
+  id: z.string(),
+  method: z.string(),
+  params: z.unknown(),
+})
+export type Request = z.infer&lt;typeof RequestSchema&gt;
+</code></pre>
+<p>The generic request shape is small. The real work is in the method table. Each method declares its parameter schema and its result schema. For example, <code>thread.history</code> takes a thread identifier, an optional <code>afterSeq</code>, and an optional page cursor. Its result contains events, a running flag, a reset flag, and an optional page cursor.</p>
+<p>The <code>stale_snapshot</code> error is part of the safety model. A diff review or a restore acts on a specific snapshot. If the snapshot is old, the server refuses the action. The client must refresh first. A silent action on stale data would be worse than a refusal.</p>
+<p>The <code>provider_unavailable</code> error is part of the provider model. A missing executable, a failed sign-in, or an unsupported capability is not a bad request. The distinction lets the user interface show the right remedy.</p>
+<h2>Pushes, sequence numbers, and resynchronisation</h2>
+<p>A push frame has a channel, a sequence number, and data. The sequence number is monotonic for one connection. The protocol comment gives the reason.</p>
+<pre><code class="language-text"># packages/contracts/src/protocol.ts:2517-2527
+/**
+ * `sequence` is monotonic per connection. A client that sees a gap knows it
+ * missed something and can resync, instead of silently diverging from the
+ * server — which is the failure mode that is impossible to debug later.
+ */
+export const PushSchema = z.object({
+  channel: z.string(),
+  sequence: z.number(),
+  data: z.unknown(),
+})
+export type Push = z.infer&lt;typeof PushSchema&gt;
+</code></pre>
+<p>The server sends all pushes through one ordered path. The <code>PushBus</code> class owns one sequence counter per socket. It also bounds the buffer for each socket.</p>
+<pre><code class="language-text"># apps/server/src/push-bus.ts:12-18
+export const MAX_PUSH_BUFFER_BYTES = 8 * 1024 * 1024
+export const MAX_REPLY_FRAME_BYTES = 128 * 1024 * 1024
+type PushSocketState = {
+  sequence: number
+  pushBytes: number
+  replyBytes: number
+}
+</code></pre>
+<p>The 8 MiB push buffer limit prevents one slow client from consuming unbounded memory. The 128 MiB reply frame limit bounds a single large response. These are source constants. The runtime effect was not observed.</p>
+<p>The client side is an explicit state machine. It is not a bare socket with ad hoc flags.</p>
+<pre><code class="language-text"># apps/web/src/transport.ts:93-100
+/**
+ * Client side of the wire protocol.
+ *
+ * An explicit state machine rather than a bare WebSocket: requests made while
+ * disconnected are queued and flushed on reconnect, so the UI never has to know
+ * whether the socket happens to be up right now.
+ */
+export type ConnectionState = &#x27;connecting&#x27; | &#x27;open&#x27; | &#x27;reconnecting&#x27; | &#x27;closed&#x27;
+</code></pre>
+<p>The transport queues requests while it is disconnected. It flushes the queue after the socket opens. It preserves request order. It rejects requests that were already on the wire when the socket closed, because the reply died with the socket. Requests that were still queued survive and flush on the next connection.</p>
+<p>The transport has explicit limits and deadlines.</p>
+<pre><code class="language-text"># apps/web/src/transport.ts:124-133
+export const TRANSPORT_LIMITS = {
+  requests: 512,
+  queuedBytes: 128 * 1024 * 1024,
+  bufferedBytes: 128 * 1024 * 1024,
+  validationFrames: 2_048,
+  validationBytes: 16 * 1024 * 1024,
+  responseValidationBytes: 128 * 1024 * 1024,
+  connectTimeoutMs: 10_000,
+  requestTimeoutMs: 120_000,
+} as const
+</code></pre>
+<p>The 512 request limit bounds the number of pending calls. The 120 second request timeout prevents a lost reply from waiting forever. The connect timeout is 10 seconds. A socket that does not open in that time is replaced.</p>
+<p>The reconnect delay starts small and grows. The source uses a delay between 100 and 1000 milliseconds. The delay resets only after the server actually speaks. This detail matters. A rejected WebSocket can open briefly before an authentication close. Resetting the delay on open caused a zero-delay reconnect loop.</p>
+<p>Push sequence numbers are per connection. A new socket starts at sequence 1. The client resets its last push sequence when it opens a new socket. If the client carried the old counter, the gap detector would fire on every reconnect. A warning that fires every time is a warning that users learn to ignore.</p>
+<p>The push sequence is a transport counter. It is not the event log sequence. The event log gives each event a global sequence number. The client tracks the last event sequence it applied separately. On a forward push gap, the transport listener calls <code>markHistoriesForRecovery()</code> and <code>resync()</code> (<code>apps/web/src/App.tsx:2534-2537</code>). The history load sends <code>thread.history</code> with <code>afterSeq</code> set to the last applied event sequence, not the push sequence (<code>apps/web/src/thread-controller.ts:498-528</code>). A push with a sequence at or below the last push sequence is ignored as stale (<code>apps/web/src/transport.ts:656-676</code>).</p>
+<p>The next diagram shows the two counters and the recovery path.</p>
+<div class="mermaid">
+sequenceDiagram
+  participant C as Client
+  participant S as Server
+  participant L as Event log
+  Note over C: last push sequence = 9&lt;br/&gt;last applied event seq = 41
+  S--&gt;&gt;C: push frame, transport sequence 11
+  C-&gt;&gt;C: gap detected, 10 is missing
+  C-&gt;&gt;S: request thread.history(afterSeq = 41)
+  S-&gt;&gt;L: read events where seq &gt; 41
+  L--&gt;&gt;S: events 42 to 58
+  S--&gt;&gt;C: response with events and running flag
+  C-&gt;&gt;C: reduce events, last applied event seq = 58
+  S--&gt;&gt;C: later push frame, transport sequence 12
+  C-&gt;&gt;C: apply push and advance push sequence
+
+</div>
+<p>The event log is the recovery source. A client does not need a full transcript in memory. It needs a recent snapshot and a sequence number.</p>
+<p><strong>Aha:</strong> The sequence number is a per-connection cursor, not a global clock. The global truth is the event log sequence. The client compares the two only when it detects a gap. This separation lets a reconnect start a fresh push counter without losing the thread.</p>
+<h2>The SQLite event log</h2>
+<p>The event log is append-only. The event table has four columns.</p>
+<pre><code class="language-text"># apps/server/src/store.ts:463-468
+CREATE TABLE IF NOT EXISTS events (
+  seq       INTEGER PRIMARY KEY AUTOINCREMENT,
+  thread_id TEXT NOT NULL,
+  at        INTEGER NOT NULL,
+  payload   TEXT NOT NULL
+);
+</code></pre>
+<p>The <code>seq</code> column is the global order. The <code>thread_id</code> column groups events by thread. The <code>at</code> column records time. The <code>payload</code> column holds the domain event as text.</p>
+<p>The architecture document states the storage rule. Transcript and orchestration history change only by appending an event. Project, lifecycle, settings, and catalog metadata are ordinary transactional records. Read models that derive from the event log must not be written directly.</p>
+<p>The database also holds projection tables. Examples are <code>usage_events</code>, <code>inbox_events</code>, <code>turn_diff_events</code>, <code>checkpoints</code>, and <code>design_runs</code>. These tables can be rebuilt from the log or from their own source. The event log remains the durable record.</p>
+<p>SQLite runs with write-ahead logging. Search uses the SQLite Full-Text Search version 5 (FTS5) module over message text and over the first and last parts of command and tool output. The architecture document explains that the first 12,000 and last 4,000 characters of output are indexed. This keeps long logs from filling the index.</p>
+<p>A design run has its own persisted table. The orchestrator stores a <code>DesignFlow</code> record that includes the phase, the approved artifacts, the reference deck, the screenshots, the repair attempt count, and correction state. The schema is <code>StoredDesignFlowSchema</code> in <code>apps/server/src/orchestrator.ts</code>. This record lets a restart resume a design run.</p>
+<h2>Checkpoints</h2>
+<p>A checkpoint is a point in both the conversation and the working tree. The comment in the checkpoint module explains the problem.</p>
+<pre><code class="language-text"># apps/server/src/checkpoint.ts:16-31
+/**
+ * A point a session can be returned to.
+ *
+ * An agent that has gone the wrong way for five turns leaves the user undoing
+ * it by hand. A checkpoint is a snapshot of the working tree taken before the
+ * agent writes, plus the point in the conversation it belongs to, so going back
+ * puts both halves right rather than only one.
+ *
+ * Snapshots are real git commit objects protected by app-owned refs — they do not
+ * appear in the log, on a branch, or in `git status`. Nothing here changes what
+ * the user would see in their own terminal until they ask to restore.
+ *
+ * The rule that makes this safe: **restoring takes a snapshot first**. Whatever
+ * state is being replaced becomes a checkpoint of its own, so no sequence of
+ * restores can reach a state nobody can get back to.
+ */
+</code></pre>
+<p>A snapshot starts from the checkout index. The function copies the index into a temporary file. It sets <code>GIT_INDEX_FILE</code> to that file. Then <code>git add -A</code> reads the working tree without touching the user's index.</p>
+<pre><code class="language-text"># apps/server/src/checkpoint.ts:495-499
+/** A short cache protects diff-only snapshots; durable metadata uses its own namespace. */
+async function protectSnapshot(repoPath: string, commit: string, retainIn?: string): Promise&lt;void&gt; {
+  assertCommit(commit)
+  const refs = [`refs/harness/snapshots/${commit}`]
+  if (retainIn !== undefined) refs.push(`refs/harness/checkpoints/${retainIn}/${commit}`)
+</code></pre>
+<p>The two references have different jobs. <code>refs/harness/snapshots/</code> protects a commit from garbage collection. <code>refs/harness/checkpoints/<namespace>/</code> also makes the commit a named checkpoint. The namespace must match <code>^[a-zA-Z0-9-]+$</code>. A bad namespace is an error.</p>
+<p>The snapshot commit uses a fixed identity. The code sets <code>SNAPSHOT_IDENTITY</code> for the <code>commit-tree</code> call. Hidden snapshot objects must not claim the user's identity. The code also caches snapshots by repository, head, and tree. Identical state reuses one commit. The cache holds at most 64 entries.</p>
+<p>The clean path is fast. If the working tree matches HEAD, the snapshot returns the HEAD commit and marks the snapshot clean. No commit object is created. The comment records the reason. A snapshot used to take about ten Git runs and 23 seconds on a busy Windows machine before the agent received the prompt.</p>
+<p>A restore writes the snapshot tree back to the checkout. It records an undo record first. The <code>restore_undos</code> table keeps the previous events and checkpoints. This makes the restore itself reversible.</p>
+<h2>Worktrees</h2>
+<p>A worktree is a private checkout for one session. The module comment states the problem and the refusal rule.</p>
+<pre><code class="language-text"># apps/server/src/worktree.ts:15-25
+/**
+ * A private checkout per session.
+ *
+ * Two agents in one working directory overwrite each other&#x27;s edits, and the
+ * second one to write wins silently. A worktree gives each session its own
+ * checkout of the same repository on its own branch, which is what makes
+ * parallel work safe rather than merely concurrent.
+ *
+ * Everything here refuses rather than forces. An agent&#x27;s work is the user&#x27;s
+ * work: losing it to a tidy-up is worse than leaving a directory behind.
+ */
+</code></pre>
+<p>The default root is beside the database. The orchestrator computes it from <code>HARNESS_WORKTREE_DIR</code>, or from a <code>trees</code> directory next to the store location. The worktree branch name is <code>harness/<short thread id></code>. The path uses the same short identifier.</p>
+<p>The creation function runs <code>git worktree prune</code> first. Stale metadata from a crash can make Git believe a path is registered. Pruning forgets worktrees whose directory is gone. Then the function runs <code>git worktree add -b <branch> <path> <base></code>.</p>
+<p>A project can be a subfolder of its repository. The function reads the repository prefix and returns a <code>workPath</code> inside the checkout when that folder exists. This keeps the project scope.</p>
+<p>Uncommitted changes can be carried into a new worktree. The carry operation reads the source checkout and applies one patch to the target. The patch is applied whole or not at all. The source changes stay in place. The maximum patch size is 64 MiB.</p>
+<p>Removal refuses a dirty worktree. The <code>WorktreeDirty</code> error tells the user to commit or discard the changes. The module also exposes a prune function and a list function.</p>
+<h2>Terminal process ownership</h2>
+<p>A terminal is a pseudo-terminal (PTY). The server owns the shell and the foreground job. Closing a pane does not kill every process that the shell ever started. It ends the foreground job with a bounded sequence of signals.</p>
+<pre><code class="language-text"># apps/server/src/terminal.ts:10-20
+// A pane or chat close: how long each step may take, counted from its start.
+// After SIGHUP the shell gets `hangup` to exit before SIGKILL. Once it is gone
+// its foreground job gets `hangup` to exit on its own, then `terminate` after
+// SIGTERM and `kill` after SIGKILL before the close gives up and logs it.
+const CLOSE_STEPS = { hangup: 3_000, terminate: 3_000, kill: 1_000 }
+// Server shutdown: the latest each step may end, counted from closeAll(), so
+// the last SIGKILL goes out about two seconds in, inside the desktop&#x27;s
+// three-second force stop. Most of it belongs to SIGTERM: servers such as
+// gunicorn, nginx or postgres reload on SIGHUP and shut down cleanly only on
+// SIGTERM.
+const SHUTDOWN_STEP_ENDS = { hangup: 200, terminate: 2_000, kill: 2_300 }
+</code></pre>
+<p>The steps have three seconds, three seconds, and one second for a pane close. The total is seven seconds, but the steps are counted from their own start. Server shutdown uses one shared deadline. The last SIGKILL goes out at about 2.3 seconds. The desktop force stop is three seconds.</p>
+<p>The manager reads the foreground process group before it hangs up the shell. It needs a shell that it forked as a session leader. The process inspection is synchronous for this step. A close must learn which job holds the terminal before node-pty sends SIGHUP.</p>
+<p>After the shell exits, the manager stops the foreground job in the background. The chat can open a new terminal at once. The old job gets a grace period, then SIGTERM, then SIGKILL. A job that still cannot be stopped is logged. The close does not fail.</p>
+<p>The output path is also bounded. The terminal manager batches output. The default batch delay is 4 milliseconds and the default batch size is 64 KiB. It retains 200,000 bytes of output and up to 64 exit records. An exit record lives for one hour.</p>
+<h2>The adapter boundary</h2>
+<p>The adapter layer hides provider details from the orchestrator. The orchestrator never learns which provider it is talking to. One comment states the rule.</p>
+<pre><code class="language-text"># apps/server/src/adapters.ts:42-49
+/**
+ * One shape every engine is driven through.
+ *
+ * The orchestrator above this never learns which provider it is talking to.
+ * That is the whole point of the layer: adding an engine is a new case here,
+ * not a change to session handling, and capabilities tell the UI what to hide
+ * rather than letting it guess.
+ */
+</code></pre>
+<p>Every adapter exposes an <code>AgentSession</code>. The interface has a capability record, an optional snapshot function, an optional prompt limit, and optional model context lookup.</p>
+<pre><code class="language-text"># apps/server/src/adapters.ts:89-98
+export interface AgentSession {
+  /** Credential-free adapter state persisted at completed-turn boundaries, never per delta. */
+  snapshot?(): unknown
+  readonly capabilities: Capabilities
+  /**
+   * The longest prompt, in UTF-16 code units, one turn can carry. Set by an
+   * engine that passes its prompt on a command line, which the system limits;
+   * absent when the prompt travels where length does not matter.
+   */
+  readonly promptLimit?: number
+</code></pre>
+<p>The snapshot is credential-free. The server persists it only at completed-turn boundaries, not on every delta. This rule limits both storage writes and credential exposure.</p>
+<p>The prompt limit is a provider fact. An engine that passes the prompt on a command line has an operating-system limit. An engine that sends the prompt over a stream does not. The server can split or refuse a prompt only when the adapter declares a limit.</p>
+<p>The <code>modelContextWindow</code> method handles a model-specific context size. An engine that knows the window per model can answer it. An engine that declares one window in its capabilities does not need the method.</p>
+<h2>Failure and recovery summary</h2>
+<p>The architecture has four recovery layers. Each layer has one owner.</p>
+<table><tr><th>Layer</th><th>Owner</th><th>Recovery action</th></tr><tr><td>Push stream</td><td>Client transport</td><td>Detect a sequence gap, request history after the last sequence</td></tr><tr><td>Transcript</td><td>Event log</td><td>Replay events, rebuild read models</td></tr><tr><td>Working tree</td><td>Checkpoint service</td><td>Restore a commit after taking a new snapshot</td></tr><tr><td>Provider session</td><td>Adapter registry</td><td>Resume, or start a new session with a snapshot</td></tr></table>
+<p>The layers are independent. A missed push does not corrupt the log. A restore does not change the log history. A provider restart does not lose the working tree.</p>
+<p>The design run adds one more layer. The <code>DesignFlow</code> record is persisted after each transition. A restart can resume the flow at the last saved phase. The record includes the correction state and the repair attempt count. The phase pipeline is the subject of the next document.</p>
+<h2>What was not verified</h2>
+<p>No server was started. No WebSocket connection was opened. No push gap was induced. No checkpoint was created. No worktree was added. No PTY was opened. The timings and limits above come from source constants and comments. The runtime effect of those values is not verified.</p>
+<p>The next document, <code>02-core-mechanism.md</code>, explains how a design brief becomes a sequence of typed phases and validated artifacts.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

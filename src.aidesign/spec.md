@@ -34,34 +34,37 @@ is built, the mechanism that carries its idea, and the limits that its own files
 It does not run the projects, render their output, or publish their packages. It reads the source
 and the documents at the pinned revision.
 
-## 3. Depth tiers
+## 3. Depth: every package is detailed
 
-A fifteen-document set for each of 34 projects is not feasible and is not useful. Small projects
-do not carry fifteen documents of substance. Depth follows size instead.
+Every package receives the full exploration. Depth does not follow size. A nine-file skill still
+gets its architecture, its mechanism, its workflow, and its limits, because a reader who opens
+that package must be able to learn how it works from the package alone.
 
-| Tier | File count | Documents per package | Words per document | Snippets per deep dive |
-|------|------------|-----------------------|--------------------|------------------------|
-| A | 1,000 or more | 6 (README plus five deep dives) | 3,000 to 5,000 | 10 or more |
-| B | 300 to 999 | 4 (README plus three) | 2,500 to 4,000 | 8 or more |
-| C | 100 to 299 | 3 (README plus two) | 2,000 to 3,500 | 6 or more |
-| D | under 100 | 2 (README profile plus spec) | 1,200 to 2,500 | 4 or more |
+| Level | Documents per package | Words per deep dive | Snippets per deep dive |
+|-------|-----------------------|--------------------|------------------------|
+| Every package | 6 (README plus five deep dives) | 3,000 to 5,000 | 10 or more |
 
-Tier A documents follow this layout: overview, architecture, core mechanism, workflow and quality,
-and limits and comparison. Tier B and C use the same headings with fewer documents. A Tier D
-README carries purpose, anatomy, one mechanism, use, and limits.
+The five deep dives are always `00-overview`, `01-architecture`, `02-core-mechanism`,
+`03-workflow-and-quality`, and `04-limits-and-comparison`. A small project divides a small
+surface into those five parts. It does not receive a shorter list.
 
-Every deep dive has at least two Mermaid diagrams and at least one Aha insight. A Tier D README
-has at least one Mermaid diagram. Each document expands every abbreviation at first use.
+Every deep dive has at least two Mermaid diagrams, at least one **Aha:** insight, and ten or more
+byte-exact snippets with a `path:line` citation header. The README has the thesis, one Mermaid
+map, the document table, the reading order, and the non-claims. Each document expands every
+abbreviation at first use.
+
+The size bands in section 4 now set only the order of work. They do not set depth.
 
 ## 4. Inventory and order
 
 The work runs in this order, one package at a time. A package is complete, committed, and pushed
-before the next one starts.
+before the next one starts. The size bands are A = 1,000 files or more, B = 300 to 999, C = 100 to
+299, and D = under 100. A band sets the place in the queue only. Every row receives six documents.
 
-| # | Package | Files | Tier | Git | Purpose |
+| # | Package | Files | Size band | Git | Purpose |
 |---|---------|-------|------|-----|---------|
 | 1 | `open-design` | 14,292 | A | no | A design environment built around plugins and skills |
-| 2 | `src.leonnix` | 8,704 | A | no | A large design application source tree |
+| 2 | `src.leonnix` | 8,704 | A | no | A container of nineteen design, film, and skill checkouts |
 | 3 | `impeccable` | 4,558 | A | yes | The design vocabulary for coding agents, shipped as a plugin |
 | 4 | `openui` | 3,872 | A | yes | The open standard for generative user interfaces |
 | 5 | `motion` | 3,570 | A | no | An animation library and its tooling |
@@ -95,8 +98,8 @@ before the next one starts.
 | 33 | `ai-iso-skill` | 10 | D | yes | An isometric figure skill |
 | 34 | `colorfigures` | 9 | D | no | A colour-figure skill |
 
-The order is tier first, then size. A Tier A package teaches the shared vocabulary that the small
-packages reuse. The small packages follow quickly once that vocabulary exists.
+The order is size band first, then size. The largest packages teach the shared vocabulary that the
+small packages reuse. Every row receives six documents, as section 3 states.
 
 ## 5. Constraints
 
@@ -135,7 +138,7 @@ packages reuse. The small packages follow quickly once that vocabulary exists.
 | # | Package | State |
 |---|---------|-------|
 | 1 | `open-design` | DONE (6 documents, 67 snippets, fresh-reader review repaired) |
-| 2 | `src.leonnix` | TODO |
+| 2 | `src.leonnix` | IN PROGRESS (container index and 19-subproject plan written; 1 of 19 nested projects published: tastecode) |
 | 3 | `impeccable` | TODO |
 | 4 | `openui` | TODO |
 | 5 | `motion` | TODO |

@@ -4,11 +4,11 @@
 Usage:
     python3 -I build.py [ROOT]
 
-The script finds every direct child directory whose name starts with ``src.``
-and that contains a ``markdown/`` directory. It converts ``markdown/**/*.md``
-to a matching ``html/**/*.html``, and writes an ``index.html`` for every
-directory. It then converts the root ``index.md`` to ``index.html`` so the
-root page links to every exploration.
+The script finds every project directory that contains a ``markdown/``
+directory, at any depth. It converts ``markdown/**/*.md`` to a matching
+``html/**/*.html``, and writes an ``index.html`` for every directory. It then
+converts the root ``index.md`` and ``spec.md`` to HyperText Markup Language
+(HTML) so the root page links to every exploration.
 
 Navigation (index, previous, next) stays inside the current directory. Only
 the Python standard library is used.
@@ -429,14 +429,22 @@ def relative_prefix(rel_dir: Path) -> str:
     return "../" * depth
 
 
-def build_project(project_dir: Path, converter: Md2Html) -> None:
+def find_styles(project_dir: Path) -> Path | None:
+    for parent in project_dir.parents:
+        css = parent / "styles.css"
+        if css.exists():
+            return css
+    return None
+
+
+def build_project(project_dir: Path, converter: Md2Html, root: Path | None = None) -> None:
     md_dir = project_dir / "markdown"
     html_dir = project_dir / "html"
     html_dir.mkdir(parents=True, exist_ok=True)
     project_name = project_dir.name
 
-    css = project_dir.parent / "styles.css"
-    if css.exists():
+    css = find_styles(project_dir)
+    if css is not None:
         shutil.copyfile(css, html_dir / "styles.css")
 
     md_files = sorted(p for p in md_dir.rglob("*.md") if p.is_file())
@@ -524,8 +532,14 @@ def build_project(project_dir: Path, converter: Md2Html) -> None:
         if str(rel_dir) != ".":
             up_link = '<a href="../index.html" class="nav-btn" title="Up one level">up</a>'
         else:
+            if root is not None:
+                all_href = os.path.relpath(
+                    root / "index.html", html_dir / rel_dir
+                ).replace(os.sep, "/")
+            else:
+                all_href = "../../index.html"
             up_link = (
-                '<a href="../../index.html" class="nav-btn" title="All explorations">'
+                f'<a href="{all_href}" class="nav-btn" title="All explorations">'
                 "all explorations</a>"
             )
 
@@ -618,14 +632,19 @@ def main() -> None:
     root = Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
     converter = Md2Html()
 
-    projects = sorted(
-        p for p in root.iterdir()
-        if p.is_dir()
-        and not p.name.startswith(".")
-        and (p / "markdown").is_dir()
-    )
+    projects = []
+    for dirpath, dirnames, _filenames in os.walk(root):
+        dirnames[:] = [
+            name
+            for name in dirnames
+            if not name.startswith(".") and name not in ("html", "markdown", "node_modules")
+        ]
+        if (Path(dirpath) / "markdown").is_dir():
+            projects.append(Path(dirpath))
+
+    projects.sort(key=lambda p: (len(p.relative_to(root).parts), str(p)))
     for project in projects:
-        build_project(project, converter)
+        build_project(project, converter, root)
 
     build_root(root, converter)
 
