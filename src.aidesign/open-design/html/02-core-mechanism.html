@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>02 Core mechanism: prompt composition and plugin resolution -- open-design</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue('--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        toolbar.appendChild(mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); }));
+        toolbar.appendChild(mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); }));
+        toolbar.appendChild(mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); }));
+        toolbar.appendChild(mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); }));
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/open-design/docs</span>
+    <div class="nav-actions">
+      <a href="00-overview.html" class="nav-breadcrumb">00 Overview: what OpenDesign is</a><a href="01-architecture.html" class="nav-breadcrumb">01 Architecture: process, storage, and trust</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="01-architecture.html" class="nav-btn" title="Previous: 01 Architecture: process, storage, and trust">← prev</a>
+      <a href="03-workflow-and-quality.html" class="nav-btn nav-btn-next" title="Next: 03 Workflow and quality: one brief to one preview">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>02 Core mechanism: prompt composition and plugin resolution</h1>
+<h2>Thesis</h2>
+<p>OpenDesign turns content into agent behavior in two stages. First, the prompt composer combines many inputs into one system prompt. Second, the plugin runtime turns a plugin manifest into typed context, a pipeline, and prompt blocks. The two stages meet in the daemon. The composer reads what the resolver produced.</p>
+<p>This document explains the input surface and the early fork between two prompt implementations. It also explains the classic and slim variants, the ordering rules, and the manifest path from <code>open-design.json</code> to an agent prompt.</p>
+<h2>The composition problem</h2>
+<p>A general agent needs a clear role, a task, a brand, a rendering method, and a quality bar. A single user message rarely contains all of these. OpenDesign injects them as a layered system prompt.</p>
+<p>The layers can conflict. A skill can ask for a decorative hero. A design system can forbid gradients. A craft rule can require a readable type scale. A plugin can require a critique stage. The composer must establish precedence. The layer comment at <code>apps/daemon/src/prompts/system.ts:1-40</code> puts the design system above the skill. A token rule therefore outranks a skill layout rule. The composer must also keep the prompt stable enough for prompt caching.</p>
+<p>The composer has more than 40 inputs. An input is one named field in <code>ComposeInput</code>. The destructuring at <code>system.ts:899-982</code> names 41 fields. The input interface is the contract between the daemon and the prompt text.</p>
+<h2>The input surface</h2>
+<p>The <code>ComposeInput</code> interface contains these groups:</p>
+<ul><li>Run identity: agent identifier, session mode, locale, execution profile.</li><li>Skill: body, name, mode, modes.</li><li>Design system: body, title, usage text, tokens, component manifest, fixture, pull index, import mode.</li><li>Craft: body and section list.</li><li>Memory: body and hooks.</li><li>Metadata and template.</li><li>Audio voice options.</li><li>Critique configuration.</li><li>Plugin block and active stage blocks.</li><li>Stream format.</li><li>User instructions and project instructions.</li><li>Media execution and media defaults.</li><li>Signals: freeform deck, deck framework mode, prompt core variant, media hint, platform hint.</li></ul>
+<p>The composer destructures these inputs at the top of the function. It then takes an early branch for the OpenDesign (OD) Next strategy recipe. The comment calls this the fork point.</p>
+<pre><code class="language-text"># apps/daemon/src/prompts/system.ts:899-982
+export function composeSystemPrompt({
+  odNextStrategyRecipe,
+  agentId,
+  planToolNote,
+  skillBody,
+  skillName,
+  skillMode,
+  skillModes,
+  designSystemBody,
+  designSystemTitle,
+  designSystemUsageMd,
+  designSystemTokensCss,
+  designSystemComponentsManifest,
+  designSystemFixtureHtml,
+  designSystemPullIndex,
+  designSystemImportMode,
+  craftBody,
+  craftSections,
+  memoryBody,
+  memoryHooks,
+  metadata,
+  template,
+  audioVoiceOptions,
+  audioVoiceOptionsError,
+  critique,
+  critiqueBrand,
+  critiqueSkill,
+  pluginBlock,
+  activeStageBlocks,
+  streamFormat,
+  locale,
+  sessionMode,
+  userInstructions,
+  projectInstructions,
+  mediaExecution,
+  byokMediaDefaults,
+  executionProfile,
+  freeformDeckSignal,
+  deckFrameworkMode,
+  promptCoreVariant,
+  mediaHintSignal,
+  platformHintSignal,
+}: ComposeInput): string {
+  // ── FORK POINT: two independent prompt implementations ──────────────────
+  // Everything below this early return is the legacy stack; OD Next runs never
+  // reach it. Their content comes from
+  // `plugins/_official/scenarios/od-next-strategy/assets/**` plus the
+  // TypeScript in `@open-design/contracts` `od-next-strategy.ts`, which is
+  // where OD Next carries host runtime contracts. The two sides share no
+  // composition floor, so a rule added below holds only for the runs that take
+  // this branch, and eligibility is re-evaluated per run
+  // (`../strategies/od-next/rollout.ts`). Read `docs/prompt-composition.md`
+  // before changing prompt text on either side.
+  if (odNextStrategyRecipe) {
+    return composeOdNextStrategyRequestPromptV2(odNextStrategyRecipe, {
+      agentId,
+      // The plan-tool fact has to cross the fork with everything else. Without
+      // it an OD Next run keeps the pre-fix behaviour the slim charter no
+      // longer has: a plan step whose tool is never named, and a sanctioned
+      // prose branch to fall into instead. Resolved by the caller (see
+      // `planToolNote` on ComposeInput) so this fork and its contracts mirror
+      // stay byte-identical.
+      planToolNote,
+      sessionMode,
+      locale,
+      deckIntent: odNextStrategyRecipe.taskType !== &#x27;ppt&#x27; &amp;&amp; freeformDeckSignal === true,
+      deckFrameworkMode,
+      metadata,
+      template,
+      designSystemBody,
+      designSystemTitle,
+      designSystemUsageMd,
+      designSystemTokensCss,
+      designSystemComponentsManifest,
+      designSystemFixtureHtml,
+      designSystemPullIndex,
+      designSystemImportMode,
+      craftBody,
+      craftSections,
+      memoryBody,
+      userInstructions,
+      projectInstructions,
+    });
+  }
+</code></pre>
+<p>The v2 branch returns before any legacy code runs. The legacy stack is the code below the branch. The two stacks do not share a composition floor. A rule added to one stack does not affect the other.</p>
+<p>The server decides which branch to take. It builds a system prompt input object. Then it chooses between the strategy core prompt and the classic composer.</p>
+<pre><code class="language-text"># apps/daemon/src/server.ts:11418-11420
+    const prompt = odNextStrategyRecipe
+      ? composeOdNextStrategyCorePromptV2(odNextStrategyRecipe)
+      : composeSystemPrompt(systemPromptInputs);
+</code></pre>
+<p>This is a second fork. The strategy recipe can reach the v2 composer through two different entry points. The server calls <code>composeOdNextStrategyCorePromptV2</code> at <code>packages/contracts/src/prompts/od-next-strategy.ts:785-789</code>. That function calls <code>composeOdNextStrategyRequestPromptV2(input, {})</code>. The early return in <code>composeSystemPrompt</code> calls <code>composeOdNextStrategyRequestPromptV2</code> directly with extra fields. The daemon must keep the inputs and the branches consistent.</p>
+<h2>The two prompt stacks</h2>
+<p>The legacy stack has a layered design. The documentation at the top of <code>system.ts</code> lists the layers.</p>
+<ol><li>The official designer prompt. This prompt defines identity, workflow, and content philosophy.</li><li>The discovery and planning layer. This layer adds question forms, direction picks, brand extraction, TodoWrite reinforcement, critique, and a direction library.</li><li>The active design system. The <code>DESIGN.md</code> prose and tokens are authoritative.</li><li>The active skill. The <code>SKILL.md</code> body defines the method for the artifact type.</li><li>The deck framework directive for deck runs. It is pinned last so it overrides softer slide rules.</li></ol>
+<p>The v2 stack uses a strategy recipe and plugin assets. It sends a canonical Extensible Markup Language (XML) tree, not the legacy Markdown string. The server comment at <code>apps/daemon/src/server.ts:11421-11424</code> says the tree has a cache-stable head and a per-task identity.</p>
+<p>A reader must not assume that a rule in the legacy stack applies to a v2 run. The code comments say this directly. The two stacks are independent implementations.</p>
+<h2>Classic and slim variants</h2>
+<p>Within the legacy stack there are two prompt core variants. The <code>classic</code> variant keeps the layered composition. The <code>slim</code> variant collapses the discovery layer, the designer charter, and the tail overrides into one charter document.</p>
+<p>The slim variant exists to improve prompt caching. A stable prefix can be reused across conversations. The ordering comment explains the rule.</p>
+<pre><code class="language-text"># apps/daemon/src/prompts/system.ts:1021-1046
+  const parts: string[] = isSlimCharterHead
+    ? [
+        ...(streamFormat === &#x27;plain&#x27; ? [API_MODE_OVERRIDE, &#x27;\n\n---\n\n&#x27;] : []),
+        renderSlimCoreCharter(
+          executionProfile ?? executionProfileFromStreamFormat(streamFormat),
+        ),
+        &#x27;\n\n---\n\n&#x27;,
+      ]
+    : isSlimCore &amp;&amp; isAskModeEarly
+      ? [
+          // Ask mode on a plain stream still leads with the API override so
+          // its &quot;overrides every rule below&quot; scope covers the chat charter,
+          // matching classic&#x27;s authority order (API before CHAT).
+          ...(streamFormat === &#x27;plain&#x27; ? [API_MODE_OVERRIDE, &#x27;\n\n---\n\n&#x27;] : []),
+          CHAT_MODE_OVERRIDE,
+          &#x27;\n\n---\n\n&#x27;,
+          PROMPT_INJECTION_RESISTANCE,
+          &#x27;\n\n---\n\n&#x27;,
+        ]
+      : isSlimCore
+        ? [
+            // Slim MEDIA runs (non-ask): no design charter and no Ask charter
+            // either — CHAT_MODE_OVERRIDE forbids creating media, which would
+            // contradict the media-generation contract appended below as the
+            // sole workflow authority. Keep classic&#x27;s skeleton: API override
+            // first on plain streams, then injection resistance.
+</code></pre>
+<p>The snippet shows only the slim branches. It is cut before the closing brackets, so the classic branch is not shown. The order is a security decision as well as a cache decision. In the classic stack, the layer comment puts the API override and the injection resistance before the content layers. In the slim design stack, the static charter comes first. The charter embeds the security section. In slim ask mode, the ask override comes first. In plain streams, the Application Programming Interface (API) mode override comes before the charter.</p>
+<p>The code comments call the slim ask order "identity-first". The order keeps the document hierarchy consistent: top-level heading first, second-level sections after.</p>
+<p>The slim variant has three heads, not three variants. The heads are design, ask, and media. They are not cosmetic. They change which instruction has authority. A later block can override an earlier block only when the earlier block permits it. The API override says that later instructions are overridden. Its position must be early enough to cover the charter.</p>
+<h2>Execution profile</h2>
+<p>The execution profile changes the prompt and the output contract. A <code>filesystem</code> run can write project files. A <code>text_artifact</code> run returns one complete artifact block.</p>
+<pre><code class="language-text"># packages/contracts/src/execution-profile.ts:1-7
+export type ExecutionProfile = &#x27;filesystem&#x27; | &#x27;text_artifact&#x27;;
+
+export function executionProfileFromStreamFormat(
+  streamFormat: string | null | undefined,
+): ExecutionProfile {
+  return streamFormat === &#x27;plain&#x27; ? &#x27;text_artifact&#x27; : &#x27;filesystem&#x27;;
+}
+</code></pre>
+<p>Only the <code>plain</code> stream format gets the text profile. A plain stream has no structured tool events. The daemon cannot observe file writes. The prompt must ask for one block.</p>
+<p>The profile is an input to the slim charter renderer. It changes the charter text. The profile also changes the workflow section. The same run can thus receive a different file contract without a different skill.</p>
+<h2>The design-system input</h2>
+<p>The design system contributes several kinds of text:</p>
+<ul><li>The <code>DESIGN.md</code> prose.</li><li>The token Cascading Style Sheets (CSS) file.</li><li>The component manifest.</li><li>A fixture document.</li><li>A pull index.</li><li>The import mode.</li><li>The usage text.</li></ul>
+<p>The daemon can also pass the design-system identifier and a digest. The digest is useful for cache keys and telemetry. The composer treats the design system as authoritative. The skill must map its layout to the design tokens, not invent new tokens.</p>
+<p>The Stripe manifest showed how a package declares its files and import mode. The import mode changes the guidance. A normalized package expects the agent to use the provided tokens. A different mode can expect the agent to pull values from a source.</p>
+<h2>The skill input</h2>
+<p>The skill contributes a body and metadata. The metadata includes the mode, the surface, the platform, the scenario, the preview type, and the craft requirements.</p>
+<p>The daemon finds a skill by identifier. The registry reads the user root first and the built-in root second. The first root wins on an identifier collision. This lets a user shadow a built-in skill without deleting it.</p>
+<pre><code class="language-text"># apps/daemon/src/skills.ts:232-263
+export async function listSkills(
+  skillsRoots: string | readonly string[],
+  options: ListSkillsOptions = {},
+): Promise&lt;SkillInfo[]&gt; {
+  const roots = Array.isArray(skillsRoots) ? skillsRoots : [skillsRoots];
+  const out: SkillInfo[] = [];
+  const seenIds = new Set&lt;string&gt;();
+  for (let rootIdx = 0; rootIdx &lt; roots.length; rootIdx += 1) {
+    const skillsRoot = roots[rootIdx];
+    if (!skillsRoot) continue;
+    const source: SkillSource = rootIdx === 0 ? &quot;user&quot; : &quot;built-in&quot;;
+    let entries: Dirent[] = [];
+    try {
+      entries = await readdir(skillsRoot, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() &amp;&amp; !entry.isSymbolicLink()) continue;
+      const dir = path.join(skillsRoot, entry.name);
+      const skillPath = path.join(dir, &quot;SKILL.md&quot;);
+      try {
+        const stats = await stat(skillPath);
+        if (!stats.isFile()) continue;
+        const raw = await readFile(skillPath, &quot;utf8&quot;);
+        const { data: parsedData, body } = parseFrontmatter(raw) as {
+          data: unknown;
+          body: string;
+        };
+        const data = asSkillFrontmatter(parsedData);
+        const parentId =
+          typeof data.name === &quot;string&quot; &amp;&amp; data.name ? data.name : entry.name;
+</code></pre>
+<p>The loader ignores a directory without <code>SKILL.md</code>. It also ignores a file that cannot be read. It does not stop the whole catalog for one bad entry. That behavior is important for a user-authored catalog.</p>
+<p>The loader normalizes the mode, surface, platform, and scenario. A missing <code>od</code> block does not fail. The normalizer derives values from the body and the description. The calls are at <code>apps/daemon/src/skills.ts:286-288</code>, and they use optional chaining on <code>data.od</code>. This makes a plain Agent Skills folder usable without OD metadata.</p>
+<p>A skill also carries hard constraints. The web prototype skill states them at the end of its body. The constraints are prompt rules, not renderer settings. The agent must obey them while it writes.</p>
+<pre><code class="language-text"># design-templates/web-prototype/SKILL.md:84-89
+- **Single accent, used at most twice per screen.** Eyebrow + primary CTA is the default budget.
+- **Display font is serif** (Iowan Old Style / Charter / Georgia in the seed). Sans for body. Mono for numerics, captions, eyebrows.
+- **Real imagery, never remote hotlinks.** `.ph-img` is temporary layout scaffolding, not the default final treatment. For a named real-world referent, search/fetch the correct real image, copy it into the project, and reference it relatively; never generate, draw, or invent a substitute. For illustrative or atmospheric subjects, prefer suitable fetched real photography and use image generation only as a fallback. If no compliant asset can be acquired, keep an intentional labeled `.ph-img` and disclose the limitation in the delivery summary.
+- **Preserve real-image geometry.** Inspect each acquired image&#x27;s intrinsic width and height, replace the entire `.ph-img` scaffold with an `&lt;img class=&quot;content-img&quot;&gt;`, and set matching `width` and `height` attributes. Never copy `.ph-img`, `.wide`, `.portrait`, or `.square` onto a real image. Content images must show the full frame; `object-fit: cover` is only for intentionally croppable decorative fills. The seed&#x27;s `.content-img` rule bounds unusually tall or wide images to the viewport while keeping the other axis automatic.
+- **Mobile reflow already works** via the seed&#x27;s media query at 920px. Don&#x27;t break it by adding fixed widths.
+- **`data-od-id` on every `&lt;section&gt;`** so comment mode can target it.
+</code></pre>
+<h2>The craft input</h2>
+<p>Craft files are short, reusable design rules. Examples are typography, color, and anti-slop. A skill or a design system can request them.</p>
+<p>The resolver has a deck fallback. A deck run always gets typography, even when no skill declares it. The reason is a concrete rendering defect from the source comment. Chinese headings can use Latin poster leading and overlap. Poster leading is the large line spacing that display type uses.</p>
+<pre><code class="language-text"># apps/daemon/src/craft.ts:45-69
+export function resolveCraftRequirements({
+  isWebCloneRun = false,
+  metadataKind,
+  skillModes,
+  freeformDeckSignal = false,
+  skillRequires = [],
+  designSystemApplies = [],
+  designSystemExemptions = [],
+}: ResolveCraftRequirementsInput): string[] {
+  if (isWebCloneRun) return [];
+
+  const modes = new Set(normalizeCraftSlugs(skillModes));
+  const isDeckProject = metadataKind === &quot;deck&quot; || modes.has(&quot;deck&quot;);
+  const isFreeformDeck =
+    modes.size === 0
+    &amp;&amp; (!metadataKind || metadataKind === &quot;other&quot;)
+    &amp;&amp; freeformDeckSignal;
+  const requested = normalizeCraftSlugs([
+    ...skillRequires,
+    ...designSystemApplies,
+    ...(isDeckProject || isFreeformDeck ? [&quot;typography&quot;] : []),
+  ]);
+  const excluded = new Set(normalizeCraftSlugs(designSystemExemptions));
+  return requested.filter((slug) =&gt; !excluded.has(slug));
+}
+</code></pre>
+<p>A web clone run gets no craft sections. A web clone run copies an existing site instead of authoring a new design. The clone must copy the source, not apply the product's taste. A deck project or a skill with mode <code>deck</code> gets typography. A freeform deck gets typography when no skill mode exists and the freeform signal is true.</p>
+<p>The loader reads each requested file. It validates the slug. It prefixes a level-three heading. It joins sections with a horizontal rule.</p>
+<pre><code class="language-text"># apps/daemon/src/craft.ts:78-103
+export async function loadCraftSections(craftDir: string, requested: unknown[]) {
+  if (!craftDir || !Array.isArray(requested) || requested.length === 0) {
+    return { body: &quot;&quot;, sections: [] };
+  }
+  const seen = new Set&lt;string&gt;();
+  const parts: string[] = [];
+  const sections: string[] = [];
+  for (const raw of requested) {
+    if (typeof raw !== &quot;string&quot;) continue;
+    const slug = raw.trim().toLowerCase();
+    if (!SLUG_RE.test(slug) || seen.has(slug)) continue;
+    seen.add(slug);
+    try {
+      const filePath = path.join(craftDir, `${slug}.md`);
+      const text = await readFile(filePath, &quot;utf8&quot;);
+      const trimmed = text.trim();
+      if (!trimmed) continue;
+      parts.push(`### ${slug}\n\n${trimmed}`);
+      sections.push(slug);
+    } catch {
+      // File doesn&#x27;t exist or unreadable — skip silently. Skills can
+      // forward-reference future craft sections without breaking.
+    }
+  }
+  return { body: parts.join(&quot;\n\n---\n\n&quot;), sections };
+}
+</code></pre>
+<p>A missing file is silent. A skill can name a future section. The run still works. The returned <code>sections</code> list lets the caller record what was actually included.</p>
+<h2>Memory and instructions</h2>
+<p>Memory is a separate body. It carries remembered preferences and facts. User instructions are the user's own rules. Project instructions are the project's rules.</p>
+<p>The prompt order puts conversation-stable content before turn-variable content. The layer list in "The two prompt stacks" is that order. The order improves caching. It also gives a clear authority order. A project rule should not silently disappear under a later generated block.</p>
+<h2>The plugin block and the pipeline</h2>
+<p>A plugin can add a <code>pluginBlock</code>. It can also add active stage blocks. A stage block is the prompt text for one pipeline stage. The daemon selects the active stage and passes its block.</p>
+<p>The stage blocks are separate from the plugin block. The plugin block describes the workflow. The stage block describes the current step. This separation lets the daemon advance the pipeline without recomposing the whole plugin.</p>
+<p>The scenario manifest showed the pipeline shape. Each stage has an identifier and an atom list. A repeat stage has an <code>until</code> expression. The validator requires the expression when <code>repeat</code> is true. The expression text is data. This exploration did not find the evaluator that reads it. The daemon selects the active stage and builds its blocks at <code>apps/daemon/src/server.ts:11155-11199</code>.</p>
+<h2>The plugin manifest path</h2>
+<p>A plugin starts as a directory with <code>open-design.json</code>. The daemon reads the file and parses it. The parser first parses JavaScript Object Notation (JSON). Then it validates the object with a Zod schema.</p>
+<pre><code class="language-text"># packages/plugin-runtime/src/parsers/manifest.ts:25-56
+export function parseManifest(raw: string): ManifestParseResult {
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch (err) {
+    return {
+      ok: false,
+      warnings: [],
+      errors: [`open-design.json is not valid JSON: ${(err as Error).message}`],
+    };
+  }
+  return parseManifestObject(json);
+}
+
+export function parseManifestObject(value: unknown): ManifestParseResult {
+  const result = PluginManifestSchema.safeParse(value);
+  if (!result.success) {
+    return {
+      ok: false,
+      warnings: [],
+      errors: result.error.issues.map((issue) =&gt; `${issue.path.join(&#x27;.&#x27;) || &#x27;&lt;root&gt;&#x27;}: ${issue.message}`),
+    };
+  }
+  return {
+    ok: true,
+    manifest: {
+      specVersion: OPEN_DESIGN_PLUGIN_SPEC_VERSION,
+      ...result.data,
+    },
+    warnings: [],
+  };
+}
+</code></pre>
+<p>The schema is permissive for unknown fields. A future field survives a parse. The parser sets the current specification constant first. The spread of the parsed data comes second. A declared <code>specVersion</code> therefore wins, because the spread overwrites the constant. A manifest without the field gets the constant. The schema marks the field optional at <code>packages/contracts/src/plugins/manifest.ts:140-142</code>.</p>
+<p>The validator adds cross-field rules. The schema cannot express these rules.</p>
+<pre><code class="language-text"># packages/plugin-runtime/src/validate.ts:43-62
+export function validateSafe(manifest: PluginManifest): ValidateResult {
+  const warnings: string[] = [];
+  const errors: string[] = [];
+
+  const od = manifest.od;
+  if (od) {
+    const stages = od.pipeline?.stages ?? [];
+    for (const stage of stages) {
+      if (stage.repeat &amp;&amp; !stage.until) {
+        errors.push(`pipeline.stages[${stage.id}]: repeat=true requires an &#x27;until&#x27; expression`);
+      }
+    }
+
+    const caps = od.capabilities ?? [];
+    for (const cap of caps) {
+      if (cap.startsWith(&#x27;connector:&#x27;)) continue;
+      if (!KNOWN_CAPABILITIES.has(cap)) {
+        warnings.push(`capability &#x27;${cap}&#x27; is not in the v1 vocabulary; doctor will surface this to the operator`);
+      }
+    }
+</code></pre>
+<p>A missing <code>until</code> is an error. An unknown capability is a warning. The difference is deliberate. A forward specification patch can add a capability without breaking existing installs. The warning text names "doctor". Doctor is the daemon diagnostic path that reports plugin health. The atom catalog at <code>apps/daemon/src/plugins/atoms.ts</code> lists each atom with a status field.</p>
+<p>The validator also checks connector references and Model Context Protocol (MCP) references for Generative User Interface (GenUI) surfaces. A route that names a connector must name a declared connector. A route that names an MCP server must name a declared server.</p>
+<h2>Context resolution</h2>
+<p>The resolver is pure. It receives a manifest and a registry view. It does not read the file system. It turns references into typed context items.</p>
+<pre><code class="language-text"># packages/plugin-runtime/src/resolve.ts:61-100
+export function resolveContext(manifest: PluginManifest, opts: ResolveOptions): ResolveResult {
+  const warnings: string[] = [];
+  const items: ContextItem[] = [];
+  const digestRefs: Array&lt;{ kind: string; ref: string }&gt; = [];
+
+  const ctx = manifest.od?.context;
+  const registry = opts.registry;
+
+  if (ctx) {
+    // Skills
+    for (const ref of ctx.skills ?? []) {
+      const id = (ref.ref ?? ref.path ?? &#x27;&#x27;).trim();
+      if (!id) continue;
+      const skill = registry.skills.find((s) =&gt; s.id === id || s.id === stripDotSlash(id));
+      if (!skill) {
+        if (opts.warnOnMissing) warnings.push(`Unknown skill ref: &#x27;${id}&#x27;`);
+        continue;
+      }
+      items.push({ kind: &#x27;skill&#x27;, id: skill.id, label: skill.title ?? skill.id });
+      digestRefs.push({ kind: &#x27;skill&#x27;, ref: skill.id });
+    }
+
+    // Design system
+    if (ctx.designSystem) {
+      const dsRef = ctx.designSystem;
+      const explicitRef = typeof dsRef.ref === &#x27;string&#x27; ? dsRef.ref.trim() : &#x27;&#x27;;
+      if (explicitRef) {
+        const ds = registry.designSystems.find((d) =&gt; d.id === explicitRef);
+        if (ds) {
+          items.push({ kind: &#x27;design-system&#x27;, id: ds.id, label: ds.title ?? ds.id, primary: true });
+          digestRefs.push({ kind: &#x27;design-system&#x27;, ref: ds.id });
+        } else if (opts.warnOnMissing) {
+          warnings.push(`Unknown design-system ref: &#x27;${explicitRef}&#x27;`);
+        }
+      } else if (registry.activeProjectDesignSystem) {
+        const ds = registry.activeProjectDesignSystem;
+        items.push({ kind: &#x27;design-system&#x27;, id: ds.id, label: ds.title ?? ds.id, primary: true });
+        digestRefs.push({ kind: &#x27;design-system&#x27;, ref: ds.id });
+      }
+    }
+</code></pre>
+<p>A missing reference is a warning when <code>warnOnMissing</code> is true. The daemon prefers warnings. The web preview prefers a strict drop. A strict drop discards the item instead of warning about it. The resolver returns both the items and a flat digest list.</p>
+<p>The digest list includes pipeline atoms. A stage can add an atom that is not in the context list. The digest must still change when the pipeline changes. That prevents two different manifests from sharing a cache key.</p>
+<p>The resolver handles skills, design systems, craft, assets, MCP servers, Claude plugins, and atoms. An asset path stays as given. The resolver does not check it. <code>buildAssetRefs</code> copies the string and marks it <code>stageAt: 'run-start'</code> at <code>apps/daemon/src/plugins/apply.ts:312-319</code>. This exploration did not confirm a later asset path validator. An MCP item carries a name and an optional command. A Claude plugin item carries an identifier.</p>
+<h2>The Claude plugin adapter</h2>
+<p>OpenDesign can install a Claude Code plugin folder. The adapter reads <code>.claude-plugin/plugin.json</code> and synthesizes an OD manifest. The adapter is intentionally small.</p>
+<pre><code class="language-text"># packages/plugin-runtime/src/adapters/claude-plugin.ts:23-72
+export function adaptClaudePlugin(
+  rawJson: string,
+  opts: ClaudePluginAdapterOptions,
+): ClaudePluginAdapterResult {
+  const warnings: string[] = [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawJson);
+  } catch (err) {
+    return {
+      manifest: synthesizeFallback(opts.folderId, opts.compatPath ?? &#x27;./.claude-plugin/plugin.json&#x27;),
+      warnings: [`Failed to parse .claude-plugin/plugin.json: ${(err as Error).message}`],
+    };
+  }
+
+  if (!parsed || typeof parsed !== &#x27;object&#x27; || Array.isArray(parsed)) {
+    return {
+      manifest: synthesizeFallback(opts.folderId, opts.compatPath ?? &#x27;./.claude-plugin/plugin.json&#x27;),
+      warnings: [&#x27;.claude-plugin/plugin.json must be a JSON object&#x27;],
+    };
+  }
+  const obj = parsed as Record&lt;string, unknown&gt;;
+  const compatPath = opts.compatPath ?? &#x27;./.claude-plugin/plugin.json&#x27;;
+  const name = typeof obj[&#x27;name&#x27;] === &#x27;string&#x27; &amp;&amp; obj[&#x27;name&#x27;].trim().length &gt; 0
+    ? obj[&#x27;name&#x27;].trim()
+    : opts.folderId;
+  const safeName = name.toLowerCase().replace(/[^a-z0-9._-]/g, &#x27;-&#x27;).replace(/^[._-]+/, &#x27;&#x27;) || opts.folderId;
+  if (safeName !== name) {
+    warnings.push(`claude-plugin name &#x27;${name}&#x27; was sanitized to &#x27;${safeName}&#x27; to fit the OD plugin id pattern`);
+  }
+  const version = typeof obj[&#x27;version&#x27;] === &#x27;string&#x27; ? obj[&#x27;version&#x27;] : &#x27;0.0.0&#x27;;
+  const description = typeof obj[&#x27;description&#x27;] === &#x27;string&#x27; ? obj[&#x27;description&#x27;] : undefined;
+  const commands = Array.isArray(obj[&#x27;commands&#x27;]) ? obj[&#x27;commands&#x27;].length : 0;
+  if (commands &gt; 0) {
+    warnings.push(`claude-plugin declares ${commands} command(s); v1 OD apply does not auto-register hooks. Add them via od.context.claudePlugins[].`);
+  }
+  const manifest: PluginManifest = {
+    specVersion: OPEN_DESIGN_PLUGIN_SPEC_VERSION,
+    name: safeName,
+    title: typeof obj[&#x27;title&#x27;] === &#x27;string&#x27; ? obj[&#x27;title&#x27;] : safeName,
+    version,
+    description: description ?? undefined,
+    compat: { claudePlugins: [{ path: compatPath }] },
+    od: {
+      kind: &#x27;skill&#x27;,
+      taskKind: &#x27;new-generation&#x27;,
+    },
+  };
+  return { manifest, warnings };
+}
+</code></pre>
+<p>The adapter does not map commands, agents, or hooks. It records the compatibility path. It sets the kind to <code>skill</code> and the task kind to <code>new-generation</code>. A plugin with commands gets a warning. This is a phase-one adapter, not a full compatibility layer.</p>
+<h2>From manifest to prompt</h2>
+<p>The full path has these steps.</p>
+<ol><li>Read <code>open-design.json</code>.</li><li>Parse JSON and validate the schema.</li><li>Apply cross-field validation.</li><li>Adapt a Claude plugin if needed.</li><li>Resolve context references against the registries.</li><li>Build a plugin snapshot with a digest.</li><li>Select the pipeline and the active stage.</li><li>Compose the plugin block and the stage block.</li><li>Pass both blocks to the prompt composer.</li></ol>
+<div class="mermaid">
+sequenceDiagram
+  participant FS as Plugin directory
+  participant P as Parser
+  participant V as Validator
+  participant R as Resolver
+  participant S as Snapshot store
+  participant C as Prompt composer
+  FS-&gt;&gt;P: open-design.json
+  P-&gt;&gt;V: Parsed manifest
+  V--&gt;&gt;P: Errors and warnings
+  P-&gt;&gt;R: Valid manifest and registry view
+  R--&gt;&gt;P: Context items, digest refs, warnings
+  P-&gt;&gt;S: Applied plugin snapshot
+  S-&gt;&gt;C: Plugin block and stage blocks
+  C-&gt;&gt;C: Compose system prompt
+
+</div>
+<p>The diagram shows the success path. A parse failure stops at the parser and returns errors. A validation failure stops at the validator and returns errors. The numbered list also has an adapter step. The diagram does not draw that step.</p>
+<p>The snapshot is the durable form. A run refers to a snapshot, not to a live directory. A later edit to the plugin does not change an existing run. The snapshot is stored in the daemon database with a snapshot identifier and a source digest. A doctor pass marks a snapshot stale when its digest changes. That pass is at <code>apps/daemon/src/plugins/doctor.ts:171-187</code>. The digest changes when the resolved context changes.</p>
+<p>The composer receives the plugin block and the active stage blocks as separate inputs. The legacy composer places them in the layer order. The v2 composer maps them into the strategy recipe. The two paths handle the same content but produce different prompt shapes.</p>
+<div class="mermaid">
+flowchart TB
+  subgraph Inputs
+    DS[Design system prose and tokens]
+    SK[Skill body]
+    CR[Craft sections]
+    MEM[Memory]
+    INS[User and project instructions]
+    PL[Plugin block]
+    ST[Active stage blocks]
+    MD[Metadata and template]
+    LOC[Locale and session mode]
+  end
+  DS --&gt; LEG[Legacy composer]
+  SK --&gt; LEG
+  CR --&gt; LEG
+  MEM --&gt; LEG
+  INS --&gt; LEG
+  PL --&gt; LEG
+  ST --&gt; LEG
+  MD --&gt; LEG
+  LOC --&gt; LEG
+  DS --&gt; NEXT[OD Next composer]
+  SK --&gt; NEXT
+  CR --&gt; NEXT
+  MEM --&gt; NEXT
+  INS --&gt; NEXT
+  MD --&gt; NEXT
+  LOC --&gt; NEXT
+  LEG --&gt; OUT[System prompt]
+  NEXT --&gt; OUT
+
+</div>
+<p>The OD Next branch receives a subset of the legacy inputs. It does not receive the plugin block or the active stage blocks. It receives the strategy recipe, the design-system fields, the craft fields, memory, instructions, metadata, template, locale, and session mode.</p>
+<h2>Aha</h2>
+<p><strong>Aha:</strong> The two prompt stacks share no composition floor. This is not a refactoring detail. It is a product risk. A designer can fix a rule in the classic stack and see no change in an OD Next run. The code comment tells the reader to read <code>docs/prompt-composition.md</code> before editing either side. The most important prompt work is therefore coordination, not wording.</p>
+<h2>Summary</h2>
+<p>The prompt composer combines run identity, content, memory, instructions, and plugin blocks. The legacy stack layers its content. The slim variant reorders it for caching. The OD Next branch replaces the whole stack. The plugin runtime parses, validates, resolves, and snapshots a manifest. The composer receives the result as a plugin block and stage blocks.</p>
+<p>The next document, <a href="03-workflow-and-quality.html">03-workflow-and-quality.md</a>, follows one brief through the HyperText Transfer Protocol (HTTP) API, the run engine, the artifact manifest, the preview, and the quality gates. The <a href="README.html">README index</a> lists all six documents.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
