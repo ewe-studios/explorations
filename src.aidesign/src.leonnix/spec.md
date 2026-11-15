@@ -220,7 +220,7 @@ for finishing?
 | 5 | afterglow | DONE (6 documents, 69 snippets, fresh-reader review repaired) |
 | 6 | earshot | DONE (6 documents, 66 snippets, fresh-reader review repaired) |
 | 7 | unsung-vale | DONE (6 documents, 90 snippets, fresh-reader review repaired) |
-| 8 | athenaion | TODO |
+| 8 | athenaion | DONE (6 documents, 78 snippets, fresh-reader review repaired) |
 | 9 | casa-ocaso | TODO |
 | 10 | shanshui | TODO |
 | 11 | golden-temple | TODO |
@@ -289,7 +289,7 @@ and the push.
 | 5 | afterglow | 6 | 69 | 0 | 28,271 | 11 | 7 | 0 broken | Done |
 | 6 | earshot | 6 | 66 | 0 | 27,313 | 12 | 7 | 0 broken | Done |
 | 7 | unsung-vale | 6 | 90 | 0 | 28,705 | 13 | 6 | 0 broken | Done |
-| 8 | athenaion | pending | | | | | | | |
+| 8 | athenaion | 6 | 78 | 0 | 24,075 | 11 | 5 | 0 broken | Done |
 | 9 | casa-ocaso | pending | | | | | | | |
 | 10 | shanshui | pending | | | | | | | |
 | 11 | golden-temple | pending | | | | | | | |
