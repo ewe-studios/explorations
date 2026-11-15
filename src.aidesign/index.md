@@ -48,7 +48,7 @@ nested projects. The table fills in the order given in the spec.
 | Package | Start here |
 |---------|------------|
 | [open-design](open-design/html/README.html) | [Overview](open-design/html/00-overview.html), then [core mechanism](open-design/html/02-core-mechanism.html) |
-| [src.leonnix](src.leonnix/html/README.html) | In progress: 2 of 19 projects. Start with [tastecode](src.leonnix/tastecode/html/README.html) or [taste-skill](src.leonnix/taste-skill/html/README.html) |
+| [src.leonnix](src.leonnix/html/README.html) | In progress: 3 of 19 projects. Start with [tastecode](src.leonnix/tastecode/html/README.html), [taste-skill](src.leonnix/taste-skill/html/README.html) or [cinetic](src.leonnix/cinetic/html/README.html) |
 
 ## Reading order
 

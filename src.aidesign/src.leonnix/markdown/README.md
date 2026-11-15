@@ -75,7 +75,7 @@ tree of six documents. The **Start here** column fills as each project is publis
 |---------|-------|------:|--------|------------|
 | tastecode | Tooling | 3,519 | c216616 | [Start here](../tastecode/html/README.html) |
 | taste-skill | Agent skills | 1,663 | f6b7657 | [Start here](../taste-skill/html/README.html) |
-| cinetic | Agent skills | 964 | f4bbfc8 | Planned |
+| cinetic | Agent skills | 964 | f4bbfc8 | [Start here](../cinetic/html/README.html) |
 | valle-morta | Real-time worlds | 524 | 64471ca | Planned |
 | afterglow | Offline films | 351 | ced1038 | Planned |
 | earshot | Tooling | 287 | 4ac3d2a | Planned |
