@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The sync engine: Electric, the health tracker, and the query fallback -- humanlayer</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/humanlayer/docs</span>
+    <div class="nav-actions">
+      <a href="02-daemon-and-session-runtime.html" class="nav-breadcrumb">The daemon and the session runtime</a><a href="03-session-lifecycle-and-state-machine.html" class="nav-breadcrumb">The session lifecycle: 13 statuses without a transition table</a><a href="04-session-sdk-and-durable-streams.html" class="nav-breadcrumb">The session SDK and the durable stream</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="04-session-sdk-and-durable-streams.html" class="nav-btn" title="Previous: The session SDK and the durable stream">← prev</a>
+      <a href="06-electric-proxy.html" class="nav-btn nav-btn-next" title="Next: The Electric proxy: authentication, tenancy, and access filters">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>The sync engine: Electric, the health tracker, and the query fallback</h1>
+<p>The sync engine gives the browser two ways to read the same rows: a live Electric stream and a polling query fallback. One per-collection state machine decides which transport the user interface (UI) reads at any moment. This document explains both transports, the numbers that govern the switch, and the way the React provider wires them together. Every claim cites the source snapshot at commit <code>2f66a45b186d88488fa356862be0117db1ccae9f</code>.</p>
+<h2>What the sync engine must do</h2>
+<p>The database is the only source of truth. The browser cannot open a Structured Query Language (SQL) connection to Postgres. It must receive rows over the HyperText Transfer Protocol (HTTP). Electric pushes shape changes over a long-poll connection. A second path polls an Application Programming Interface (API) with a normal query.</p>
+<p>Electric is a read-sync service. A shape is one filtered table stream. A TanStack DB collection is the client-side store that applies shape changes to rows. A TanStack Query collection fills the same store from a polling request.</p>
+<p>Each table needs both paths. Electric is fast and incremental. It can also stop: a proxy restart, a bad token, a network change, or an upstream error ends the stream. When Electric fails, the UI must keep working with stale-but-refreshable data. The query path supplies that data on a timer.</p>
+<p><strong>Aha:</strong> The two paths are not equal partners. Electric is the normal path, and the query path is a controlled fallback. The user interface reads from only one collection at a time. It creates the query collection only after Electric fails, and it schedules the query collection for destruction after Electric recovers. This keeps one clear rendering owner of each table. It does <strong>not</strong> keep one copy of the rows: in query mode the Electric collection still receives and stores rows, because the keep-alive subscription keeps its shape stream open. That duplicate in-memory copy is the price of observability. Without the no-op listener, <code>syncMode: 'on-demand'</code> would stop the shape stream when the last real subscriber leaves, no success could reach the tracker, and the engine could never prove that Electric recovered.</p>
+<p>The package files have one job each.</p>
+<table><tr><th>File</th><th>Main export</th><th>Job</th></tr><tr><td><code>packages/sync/src/electric-collection.ts</code></td><td><code>createElectricCollection</code></td><td>Build a TanStack DB collection over an Electric shape.</td></tr><tr><td><code>packages/sync/src/sync-config.ts</code></td><td><code>buildElectricSyncUrl</code>, <code>DEFAULT_BACKOFF_OPTIONS</code></td><td>Build the shape Uniform Resource Locator (URL) and hold retry values.</td></tr><tr><td><code>packages/sync/src/browser-electric-collection.ts</code></td><td><code>createBrowserElectricCollection</code></td><td>Add async authorization, caching, cleanup, and keep-alive.</td></tr><tr><td><code>packages/sync/src/health-tracker.ts</code></td><td><code>CollectionHealthTracker</code></td><td>Run the per-collection state machine.</td></tr><tr><td><code>packages/sync/src/tracked-fetch.ts</code></td><td><code>createTrackedFetchClient</code></td><td>Classify each fetch result for the tracker.</td></tr><tr><td><code>packages/sync/src/sync-error-handler.ts</code></td><td><code>createElectricSyncErrorHandler</code></td><td>Map status codes to retry or stop decisions.</td></tr><tr><td><code>packages/sync/src/query-collection.ts</code></td><td><code>createQueryCollection</code></td><td>Build a TanStack Query-backed collection.</td></tr><tr><td><code>packages/sync/src/sync-query-helpers.ts</code></td><td><code>createSyncQueryFn</code></td><td>Convert filters, sorts, bigint values, and pages.</td></tr><tr><td><code>packages/sync/src/collection-cache.ts</code></td><td><code>createCollectionCache</code></td><td>Deduplicate collections and evict on cleanup.</td></tr><tr><td><code>packages/sync/src/collection-key.ts</code></td><td><code>defaultCollectionKey</code></td><td>Use the <code>id</code> column as the key, or fail clearly.</td></tr><tr><td><code>packages/sync/src/constants.ts</code></td><td>thresholds and intervals</td><td>Hold every tunable number.</td></tr><tr><td><code>packages/sync/src/electric-keep-alive.ts</code></td><td><code>attachElectricKeepAlive</code></td><td>Keep a degraded Electric stream alive so it can recover.</td></tr></table>
+<h2>The Uniform Resource Locator and the backoff</h2>
+<p><code>buildElectricSyncUrl(syncOrigin, syncVersion, routePath)</code> returns the full shape URL. The body is <code>${syncOrigin}/v${syncVersion}${routePath}</code>, passed through <code>new URL(...)</code>. The function is at <code>packages/sync/src/sync-config.ts:35-38</code>. <code>syncOrigin</code> is the scheme, host, and port of the proxy service. <code>routePath</code> is the route for one table, such as <code>/sessions</code>. <code>syncVersion</code> selects the proxy route group.</p>
+<p><code>SyncRouteVersion</code> is <code>SyncPathVersion | 3</code> (<code>packages/sync/src/sync-config.ts:11</code>). <code>SyncPathVersion</code> is the organization setting type, either 1 or 2. The organization setting stores version 1 or 2. A single collection can pin version 3. For example, online hosts use route version 3 while the organization-wide value stays 2 (<code>apps/riptide-ui/src/collections/electric/online-hosts.ts:12-13</code>). This lets a new shape contract ship without a global migration. Version 1 applies an owner rule, a user access-list rule, and an organization access-list rule. Version 2 scopes rows by organization. Version 3 changes the columns for two shapes, online hosts and agent slash commands. The <a href="06-electric-proxy.html">proxy document</a> gives the rule sets.</p>
+<p>The retry values are a constant object.</p>
+<pre><code class="language-ts">// packages/sync/src/sync-config.ts:13-18
+export const DEFAULT_BACKOFF_OPTIONS = {
+	initialDelay: 500,
+	maxDelay: 10_000,
+	multiplier: 1.3,
+	maxRetries: Infinity,
+} as const
+</code></pre>
+<p>The first retry waits 500 milliseconds. Each later delay multiplies by 1.3. The delay stops growing at 10,000 milliseconds. <code>maxRetries: Infinity</code> means the retry loop never exhausts its own retry budget. This design treats a dropped long poll as routine. A request that fails once is retried for as long as the page stays open. The error handler can still stop the stream on a 404 or when retry is disabled. The tracker counts responses, not retry attempts. Each failed response records one error before the delay starts. Three failed responses in a row therefore reach the threshold, although the stream keeps retrying.</p>
+<p><code>AccessTokenUnavailableError</code> is defined in the same file (<code>packages/sync/src/sync-config.ts:20-25</code>). The async authorization header throws it when the token fetcher fails. The error handler uses the type to separate auth lifecycle from real sync faults.</p>
+<h2>The Electric collection adapter</h2>
+<p><code>createElectricCollection</code> is the shared adapter for every app. It accepts a schema, a collection name, the sync origin, the route version, and the route path. It also accepts an optional tracker, headers, the retry policy, a logger, an optional error reporter, an auth-unavailable predicate, and an optional key function (<code>packages/sync/src/electric-collection.ts:16-29</code>).</p>
+<p>The adapter builds <code>shapeOptions</code>. The URL comes from <code>buildElectricSyncUrl</code>. A subset is an additional filter and row window that a live query asks the collection to load beyond the shape's own filter. The browser cannot put that request in the shape Uniform Resource Locator (URL), because the live query chooses it at run time. Subsets therefore use <code>subsetMethod: 'POST'</code>: the collection sends the filter, its parameters, the sort, and the limit in a JSON body, and the proxy merges them into the upstream shape request (<code>apps/riptide-electric-proxy/src/lib/effect/electric-proxy.service.ts:33-69</code>). The adapter installs the error handler. It also installs the default backoff. When a tracker is present, the adapter wraps the global <code>fetch</code> in <code>createTrackedFetchClient</code>.</p>
+<pre><code class="language-ts">// packages/sync/src/electric-collection.ts:31-57
+export function createElectricCollection&lt;TSchema extends StandardSchema&lt;object&gt;&gt;(
+	options: ElectricCollectionOptions&lt;TSchema&gt;,
+): Collection&lt;InferSchemaOutput&lt;TSchema&gt;, string | number&gt; {
+	const getKey = options.getKey ?? defaultCollectionKey
+	const shapeOptions: {
+		url: string
+		subsetMethod: &#x27;POST&#x27;
+		headers: ElectricCollectionOptions&lt;TSchema&gt;[&#x27;headers&#x27;]
+		onError: ReturnType&lt;typeof createElectricSyncErrorHandler&gt;
+		backoffOptions: typeof DEFAULT_BACKOFF_OPTIONS
+		fetchClient?: typeof fetch
+	} = {
+		url: buildElectricSyncUrl(options.syncOrigin, options.syncVersion, options.routePath),
+		subsetMethod: &#x27;POST&#x27;,
+		headers: options.headers,
+		onError: createElectricSyncErrorHandler({
+			collectionName: options.collectionName,
+			shouldRetryOnFailure: options.shouldRetryOnFailure,
+			logger: options.logger,
+			captureException: options.captureException,
+			isAuthUnavailableError: options.isAuthUnavailableError,
+		}),
+		backoffOptions: DEFAULT_BACKOFF_OPTIONS,
+	}
+	if (options.tracker !== undefined) {
+		shapeOptions.fetchClient = createTrackedFetchClient(options.tracker, options.collectionName) as typeof fetch
+	}
+</code></pre>
+<p>The final call sets <code>autoIndex: 'eager'</code>, <code>defaultIndexType: BasicIndex</code>, <code>getKey</code>, and <code>syncMode: 'on-demand'</code> (<code>packages/sync/src/electric-collection.ts:62-70</code>). Two matter here. <code>getKey</code> defaults to <code>defaultCollectionKey</code>, which parses the row with a Zod object that requires a string <code>id</code>. A row without a string <code>id</code> throws <code>TypeError('Collection rows without a string id must provide getKey')</code> (<code>packages/sync/src/collection-key.ts:11-19</code>). <code>syncMode: 'on-demand'</code> means the collection syncs only while a subscriber exists. A mounted live query is the subscriber. When the last subscriber unmounts, the stream stops, which creates the recovery problem described below.</p>
+<p>Two <code>as never</code> casts follow the excerpt at the collection construction call. A comment explains that <code>electricCollectionOptions</code> loses the caller's Standard Schema type through its invariant callback. The casts keep the precise row type inside the adapter and return it to consumers (<code>packages/sync/src/electric-collection.ts:59-71</code>).</p>
+<h2>The browser layer: token, cache, and identity</h2>
+<p><code>createBrowserElectricCollection</code> is the browser-specific shell. Its configuration adds an optional <code>routeVersion</code>, row indexes, and a key function (<code>packages/sync/src/collection-builder-types.ts:18-25</code>). Its dependencies carry the sync origin, a token fetcher, the retry flag, the tracker, the version, a logger, and an error reporter (<code>packages/sync/src/collection-builder-types.ts:27-35</code>).</p>
+<p>The authorization header is an async function, not a string, so each request calls the token fetcher again.</p>
+<pre><code class="language-ts">// packages/sync/src/browser-electric-collection.ts:12-34
+	const create = (deps: BrowserCollectionDeps) =&gt; {
+		const collection = createElectricCollection({
+			schema: config.schema,
+			collectionName: config.collectionName,
+			syncOrigin: deps.syncOrigin,
+			syncVersion: config.routeVersion ?? deps.syncVersion,
+			routePath: config.routePath,
+			tracker: deps.tracker,
+			headers: {
+				Authorization: async () =&gt; {
+					try {
+						return `Bearer ${await deps.tokenFetcher()}`
+					} catch (e) {
+						throw new AccessTokenUnavailableError(&#x27;Failed to fetch access token&#x27;, { cause: e })
+					}
+				},
+			},
+			shouldRetryOnFailure: deps.shouldRetryOnFailure,
+			logger: deps.logger,
+			captureException: deps.captureException,
+			isAuthUnavailableError: (e) =&gt; e instanceof AccessTokenUnavailableError,
+			getKey: config.getKey,
+		})
+</code></pre>
+<p>The header returns <code>Bearer &lt;token&gt;</code>. If the token fetcher throws, the header throws <code>AccessTokenUnavailableError</code> and keeps the original cause. The adapter passes <code>isAuthUnavailableError</code> as a predicate on that class. A token refresh can therefore recover a request without a reload.</p>
+<p>After creation, the builder adds any declared indexes. It then calls <code>attachElectricKeepAlive</code>. That call connects the collection to the tracker, so a collection that degrades keeps a no-op subscriber. The reason is in the comment. An on-demand collection stops syncing when the UI swaps away from it. No Electric success would then arrive to trigger recovery (<code>packages/sync/src/browser-electric-collection.ts:40-42</code> and <code>packages/sync/src/electric-keep-alive.ts:26-39</code>).</p>
+<p>The returned <code>get</code> function takes the user identifier, the organization identifier, a dependencies object, and the loading flag. It owns cache identity and cleanup.</p>
+<pre><code class="language-ts">// packages/sync/src/browser-electric-collection.ts:64-88
+			const collection = cache.get(`${userId}:${organizationId}:v${deps.syncVersion}`, deps, {
+				skipCache: isLoading,
+			})
+
+			// Cleanup all previous collections that aren&#x27;t the one we&#x27;re returning
+			for (const prev of activeCollections) {
+				if (prev !== collection) {
+					deps.logger.info(`Cleaning up previous ${config.collectionName} collection`)
+					prev.cleanup()
+					activeCollections.delete(prev)
+				}
+			}
+
+			// Track and log if this is a new collection
+			if (!activeCollections.has(collection)) {
+				deps.logger.info(`Collection ${config.collectionName} started syncing`, {
+					userId,
+					organizationId,
+					isLoading,
+					shouldRetryOnFailure: deps.shouldRetryOnFailure,
+				})
+				activeCollections.add(collection)
+			}
+
+			return collection
+</code></pre>
+<p>The cache key is <code>${userId}:${organizationId}:v${deps.syncVersion}</code>. Each builder creates its own cache, so the key does not need the collection name. A change of user, organization, or organization-wide sync version therefore creates a new collection. <code>skipCache</code> does not bypass an existing key: <code>get</code> returns an existing entry first (<code>packages/sync/src/collection-cache.ts:35-36</code>). On a miss it creates the collection but does not store it, so an unauthenticated instance is never reused (<code>packages/sync/src/collection-cache.ts:47-49</code>). A pinned route version is static, so it does not need to appear in the key. <code>activeCollections</code> is a set held by this builder. It holds every instance that the builder has returned. The code then walks every instance in that set and cleans up each one that is not the returned collection. This is the guard against showing one organization's rows to another organization. When <code>isLoading</code> is true, the cache write is skipped; an existing key is still returned. A token-less collection is not stored under the real key.</p>
+<p>The cache itself holds a <code>Map</code>, creates on a miss, and listens for <code>status:change</code>. A collection that reports <code>cleaned-up</code> deletes its own key (<code>packages/sync/src/collection-cache.ts:35-52</code>). The listener closes over the cache key, so it can delete the right entry. <code>destroy</code> calls <code>cleanup()</code> and lets that listener evict the entry (<code>packages/sync/src/collection-cache.ts:59-64</code>).</p>
+<p>Each builder fixes the route path, the collection name, and the indexes. The provider supplies the identity and the version.</p>
+<table><tr><th>Collection name</th><th>Route path</th><th>Route version</th></tr><tr><td><code>approvals</code></td><td><code>/approvals</code></td><td>Organization version</td></tr><tr><td><code>artifactComments</code></td><td><code>/artifact-comments</code></td><td>Organization version</td></tr><tr><td><code>artifacts</code></td><td><code>/artifacts</code></td><td>Organization version</td></tr><tr><td><code>artifactsMetadata</code></td><td><code>/artifacts/metadata</code></td><td>Organization version</td></tr><tr><td><code>conversationEvents</code></td><td><code>/events</code></td><td>Organization version</td></tr><tr><td><code>diffComments</code></td><td><code>/diff-comments</code></td><td>Organization version</td></tr><tr><td><code>onlineHosts</code></td><td><code>/hosts</code></td><td>3</td></tr><tr><td><code>providerLoginRequests</code></td><td><code>/provider-login-requests</code></td><td>Organization version</td></tr><tr><td><code>queuedMessages</code></td><td><code>/queued-messages</code></td><td>Organization version</td></tr><tr><td><code>sessions</code></td><td><code>/sessions</code></td><td>Organization version</td></tr><tr><td><code>taskOrganizationAcls</code></td><td><code>/task-organization-acls</code></td><td>Organization version</td></tr><tr><td><code>taskUserAcls</code></td><td><code>/task-user-acls</code></td><td>Organization version</td></tr><tr><td><code>taskUserSettings</code></td><td><code>/task-user-settings</code></td><td>Organization version</td></tr><tr><td><code>workspaceSetup</code></td><td><code>/task-workspace-setup-for-host</code></td><td>Organization version</td></tr><tr><td><code>tasks</code></td><td><code>/tasks</code></td><td>Organization version</td></tr><tr><td><code>agentSlashCommands</code></td><td><code>/agent-slash-commands</code></td><td>3</td></tr></table>
+<p>Two builders use an explicit key function because their rows have no single <code>id</code> column. <code>onlineHosts</code> keys on the host, organization, and user tuple (<code>apps/riptide-ui/src/collections/online-host-key.ts:3-5</code>). <code>agentSlashCommands</code> keys on the organization, user, host, agent, and workspace path tuple (<code>apps/riptide-ui/src/collections/agent-slash-commands-key.ts:3-7</code>). Every other builder accepts the default <code>id</code> key.</p>
+<h2>The health tracker state machine</h2>
+<p><code>CollectionHealthTracker</code> is a per-collection state machine. Each entry holds a mode, a success counter, an error counter, a forced mode, and two offline flags (<code>packages/sync/src/health-tracker.ts:14-21</code>). The constructor registers each collection name in electric mode. The thresholds default to <code>RECOVERY_SUCCESS_THRESHOLD</code> and <code>DEGRADE_ERROR_THRESHOLD</code> (<code>packages/sync/src/health-tracker.ts:48-71</code>).</p>
+<p>The default degrade threshold is 3. One transient long-poll drop must not flip the UI to slow polling. A comment records this reason and the tracking identifier CORE-1326 (<code>packages/sync/src/constants.ts:7-12</code>). The recovery threshold is also 3 (<code>packages/sync/src/constants.ts:1-5</code>).</p>
+<p>An Electric error advances the error streak and clears recovery progress.</p>
+<pre><code class="language-ts">// packages/sync/src/health-tracker.ts:110-132
+	recordElectricError(name: string): void {
+		const state = this.getState(name)
+		// Any error resets recovery progress and advances the error streak.
+		state.consecutiveSuccesses = 0
+		state.consecutiveErrors += 1
+
+		// Tolerate transient errors below the threshold — stay in the current mode.
+		if (state.consecutiveErrors &lt; this.errorThreshold) {
+			return
+		}
+
+		const wasOffline = this.isOffline(name)
+		state.electricOffline = true
+
+		if (state.forcedMode === &#x27;auto&#x27;) {
+			this.setMode(name, &#x27;query&#x27;)
+		}
+
+		const isNowOffline = this.isOffline(name)
+		if (wasOffline !== isNowOffline) {
+			this.emitOfflineChange(name, isNowOffline)
+		}
+	}
+</code></pre>
+<p>Below the threshold, the method returns and the mode does not change. At the threshold, the method marks Electric offline. If the collection is in automatic mode, it moves to query. It emits an offline change only when the combined offline state changes. A forced mode blocks the automatic move, but the offline flag still updates.</p>
+<p>A success clears the error streak and can count toward recovery.</p>
+<pre><code class="language-ts">// packages/sync/src/health-tracker.ts:147-163
+		if (state.forcedMode === &#x27;auto&#x27; &amp;&amp; state.mode === &#x27;query&#x27;) {
+			state.consecutiveSuccesses += 1
+			this.logger.debug(
+				{
+					collection: name,
+					consecutiveSuccesses: state.consecutiveSuccesses,
+					threshold: this.recoveryThreshold,
+				},
+				&#x27;Electric recovery progress&#x27;,
+			)
+			if (state.consecutiveSuccesses &gt;= this.recoveryThreshold) {
+				state.consecutiveSuccesses = 0
+				this.setMode(name, &#x27;electric&#x27;)
+			}
+		} else {
+			state.consecutiveSuccesses = 0
+		}
+</code></pre>
+<p><code>recordElectricSuccess(name)</code> first reads the previous offline state. It then sets <code>electricOffline</code> to false and clears <code>consecutiveErrors</code> (<code>packages/sync/src/health-tracker.ts:138-145</code>). When the collection is in query mode and automatic, it increments the success counter. At three successes it resets the counter and moves to electric. If the collection is already in electric mode, or is forced, it resets the counter instead. Any error during recovery resets the success streak, because <code>recordElectricError</code> sets <code>consecutiveSuccesses</code> to zero. One success clears <code>electricOffline</code> while the mode stays query until three successes. The offline banner can therefore disappear before the user interface leaves the polling fallback. That is intended: the banner reports transport availability, not the active mode.</p>
+<p>The query path has its own two methods. <code>recordQueryError</code> sets <code>queryOffline</code>. <code>recordQuerySuccess</code> clears it. Both emit an offline change only when the combined result changes (<code>packages/sync/src/health-tracker.ts:174-195</code>). The query side has no threshold. One query error marks that transport offline, and one success clears it. A long-poll connection drops routinely, so Electric needs a threshold. A poll either returns a complete answer or an error, so one result is enough.</p>
+<p>A collection is offline only when both transports fail. <code>isOffline</code> returns <code>state.electricOffline &amp;&amp; state.queryOffline</code> (<code>packages/sync/src/health-tracker.ts:224-227</code>).</p>
+<p>This conjunction is the key rule. Neither failure alone is offline, because the other path may still work. Only the loss of both paths produces the banner.</p>
+<p><code>getMode</code> returns the forced mode when the forced mode is not <code>auto</code>, else the automatic mode (<code>packages/sync/src/health-tracker.ts:200-206</code>). A forced mode is <code>electric</code>, <code>query</code>, or <code>auto</code>. Forcing changes the mode that <code>getMode</code> returns. It does not change either offline flag, so the banner still reports real transport health. <code>forceMode</code> and <code>forceAllMode</code> set or clear that override (<code>packages/sync/src/health-tracker.ts:251-270</code>). <code>addCollection</code> registers a collection created later, such as a per-task artifact collection (<code>packages/sync/src/health-tracker.ts:277-289</code>). <code>onChange</code> and <code>onOfflineChange</code> return unsubscribe functions (<code>packages/sync/src/health-tracker.ts:295-311</code>).</p>
+<div class="mermaid">
+stateDiagram-v2
+    [*] --&gt; electric
+    electric --&gt; electric: success clears error streak
+    electric --&gt; query: 3 consecutive Electric errors
+    query --&gt; query: error resets success streak
+    query --&gt; electric: 3 consecutive Electric successes
+    note right of query
+        offline = electricOffline AND queryOffline
+        It is a separate flag pair, not a mode.
+        forcedMode auto is required for moves.
+    end note
+
+</div>
+<p>The tracker caches <code>getAllModes()</code> and the offline name list. A mode change clears the cached modes, and an offline change recomputes the cached list (<code>packages/sync/src/health-tracker.ts:81-91</code>). The getter and the compute helper keep referential stability, because <code>useSyncExternalStore</code> requires it (<code>packages/sync/src/health-tracker.ts:229-245</code>). Without the cache, every render would receive a new array and could loop.</p>
+<h2>Degradation and recovery, step by step</h2>
+<p>The cycle crosses four components: the browser collection, the tracked fetch, the tracker, and the provider.</p>
+<div class="mermaid">
+sequenceDiagram
+    participant E as Electric shape stream
+    participant B as Browser collection
+    participant T as CollectionHealthTracker
+    participant P as SyncProvider
+    participant Q as Query collection
+    E-&gt;&gt;B: 503 response
+    B-&gt;&gt;T: recordElectricError (1 of 3)
+    E-&gt;&gt;B: 503 response
+    B-&gt;&gt;T: recordElectricError (2 of 3)
+    E-&gt;&gt;B: 503 response
+    B-&gt;&gt;T: recordElectricError (3 of 3)
+    T--&gt;&gt;P: onChange -&gt; query
+    P-&gt;&gt;Q: create and subscribe lazily
+    P-&gt;&gt;E: keep-alive no-op subscription
+    Q-&gt;&gt;Q: poll on a 2 to 10 second timer
+    E-&gt;&gt;B: 200 response
+    B-&gt;&gt;T: recordElectricSuccess (1 of 3)
+    E-&gt;&gt;B: 200 response
+    B-&gt;&gt;T: recordElectricSuccess (2 of 3)
+    E-&gt;&gt;B: 200 response
+    B-&gt;&gt;T: recordElectricSuccess (3 of 3)
+    T--&gt;&gt;P: onChange -&gt; electric
+    P-&gt;&gt;Q: destroy after 1 second
+    P-&gt;&gt;E: release keep-alive
+
+</div>
+<p><code>attachElectricKeepAlive</code> takes the collection, the tracker, and the collection name. It reads the current mode, then subscribes to <code>onChange</code>. It returns a teardown function, and the no-op <code>subscribeChanges</code> takes a listener that ignores every change. When the provider swaps to the query collection, nothing else subscribes to the Electric collection. In <code>on-demand</code> mode, that stops the shape stream. If the stream stops, no success can reach the tracker, and the recovery threshold can never be met. The collection would stay on stale data until a reload. <code>attachElectricKeepAlive</code> holds a no-op <code>subscribeChanges</code> while the mode is query, then releases it on recovery. The tracker observes responses, not timer ticks. The no-op subscription keeps requests flowing, so a recovered upstream produces the three successes the threshold requires. The function also tears down on <code>status:change</code> with <code>cleaned-up</code>, so it cannot outlive the collection (<code>packages/sync/src/electric-keep-alive.ts:75-119</code>).</p>
+<h2>What counts as an Electric failure</h2>
+<p><code>createTrackedFetchClient</code> wraps the global fetch. It records an error for a response at or above 500. It records a success for any <code>response.ok</code> result. It ignores every other status. It also records an error only for a thrown <code>TypeError</code>, which is what the fetch standard uses for a network failure. Other thrown values, including <code>AbortError</code>, are rethrown without a tracker event.</p>
+<pre><code class="language-ts">// packages/sync/src/tracked-fetch.ts:35-58
+	return async (input: Request | string | URL, init?: RequestInit): Promise&lt;Response&gt; =&gt; {
+		try {
+			const response = await fetch(input, init)
+
+			if (response.status &gt;= 500) {
+				logger?.warn({ status: response.status, collectionName }, &#x27;Electric fetch 5XX&#x27;)
+				tracker.recordElectricError(collectionName)
+			} else if (response.ok) {
+				tracker.recordElectricSuccess(collectionName)
+			}
+
+			return response
+		} catch (err) {
+			// Only treat real network errors as Electric failures. fetch() throws
+			// TypeError for genuine network issues (DNS failure, connection refused).
+			// Everything else — AbortError, raw strings thrown by Electric&#x27;s internal
+			// fetch wrappers during abort/reconnection cycles — should be ignored.
+			if (err instanceof TypeError) {
+				logger?.warn({ collectionName, error: (err as Error).message }, &#x27;Electric fetch network error&#x27;)
+				tracker.recordElectricError(collectionName)
+			}
+
+			throw err
+		}
+</code></pre>
+<p>A 1XX, 3XX, or 4XX response is not an Electric outage. A 401 or 403 is an auth lifecycle event, and the error handler manages it. Counting those statuses as failures would degrade the UI during a normal token refresh. The comment also explains the retry environment: Electric wraps the fetch in an infinite-backoff loop, so individual attempts fail and recover constantly (<code>packages/sync/src/tracked-fetch.ts:17-21</code>).</p>
+<table><tr><th>Fetch outcome</th><th>Tracker action</th><th>Reason</th></tr><tr><td>5XX response</td><td><code>recordElectricError</code></td><td>The upstream service is failing.</td></tr><tr><td>2XX response</td><td><code>recordElectricSuccess</code></td><td>The stream is healthy.</td></tr><tr><td>1XX, 3XX, 4XX response</td><td>none</td><td>These are not Electric outages; auth is handled elsewhere.</td></tr><tr><td>Thrown <code>TypeError</code></td><td><code>recordElectricError</code></td><td>The network failed.</td></tr><tr><td>Any other thrown value</td><td>none</td><td>Aborts and internal wrapper errors are expected churn.</td></tr></table>
+<h2>The error handler: status by status</h2>
+<p>The Electric error handler returns a value to Electric. <code>{}</code> tells Electric to retry or re-sync. <code>undefined</code> tells Electric to stop the shape stream. Most branches retry; the 404 and retry-denied branches stop on purpose. The handler's <code>tags</code> object carries <code>sync.mode</code> and <code>sync.collection</code>.</p>
+<pre><code class="language-ts">// packages/sync/src/sync-error-handler.ts:147-174
+		// Electric&#x27;s FetchError carries the shape URL on `.url` even when the message
+		// is a bare network string like &quot;Load failed&quot; / &quot;Failed to fetch&quot;.
+		const url = isFetchError(error) ? error.url : undefined
+
+		if (isFetchError(error)) {
+			if (error.status === 401 || error.status === 403) {
+				opts.logger.info(`Auth error (${error.status}) syncing ${opts.collectionName}; retrying after delay`)
+				await new Promise((resolve) =&gt;
+					setTimeout(resolve, opts.authErrorRetryDelayMs ?? AUTH_ERROR_RETRY_DELAY_MS),
+				)
+				return {}
+			}
+			if (error.status === 404) {
+				opts.logger.error(`Sync endpoint not found for ${opts.collectionName} (url: ${url}); stopping sync.`)
+				opts.captureException?.(error, { tags })
+				return
+			}
+			if (error.status === 409) {
+				return {}
+			}
+		}
+
+		opts.logger.error(`Error syncing ${opts.collectionName} (url: ${url ?? &#x27;unknown&#x27;}):`, error)
+		opts.captureException?.(error, { tags })
+		if (opts.shouldRetryOnFailure) {
+			return {}
+		}
+	}
+</code></pre>
+<p>The handler reads the shape URL from the error when the error is a duck-typed <code>FetchError</code>. It cannot use <code>instanceof</code>, because Vite may bundle a separate copy of the Electric client. The duck-type check uses an Effect schema (<code>packages/sync/src/sync-error-handler.ts:19-21</code>). <code>authErrorRetryDelayMs</code> is an optional override for the 2,000 millisecond wait.</p>
+<p>The auth-unavailable branch runs before the status branches. After initial load, it writes a warning on every occurrence and a console error only once. It then waits 2,000 milliseconds and returns <code>{}</code>. During initial load it logs and returns <code>undefined</code>. The handler uses <code>shouldRetryOnFailure</code> as the after-load switch. The provider sets it to <code>!isLoading</code>. The constant is <code>AUTH_ERROR_RETRY_DELAY_MS = 2_000</code> (<code>packages/sync/src/sync-error-handler.ts:75</code>). The reason for the split is that a collection created during load is recreated when <code>isLoading</code> becomes false. That new collection gets a fresh header and a fresh token fetch.</p>
+<table><tr><th>Condition</th><th>Delay</th><th>Return</th><th>Effect</th></tr><tr><td>Auth token unavailable, after load</td><td>2,000 ms</td><td><code>{}</code></td><td>Retry with a fresh token fetch.</td></tr><tr><td>Auth token unavailable, during load</td><td>none</td><td><code>undefined</code></td><td>Stop; the provider recreates the collection after load.</td></tr><tr><td>401 or 403</td><td>2,000 ms</td><td><code>{}</code></td><td>Retry after a likely refresh.</td></tr><tr><td>404</td><td>none</td><td><code>undefined</code></td><td>Stop; the route is wrong.</td></tr><tr><td>409</td><td>none</td><td><code>{}</code></td><td>Electric control flow; re-sync now.</td></tr><tr><td>Unknown error, retry allowed</td><td>none</td><td><code>{}</code></td><td>Retry.</td></tr><tr><td>Unknown error, retry denied</td><td>none</td><td><code>undefined</code></td><td>Stop.</td></tr></table>
+<p>The 404 branch reports to the error reporter, which is Sentry. The 401 and 403 branches do not report, because they are expected auth churn. The unknown branch reports and then obeys <code>shouldRetryOnFailure</code>. The query error handler, <code>createQuerySyncErrorHandler</code>, uses the same auth-lifecycle filter and tags every other error with <code>sync.mode</code> and <code>sync.collection</code> (<code>packages/sync/src/sync-error-handler.ts:56-73</code>).</p>
+<h2>The query fallback</h2>
+<p><code>createQueryCollection</code> builds a TanStack DB collection over a TanStack Query cache. The options include the API procedure call, the row schema, the tracker, the query client, bigint fields, indexes, a refetch interval, and optional pagination (<code>packages/sync/src/query-collection.ts:18-33</code>). The builder also supplies any extra procedure input and an error callback.</p>
+<pre><code class="language-ts">// packages/sync/src/query-collection.ts:48-75
+	const collection = createCollection(
+		queryCollectionOptions({
+			id: options.id,
+			queryKey: options.queryKey,
+			queryFn: createSyncQueryFn(
+				options.procedure,
+				options.input,
+				options.tracker,
+				options.collectionName,
+				onError,
+				options.pagination,
+			),
+			select: (data): Row[] =&gt; {
+				const rows = QueryResultRowsSchema.parse(data.rows)
+				const coercedRows = options.bigIntFields?.length
+					? coerceBigIntFields(rows, options.bigIntFields.map(String))
+					: rows
+				return options.rowSchema.array().parse(coercedRows)
+			},
+			queryClient: options.queryClient,
+			autoIndex: &#x27;eager&#x27;,
+			defaultIndexType: BasicIndex,
+			getKey,
+			syncMode: &#x27;on-demand&#x27;,
+			refetchInterval: options.refetchInterval,
+			retry: false,
+		}),
+	)
+</code></pre>
+<p>The <code>select</code> function runs three steps. It parses <code>data.rows</code> with a generic record array schema. It converts configured bigint fields. It parses the result with the precise row schema. The collection sets <code>retry: false</code>, because the tracker records every failure and the polling interval supplies the retry. <code>refetchInterval</code> comes from the caller and defaults to the per-collection table in <code>constants.ts</code>.</p>
+<p>A live query is a TanStack DB query that runs in the browser and declares the row subset it needs: a filter, a sort, and a limit. <code>loadSubsetOptions</code> is the object that carries those three demands to the collection. <code>Standard Schema</code> is a common validation interface that schema libraries such as Zod implement; the adapter's generic constraint uses it so any such library can supply the row schema (<code>packages/sync/src/electric-collection.ts:31-33</code>).</p>
+<p>The filter wire format is <code>SyncWhereExpression</code>. It has four node types: comparison, and, or, and not. <code>loadSubsetOptions</code> is the TanStack DB description of the rows a live query needs: filter, sort, and limit. A comparison node carries a field, an operator, and a value. The group nodes carry child expressions. <code>intermediateRepresentationToWhereExpression</code> converts the TanStack DB intermediate representation into that format (<code>packages/sync/src/sync-query-helpers.ts:37-132</code>). It handles <code>eq</code>, <code>gt</code>, <code>gte</code>, <code>lt</code>, <code>lte</code>, <code>in</code>, <code>like</code>, <code>ilike</code>, <code>isNull</code>, and <code>isUndefined</code>. It collapses an <code>and</code> or <code>or</code> with one child, drops null children, and returns null for an empty group. A <code>not</code> around a comparison becomes a <code>not_&lt;operator&gt;</code> comparison. An unknown operator returns null and is silently dropped. The resulting filter is wider than the live query asked for, because the missing condition is not replaced. <code>irToSorts</code> converts order clauses to field, direction, and null ordering (<code>packages/sync/src/sync-query-helpers.ts:137-147</code>).</p>
+<p>Bigint values need explicit repair. The API process installs <code>BigInt.prototype.toJSON = () =&gt; this.toString()</code>, so a bigint column arrives as a string such as <code>"1771621345994"</code>. Electric handles this itself. The query path does not.</p>
+<pre><code class="language-ts">// packages/sync/src/sync-query-helpers.ts:188-199
+export function coerceBigIntFields&lt;T extends Record&lt;string, unknown&gt;&gt;(rows: T[], fields: (keyof T)[]): T[] {
+	return rows.map((row) =&gt; {
+		const coerced = { ...row }
+		for (const field of fields) {
+			const val = coerced[field]
+			if (typeof val === &#x27;string&#x27; &amp;&amp; val !== &#x27;&#x27;) {
+				;(coerced as Record&lt;string, unknown&gt;)[field as string] = BigInt(val)
+			}
+		}
+		return coerced
+	})
+}
+</code></pre>
+<p>The coercion copies each row and replaces non-empty strings with <code>BigInt</code> values. The row schema then validates the result. The Drizzle schema declares those columns as bigint, so the browser row must hold a <code>BigInt</code> and not a string.</p>
+<p>Paging is the last helper. A server caps one response at 10,000 rows. The artifact metadata collection requests that page size and declares a stable sort by <code>id</code> (<code>apps/riptide-ui/src/collections/query/artifacts-metadata.ts:9</code> and <code>apps/riptide-ui/src/collections/query/artifacts-metadata.ts:20-23</code>). The helper fetches additional pages while the last page is full.</p>
+<pre><code class="language-ts">// packages/sync/src/sync-query-helpers.ts:220-236
+async function fetchAllPages&lt;T extends { rows: unknown[] }&gt;(
+	apiFn: (input: Record&lt;string, unknown&gt;) =&gt; Promise&lt;T&gt;,
+	input: Record&lt;string, unknown&gt;,
+	pagination: SyncQueryPagination,
+): Promise&lt;T&gt; {
+	if (!Number.isSafeInteger(pagination.pageSize) || pagination.pageSize &lt;= 0) {
+		throw new Error(&#x27;Sync query pagination pageSize must be a positive safe integer&#x27;)
+	}
+
+	const rows: unknown[] = []
+	for (let offset = 0; ; ) {
+		const page = await apiFn({ ...input, limit: pagination.pageSize, offset })
+		rows.push(...page.rows)
+		if (page.rows.length &lt; pagination.pageSize) return { ...page, rows }
+		offset += page.rows.length
+	}
+}
+</code></pre>
+<p><code>fetchAllPages</code> rejects a page size that is not a positive safe integer. It then loops with <code>limit</code> and <code>offset</code>, appends each page, and stops when a page is shorter than the page size. The loop trusts the procedure to honor <code>offset</code>. A procedure that ignored <code>offset</code> and always returned a full page would loop forever. The helper has no page-count guard. The test at <code>packages/sync/test/sync-query-helpers.test.ts:417-449</code> proves the behavior with 10,001 rows in two calls.</p>
+<p><code>createSyncQueryFn</code> is the wrapper around every poll (<code>packages/sync/src/sync-query-helpers.ts:238-269</code>). It reads <code>ctx.meta.loadSubsetOptions</code>, converts the filter and sorts, and adds the configured stable sorts, such as <code>id</code>, when the live query did not supply them, and calls the procedure. It records a query success or a query error on the tracker. It calls the error handler and rethrows. <code>onError</code> receives the thrown value after the tracker records the failure. The function then rethrows, so the query client sees the error. Paging runs only when pagination is configured and the caller did not ask for a limit. A caller limit is passed through unchanged.</p>
+<h2>Constants: thresholds and intervals</h2>
+<p>All tunable values live in one file.</p>
+<pre><code class="language-ts">// packages/sync/src/constants.ts:43-58
+export const REFETCH_INTERVALS: Record&lt;CollectionName, number&gt; = {
+	conversationEvents: 4_000,
+	approvals: 10_000,
+	artifactComments: 10_000,
+	diffComments: 10_000,
+	sessions: 10_000,
+	artifacts: 10_000,
+	artifactsMetadata: 10_000,
+	tasks: 10_000,
+	onlineHosts: 10_000,
+	providerLoginRequests: 2_000,
+	queuedMessages: 10_000,
+	taskOrganizationAcls: 10_000,
+	taskUserAcls: 10_000,
+	taskUserSettings: 10_000,
+	workspaceSetup: 10_000,
+</code></pre>
+<p>The intervals express urgency. Conversation events change quickly, so they poll every 4 seconds. Provider login requests are short-lived, so they poll every 2 seconds. Every other collection polls every 10 seconds. There is no entry for <code>agentSlashCommands</code>; the provider builds no query collection for it.</p>
+<table><tr><th>Constant</th><th>Value</th><th>Meaning</th></tr><tr><td><code>DEGRADE_ERROR_THRESHOLD</code></td><td>3</td><td>Consecutive Electric errors before query mode.</td></tr><tr><td><code>RECOVERY_SUCCESS_THRESHOLD</code></td><td>3</td><td>Consecutive Electric successes before electric mode.</td></tr><tr><td><code>AWAIT_TX_TIMEOUT</code></td><td>10,000 ms</td><td>Maximum wait for a transaction identifier after a write.</td></tr><tr><td><code>conversationEvents</code> refetch</td><td>4,000 ms</td><td>Query-mode poll interval.</td></tr><tr><td><code>providerLoginRequests</code> refetch</td><td>2,000 ms</td><td>Query-mode poll interval.</td></tr><tr><td>All other collections</td><td>10,000 ms</td><td>Query-mode poll interval.</td></tr><tr><td>Electric initial backoff</td><td>500 ms</td><td>First retry delay.</td></tr><tr><td>Electric backoff multiplier</td><td>1.3</td><td>Growth factor per retry.</td></tr><tr><td>Electric maximum backoff</td><td>10,000 ms</td><td>Delay cap.</td></tr><tr><td>Electric maximum retries</td><td>infinite</td><td>The stream never gives up.</td></tr></table>
+<p><code>AWAIT_TX_TIMEOUT</code> is used by <code>confirmTx</code>. The write procedure returns <code>pg_current_xact_id()::text</code>, the identifier of the PostgreSQL transaction that wrote the row (<code>apps/riptide-api/src/db/get-tx-id.ts:4-7</code>). Electric includes that identifier in each shape message. <code>utils.awaitTxId</code> resolves when the collection has applied a message whose transaction identifier is at or past the given value. In query mode there is no such message, so the provider triggers a refetch instead. If the identifier never arrives, the wait rejects after 10 seconds, and the caller rolls back its optimistic row and restores the draft (<code>apps/riptide-ui/src/actions/sessions.ts:878-884</code>).</p>
+<h2>The React integration</h2>
+<p><code>SyncProvider</code> is the place where all the pieces meet. The organization-wide sync version is hardcoded to 2 at <code>apps/riptide-ui/src/components/providers/SyncProvider.tsx:237</code>. Individual collections can still pin route version 3.</p>
+<p>The token fetcher gates on WorkOS auth state and organization membership. WorkOS is the identity provider, and <code>getAuthKitAccessToken</code> returns its access token.</p>
+<pre><code class="language-ts">// apps/riptide-ui/src/components/providers/SyncProvider.tsx:236-243
+	const syncForceMode = useSettingsStore((s) =&gt; s.syncForceMode)
+	const syncVersion: SyncVersion = 2
+	const getAccessToken = useCallback(() =&gt; {
+		if (isLoading || !user || !organizationId) {
+			return Promise.reject(new AccessTokenUnavailableError(&#x27;Authentication is not ready&#x27;))
+		}
+		return getAuthKitAccessToken()
+	}, [getAuthKitAccessToken, isLoading, organizationId, user])
+</code></pre>
+<p>If auth is still loading, or the user is absent, or the organization is absent, the callback rejects with <code>AccessTokenUnavailableError</code>. Otherwise it calls the WorkOS access token function. This rejection is the expected first state, not a bug. The provider installs an <code>unhandledrejection</code> listener that suppresses only this error class (<code>apps/riptide-ui/src/components/providers/SyncProvider.tsx:250-261</code>).</p>
+<p>Each Electric collection is built inside <code>useMemo</code>. The dependency list includes the user identifier, the organization identifier, the token fetcher, the loading flag, and the sync version. For example, the sessions collection is built at <code>apps/riptide-ui/src/components/providers/SyncProvider.tsx:282-284</code>. The <code>isLoading</code> argument reaches the builder twice. The collection module maps it to <code>shouldRetryOnFailure: !isLoading</code>, and the builder's <code>get</code> function uses it as the <code>skipCache</code> argument. Both uses have the same purpose. Do not retry or cache a collection that cannot authenticate yet.</p>
+<p>The provider subscribes to tracker mode changes with <code>useSyncExternalStore</code> (<code>apps/riptide-ui/src/components/providers/SyncProvider.tsx:274-278</code>). The snapshot is <code>tracker.getAllModes()</code>. The cached object in the tracker keeps the snapshot stable between real changes. The provider also reads <code>syncForceMode</code> from the settings store and applies it with <code>tracker.forceAllMode(...)</code> (<code>apps/riptide-ui/src/components/providers/SyncProvider.tsx:265-266</code>).</p>
+<p>Query collections are lazy. An effect watches the tracker. It creates a query collection when a name enters query mode. It destroys one when the name leaves query mode. The effect first creates any collection that is already degraded, because the switch may have happened before the effect ran (<code>apps/riptide-ui/src/components/providers/SyncProvider.tsx:447-451</code> and <code>apps/riptide-ui/src/components/providers/SyncProvider.tsx:760-776</code>). Creation is guarded by <code>syncAuthReady</code>.</p>
+<p><code>useSyncAuthReady</code> runs a TanStack Query request that asks for a token. It is enabled only when auth is not loading and both identifiers exist. It retries with a delay of <code>min(250 <em> 2 </em>* attempt, 2000)</code> and caches the readiness result forever (<code>apps/riptide-ui/src/hooks/use-sync-auth-ready.ts:15-29</code>). This flag separates "the token is not ready" from "the table is empty". Without the flag, the UI cannot tell those two states apart after a failed shape request.</p>
+<p>The swap is a per-name ternary. When the mode is query, the provider uses the query ref if it exists, else it falls back to the Electric collection for that render (<code>apps/riptide-ui/src/components/providers/SyncProvider.tsx:874-884</code>).</p>
+<p>The effect usually creates the query collection before the next render. If a render happens first, the UI still has a valid collection and may show stale data for one frame.</p>
+<p><code>confirmTx</code> abstracts the post-write wait.</p>
+<pre><code class="language-ts">// apps/riptide-ui/src/components/providers/SyncProvider.tsx:927-942
+	const confirmTx = useMemo(
+		() =&gt; ({
+			sessions: async (txId: string | number): Promise&lt;void&gt; =&gt; {
+				if (modes.sessions === &#x27;query&#x27; &amp;&amp; sessionsQueryRef.current) {
+					await sessionsQueryRef.current.utils.refetch()
+				} else {
+					await sessionsElectric.utils.awaitTxId(Number(txId), AWAIT_TX_TIMEOUT)
+				}
+			},
+			tasks: async (txId: string | number): Promise&lt;void&gt; =&gt; {
+				if (modes.tasks === &#x27;query&#x27; &amp;&amp; tasksQueryRef.current) {
+					await tasksQueryRef.current.utils.refetch()
+				} else {
+					await tasksElectric.utils.awaitTxId(Number(txId), AWAIT_TX_TIMEOUT)
+				}
+			},
+</code></pre>
+<p>In query mode the function calls <code>utils.refetch()</code> on the active query collection. In electric mode it calls <code>utils.awaitTxId(Number(txId), AWAIT_TX_TIMEOUT)</code>. Electric reports progress with transaction identifiers, and <code>awaitTxId</code> resolves when the stream has applied the given identifier. The 10-second timeout bounds the wait. The same pattern repeats for every collection in the object. Callers receive <code>txId</code> from the write that created the row. The dependency list includes every mode and every Electric collection, so the closures always see the current objects.</p>
+<p><code>deferredDestroyQueryCollection</code> delays destruction by 1,000 milliseconds (<code>apps/riptide-ui/src/components/providers/SyncProvider.tsx:119-137</code>). It also cancels and removes the matching <code>['sync', collectionName]</code> queries. The delay prevents a fast degrade-recover cycle from destroying a collection that a component is still reading.</p>
+<h3>The tracker singleton and the offline banner</h3>
+<p>The application creates one tracker at module scope. Its collection list comes from the keys of <code>REFETCH_INTERVALS</code>, plus <code>agentSlashCommands</code> (<code>apps/riptide-ui/src/services/tracker.ts:11-13</code>). The fifteen interval names each have a query collection in the provider. <code>agentSlashCommands</code> is added separately and has no query collection, so its tracker mode has no consumer in this provider. If its Electric stream fails, no polling path replaces it: the rows stay stale, and the offline banner shows the collection only when its query path also reports failure, which it never does without a query collection.</p>
+<p><code>SyncOfflineBanner</code> subscribes to the tracker offline state. It uses <code>useSyncExternalStore</code> with <code>onOfflineChange</code> and returns <code>getOfflineCollections()</code> as the snapshot (<code>apps/riptide-ui/src/components/SyncOfflineBanner.tsx:23-30</code>).</p>
+<p>When the list is empty, the component renders nothing. Otherwise it renders an alert. The text names the single collection or gives the count. The action "View diagnostics" navigates to the sync settings route. Because the list changes only when the conjunction of both failures changes, the banner does not flicker during a single transport outage.</p>
+<h2>Next</h2>
+<p>Read <a href="06-electric-proxy.html">The Electric proxy</a> to see the server side of every shape request. The proxy adds the tenant filter that makes these collections safe. Read <a href="09-write-paths-and-idempotency.html">Write paths and idempotency</a> for the write half of <code>confirmTx</code>. Read <a href="10-ui-application.html">The user interface application</a> for the React application that hosts this provider.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

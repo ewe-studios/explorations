@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The Electric proxy: authentication, tenancy, and access filters -- humanlayer</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/humanlayer/docs</span>
+    <div class="nav-actions">
+      <a href="03-session-lifecycle-and-state-machine.html" class="nav-breadcrumb">The session lifecycle: 13 statuses without a transition table</a><a href="04-session-sdk-and-durable-streams.html" class="nav-breadcrumb">The session SDK and the durable stream</a><a href="05-sync-engine.html" class="nav-breadcrumb">The sync engine: Electric, the health tracker, and the query fallback</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="05-sync-engine.html" class="nav-btn" title="Previous: The sync engine: Electric, the health tracker, and the query fallback">← prev</a>
+      <a href="07-api-and-contracts.html" class="nav-btn nav-btn-next" title="Next: The API and the contracts: one type spine for every client">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>The Electric proxy: authentication, tenancy, and access filters</h1>
+<p>The Electric proxy is the only component that may talk to the Electric service. It validates a user or daemon identity, computes a tenant filter, appends the upstream secret, and forwards a shape request. Clients never hold the Electric secret and never choose their own filter. This document explains the server, the two authentication paths, the version 1, version 2, and version 3 access filters, and the failure behavior. Every claim cites the source snapshot at commit <code>2f66a45b186d88488fa356862be0117db1ccae9f</code>.</p>
+<h2>Why the proxy exists</h2>
+<p>Electric exposes a shape endpoint that accepts a table name, a filter, and a secret. If a browser called Electric directly, the filter would be client-controlled. Any user could request another organization's rows by editing a query parameter. The proxy removes that option. It accepts a narrow route instead of a general query. It builds the filter on the server from the authenticated context.</p>
+<p>The proxy also owns the upstream credential. The browser sends a WorkOS access token, which is a JavaScript Object Notation (JSON) Web Token (JWT). WorkOS is the identity provider. The proxy sends the Electric secret. The two credentials never mix. A stolen browser token cannot be replayed against Electric, because Electric does not accept it.</p>
+<p>The application is a Hono server on Node.js. It has five route files and six mounts, because the stream module is mounted twice. One shared proxy service forwards every shape request.</p>
+<table><tr><th>Path</th><th>Mount</th><th>Purpose</th></tr><tr><td><code>routes/response-editor-collaboration.ts</code></td><td><code>/</code></td><td>Session collaboration before the versioned route groups.</td></tr><tr><td><code>routes/v1.ts</code></td><td><code>/v1</code></td><td>Legacy access rule with ownership and Access Control List (ACL) subqueries.</td></tr><tr><td><code>routes/v2.ts</code></td><td><code>/v2</code></td><td>Organization-scoped access plus daemon routes.</td></tr><tr><td><code>routes/v3.ts</code></td><td><code>/v3</code></td><td>New column contracts for hosts and agent slash commands.</td></tr><tr><td><code>routes/streams.ts</code></td><td><code>/streams</code></td><td>Durable Streams proxy for session events and diffs.</td></tr><tr><td><code>routes/streams.ts</code></td><td><code>/v2/streams</code></td><td>Durable Streams proxy without the session route.</td></tr></table>
+<h2>The entry point and the mandatory secret</h2>
+<p><code>index.ts</code> reads three values from the environment. <code>ELECTRIC_SHAPE_URL</code> and <code>DURABLE_STREAMS_ORIGIN</code> are required. <code>ELECTRIC_SECRET</code> is optional in development and mandatory in production.</p>
+<pre><code class="language-ts">// apps/riptide-electric-proxy/src/index.ts:30-37
+if (ELECTRIC_SECRET) {
+	logger.info(&#x27;Successfully loaded ELECTRIC_SECRET from environment&#x27;)
+} else if (process.env.NODE_ENV === &#x27;production&#x27;) {
+	logger.error(&#x27;ELECTRIC_SECRET not found in process environment in production!&#x27;)
+	throw new Error(&#x27;ELECTRIC_SECRET not found in process environment in production mode.&#x27;)
+} else {
+	logger.warn(&#x27;ELECTRIC_SECRET not found in process environment, this is ok in non-production.&#x27;)
+}
+</code></pre>
+<p>The production check throws, so the process does not start without the secret. A development start logs a warning and continues. This split lets a local stack run an unauthenticated Electric instance. When the secret is absent, the proxy appends no <code>secret</code> parameter, so the upstream Electric instance must accept requests without one. The <code>resolveProxyRuntimeEnvironment</code> function enforces the two required values and throws when either is absent (<code>apps/riptide-electric-proxy/src/runtime-environment.ts:7-17</code>).</p>
+<p>The port resolves from <code>RIPTIDE_ELECTRIC_PROXY_PORT</code>, then <code>PORT</code>, then 8888 (<code>apps/riptide-electric-proxy/src/server-port.ts:1-5</code>). The expression <code>Number(...) || 8888</code> also sends an empty, non-numeric, or zero value to 8888. The server sets <code>keepAliveTimeout = 0</code> after start (<code>apps/riptide-electric-proxy/src/index.ts:56-60</code>). This disables the Node.js idle timeout for long-lived shape responses. A long poll must not be cut by a server-side keep-alive limit.</p>
+<p>The process installs an <code>uncaughtException</code> handler. It ignores known socket teardown codes such as <code>ECONNRESET</code> and <code>UND_ERR_SOCKET</code>, and exits on anything else after flushing Sentry (<code>apps/riptide-electric-proxy/src/index.ts:62-85</code>). An upstream socket close is normal for a proxy that streams. It must not kill the task.</p>
+<h2>The Hono server</h2>
+<p><code>createApp</code> has no side effects. It receives the application configuration, including the Effect runtime, and builds the middleware chain. The body limit comes first, before any route or parser.</p>
+<pre><code class="language-ts">// apps/riptide-electric-proxy/src/server.ts:29-54
+	// Body size limit - prevents OOM from large payloads
+	app.use(
+		&#x27;*&#x27;,
+		bodyLimit({
+			maxSize: 10 * 1024 * 1024, // 10 MB
+			onError: (c) =&gt; c.json({ error: &#x27;Request body too large&#x27;, maxSize: &#x27;10MB&#x27; }, 413),
+		}),
+	)
+
+	attachGlobalErrorHandler(app)
+	app.use(cors())
+	app.use(&#x27;*&#x27;, async (_c, next) =&gt; {
+		return config.effectRuntime.runPromise(
+			Effect.gen(function* () {
+				const metrics = yield* ConnectionMetrics
+				return yield* metrics.trackRequest(Effect.promise(() =&gt; next()))
+			}),
+		)
+	})
+	app.get(&#x27;/&#x27;, async (c) =&gt; c.json({ status: &#x27;online&#x27; }))
+
+	// Electric serves everything uncompressed by design and expects the proxy in
+	// front of it to negotiate encoding, so gzip all responses here. Streaming
+	// routes opt out automatically by declaring `Cache-Control: no-transform`
+	// (see routes/streams.ts) — compress honors it, as do compliant intermediaries.
+	app.use(&#x27;*&#x27;, compress())
+</code></pre>
+<p>The limit is 10 mebibytes. A larger body receives status 413 with a JSON message. The global error handler and Cross-Origin Resource Sharing (CORS) follow. A metrics middleware wraps every request in the Effect runtime and records it through <code>ConnectionMetrics</code>. <code>ConnectionMetrics</code> is the Effect service that counts upstream connections and request outcomes. The health route returns <code>{ status: 'online' }</code>. The compression middleware is registered after the health route, so it applies to every route mounted later. The health response itself is not compressed.</p>
+<p>Compression matters because Electric serves uncompressed data by design. The proxy negotiates the encoding. Streaming routes opt out by declaring <code>Cache-Control: no-transform</code>, and the compression middleware honors that value (<code>apps/riptide-electric-proxy/src/server.ts:50-54</code>). A buffering transform would hold back incremental stream chunks.</p>
+<p>The mounts are ordered (<code>apps/riptide-electric-proxy/src/server.ts:56-70</code>).</p>
+<p>The collaboration application is mounted at <code>/</code> before the versioned groups. Its comment says this order matters: it must run before the version 2 wildcard middleware (<code>apps/riptide-electric-proxy/src/server.ts:62-63</code>). The version 2 app registers its auth middleware with <code>app.use</code>, so that middleware matches every path under <code>/v2</code>, including <code>/v2/collaboration/...</code> (<code>apps/riptide-electric-proxy/src/routes/v2.ts:53-54</code>). The collaboration app applies its own rule: it rejects daemon tokens and a user from another organization (<code>apps/riptide-electric-proxy/src/routes/response-editor-collaboration.ts:30-33</code>). If the version 2 app matched first, the request would be authenticated as a shape request and would never reach that handler. The two stream mounts pass different options. <code>/streams</code> disables task diffs and pull-request status. <code>/v2/streams</code> disables the session route (<code>apps/riptide-electric-proxy/src/server.ts:59-60</code>). The version 2 group holds fifteen table routes, including <code>/sessions</code>, <code>/tasks</code>, <code>/artifacts</code>, <code>/artifacts/metadata</code>, and <code>/provider-login-requests</code>, four daemon routes, and a separate task artifact route (<code>apps/riptide-electric-proxy/src/routes/v2.ts:56-230</code>).</p>
+<h2>The authentication decision</h2>
+<p><code>createAuthMiddleware</code> accepts an <code>AppConfig</code>. When <code>config.testAuthContext</code> is set, it stores that context and calls <code>next()</code> without any validation. This branch exists for tests only. A production configuration never sets the field.</p>
+<p>The real path reads two headers.</p>
+<pre><code class="language-ts">// apps/riptide-electric-proxy/src/middleware.ts:80-106
+			// User authorization path
+			if (authHeader) {
+				const match = authHeader.match(/^Bearer (.+)$/)
+				// Extract Bearer token
+				if (!match || !match[1]) {
+					logger.error(&#x27;Unable to locate token in authorization header&#x27;)
+					authContext = null
+				} else {
+					// Validate JWT and extract auth context
+					const token = match[1]
+					authContext = await validateJWT(token)
+				}
+			}
+
+			if (daemonAuthHeader) {
+				try {
+					const ctx = await config.validateDaemonToken(daemonAuthHeader)
+					if (ctx)
+						authContext = {
+							organizationId: ctx.organizationId,
+							userId: ctx.userId,
+							hostId: ctx.hostId,
+						}
+				} catch (error) {
+					logger.error(&#x27;Daemon token validation failed&#x27;, error)
+				}
+			}
+</code></pre>
+<p>The <code>authorization</code> header must match <code>Bearer &lt;token&gt;</code>. A header without that form logs an error and leaves the context null. A valid Bearer token goes to the JWT validator. The validator wrapper runs the Effect and converts any typed failure to <code>null</code>, so the middleware receives a plain value or null (<code>apps/riptide-electric-proxy/src/auth/jwt-validator.ts:8-23</code>). The <code>x-daemon-authorization</code> header is validated by the injected daemon validator. When that validator returns claims, the middleware replaces the context with the daemon identity.</p>
+<p><strong>Aha:</strong> The daemon block runs after the Bearer block, so the daemon identity wins. The order is the precedence rule. A request that carries both headers is treated as the daemon, not as the user. This is safe. The daemon token is scoped to one host and one user. A daemon request also needs the <code>hostId</code> claim that a user token does not have. If daemon validation throws, the catch logs the error and leaves any valid user context in place. A <code>null</code> result leaves the prior context in place.</p>
+<p>The rest of the method handles failure and success (<code>apps/riptide-electric-proxy/src/middleware.ts:108-125</code>).</p>
+<p>Only token validation failures produce the auth-failure report and the 401. The configuration check above returns a bare 401 without a report. The <code>next()</code> call is deliberately outside the <code>try</code> block. A downstream handler error therefore propagates to the global handler and is not mislabeled as an authentication failure. On success, the middleware sets the Sentry user identifier and organization tag, then stores a normalized three-field context (<code>organizationId</code>, <code>userId</code>, optional <code>hostId</code>) for the route with <code>c.set('authContext', ...)</code> (<code>apps/riptide-electric-proxy/src/middleware.ts:118-124</code>).</p>
+<p>The middleware returns 401 in three places: when no daemon validator is configured (<code>apps/riptide-electric-proxy/src/middleware.ts:70-73</code>), when token validation throws (<code>:107-114</code>), and when no auth context survives both header checks (<code>:116</code>). The first case is a startup misconfiguration, not a per-request decision. The production entry point always injects <code>config.validateDaemonToken</code> (<code>apps/riptide-electric-proxy/src/index.ts:52</code>), so the branch fails closed when the proxy is assembled without auth services. Because the guard runs before the header checks, a valid user token also receives 401 in that state: a proxy with no daemon validator is treated as a proxy that cannot authenticate anything.</p>
+<table><tr><th>401 case</th><th>Trigger</th><th>Sentry report</th><th>Response body</th></tr><tr><td>No daemon validator</td><td>Missing configuration</td><td>No</td><td>None</td></tr><tr><td>Validation throws</td><td>Unexpected exception inside the outer <code>try</code></td><td>Yes, tagged <code>auth_failure</code></td><td>None</td></tr><tr><td>No context survives</td><td>Bad Bearer form, invalid JWT, invalid or absent daemon token, or no headers</td><td>No</td><td>None</td></tr></table>
+<div class="mermaid">
+flowchart TD
+    A[Incoming request] --&gt; B{testAuthContext set?}
+    B --&gt;|Yes| T[Use test context]
+    T --&gt; N[next]
+    B --&gt;|No| V{Daemon validator configured?}
+    V --&gt;|No| X[401 Unauthorized]
+    V --&gt;|Yes| C{authorization header?}
+    C --&gt;|Yes| D{Matches Bearer token?}
+    D --&gt;|No| F{x-daemon-authorization header?}
+    D --&gt;|Yes| E[Validate JWT]
+    E --&gt;|Invalid| F
+    E --&gt;|Valid| F{x-daemon-authorization header?}
+    C --&gt;|No| F
+    F --&gt;|Yes| G[Validate daemon token]
+    G --&gt;|Valid| H[Replace context with daemon identity]
+    G --&gt;|Invalid| I[Keep the prior context]
+    F --&gt;|No| J{Auth context present?}
+    H --&gt; J
+    I --&gt; J
+    J --&gt;|No| X
+    J --&gt;|Yes| K[Set Sentry user and organization]
+    K --&gt; N
+
+</div>
+<table><tr><th>Header</th><th>Credential</th><th>Resulting context</th></tr><tr><td><code>authorization: Bearer ...</code></td><td>WorkOS access JWT</td><td>User and internal organization; no host.</td></tr><tr><td><code>x-daemon-authorization: ...</code></td><td>Daemon RS256 JWT</td><td>User, organization, and host; overrides a Bearer context.</td></tr><tr><td>Neither</td><td>none</td><td>401 Unauthorized.</td></tr><tr><td>Both</td><td>both</td><td>Daemon identity wins because its block runs last.</td></tr></table>
+<h2>JWT validation</h2>
+<p>The JWT validator is an Effect service. <code>validateJWT</code> returns an <code>AuthContext</code> or a typed validation error (<code>apps/riptide-electric-proxy/src/auth/effect/jwt-validator.service.ts:19-44</code>). The context carries the user identifier, the internal organization identifier, the WorkOS organization identifier, roles, permissions, entitlements, the session identifier, and an optional acting user.</p>
+<pre><code class="language-ts">// apps/riptide-electric-proxy/src/auth/effect/jwt-validator.service.ts:91-119
+			validateJWT: (token: string) =&gt;
+				Effect.gen(function* () {
+					const kid = yield* parseProtectedKid(token)
+					const issuer = yield* parseIssuer(token)
+
+					// Try to get key, if not found force refresh and retry once
+					const key = yield* jwksCache.getKey(kid).pipe(
+						Effect.catchTag(&#x27;JWKSKeyNotFoundError&#x27;, () =&gt;
+							jwksCache.forceRefresh.pipe(
+								Effect.catch(() =&gt; Effect.void), // Ignore refresh errors, will retry getKey anyway
+								Effect.flatMap(() =&gt; jwksCache.getKey(kid)),
+							),
+						),
+					)
+
+					const { payload } = yield* Effect.tryPromise({
+						try: () =&gt; jwtVerify(token, key, { issuer }),
+						catch: (error) =&gt; new JWTVerificationError({ cause: String(error) }),
+					})
+
+					const claims = yield* Effect.try({
+						try: () =&gt; parseWorkOsAccessTokenClaims(payload),
+						catch: (error) =&gt;
+							new JWTVerificationError({
+								cause: error instanceof Error ? error.message : &#x27;JWT claims schema validation failed&#x27;,
+							}),
+					})
+
+					return yield* claimsToAuthContext(claims)
+</code></pre>
+<p>The method performs six steps. It decodes the protected header and requires a Key Identifier (kid). It decodes the payload and requires an issuer (<code>iss</code>). It looks up the key in the JSON Web Key Set (JWKS) cache. It verifies the signature with <code>jose</code> and the issuer. The call passes no explicit algorithm list, so <code>jose</code> selects one that the key supports. It parses the claims and converts them to the auth context. <code>parseProtectedKid</code> raises the malformed and missing-key errors. <code>parseIssuer</code> raises the missing-issuer error. <code>jwtVerify</code> and the claims parse raise <code>JWTVerificationError</code>. <code>claimsToAuthContext</code> raises the missing internal organization error.</p>
+<p>When the key is absent, the code forces one refresh and tries again. A refresh failure is ignored, because the second <code>getKey</code> call will report the real reason. This handles key rotation without a restart: a token signed by a new key triggers a fetch on first use.</p>
+<p>The claims conversion requires <code>internal_org_id</code> (<code>apps/riptide-electric-proxy/src/auth/effect/jwt-validator.service.ts:68-83</code>).</p>
+<p>If <code>internal_org_id</code> is absent, validation fails with <code>JWTMissingInternalOrgIdError</code>. The WorkOS organization identifier alone is not enough. Every filter in this proxy uses the internal organization identifier. A token without it cannot be scoped, so the request is rejected instead of being given a wider filter.</p>
+<table><tr><th>Validation failure</th><th>Cause</th></tr><tr><td><code>JWTMalformedError</code></td><td>The header or payload cannot be decoded.</td></tr><tr><td><code>JWTMissingKidError</code></td><td>The protected header has no <code>kid</code>.</td></tr><tr><td><code>JWTMissingIssuerError</code></td><td>The payload has no <code>iss</code>.</td></tr><tr><td><code>JWTVerificationError</code></td><td>The signature or issuer check fails, or the claims schema fails.</td></tr><tr><td><code>JWTMissingInternalOrgIdError</code></td><td>The claims lack <code>internal_org_id</code>.</td></tr><tr><td><code>JWKSNotReadyError</code></td><td>Declared in the error union, but the current cache never raises it; startup waits for the first fetch.</td></tr><tr><td><code>JWKSKeyNotFoundError</code></td><td>The cache has no key for this <code>kid</code> after a forced refresh.</td></tr></table>
+<h2>The JSON Web Key Set cache</h2>
+<p><code>JWKSCacheLive</code> is an Effect layer, a managed component with startup and shutdown. It starts with an empty map and <code>ready: false</code>. The first fetch blocks layer startup and retries within one refresh window. If it cannot succeed, the layer fails to start. A background loop then refreshes the set on a fixed interval (<code>apps/riptide-electric-proxy/src/auth/effect/jwks-cache.service.ts:42-157</code>).</p>
+<p>The fetch has a 10,000 millisecond timeout. The refresh interval is 300,000 milliseconds, or five minutes (<code>apps/riptide-electric-proxy/src/auth/effect/jwks-cache-config.service.ts:31-41</code>). A failed fetch retries on an exponential schedule that starts at 250 milliseconds and doubles. The retry window is bounded by the refresh interval, so each background cycle owns its own retries (<code>apps/riptide-electric-proxy/src/auth/effect/jwks-cache.service.ts:97-106</code>).</p>
+<p><code>getKey</code> is the public lookup (<code>apps/riptide-electric-proxy/src/auth/effect/jwks-cache.service.ts:159-180</code>).</p>
+<p>A missing key logs an error, sends a Sentry message with <code>error_type: jwks_key_not_found</code>, and fails with <code>JWKSKeyNotFoundError</code>. The validator catches that tag and forces a refresh. <code>forceRefresh</code> is the same <code>refreshJwksOnce</code> effect used by the background loop. <code>isReady</code> reports the state flag. <code>getKey</code> does not check that flag; it reports a missing key whether or not the cache has loaded. The validator never calls <code>isReady</code>. An import failure returns <code>JWKSKeyImportError</code>, which fails the whole import effect, so the refresh fails and later keys are not imported (<code>apps/riptide-electric-proxy/src/auth/effect/jwks-cache.service.ts:72-95</code>).</p>
+<p>The WorkOS client supplies the JWKS Uniform Resource Locator (URL). It is <code>workos.userManagement.getJwksUrl(workosClientId)</code> (<code>apps/riptide-electric-proxy/src/auth/effect/workos.service.ts:23-39</code>). The configuration service also requires <code>WORKOS_CLIENT_ID</code>, <code>WORKOS_REDIRECT_URI</code>, and <code>WORKOS_API_KEY</code>. The redirect address and the API key belong to the WorkOS client setup; the client identifier builds the JWKS URL. The WorkOS configuration layer reads all three at startup, so a missing value stops the proxy before it serves a request.</p>
+<h2>Daemon tokens: verify only</h2>
+<p>The daemon path uses asymmetric cryptography. Tokens are signed with the RS256 algorithm. The proxy holds only the public key. It cannot create a token.</p>
+<pre><code class="language-ts">// apps/riptide-electric-proxy/src/auth/daemon-tokens.ts:28-41
+/**
+ * Validate a daemon token using env-configured public key.
+ * Key is imported once and cached for subsequent calls.
+ * Note: This module intentionally does NOT export a sign function.
+ */
+export async function validateDaemonToken(token: string): Promise&lt;DaemonTokenClaims | null&gt; {
+	try {
+		const key = await getPublicKey()
+		const { payload } = await jwtVerify(token, key)
+		return parseDaemonTokenClaims(payload)
+	} catch {
+		return null
+	}
+}
+</code></pre>
+<p>The key loads lazily. <code>RIPTIDE_DAEMON_TOKEN_PUBLIC_KEY</code> may hold a base64-encoded Privacy-Enhanced Mail (PEM) block or a file path. A path may start with <code>./</code>, <code>/</code>, or <code>~/</code> (<code>apps/riptide-electric-proxy/src/auth/daemon-token-core.ts:27-46</code>). The imported <code>CryptoKey</code> is cached forever. A verification failure returns <code>null</code>, and the middleware treats that as no daemon context.</p>
+<p>The module has no sign function, and a comment states the reason: the proxy must be able to validate tokens, not create them (<code>apps/riptide-electric-proxy/src/auth/daemon-token-core.ts:67-74</code>). The claims schema requires <code>userId</code>, <code>organizationId</code>, <code>hostId</code>, and <code>createdAt</code> (<code>apps/riptide-electric-proxy/src/auth/daemon-token-core.ts:55-65</code>). The <code>hostId</code> is what unlocks the host-scoped routes. The signing system uses RS256. The verification call passes no explicit algorithm list, but the public key is imported with the fixed RS256 algorithm, and the signing code also uses RS256 (<code>apps/riptide-electric-proxy/src/auth/daemon-tokens.ts:6</code>, <code>:23</code>, <code>:37</code>; <code>apps/riptide-api/src/auth/daemon-token-core.ts:8</code>, <code>:76-77</code>). The module checks no issuer, audience, or revocation list. <code>jwtVerify</code> checks <code>exp</code> only when the token carries it, and the claims schema does not require an expiry claim. A leaked daemon token therefore stays valid until its expiry passes, or indefinitely when it carries none. The repository has no revocation endpoint and no deny list for daemon tokens. Key rotation is the only mass invalidation, and it is slow: the imported <code>CryptoKey</code> is cached for the life of the process, so every proxy process must restart to accept a new public key (<code>apps/riptide-electric-proxy/src/auth/daemon-token-core.ts:27-46</code>). <code>index.ts</code> injects this function as <code>config.validateDaemonToken</code> (<code>apps/riptide-electric-proxy/src/index.ts:52</code>).</p>
+<h2>The origin URL and the secret</h2>
+<p>Every route starts from <code>buildElectricOriginUrl</code>.</p>
+<pre><code class="language-ts">// apps/riptide-electric-proxy/src/routes/electric-origin.ts:6-18
+export function buildElectricOriginUrl(config: AppConfig, requestUrl: URL) {
+	const electricOriginUrl = new URL(config.electricShapeUrl)
+	ELECTRIC_PROTOCOL_QUERY_PARAMS.forEach((param) =&gt; {
+		const value = requestUrl.searchParams.get(param)
+		if (value) {
+			electricOriginUrl.searchParams.set(param, value)
+		}
+	})
+
+	if (config.electricSecret) electricOriginUrl.searchParams.append(&#x27;secret&#x27;, config.electricSecret)
+
+	return electricOriginUrl
+}
+</code></pre>
+<p>The function copies only the parameters in <code>ELECTRIC_PROTOCOL_QUERY_PARAMS</code>, imported from the Electric client. It does not copy arbitrary query parameters. This blocks parameter injection. The list is the Electric client's own allow-list of protocol fields; the proxy does not add names to it. If the set includes <code>where</code>, <code>params</code>, or <code>table</code>, the route later replaces each of those values with its own server-side filter. Then the function appends the Electric secret.</p>
+<p>The secret is appended, not set. <code>append</code> keeps any existing value and adds a second <code>secret</code> parameter. In the expected configuration the base URL has no secret, so the appended value is the only one. A client cannot supply its own value, because <code>secret</code> is not in the allowed parameter list.</p>
+<h2>The version 1 access filter</h2>
+<p>The version 1 rule protects rows by organization, owner, and task ACL. It governs these table routes: <code>/sessions</code>, <code>/tasks</code>, <code>/events</code>, <code>/approvals</code>, <code>/artifact-comments</code>, <code>/artifacts</code>, <code>/artifacts/metadata</code>, <code>/task-organization-acls</code>, <code>/task-user-acls</code>, <code>/task-user-settings</code>, <code>/queued-messages</code>, <code>/tasks/:taskId/artifacts</code>, and <code>/hosts</code> (<code>apps/riptide-electric-proxy/src/routes/v1.ts:98-223</code>). It is built with Drizzle's <code>QueryBuilder</code>. Column names use <code>sql.identifier</code>, and values become bound parameters. The final Structured Query Language (SQL) text and the parameter array are separated, then the parameter array is placed in <code>params[1]</code>, <code>params[2]</code>, and so on. Electric numbers its parameters from 1, so the code offsets each array index by one. The query builder emits a full <code>SELECT</code> statement. The regex removes the leading <code>SELECT ... FROM ... WHERE</code> text. The tests confirm that the ACL subqueries remain in the fragment (<code>apps/riptide-electric-proxy/test/where-builder.test.ts:17-37</code>).</p>
+<pre><code class="language-ts">// apps/riptide-electric-proxy/src/lib/where-builder.ts:73-86
+	const orgCondition = sql`${sql.identifier(&#x27;organization_id&#x27;)} = ${auth.organizationId}`
+
+	const ownershipOrAcl = sql`(
+		${sql.identifier(&#x27;resource_owner_user_id&#x27;)} = ${auth.userId}
+		OR (${sql.identifier(taskIdCol)} IS NOT NULL AND ${sql.identifier(taskIdCol)} IN (
+			SELECT ${sql.identifier(&#x27;task_id&#x27;)} FROM ${sql.identifier(&#x27;task_user_acl&#x27;)}
+			WHERE ${sql.identifier(&#x27;subject_user_id&#x27;)} = ${auth.userId}
+			AND ${sql.identifier(&#x27;organization_id&#x27;)} = ${auth.organizationId}
+		))
+		OR (${sql.identifier(taskIdCol)} IS NOT NULL AND ${sql.identifier(taskIdCol)} IN (
+			SELECT ${sql.identifier(&#x27;task_id&#x27;)} FROM ${sql.identifier(&#x27;task_organization_acl&#x27;)}
+			WHERE ${sql.identifier(&#x27;organization_id&#x27;)} = ${auth.organizationId}
+		))
+	)`
+</code></pre>
+<p>The rule is an AND of two parts, plus any additional conditions. The first part requires <code>organization_id = org</code>. The second part is a group. A row passes the group when <code>resource_owner_user_id = user</code>, or when its <code>task_id</code> is in the user's <code>task_user_acl</code>, or when its <code>task_id</code> is in the <code>task_organization_acl</code> for the organization. The task ACL subqueries also check the organization, so a cross-tenant ACL row cannot grant access.</p>
+<p>The <code>tasks</code> table needs a different column.</p>
+<pre><code class="language-ts">// apps/riptide-electric-proxy/src/lib/where-builder.ts:106-130
+export function buildWhereFragmentForTasks(auth: { organizationId: string; userId: string }): {
+	fragment: string
+	params: unknown[]
+} {
+	const orgCondition = sql`${sql.identifier(&#x27;organization_id&#x27;)} = ${auth.organizationId}`
+
+	const ownershipOrAcl = sql`(
+		${sql.identifier(&#x27;resource_owner_user_id&#x27;)} = ${auth.userId}
+		OR ${sql.identifier(&#x27;id&#x27;)} IN (
+			SELECT ${sql.identifier(&#x27;task_id&#x27;)} FROM ${sql.identifier(&#x27;task_user_acl&#x27;)}
+			WHERE ${sql.identifier(&#x27;subject_user_id&#x27;)} = ${auth.userId}
+			AND ${sql.identifier(&#x27;organization_id&#x27;)} = ${auth.organizationId}
+		)
+		OR ${sql.identifier(&#x27;id&#x27;)} IN (
+			SELECT ${sql.identifier(&#x27;task_id&#x27;)} FROM ${sql.identifier(&#x27;task_organization_acl&#x27;)}
+			WHERE ${sql.identifier(&#x27;organization_id&#x27;)} = ${auth.organizationId}
+		)
+	)`
+
+	const queryBuilder = new QueryBuilder()
+	const { sql: query, params } = queryBuilder.select().from(tasks).where(and(orgCondition, ownershipOrAcl)).toSQL()
+
+	const fragment = query.replace(/^SELECT .* FROM .* WHERE\s+/i, &#x27;&#x27;)
+	return { fragment, params }
+}
+</code></pre>
+<p>On every other table the ACL lookup compares the row's <code>task_id</code>. The <code>tasks</code> table is the task, so its own primary key is <code>id</code>. The special function uses <code>id</code> in both subqueries. A shared builder with a <code>taskIdColumn</code> option exists, but the tasks case is separate so the column is never misnamed.</p>
+<p><code>buildWhereFragment</code> takes a table and a list of column-value pairs, then joins them with AND. <code>buildWhereFragmentWithAcl</code> handles the full rule with optional extra conditions (<code>apps/riptide-electric-proxy/src/lib/where-builder.ts:25-42</code> and <code>apps/riptide-electric-proxy/src/lib/where-builder.ts:63-101</code>). <code>applyWhereToUrl</code> writes the fragment to <code>where</code> and each parameter to a numbered slot (<code>apps/riptide-electric-proxy/src/lib/where-builder.ts:51-56</code>). It uses <code>set</code>, so it replaces any client-supplied <code>where</code> and parameter slots.</p>
+<h3>Shared artifacts before authentication</h3>
+<p>Two version 1 routes are public. They appear before <code>app.use(createAuthMiddleware(config))</code> (<code>apps/riptide-electric-proxy/src/routes/v1.ts:51-96</code>). Their only credential is the <code>x-share-key</code> header. A missing share key returns 401, an invalid artifact identifier returns 400, and a failed capability check returns 404. The 404 does not confirm whether the artifact exists.</p>
+<p>The artifact route validates the artifact identifier as a Universally Unique Identifier (UUID). It then calls <code>isSharedArtifactAccessible</code> with the database, the artifact identifier, and the share key (<code>apps/riptide-electric-proxy/src/routes/v1.ts:51-71</code>). The query filters only on <code>id</code> and <code>share_key</code> (<code>apps/riptide-electric-proxy/src/lib/queries.ts:115-123</code>). It selects <code>share_enabled</code>, and <code>effectivePublicPermission</code> applies the <code>share_enabled</code> rule later (<code>:137</code>; <code>packages/db/src/artifact-public-permission.ts:27</code>). It also checks the organization's public-link policy through <code>effectivePublicPermission</code> (<code>apps/riptide-electric-proxy/src/lib/queries.ts:113-146</code>).</p>
+<p>The comment route requires a stronger capability. <code>isSharedArtifactCommentAccessible</code> returns true only when the effective public permission is <code>comment</code> (<code>apps/riptide-electric-proxy/src/lib/queries.ts:148-164</code>). <code>effectivePublicPermission</code> returns <code>off</code> when the organization forbids public links or the row is not shared. Otherwise a <code>comment</code> row stays <code>comment</code>, and every other shared row becomes <code>view</code>. A read-only public link cannot stream the comment table.</p>
+<p>The filter for a shared artifact is capability-based (<code>apps/riptide-electric-proxy/src/lib/where-builder.ts:136-155</code>).</p>
+<p>The rule is <code>id = artifactId AND share_key = shareKey AND share_enabled = true</code>. There is no user or organization condition, because the share key is the capability. The comment filter is the artifact identifier alone (<code>apps/riptide-electric-proxy/src/lib/where-builder.ts:157-163</code>). The capability check runs before the stream. The filter then limits rows to the artifact identifier, because the key already proved access. The public column lists hide private columns before the request reaches Electric (<code>apps/riptide-electric-proxy/src/routes/v1.ts:284-292</code>). Each list is every table column except a fixed hidden set. For an artifact, the hidden set is <code>task_id</code>, <code>task_slug</code>, <code>resource_owner_user_id</code>, <code>organization_id</code>, <code>content_hash</code>, <code>frontmatter</code>, <code>created_by</code>, <code>share_key</code>, <code>shared_by</code>, <code>share_enabled</code>, <code>public_permission</code>, and <code>is_deleted</code> (<code>packages/db/src/tables/artifacts.ts:91-107</code>). Those columns identify the tenant, the task, the owner, and the sharing state. A public viewer receives none of them.</p>
+<h2>Host-scoped and daemon routes</h2>
+<p>The <code>/sessions/:hostId</code> route has a check that is easy to miss.</p>
+<pre><code class="language-ts">// apps/riptide-electric-proxy/src/routes/v1.ts:225-253
+	app.all(&#x27;/sessions/:hostId&#x27;, async (c) =&gt; {
+		const hostId = c.req.param(&#x27;hostId&#x27;)
+		if (!isUuid(hostId)) {
+			return c.json({ error: &#x27;Invalid hostId format&#x27; }, StatusCodes.BAD_REQUEST)
+		}
+
+		const { userId, organizationId, hostId: authHostId } = c.var.authContext
+
+		if (authHostId &amp;&amp; authHostId !== hostId) {
+			return c.json(
+				{ error: &#x27;hostId mismatch: URL parameter does not match daemon token&#x27; },
+				StatusCodes.FORBIDDEN,
+			)
+		}
+
+		c.var.electricOriginUrl.searchParams.set(&#x27;table&#x27;, getTableName(sessions))
+		const additionalConditions: Array&lt;{
+			column: typeof sessions.host_id | typeof sessions.created_by
+			value: string
+		}&gt; = [{ column: sessions.host_id, value: hostId }]
+		// Sharing grants visibility, not permission to watch another OS user&#x27;s session paths.
+		if (authHostId) additionalConditions.push({ column: sessions.created_by, value: userId })
+		const { fragment, params } = buildWhereFragmentWithAcl(
+			sessions,
+			{ organizationId, userId },
+			{ additionalConditions },
+		)
+		applyWhereToUrl(c.var.electricOriginUrl, fragment, params)
+		return proxyElectricResponseWithRuntime(config, c.var.electricOriginUrl, undefined, c.req)
+</code></pre>
+<p>The route first validates the host identifier as a UUID. When the caller is a daemon, <code>authHostId</code> is present. If the URL host differs from the token host, the route returns 403. This stops a daemon from reading another host's sessions by changing the path.</p>
+<p>The filter then requires <code>sessions.host_id = hostId</code>. When the caller is a daemon, it also requires <code>sessions.created_by = userId</code>. The comment explains the reason: a share grant gives visibility, not permission to watch another operating-system user's session paths. Without the second condition, a daemon could read sessions that belong to a different local user on the same host. <code>getTableName</code> is the Drizzle helper that returns the SQL table name. <code>c.var.electricOriginUrl</code> is set by <code>createElectricOriginMiddleware</code> before the route runs (<code>apps/riptide-electric-proxy/src/routes/electric-origin.ts:20-25</code>). The third argument to <code>proxyElectricResponseWithRuntime</code> is the optional error-reporting context; <code>undefined</code> means no extra tags. The fourth argument is the incoming request, which the proxy reads for a POST body.</p>
+<p><code>/daemon/approvals</code> requires the <code>hostId</code> claim. Without it the route returns 400. The filter is the normal ACL rule plus <code>approvals.host_id = hostId</code> (<code>apps/riptide-electric-proxy/src/routes/v1.ts:267-279</code>). The daemon therefore sees only approvals addressed to its host.</p>
+<p>The version 2 daemon routes follow the same pattern. Each one requires <code>hostId</code> and adds an equality condition on the relevant host column (<code>apps/riptide-electric-proxy/src/routes/v2.ts:166-217</code>).</p>
+<h2>Version 2 and version 3 filters</h2>
+<p>Version 2 removes the per-user owner and ACL checks. The shared builder scopes every row by organization only, and a route adds any narrower condition itself.</p>
+<pre><code class="language-ts">// apps/riptide-electric-proxy/src/lib/v2-where-builder.ts:33-44
+function organizationCondition(organizationId: string): SQL {
+	return sql`${sql.identifier(&#x27;organization_id&#x27;)} = ${organizationId}`
+}
+
+export function buildWhereFragmentForOrgScopedRows(
+	table: PgTable,
+	auth: { organizationId: string },
+	options?: { additionalConditions?: WhereCondition[] },
+): { fragment: string; params: unknown[] } {
+	const additionalConditions = options?.additionalConditions ?? []
+	return buildWhereFragment(table, [organizationCondition(auth.organizationId), ...additionalConditions])
+}
+</code></pre>
+<p><code>buildWhereFragmentForOrgScopedRows</code> takes a table, an auth object with <code>organizationId</code>, and optional extra conditions. It always adds <code>organization_id = org</code>. The task variant adds the same condition to the <code>tasks</code> table. The task artifact variant adds <code>artifacts.task_id = taskId</code> (<code>apps/riptide-electric-proxy/src/lib/v2-where-builder.ts:46-55</code>). The <code>/provider-login-requests</code> route scopes by organization and user. Its daemon variant scopes by organization and host (<code>apps/riptide-electric-proxy/src/routes/v2.ts:155-190</code>).</p>
+<p>The artifact metadata route excludes the <code>content</code> column. <code>buildArtifactMetadataColumns</code> derives the column list from a <code>SELECT</code> statement and removes <code>"content"</code> (<code>apps/riptide-electric-proxy/src/lib/v2-where-builder.ts:57-73</code>). The full artifact route keeps <code>content</code>. This split lets a list view sync without moving large payloads.</p>
+<p>Version 3 exists for two shapes whose contract changed. The version 2 routes stay untouched so released clients keep their expected columns. <code>/v3/hosts</code> sets an explicit column list and uses the organization-scoped filter. <code>/v3/agent-slash-commands</code> sets a column list, sets <code>replica=full</code>, and adds <code>user_id = user</code> to the organization filter (<code>apps/riptide-electric-proxy/src/routes/v3.ts:45-62</code>). <code>replica</code> selects an Electric replica mode. The repository sets only one value, <code>full</code>, which asks the stream to send the complete row on update instead of only the changed columns. The default and the other modes belong to Electric's protocol; no source comment in this snapshot explains why the agent slash command shape needs complete rows.</p>
+<table><tr><th>Aspect</th><th>Version 1</th><th>Version 2</th><th>Version 3</th></tr><tr><td>Primary scope</td><td>Organization</td><td>Organization</td><td>Organization</td></tr><tr><td>Owner and ACL rule</td><td>Yes, plus task ACL subqueries</td><td>No</td><td>No</td></tr><tr><td>Tasks table column</td><td><code>tasks.id</code></td><td><code>tasks.id</code> via the org task builder</td><td>Not used</td></tr><tr><td>Extra user condition</td><td>On owner, ACL, and several routes</td><td>On provider-login routes and some daemon routes</td><td>On agent slash commands</td></tr><tr><td>Artifact metadata</td><td>Hides <code>content</code></td><td>Hides <code>content</code></td><td>Not used</td></tr><tr><td>Shared artifact route</td><td>Yes, before auth</td><td>No</td><td>No</td></tr><tr><td>Main use</td><td>Legacy browser clients</td><td>Browser and daemon default</td><td>New host and command shapes</td></tr></table>
+<h2>The proxy service</h2>
+<p>The shared service accepts a URL, an optional request context, and an optional incoming request. It builds an <code>HttpClientRequest</code>, which is the Effect request value. It executes the request through a pooled client, the <code>ElectricProxyHttpClient</code> service (<code>apps/riptide-electric-proxy/src/lib/effect/electric-http-client.service.ts:8-22</code>). The pool allows 5,000 connections, a 300,000 millisecond header timeout, no body timeout, and a 10,000 millisecond connect timeout (<code>apps/riptide-electric-proxy/src/lib/effect/undici-pool-options.ts:5-14</code>). The service converts the result to a web <code>Response</code>. The service is wrapped by connection metrics.</p>
+<p>Subset request bodies receive validation. A subset is an additional filter and row window that a live query asks the collection to load. Electric 1.7.12 treats flat fields as subset parameters, but merges all top-level fields over the URL when <code>subset</code> is an object. The proxy normalizes both forms and never forwards arbitrary shape or auth fields (<code>apps/riptide-electric-proxy/src/lib/effect/electric-proxy.service.ts:32-56</code>).</p>
+<table><tr><th>Client body</th><th>Body the proxy sends upstream</th><th>Meaning of <code>offset</code></th></tr><tr><td><code>{"where":"...","offset":0}</code></td><td><code>{"subset":{"where":"...","offset":0}}</code></td><td>Subset pagination</td></tr><tr><td><code>{"subset":{"where":"...","offset":0},"offset":123}</code></td><td><code>{"offset":123,"subset":{"where":"...","offset":0}}</code></td><td>Root value is the shape-log cursor; the value inside <code>subset</code> is pagination</td></tr></table>
+<p>An empty body becomes <code>{}</code>, and the proxy sends no <code>subset</code> field. The allowed names are <code>where</code>, <code>params</code>, <code>order_by</code>, <code>limit</code>, <code>offset</code>, <code>where_expr</code>, and <code>order_by_expr</code>. The full body may also carry <code>handle</code>, <code>live</code>, <code>live_sse</code>, <code>experimental_live_sse</code>, and <code>log</code>. Schema decoding drops any other top-level field, so an unknown field is not forwarded and does not produce an error.</p>
+<p>A malformed body does not reach Electric.</p>
+<pre><code class="language-ts">// apps/riptide-electric-proxy/src/lib/effect/electric-proxy.service.ts:114-129
+					}).pipe(
+						Effect.catchTag(&#x27;SchemaError&#x27;, () =&gt;
+							Effect.succeed(
+								new Response(
+									JSON.stringify({ error: &#x27;Expected a JSON object with an optional subset object&#x27; }),
+									{ status: 400, headers: { &#x27;Content-Type&#x27;: &#x27;application/json&#x27; } },
+								),
+							),
+						),
+						Effect.catch((cause) =&gt;
+							Effect.sync(() =&gt; {
+								logger.error(`Fetch error from upstream electric at ${redactUrl(url)}:`, cause)
+								return makeBadGatewayResponse()
+							}),
+						),
+					),
+</code></pre>
+<p>A <code>SchemaError</code> produces status 400 with a fixed message. Any other failure produces status 502 from <code>makeBadGatewayResponse</code> and logs the redacted URL (<code>apps/riptide-electric-proxy/src/lib/effect/electric-proxy.service.ts:24-30</code>). The route never leaks an internal exception message to the client. The two paths differ. On a successful response, the service returns the original <code>Response</code> and reads no body, so a live stream is not buffered. On a capturable error response, it clones the response, sends the original to the client, and reads the clone for the error report (<code>apps/riptide-electric-proxy/src/lib/effect/electric-proxy.service.ts:80-96</code>).</p>
+<p>The body builder also preserves a subtle distinction. A flat <code>offset</code> is subset pagination. With an explicit <code>subset</code> object, a root <code>offset</code> is the shape-log cursor. The code sets one or the other, never both (<code>apps/riptide-electric-proxy/src/lib/effect/electric-proxy.service.ts:58-77</code>).</p>
+<h2>Response headers</h2>
+<p>The proxy copies response headers with a filter. It removes hop-by-hop headers and adds a <code>Vary</code> header.</p>
+<pre><code class="language-ts">// apps/riptide-electric-proxy/src/lib/effect/proxy-headers.ts:24-40
+export function copyProxyHeaders(headers: WebHeadersInit) {
+	const copied = new Headers(headers)
+	for (const header of hopByHopHeaders) copied.delete(header)
+	// Accept-Encoding: shape responses are gzipped per-request by the compress
+	// middleware, and v1 GETs are publicly cacheable — caches must key on encoding.
+	copied.set(&#x27;Vary&#x27;, &#x27;Authorization, Cookie, Accept-Encoding&#x27;)
+	return copied
+}
+
+export function copyProxyRequestHeaders(headers: WebHeadersInit) {
+	const copied = new Headers(headers)
+	for (const header of hopByHopHeaders) copied.delete(header)
+	copied.delete(&#x27;host&#x27;)
+	copied.delete(&#x27;authorization&#x27;)
+	copied.delete(&#x27;content-length&#x27;)
+	return copied
+}
+</code></pre>
+<p>The <code>Vary</code> value is <code>Authorization, Cookie, Accept-Encoding</code>. The authorization and cookie parts keep a shared cache from serving one user's rows to another. <code>Cookie</code> is included because a cookie-authenticated response must not be reused for a different cookie. The encoding part is required because shape responses are compressed per request, and version 1 GET responses are publicly cacheable (<code>apps/riptide-electric-proxy/src/lib/effect/proxy-headers.ts:31-34</code>). The call is <code>set</code>, not <code>append</code>, so an upstream <code>Vary</code> value is replaced.</p>
+<p>The request copy removes the same hop-by-hop set and three more headers: <code>host</code>, <code>authorization</code>, and <code>content-length</code>. Removing <code>authorization</code> is the critical rule. The browser token must not reach Electric. Removing <code>host</code> lets the upstream client set the correct authority. Removing <code>content-length</code> lets the client recompute it after the body is normalized.</p>
+<table><tr><th>Header</th><th>Response copy</th><th>Request copy</th></tr><tr><td><code>connection</code>, <code>keep-alive</code>, <code>transfer-encoding</code>, <code>upgrade</code></td><td>Removed</td><td>Removed</td></tr><tr><td><code>proxy-authenticate</code>, <code>proxy-authorization</code>, <code>te</code>, <code>trailer</code></td><td>Removed</td><td>Removed</td></tr><tr><td><code>host</code></td><td>Kept</td><td>Removed</td></tr><tr><td><code>authorization</code></td><td>Kept from Electric (not used)</td><td>Removed</td></tr><tr><td><code>content-length</code></td><td>Kept</td><td>Removed</td></tr><tr><td><code>Vary</code></td><td>Set</td><td>Not set</td></tr></table>
+<h2>Error reporting: redaction and sampling</h2>
+<p>The proxy logs every captured Electric error and reports a sample to Sentry. The log call runs before the sample check, so every captured error is logged. It does not report every error, because a failing upstream can produce a flood.</p>
+<pre><code class="language-ts">// apps/riptide-electric-proxy/src/lib/electric-error-handler.ts:74-90
+	logger.error(&#x27;Electric proxy error response&#x27;, errorContext)
+
+	// Capture to Sentry with user/org context
+	// Sample 5% of Electric errors — CloudWatch alarms cover spike detection
+	if (Math.random() &gt;= 0.05) {
+		return
+	}
+
+	Sentry.withScope((scope) =&gt; {
+		scope.setUser({
+			id: context.authContext.userId,
+		})
+
+		scope.setTag(&#x27;organization_id&#x27;, context.authContext.organizationId)
+		scope.setTag(&#x27;electric_status&#x27;, String(status))
+		scope.setTag(&#x27;route_path&#x27;, context.routePath)
+		scope.setTag(&#x27;table_name&#x27;, context.tableName)
+</code></pre>
+<p>The sample check is <code>Math.random() &gt;= 0.05</code>, so about 5 percent of errors reach Sentry. The comment states that CloudWatch alarms cover spike detection, so Sentry does not need every event.</p>
+<p>The URL is redacted before any log or report. <code>redactUrl</code> clones the URL and replaces the <code>secret</code> parameter with <code>[REDACTED]</code> (<code>apps/riptide-electric-proxy/src/lib/electric-error-handler.ts:35-41</code>). The capture includes the status, route, table, filter, parameters, response body, and the user, organization, and host identifiers.</p>
+<p>Only some responses are captured. <code>headerIndicatesCapturableError</code> returns true for 4XX except 409, and for 5XX (<code>apps/riptide-electric-proxy/src/lib/electric-error-handler.ts:26-30</code>). The proxy service calls it when it receives the upstream response, before reading the body (<code>apps/riptide-electric-proxy/src/lib/effect/electric-proxy.service.ts:80-81</code>). A 401 that the middleware itself returns never reaches this check. Status 409 is Electric control flow for a shape change. A shape change means the shape handle that the client holds no longer matches the shape definition on the server, for example after the shape is recreated. Electric answers 409, the client discards its handle and refetches the shape from the start, and the proxy reports no error (<code>packages/session-sdk-sessions/src/shape.ts:70-73</code>). A 2XX or 3XX response is not an error.</p>
+<h2>Access computation and the duplication comment</h2>
+<p>The proxy also computes session access for the collaboration and stream routes. <code>getSessionCapabilities</code> loads the session, the organization settings, and the effective task permission. It then calls <code>calculateSessionAccessControlLevel</code> (<code>apps/riptide-electric-proxy/src/lib/queries.ts:170-218</code>).</p>
+<p><code>prompt</code> is the right to send a prompt into the session, not only to read it. <code>owner</code> is the session creator. A <strong>standalone session</strong> is a session with no task, so ownership alone supplies access; there is no task access control list to consult. <strong>Multiplayer prompting</strong> is the organization feature that grants named users a time window in which they may prompt a session they do not own; the grant is active only between the stored start and expiry values (<code>apps/riptide-api/src/lib/session-multiplayer-prompting-auth.ts:57-80</code>).</p>
+<p>The rank order is <code>no_access</code>, <code>view</code>, <code>prompt</code>, <code>owner</code> (<code>apps/riptide-electric-proxy/src/lib/queries.ts:17-24</code>). The effective task permission is an ACL level of <code>read</code>, <code>comment</code>, or <code>edit</code>. <code>sessionResourceOwnerUserId</code> is the row's resource owner, and <code>nowMillis</code> is the current time in milliseconds. The checks run in order: owner, then prompt, then view. The function gives owner access to the session creator when that user has task edit permission or owns a standalone session. It gives prompt access to an enabled multiplayer user with an active time grant, when that user also has task edit permission or owns a standalone session (<code>apps/riptide-electric-proxy/src/lib/queries.ts:108</code>). The grant is active when the current time in milliseconds is at or after the stored bigint start value and before the stored bigint expiry value. It gives view access when the user has task view permission or owns a standalone session. Otherwise it returns no access.</p>
+<p><strong>Aha:</strong> This logic is a copy. The comment above the function says it duplicates the canonical authorization rules in <code>apps/riptide-api/src/lib/session-multiplayer-prompting-auth.ts</code>, and asks maintainers to keep both implementations synchronized (<code>apps/riptide-electric-proxy/src/lib/queries.ts:74-78</code>).</p>
+<pre><code class="language-ts">// apps/riptide-electric-proxy/src/lib/queries.ts:74-90
+/**
+ * Duplicates the canonical authorization rules in
+ * apps/riptide-api/src/lib/session-multiplayer-prompting-auth.ts.
+ * Keep both implementations synchronized when session access rules change.
+ */
+function calculateSessionAccessControlLevel(input: {
+	actorUserId: string
+	sessionCreatedBy: string
+	sessionResourceOwnerUserId: string
+	sessionTaskId: string | null
+	multiplayerPromptingEnabledForOrganization: boolean
+	multiplayerPromptingUserIds: string[]
+	multiplayerPromptingStartedAt: bigint | null
+	multiplayerPromptingExpiresAt: bigint | null
+	effectiveTaskPermission: AclPermissionLevel | null
+	nowMillis: number
+}): SessionAccessControlLevel {
+</code></pre>
+<p>The duplication is a design debt with a security consequence. If the Application Programming Interface (API) adds a new access rule and the proxy does not, the proxy may grant a stream that the API would deny. The two places must change together. The version 1 shape filters have the same property: they encode access in SQL, while the API encodes it in TypeScript. Read <a href="18-security-and-self-hosting.html">Security and self-hosting</a> for the trust-boundary analysis of this split.</p>
+<h2>A request, end to end</h2>
+<p>The following sequence shows the normal shape path.</p>
+<div class="mermaid">
+sequenceDiagram
+    participant B as Browser
+    participant P as Electric proxy
+    participant M as Auth middleware
+    participant J as JWT validator
+    participant K as JWKS cache
+    participant W as Where builder
+    participant E as Electric
+    B-&gt;&gt;P: GET /v2/sessions with Bearer JWT
+    P-&gt;&gt;M: authorization header
+    M-&gt;&gt;J: validateJWT(token)
+    J-&gt;&gt;K: getKey(kid)
+    K--&gt;&gt;J: CryptoKey
+    J--&gt;&gt;M: AuthContext with internal_org_id
+    M-&gt;&gt;P: authContext set, next()
+    P-&gt;&gt;W: build org-scoped filter
+    W--&gt;&gt;P: fragment and params
+    P-&gt;&gt;E: shape request with secret
+    E--&gt;&gt;P: streamed rows
+    P--&gt;&gt;B: compressed response
+
+</div>
+<p>The request never carries the Electric secret from the browser. The filter is never taken from the browser. The organization identifier comes from the verified token claims. Those three properties are the whole security model of the proxy. A failed validation ends the sequence at the middleware with a 401, before the proxy or Electric is called. On the return path, the compression middleware and the header filter process the response.</p>
+<h2>Next</h2>
+<p>Read <a href="05-sync-engine.html">The sync engine</a> for the client that consumes these shapes. Read <a href="07-api-and-contracts.html">The API and the contracts</a> for the other server surface and the typed procedures. Read <a href="18-security-and-self-hosting.html">Security and self-hosting</a> for the trust boundaries and the required secrets.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Desktop shells: Electron, Tauri, and the bridge to native -- humanlayer</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/humanlayer/docs</span>
+    <div class="nav-actions">
+      <a href="08-database-and-schemas.html" class="nav-breadcrumb">The database and the schema pair</a><a href="09-write-paths-and-idempotency.html" class="nav-breadcrumb">Write paths, transaction identifiers, and optimistic updates</a><a href="10-ui-application.html" class="nav-breadcrumb">The user interface: React, live queries, and interface-only state</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="10-ui-application.html" class="nav-btn" title="Previous: The user interface: React, live queries, and interface-only state">← prev</a>
+      <a href="12-cli-and-agent-plugins.html" class="nav-btn nav-btn-next" title="Next: The command-line interface and the agent plugins">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Desktop shells: Electron, Tauri, and the bridge to native</h1>
+<p>HumanLayer builds one React application for two native containers. The application is <code>apps/riptide-ui</code>. The Electron shell and the Tauri shell load it. Each shell adds native functions through a different bridge. A bridge is the small layer that carries a call from the web page to a privileged process. The bundled daemon is <code>riptided</code>. It starts and supervises agent sessions, has no inbound listener, and calls the API outbound. An agent session is one conversation with a coding agent. Riptide is the internal code name, and every package and binary uses it. This document explains both bridges, the native command sets, the bundled daemon, and the places where the shells differ in capability.</p>
+<p>In this document, native means code or a function outside the web page. A renderer is the web page process. Electron uses a Chromium renderer, and Tauri uses the system web view. The word channel has three meanings here. An Electron Inter-Process Communication (IPC) channel is a named message path. A Tauri <code>Channel</code> is a typed stream object. A release channel is a build track such as development, beta, or production.</p>
+<h2>One user interface, two containers</h2>
+<p>The user interface is <code>apps/riptide-ui</code>. Nothing in the application folder belongs to a single shell. Two small predicates decide the runtime. <code>isTauri()</code> checks for <code>__TAURI__</code> on the window, and <code>isElectron()</code> checks for <code>__RIPTIDE_ELECTRON__</code> (<code>apps/riptide-ui/src/lib/utils.ts:12-22</code>). <code>isDesktop()</code> returns true when either check passes (<code>apps/riptide-ui/src/lib/utils.ts:20-22</code>).</p>
+<pre><code class="language-ts">// apps/riptide-ui/src/lib/utils.ts:12-22
+export function isTauri(): boolean {
+	return typeof window !== &#x27;undefined&#x27; &amp;&amp; &#x27;__TAURI__&#x27; in window
+}
+
+export function isElectron(): boolean {
+	return typeof window !== &#x27;undefined&#x27; &amp;&amp; &#x27;__RIPTIDE_ELECTRON__&#x27; in window
+}
+
+export function isDesktop(): boolean {
+	return isTauri() || isElectron()
+}
+</code></pre>
+<p>Higher layers do not test the shell in every component. A dispatch module chooses the implementation. <code>integrations/desktop/daemon.ts</code> sends a daemon command to the Electron module or the Tauri module (<code>apps/riptide-ui/src/integrations/desktop/daemon.ts:14-33</code>).</p>
+<pre><code class="language-ts">// apps/riptide-ui/src/integrations/desktop/daemon.ts:14-33
+export function shouldStartManagedDaemon(): boolean {
+	if (isTauri()) return !import.meta.env.DEV || Boolean(import.meta.env.VITE_FORCE_DAEMON_IN_DEV)
+	if (!isElectron()) return false
+	if (!import.meta.env.DEV) return true
+	const bridge = (window as Window &amp; { __RIPTIDE_ELECTRON__?: { readonly daemonMode?: unknown } })
+		.__RIPTIDE_ELECTRON__
+	return bridge?.daemonMode === &#x27;staged&#x27;
+}
+
+export async function startDaemon(
+	token: string,
+	userId: string,
+	organizationId: string,
+	syncMode: DaemonSyncMode,
+	verifiedClaudePath: string | null,
+): Promise&lt;DaemonLaunchResult | null&gt; {
+	if (isElectron()) return electronDaemon.startDaemon(token, userId, organizationId, syncMode, verifiedClaudePath)
+	if (isTauri()) return tauriDaemon.startDaemon(token, userId, organizationId, syncMode, verifiedClaudePath)
+	return null
+}
+</code></pre>
+<p><code>shouldStartManagedDaemon</code> decides whether this window owns a daemon. In Tauri it returns true in production, or in development when <code>VITE_FORCE_DAEMON_IN_DEV</code> is set. In Electron it returns false outside the shell, true in production, and true in development only in <code>staged</code> mode. <code>startDaemon</code> takes a token, a user identifier, an organization identifier, a sync mode, and an optional verified Claude path. It returns a launch result, or null in a browser. <code>DaemonSyncMode</code> has three values: <code>auto</code>, <code>electric</code>, and <code>query</code>. A verified Claude path is an executable that device setup has checked.</p>
+<p><strong>Aha:</strong> The shared interface does not abstract the two bridges into one method surface. It abstracts each capability family, such as daemon control, terminals, files, and updates. Each family has a dispatch module with one implementation for each shell. The daemon family is the example here. The interface therefore mostly stays free of shell names. The two predicates and the dispatch modules are the places that name a shell. A browser call returns null.</p>
+<p>The architecture has three layers. The React application is the top layer. A bridge adapter is the middle layer. The native process is the bottom layer. The middle layer is very different in each shell. Electron uses a transferred <code>MessagePort</code> with Effect Remote Procedure Call (RPC). A <code>MessagePort</code> is one end of a two-way message pipe. Effect is a TypeScript library for typed effects, dependency layers, and schema codecs. Tauri uses the <code>invoke</code> function and <code>Channel</code> objects. <code>invoke</code> sends a named command and arguments to Rust and returns a promise. A <code>Channel</code> is a typed stream from Rust to the page. PTY means pseudo-terminal, a terminal device that a program controls.</p>
+<div class="mermaid">
+flowchart TD
+    UI[&quot;Shared React application - apps/riptide-ui&quot;]
+    subgraph Electron[&quot;Electron shell&quot;]
+        PRE[&quot;preload.ts context bridge&quot;]
+        PORT[&quot;MessagePort RPC server in the main process&quot;]
+        MAIN[&quot;Electron main process handlers&quot;]
+    end
+    subgraph Tauri[&quot;Tauri shell&quot;]
+        INV[&quot;invoke and Channel adapters&quot;]
+        RUST[&quot;Rust command handlers in lib.rs&quot;]
+    end
+    MAIN --&gt;|&quot;ipcRenderer channel riptide:desktop-rpc-port&quot;| PRE
+    PRE --&gt;|&quot;window.postMessage transfers the port&quot;| UI
+    UI &lt;--&gt;|&quot;Effect RPC over the transferred port&quot;| PORT
+    PORT --&gt; MAIN
+    UI --&gt;|&quot;invoke command name&quot;| INV
+    INV --&gt; RUST
+    MAIN --&gt; NATIVE[&quot;Operating system and riptided daemon&quot;]
+    RUST --&gt; NATIVE
+
+</div>
+<h2>The Electron shell</h2>
+<p>The Electron application is <code>apps/riptide-electron</code>. Its package version is 0.1.12, and it pins Electron 43.0.0 (<code>apps/riptide-electron/package.json</code>). Its bundle identifier is <code>com.humanlayer.electron</code> (<code>apps/riptide-electron/electron-builder.prod.yml:2</code>). The shell is security-first. Every window is sandboxed, has context isolation, and has Node integration turned off (<code>apps/riptide-electron/src/window/window-service.layer.ts:86-95</code>).</p>
+<pre><code class="language-ts">// apps/riptide-electron/src/window/window-service.layer.ts:86-95
+						webPreferences: {
+							sandbox: true,
+							contextIsolation: true,
+							nodeIntegration: false,
+							additionalArguments: [
+								`--riptide-renderer-url=${rendererUrl}`,
+								`--riptide-daemon-mode=${config.daemonMode}`,
+								`--riptide-window-role=${windowRole}`,
+							],
+						},
+</code></pre>
+<p>The three settings limit the damage that a compromised page can do. The sandbox denies the page direct operating system access. Context isolation keeps preload variables separate from page variables. Disabled Node integration keeps Node.js out of the page.</p>
+<p>The main process passes three values on the command line of the renderer. The renderer URL lets the preload script verify the page origin. The daemon mode tells the bridge whether this window owns a daemon. The window role separates the main window from additional windows.</p>
+<p>The preload script is the only renderer-side code with direct access to Electron Inter-Process Communication (IPC). It first verifies the renderer. <code>isTrustedRenderer</code> compares the current location with the URL from the command line (<code>apps/riptide-electron/src/preload-trust.ts:3-18</code>). For a <code>file:</code> page it compares protocol and path. For every non-file page, including a private-scheme page, it compares protocol and host.</p>
+<p>The two comparisons are the two branches of <code>isTrustedRenderer</code>, and each branch guards a different trust boundary. A normal <code>file:</code> address has an empty host, so the exact file path is the only stable identity. The <code>file:</code> branch applies when the renderer runs from a local file, such as an unpackaged build with <code>RIPTIDE_ELECTRON_RENDERER_PATH</code> (<code>apps/riptide-electron/src/config/electron-config.ts:59-62</code>). The packaged renderer serves its entry file, and the application uses hash history for <code>file:</code> pages. Hash history keeps the route in the fragment after <code>#</code>, so a client-side route change does not change the path (<code>apps/riptide-ui/src/main.tsx:70</code>). A different local page file has a different path and fails the check. For an <code>http(s)</code> page, protocol and host form the origin, and host includes the port. For a private-scheme page, the scheme is custom and the address parser reports its origin as <code>null</code>. The preload therefore compares protocol and host rather than origin (<code>apps/riptide-electron/src/preload-trust.ts:3-18</code>). The navigation and permission code uses the same rule and names it <code>isSameSite</code> (<code>apps/riptide-electron/src/window/window-security.ts:23-29</code>). The path must not be compared, because the protocol handler serves every client-side route from one host and maps an unknown path to <code>index.html</code> (<code>apps/riptide-electron/src/renderer-protocol.ts:28-44</code>). The packaged address is <code>&lt;scheme&gt;://app/</code>, so <code>app</code> is the host (<code>apps/riptide-electron/src/renderer-protocol-config.ts:9-14</code>). The check stops another local page file, or another host with the same scheme, from receiving the preload bridge and the transferred port.</p>
+<pre><code class="language-ts">// apps/riptide-electron/src/preload.ts:16-33
+if (isTrustedRenderer({ location: window.location, rendererUrl: rendererArgument(&#x27;riptide-renderer-url&#x27;) })) {
+	contextBridge.exposeInMainWorld(
+		&#x27;__RIPTIDE_ELECTRON__&#x27;,
+		Object.freeze({
+			version: 1,
+			// Passed by the window service so the bridge reports the mode the main
+			// process actually resolved, instead of re-deriving it from env.
+			daemonMode: rendererArgument(&#x27;riptide-daemon-mode&#x27;) ?? &#x27;external&#x27;,
+			windowRole: rendererWindowRole(),
+		}),
+	)
+
+	ipcRenderer.on(electronRpcPortChannel, (event) =&gt; {
+		const port = event.ports[0]
+		if (port === undefined) return
+		window.postMessage(electronRpcPortMessage, &#x27;*&#x27;, [port])
+	})
+}
+</code></pre>
+<p>The preload exposes a frozen object with three values. It does not expose methods. The method surface arrives as a <code>MessagePort</code>. The main process sends the port on <code>riptide:desktop-rpc-port</code>, and the preload reposts it to the page as <code>riptide:desktop-rpc-port-ready</code> (<code>contracts/riptide-electron-rpc/src/protocol.ts:1-2</code>). The second name is a <code>window.postMessage</code> message, not an Electron channel.</p>
+<table><tr><th>Channel or message</th><th>Sender</th><th>Receiver</th><th>Payload</th></tr><tr><td><code>riptide:desktop-rpc-port</code></td><td>Electron main process</td><td>Preload script</td><td>A <code>MessagePort</code> in <code>event.ports[0]</code></td></tr><tr><td><code>riptide:desktop-rpc-port-ready</code></td><td>Preload script</td><td>Renderer window</td><td>The same port, transferred</td></tr></table>
+<p>The server side creates one channel for each attached window. <code>connect()</code> closes the previous connection, creates a channel, starts the RPC server on <code>port1</code>, and posts <code>port2</code> to the window (<code>apps/riptide-electron/src/rpc/message-port-server.ts:64-74</code>). A <code>MessageChannel</code> creates two entangled ports. A message sent on one port arrives on the other. The server calls <code>connect()</code> once when it attaches to the window, and again on each <code>did-finish-load</code> event. <code>did-finish-load</code> means the page finished its first load. A window close closes the connection.</p>
+<p>The server implements the Effect RPC protocol directly on the port. It returns a connection description with ten fields. <code>disconnects</code> is a stream of disconnect events. <code>send</code> posts a response on the port. <code>end</code> closes the port. <code>clientIds</code> is a set with the one client identifier. <code>initialMessage</code> is <code>Option.none()</code>, because the client sends no opening message. <code>codecFor</code> supplies <code>Schema.toCodecJson</code> as the JSON codec. It disables acknowledgement, transferables, span propagation, and notifications (<code>apps/riptide-electron/src/rpc/message-port-server.ts:121-132</code>). Acknowledgement confirms delivery. Transferables move object ownership inside a message. Span propagation carries tracing metadata. Notifications let the server push unsolicited messages. With notifications off, the server sends a message only in answer to a call. Streaming RPC still works, because the stream answers one call.</p>
+<pre><code class="language-ts">// apps/riptide-electron/src/rpc/message-port-server.ts:121-132
+			return {
+				disconnects,
+				send: (_id, response) =&gt; Effect.sync(() =&gt; port.postMessage(response)),
+				end: () =&gt; Effect.sync(() =&gt; port.close()),
+				clientIds: Effect.succeed(new Set([clientId])),
+				initialMessage: Effect.succeed(Option.none()),
+				supportsAck: false,
+				supportsTransferables: false,
+				supportsSpanPropagation: false,
+				supportsNotifications: false,
+				codecFor: Schema.toCodecJson,
+			}
+</code></pre>
+<p>The contract is one shared package, <code>contracts/riptide-electron-rpc</code>. <code>DesktopRpc</code> is an Effect <code>RpcGroup</code> with 48 members (<code>contracts/riptide-electron-rpc/src/desktop-rpc.ts:58-107</code>). The first members cover host identity, external URLs, application version, window theme, zoom, logs, command-line updates, diagnostics, daemon control, new windows, dragging, and terminals.</p>
+<pre><code class="language-ts">// contracts/riptide-electron-rpc/src/desktop-rpc.ts:58-81
+export class DesktopRpc extends RpcGroup.make(
+	GetHostId,
+	OpenInEditor,
+	OpenExternalUrl,
+	GetAppVersion,
+	SetWindowTheme,
+	SetZoom,
+	WriteHostLog,
+	GetLogDirectory,
+	GetCurrentLogFiles,
+	UpdateCli,
+	CheckClaudeInstalled,
+	ProbeCodingAgent,
+	UpdateClaudeCode,
+	StartDaemon,
+	StopDaemon,
+	IsDaemonRunning,
+	SetDaemonManagement,
+	DaemonLifecycleEvents,
+	OpenNewWindow,
+	DragWindow,
+	CreatePty,
+	AttachPty,
+	DetachPty,
+</code></pre>
+<p>The snippet shows the first 23 members. The other 25 continue in the same class body (<code>contracts/riptide-electron-rpc/src/desktop-rpc.ts:82-106</code>). Each of the 48 members belongs to exactly one family in the table (<code>contracts/riptide-electron-rpc/src/desktop-rpc.ts:58-107</code>).</p>
+<table><tr><th>Command family</th><th>Members</th><th>Role</th><th>Count</th></tr><tr><td>Host and application identity</td><td><code>GetHostId</code>, <code>GetAppVersion</code>, <code>SetSentryIdentity</code>, <code>SetWindowTheme</code>, <code>SetZoom</code>, <code>OpenNewWindow</code>, <code>DragWindow</code></td><td>Host identifier, application version, error-reporting identity, window theme, zoom, new windows, and window drag</td><td>7</td></tr><tr><td>External links</td><td><code>OpenExternalUrl</code>, <code>TakePendingDeepLink</code>, <code>DeepLinkEvents</code></td><td>Open a web address in the system browser, read a launch link, and stream deep-link events</td><td>3</td></tr><tr><td>Editor and workspace configuration</td><td><code>OpenInEditor</code>, <code>GetEditorEnvironment</code>, <code>ReadWorkspaceConfig</code>, <code>WriteWorkspaceConfig</code>, <code>EnsureWorkspaceConfigIgnored</code>, <code>OpenWorkspaceConfig</code>, <code>DiscoverGitRepositories</code></td><td>Open an editor, read its environment, read or write workspace configuration, keep the ignore file, and find Git repositories</td><td>7</td></tr><tr><td>Diagnostics and logs</td><td><code>WriteHostLog</code>, <code>GetLogDirectory</code>, <code>GetCurrentLogFiles</code>, <code>UpdateCli</code>, <code>CheckClaudeInstalled</code>, <code>ProbeCodingAgent</code>, <code>UpdateClaudeCode</code></td><td>Write and locate logs, update the command-line tool, and detect or update coding agents</td><td>7</td></tr><tr><td>Daemon lifecycle</td><td><code>StartDaemon</code>, <code>StopDaemon</code>, <code>IsDaemonRunning</code>, <code>SetDaemonManagement</code>, <code>DaemonLifecycleEvents</code></td><td>Start, stop, and observe the daemon; open or close the management gate; stream lifecycle events</td><td>5</td></tr><tr><td>Terminal</td><td><code>CreatePty</code>, <code>AttachPty</code>, <code>DetachPty</code>, <code>WritePty</code>, <code>ResizePty</code>, <code>KillPty</code>, <code>ListPtys</code></td><td>Create, attach, detach, write, resize, kill, and list pseudo-terminals</td><td>7</td></tr><tr><td>Filesystem and directory selection</td><td><code>GetHomeDirectory</code>, <code>StatPath</code>, <code>ReadTextFile</code>, <code>ReadFile</code>, <code>BrowseDirectories</code>, <code>ListDirectory</code>, <code>FuzzySearchFiles</code>, <code>PickDirectory</code></td><td>Read the home directory, stat and read files, browse and list directories, search files, and pick a directory</td><td>8</td></tr><tr><td>Updater</td><td><code>CheckForUpdate</code>, <code>DownloadUpdate</code>, <code>UpdateDownloadProgress</code>, <code>QuitAndInstall</code></td><td>Check, download, stream progress for, and install an update</td><td>4</td></tr><tr><td><strong>Total</strong></td><td><strong>48</strong></td></tr></table>
+<p>The families follow the handler modules under <code>contracts/riptide-electron-rpc/src/rpcs</code>. Two small modules are grouped by purpose. <code>PickDirectory</code> joins filesystem because it selects a path, and <code>SetSentryIdentity</code> joins host and application identity because it sets the error-reporting identity (<code>contracts/riptide-electron-rpc/src/desktop-rpc.ts:6-29</code>).</p>
+<p>The main process binds one handler to each member. <code>DesktopRpcHandlers</code> omits <code>DragWindow</code> and binds the rest with <code>toLayer</code> (<code>apps/riptide-electron/src/rpc/desktop-rpc-handlers.ts:56-104</code>).</p>
+<pre><code class="language-ts">// apps/riptide-electron/src/rpc/desktop-rpc-handlers.ts:56-70
+export const DesktopRpcHandlers = DesktopRpc.omit(&#x27;DragWindow&#x27;).toLayer({
+	GetHostId: getHostIdHandler,
+	OpenInEditor: openInEditorHandler,
+	OpenExternalUrl: openExternalUrlHandler,
+	GetAppVersion: getAppVersionHandler,
+	SetWindowTheme: setWindowThemeHandler,
+	SetZoom: setZoomHandler,
+	WriteHostLog: writeHostLogHandler,
+	GetLogDirectory: getLogDirectoryHandler,
+	GetCurrentLogFiles: getCurrentLogFilesHandler,
+	UpdateCli: updateCliHandler,
+	CheckClaudeInstalled: checkClaudeInstalledHandler,
+	ProbeCodingAgent: probeCodingAgentHandler,
+	UpdateClaudeCode: updateClaudeCodeHandler,
+	StartDaemon: startDaemonHandler,
+</code></pre>
+<p><code>DragWindow</code> is separate because it needs the window handle of the caller. The server binds it for each attached window (<code>apps/riptide-electron/src/rpc/message-port-server.ts:44-49</code>). <code>toLayer</code> turns the handler map into an Effect layer, a dependency bundle that the RPC server provides.</p>
+<p>On the renderer side, the application listens for the ready message. It rejects any message that does not come from the same window, does not carry the expected name, or does not carry exactly one port (<code>apps/riptide-ui/src/effects/electron-rpc/electron-rpc-client.layer.ts:28-39</code>). When a new port arrives, the renderer replaces the protocol client with one built on that port, so it does not restart. When the port closes and no new port arrives, every native call fails until the main process sends a replacement.</p>
+<p>The renderer then creates a normal typed client from <code>DesktopRpc</code> (<code>apps/riptide-ui/src/effects/electron-rpc/electron-rpc-client.layer.ts:119-121</code>). <code>ElectronRpcClient.use((client) =&gt; client.StartDaemon(...))</code> looks like a local function call, but every call crosses the port (<code>apps/riptide-ui/src/integrations/electron/daemon.ts:21-33</code>).</p>
+<div class="mermaid">
+sequenceDiagram
+    participant UI as &quot;Renderer React code&quot;
+    participant Bridge as &quot;preload.ts&quot;
+    participant Main as &quot;Electron main process&quot;
+    participant Daemon as &quot;riptided daemon&quot;
+
+    Main-&gt;&gt;Bridge: &quot;Send port on riptide:desktop-rpc-port&quot;
+    Bridge-&gt;&gt;UI: &quot;postMessage transfers the port&quot;
+    UI-&gt;&gt;Main: &quot;Effect RPC StartDaemon over the port&quot;
+    Main-&gt;&gt;Main: &quot;startDaemonHandler&quot;
+    Main-&gt;&gt;Daemon: &quot;Spawn riptided with token and identifiers&quot;
+    Daemon--&gt;&gt;Main: &quot;Launch result&quot;
+    Main--&gt;&gt;UI: &quot;RPC response over the same port&quot;
+
+</div>
+<p>The Electron window also controls navigation. <code>will-navigate</code> checks every target URL against the renderer URL. An allowed target loads. An external target opens in the system browser. Every other target is denied (<code>apps/riptide-electron/src/platform/electron-platform.layer.ts:71-80</code>). The session also has explicit permission handlers. A permission request is granted only for a fixed set: clipboard read, clipboard sanitized write, notifications, media, fullscreen, external open, and persistent storage. The request must also come from the same site as the renderer (<code>apps/riptide-electron/src/window/window-security.ts:39-49</code>).</p>
+<p>A packaged build does not use a <code>file:</code> URL. It registers a private scheme, a custom URL protocol that Electron serves from disk. <code>rendererFileForRequest</code> normalizes the path, rejects traversal outside the renderer directory, and falls back to <code>index.html</code> for client-side routes (<code>apps/riptide-electron/src/renderer-protocol.ts:28-44</code>). The scheme names differ by release channel, such as <code>humanlayer-electron</code> for production (<code>apps/riptide-electron/src/config/electron-channel.ts:5-10</code>). The same scheme also handles operating system deep links.</p>
+<p>The Electron shell also owns a daemon. In packaged mode it looks for <code>bin/riptided</code> under the resources path (<code>apps/riptide-electron/src/daemon/daemon-resource.ts:21-29</code>).</p>
+<pre><code class="language-ts">// apps/riptide-electron/src/daemon/daemon-resource.ts:21-29
+	const executablePath =
+		daemonMode === &#x27;packaged&#x27;
+			? pathService.join(platform.resourcesPath, &#x27;bin&#x27;, &#x27;riptided&#x27;)
+			: input.config.stagedDaemonPath
+	if (executablePath === undefined) {
+		return yield* Effect.fail(
+			new DaemonUnavailableError({ message: &#x27;RIPTIDE_ELECTRON_STAGED_DAEMON_PATH is required in staged mode&#x27; }),
+		)
+	}
+</code></pre>
+<p>The three daemon modes are <code>external</code>, <code>staged</code>, and <code>packaged</code> (<code>apps/riptide-electron/src/config/electron-config.ts:36</code>). The default is <code>packaged</code> when the application is packaged and <code>external</code> when it runs from source (<code>apps/riptide-electron/src/config/electron-config.ts:71-73</code>). In <code>external</code> mode the shell expects a daemon that another process started, such as the command-line interface. In <code>staged</code> mode it runs the path from <code>RIPTIDE_ELECTRON_STAGED_DAEMON_PATH</code>. In <code>packaged</code> mode it runs the bundled binary.</p>
+<p>The shell stops only a daemon that it started. A generation is one record of a daemon process that the shell spawned, keyed by the user and organization pair (<code>apps/riptide-electron/src/daemon/daemon-supervisor.layer.ts:50-69</code>, <code>apps/riptide-electron/src/daemon/daemon-supervisor.layer.ts:86</code>). <code>stopDaemonHandler</code> obtains the <code>DaemonSupervisor</code> service from the Effect context (<code>apps/riptide-electron/src/rpc/handlers/stop-daemon.ts:5-9</code>). <code>stopOwnedGeneration</code> looks up a generation for the user and organization pair (<code>apps/riptide-electron/src/daemon/daemon-supervisor.layer.ts:547-568</code>). If it finds one, <code>terminateDaemonGeneration</code> sends <code>SIGTERM</code> and waits ten seconds. If the process still runs, it sends <code>SIGKILL</code> (<code>apps/riptide-electron/src/daemon/daemon-generation.ts:16-35</code>).</p>
+<table><tr><th>Mode</th><th>Start behavior</th><th>Stop behavior</th></tr><tr><td><code>external</code></td><td>A managed start is a start that the shell performs. The renderer usually skips it in Electron development, because <code>shouldStartManagedDaemon</code> returns true only for <code>staged</code> in that case (<code>apps/riptide-ui/src/integrations/desktop/daemon.ts:14-21</code>). A renderer start call fails with <code>DaemonUnavailableError</code>, because <code>resolveDaemonExecutable</code> refuses every <code>external</code> start (<code>apps/riptide-electron/src/daemon/daemon-resource.ts:9-16</code>). The shell has no attach path in this mode. A packaged build can also select <code>external</code>, and its start call fails in the same way (<code>apps/riptide-electron/src/config/electron-config.ts:71-73</code>).</td><td>The generation map has no entry, so <code>stopOwnedGeneration</code> returns without a signal (<code>apps/riptide-electron/src/daemon/daemon-supervisor.layer.ts:547-555</code>). <code>StopDaemon</code> resolves with no value, and the separately started process keeps running.</td></tr><tr><td><code>staged</code></td><td>The shell spawns the path in <code>RIPTIDE_ELECTRON_STAGED_DAEMON_PATH</code>. A missing value or a missing file fails with <code>DaemonUnavailableError</code> (<code>apps/riptide-electron/src/daemon/daemon-resource.ts:18-34</code>).</td><td>The shell sends <code>SIGTERM</code>, waits ten seconds, then sends <code>SIGKILL</code>, and closes the generation scope (<code>apps/riptide-electron/src/daemon/daemon-generation.ts:16-35</code>).</td></tr><tr><td><code>packaged</code></td><td>The shell spawns <code>resources/bin/riptided</code> (<code>apps/riptide-electron/src/daemon/daemon-resource.ts:21-29</code>).</td><td>The stop path is the same as <code>staged</code>.</td></tr></table>
+<p>In <code>external</code> mode the shell owns no process. A stop call therefore does not stop the daemon that another process started. <code>IsDaemonRunning</code> also reports false in this mode, because it reads only the shell generation map (<code>apps/riptide-electron/src/daemon/daemon-supervisor.layer.ts:630-637</code>). The interface cannot see the external process through this call. A signal reaches only a daemon that the shell owns. The application does not connect to the daemon directly. The daemon calls the API outbound. The daemon keeps no inbound listener.</p>
+<p>The update path uses <code>electron-updater</code> 6.8.9. Each channel has a product name, an update URL, and a cache folder (<code>apps/riptide-electron/src/config/updater-channels.json</code>). Production uses product name <code>HumanLayerElectron</code> and the URL <code>https://update.humanlayer.com/stable</code>. The main process exposes check, download, progress, and quit-and-install operations through the RPC group.</p>
+<h2>The Tauri shell</h2>
+<p>The Tauri application is <code>apps/riptide-native</code>. The Rust dependency is Tauri 2.11.0, and the JavaScript package is <code>@tauri-apps/api</code> 2.11.0 (<code>apps/riptide-native/Cargo.toml:25</code>, <code>apps/riptide-native/package.json</code>). The package version is 0.200.0. The product name is <code>HumanLayer</code>, and the bundle identifier is <code>com.humanlayer.riptide</code> (<code>apps/riptide-native/tauri.conf.json:1-10</code>).</p>
+<p>The build step compiles the user interface and the daemon before it builds the bundle. <code>beforeBuildCommand</code> builds <code>riptide-ui</code>, then builds <code>riptide-daemon</code> and copies the result to <code>bin/riptided</code> when the file is absent (<code>apps/riptide-native/tauri.conf.json:8</code>). The bundle declares that file as a resource, so the daemon travels inside the application (<code>apps/riptide-native/tauri.conf.json:37-50</code>).</p>
+<pre><code class="language-json">// apps/riptide-native/tauri.conf.json:37-50
+  &quot;bundle&quot;: {
+    &quot;active&quot;: true,
+    &quot;targets&quot;: &quot;all&quot;,
+    &quot;createUpdaterArtifacts&quot;: true,
+    &quot;icon&quot;: [
+      &quot;icons/32x32.png&quot;,
+      &quot;icons/128x128.png&quot;,
+      &quot;icons/128x128@2x.png&quot;,
+      &quot;icons/icon.icns&quot;,
+      &quot;icons/icon.ico&quot;
+    ],
+    &quot;resources&quot;: [
+      &quot;bin/riptided&quot;
+    ],
+</code></pre>
+<p>The Rust side exposes commands with the <code>#[tauri::command]</code> attribute. The <code>invoke_handler</code> call registers them. Its <code>tauri::generate_handler!</code> macro lists 37 commands (<code>apps/riptide-native/src/lib.rs:594-637</code>).</p>
+<pre><code class="language-rust">// apps/riptide-native/src/lib.rs:594-610
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            get_host_id,
+            get_process_cwd,
+            take_pending_deep_link,
+            start_daemon,
+            stop_daemon,
+            is_daemon_running,
+            set_daemon_management,
+            get_log_directory,
+            get_current_log_files,
+            get_editor_env,
+            open_in_editor,
+            save_window_state,
+            set_window_theme,
+            terminal_cli_self_update,
+            artifact_trace::save_artifact_trace,
+</code></pre>
+<p>The 37 commands group into eight families.</p>
+<table><tr><th>Command family</th><th>Tauri commands</th><th>Purpose</th></tr><tr><td>Window and application</td><td><code>greet</code>, <code>get_process_cwd</code>, <code>save_window_state</code>, <code>set_window_theme</code>, <code>terminal_cli_self_update</code></td><td>Basic window state and shell actions; <code>greet</code> is the unchanged template command</td></tr><tr><td>Artifact tracing</td><td><code>artifact_trace::save_artifact_trace</code></td><td>Write an artifact trace file</td></tr><tr><td>Deep links</td><td><code>take_pending_deep_link</code></td><td>Read a URL that launched the app</td></tr><tr><td>Daemon</td><td><code>get_host_id</code>, <code>start_daemon</code>, <code>stop_daemon</code>, <code>is_daemon_running</code>, <code>set_daemon_management</code></td><td>Start, stop, and observe the daemon; <code>set_daemon_management</code> calls <code>set_management_enabled</code></td></tr><tr><td>Diagnostics</td><td><code>check_claude_installed</code>, <code>probe_coding_agent</code>, <code>update_claude_code</code>, <code>get_editor_env</code>, <code>open_in_editor</code></td><td>Agent detection and editor launch</td></tr><tr><td>Workspace</td><td><code>workspace_config_read</code>, <code>workspace_config_write</code>, <code>workspace_config_ensure_gitignore</code>, <code>workspace_config_open_in_editor</code>, <code>discover_git_repositories</code>, <code>workspace_preflight</code>, <code>workspace_create</code>, <code>workspace_copy_globs</code>, <code>workspace_run_setup</code>, <code>workspace_remove_all</code></td><td>Repository setup and worktree creation</td></tr><tr><td>Terminal and files</td><td><code>pty_create</code>, <code>pty_attach</code>, <code>pty_detach</code>, <code>pty_write</code>, <code>pty_resize</code>, <code>pty_kill</code>, <code>pty_list</code>, <code>fuzzy_search_files</code></td><td>Pseudo-terminal (PTY) sessions and file search</td></tr><tr><td>Logs</td><td><code>get_log_directory</code>, <code>get_current_log_files</code></td><td>Log file discovery</td></tr></table>
+<p>The daemon command resolves the sidecar from the resource directory. A sidecar is a separate executable that ships inside the application bundle and runs as a child process. <code>get_daemon_path</code> is a helper, not a command. It joins the resource directory with <code>bin</code> and <code>riptided</code> (<code>apps/riptide-native/src/daemon.rs:1240-1247</code>).</p>
+<pre><code class="language-rust">// apps/riptide-native/src/daemon.rs:1240-1247
+    fn get_daemon_path(&amp;self, app_handle: &amp;AppHandle) -&gt; Result&lt;PathBuf, String&gt; {
+        let resource_dir = app_handle
+            .path()
+            .resource_dir()
+            .map_err(|e| format!(&quot;Failed to get resource directory: {}&quot;, e))?;
+
+        Ok(resource_dir.join(&quot;bin&quot;).join(&quot;riptided&quot;))
+    }
+</code></pre>
+<p><code>start_daemon</code> receives a token, a user identifier, an organization identifier, a sync mode, and an optional verified Claude path. It clones the manager, runs the blocking start on a worker thread, and returns the launch result or an error string (<code>apps/riptide-native/src/lib.rs:126-148</code>).</p>
+<pre><code class="language-rust">// apps/riptide-native/src/lib.rs:126-148
+#[tauri::command]
+async fn start_daemon(
+    app_handle: tauri::AppHandle,
+    daemon_manager: tauri::State&lt;&#x27;_, DaemonManager&gt;,
+    token: String,
+    user_id: String,
+    organization_id: String,
+    sync_mode: String,
+    verified_claude_path: Option&lt;String&gt;,
+) -&gt; Result&lt;daemon::DaemonLaunchResult, String&gt; {
+    let daemon_manager = daemon_manager.inner().clone();
+    run_off_main_thread(move || {
+        daemon_manager.start_daemon(
+            &amp;app_handle,
+            &amp;token,
+            &amp;user_id,
+            &amp;organization_id,
+            &amp;sync_mode,
+            verified_claude_path.as_deref(),
+        )
+    })
+    .await?
+}
+</code></pre>
+<p>The helper <code>run_off_main_thread</code> exists because a blocked main thread freezes the whole window on macOS (<code>apps/riptide-native/src/lib.rs:114-116</code>). It runs the closure on a blocking worker thread and awaits the result. Every command that spawns, waits, or sleeps uses it.</p>
+<p>The renderer calls these commands through <code>invoke</code>. <code>startDaemon</code> sends the five fields as one object, and Tauri converts camelCase JavaScript keys to snake_case Rust parameter names (<code>apps/riptide-ui/src/integrations/tauri/daemon.ts:73-79</code>).</p>
+<pre><code class="language-ts">// apps/riptide-ui/src/integrations/tauri/daemon.ts:73-79
+		return await invoke&lt;DaemonLaunchResult&gt;(&#x27;start_daemon&#x27;, {
+			token,
+			userId,
+			organizationId,
+			syncMode,
+			verifiedClaudePath,
+		})
+</code></pre>
+<p>Terminal output uses a different transport. A Tauri <code>Channel</code> streams output events to the renderer. Each event has an <code>event</code> tag and a <code>data</code> field (<code>apps/riptide-ui/src/integrations/tauri/pty.ts:9</code>). An output event serializes as <code>{"event":"output","data":{"data":[...]}}</code>, because the Rust enum tags the variant and wraps its payload. <code>pty_create</code> receives the working directory and the channel and returns a terminal identifier (<code>apps/riptide-ui/src/integrations/tauri/pty.ts:22-34</code>). A failed call rejects with a string from Rust.</p>
+<p>A detached terminal is a PTY with no attached channel. Each terminal has its own 64 kilobyte ring buffer for output produced while no channel is attached (<code>apps/riptide-native/src/pty.rs:22-33</code>). When the buffer is full, it drops the oldest bytes. A single write larger than the buffer keeps only its tail. A detached terminal therefore keeps the most recent 64 kilobytes of output, and a reattach replays the buffer.</p>
+<pre><code class="language-rust">// apps/riptide-native/src/pty.rs:22-33
+/// Maximum bytes to buffer while the Channel is detached (64 KB).
+const RING_BUFFER_CAP: usize = 64 * 1024;
+
+/// Event sent to the webview via Channel
+#[derive(Clone, Serialize)]
+#[serde(rename_all = &quot;camelCase&quot;, tag = &quot;event&quot;, content = &quot;data&quot;)]
+pub enum PtyEvent {
+    /// Raw output data from the PTY
+    Output { data: Vec&lt;u8&gt; },
+    /// PTY process exited
+    Exit { code: Option&lt;u32&gt; },
+}
+</code></pre>
+<p>Tauri permissions are declarative. A capability is a named permission set. Tauri checks the window name and the requested permission against the capability before a plugin action runs. <code>capabilities/default.json</code> grants the main window and a second window named <code>quick-launcher</code> a named set of permissions. They are opener, notification, zoom, file read and stat, clipboard write, shell spawn and execute, store, log, global shortcut, window actions, deep link, updater, and process (<code>apps/riptide-native/capabilities/default.json:1-52</code>). No code in this snapshot creates a window with the label <code>quick-launcher</code>. The label is a prepared slot. A separate capability grants folder selection to the main composer, which is the session text input (<code>apps/riptide-native/capabilities/main-dialog.json:1-7</code>). The capability lists plugin and core permissions only. The 37 application commands need no entry, because <code>generate_handler!</code> registers them for every window that loads the application.</p>
+<div class="mermaid">
+sequenceDiagram
+    participant UI as &quot;Renderer React code&quot;
+    participant IPC as &quot;Tauri invoke layer&quot;
+    participant Cmd as &quot;Rust start_daemon&quot;
+    participant Mgr as &quot;DaemonManager&quot;
+    participant Side as &quot;bin/riptided sidecar&quot;
+
+    UI-&gt;&gt;IPC: &quot;invoke start_daemon with token and identifiers&quot;
+    IPC-&gt;&gt;Cmd: &quot;Deserialize command arguments&quot;
+    Cmd-&gt;&gt;Cmd: &quot;run_off_main_thread&quot;
+    Cmd-&gt;&gt;Mgr: &quot;start_daemon&quot;
+    Mgr-&gt;&gt;Mgr: &quot;Resolve resource_dir/bin/riptided&quot;
+    Mgr-&gt;&gt;Side: &quot;Spawn riptided with token and identifiers&quot;
+    Side--&gt;&gt;Mgr: &quot;Launch result&quot;
+    Mgr--&gt;&gt;Cmd: &quot;DaemonLaunchResult&quot;
+    Cmd--&gt;&gt;UI: &quot;Promise resolves with the result&quot;
+
+</div>
+<p>The Tauri update path uses <code>tauri-plugin-updater</code>. <code>tauri.conf.json</code> sets a public key and an update endpoint. The endpoint serves a JSON manifest that carries a signature. The public key lets the application verify that signature before it installs an update. The production endpoint is <code>https://update.humanlayer.com/stable/{{target}}-{{arch}}/{{current_version}}</code> (<code>apps/riptide-native/tauri.conf.json:77-82</code>). The bundle creates updater artifacts (<code>apps/riptide-native/tauri.conf.json:40</code>).</p>
+<p>The Tauri shell supports more platforms in configuration than the Electron build. It sets bundle targets to <code>all</code>, a macOS minimum version of 11.0, and Linux Debian and Red Hat package templates (<code>apps/riptide-native/tauri.conf.json:37-64</code>). The single-instance plugin is a Linux and Windows feature (<code>apps/riptide-native/src/lib.rs:528-548</code>, <code>apps/riptide-native/Cargo.toml:61-62</code>). On those systems a deep link starts a second process, and the plugin forwards the call to the running application. Without the plugin, every <code>riptide://</code> link would start another copy of the application. The Electron production configuration in this repository builds only a macOS arm64 disk image and zip (<code>apps/riptide-electron/electron-builder.prod.yml</code>).</p>
+<h2>The two shells compared</h2>
+<table><tr><th>Property</th><th>Electron shell</th><th>Tauri shell</th></tr><tr><td>Application folder</td><td><code>apps/riptide-electron</code></td><td><code>apps/riptide-native</code></td></tr><tr><td>Package version</td><td>0.1.12</td><td>0.200.0</td></tr><tr><td>Runtime version</td><td>Electron 43.0.0</td><td>Tauri 2.11.0</td></tr><tr><td>Renderer model</td><td>Chromium renderer with <code>sandbox</code>, <code>contextIsolation</code>, and no Node integration</td><td>System web view with declarative capabilities</td></tr><tr><td>Renderer entry</td><td>Packaged files through a private scheme, or the development server URL</td><td>Built assets through <code>frontendDist</code>, or the development server through <code>devUrl</code></td></tr><tr><td>Bridge technology</td><td>Preload context bridge plus a transferred <code>MessagePort</code> with Effect RPC</td><td><code>invoke</code> commands and <code>Channel</code> streams</td></tr><tr><td>Contract source</td><td>Shared <code>contracts/riptide-electron-rpc</code> package</td><td>Rust commands are defined in Rust; the renderer imports shared result types from the contract package</td></tr><tr><td>Native command set</td><td>48 typed RPC members</td><td>37 Rust commands</td></tr><tr><td>Daemon sidecar</td><td><code>resources/bin/riptided</code> in packaged mode</td><td><code>bin/riptided</code> resource from the bundle</td></tr><tr><td>Update path</td><td><code>electron-updater</code> with per-channel product names and URLs</td><td><code>tauri-plugin-updater</code> with a signed endpoint</td></tr><tr><td>Platform support in this snapshot</td><td>macOS arm64 build configuration</td><td>macOS, Linux, and Windows configuration</td></tr><tr><td>Bundle identity</td><td><code>com.humanlayer.electron</code>, product <code>HumanLayerElectron</code></td><td><code>com.humanlayer.riptide</code>, product <code>HumanLayer</code></td></tr><tr><td>Custom scheme</td><td><code>humanlayer-electron</code> serves the packaged renderer and OS deep links</td><td><code>riptide</code> handles OS deep links</td></tr></table>
+<p>The commands overlap but are not identical. Both shells can control the daemon, run a terminal, read logs, detect coding agents, manage workspace configuration, and check for updates. This table uses the contract names for Electron. <code>ReadFile</code> is the binary read, <code>ReadTextFile</code> is the text read, <code>StatPath</code> is the path stat, <code>PickDirectory</code> is the directory picker, and <code>DownloadUpdate</code> is one updater operation.</p>
+<p>Electron exposes a few extra operations as first-class RPC members, such as binary file read, directory browse, directory picker, window drag, Sentry identity, and update progress as a stream. Tauri exposes workspace worktree creation as one Rust command per step, such as <code>workspace_preflight</code>, <code>workspace_create</code>, and <code>workspace_run_setup</code>. A git worktree is a second working directory on its own branch.</p>
+<table><tr><th>Capability</th><th>Electron</th><th>Tauri</th><th>Difference that matters</th></tr><tr><td>Daemon start and stop</td><td><code>StartDaemon</code>, <code>StopDaemon</code></td><td><code>start_daemon</code>, <code>stop_daemon</code></td><td>The same success payload crosses both bridges; errors differ</td></tr><tr><td>Terminal</td><td><code>CreatePty</code> and related RPCs</td><td><code>pty_create</code> and related commands with <code>Channel</code> output</td><td>Both stream output: Electron uses a streaming RPC (<code>AttachPty</code> has <code>stream: true</code>) on the port, and Tauri uses a <code>Channel</code></td></tr><tr><td>File read</td><td><code>ReadFile</code>, <code>ReadTextFile</code>, <code>StatPath</code></td><td>Capability-scoped <code>fs</code> plugin plus <code>fuzzy_search_files</code></td><td>Electron exposes three typed read members; Tauri grants the wider <code>fs</code> plugin scope under a capability</td></tr><tr><td>Folder picker</td><td><code>PickDirectory</code> RPC</td><td><code>dialog:allow-open</code> capability</td><td>Electron opens its own dialog from the main process; Tauri asks the dialog plugin under a capability</td></tr><tr><td>Workspace setup</td><td><code>ReadWorkspaceConfig</code>, <code>WriteWorkspaceConfig</code></td><td>Ten workspace commands including worktree creation</td><td>Tauri owns more of the worktree workflow in Rust</td></tr><tr><td>Update progress</td><td><code>DownloadUpdate</code> plus an update progress stream</td><td><code>updater</code> plugin events</td><td>Electron streams progress through <code>UpdateDownloadProgress</code>; Tauri emits plugin events</td></tr><tr><td>Window chrome</td><td>Custom application menu and traffic lights</td><td>Overlay title bar with a drag region</td><td>Electron draws the three colored window buttons; Tauri uses an overlay bar; a browser preview draws fake controls</td></tr></table>
+<p>The user interface already handles the difference. <code>hasTauriChrome()</code> returns true for Tauri and Electron, because both shells use the same custom title bar (<code>apps/riptide-ui/src/lib/tauri-chrome.ts:47-49</code>). The name is historical. It does not mean the Tauri shell only. The title bar layout is shared. The shell supplies the native window buttons, and <code>hasMacWindowControls()</code> decides whether macOS traffic lights sit in the top-left corner (<code>apps/riptide-ui/src/lib/tauri-chrome.ts:56-61</code>). A development browser preview can force this chrome, and <code>showsFakeWindowControls()</code> then draws stand-in traffic lights for screenshots (<code>apps/riptide-ui/src/lib/tauri-chrome.ts:63-66</code>).</p>
+<h2>Which shell is primary</h2>
+<p>The source does not contain one sentence that names a primary shell. The evidence points to the Tauri shell as the shipping HumanLayer application.</p>
+<p>Three facts support this reading. First, the Tauri product name is <code>HumanLayer</code>, and the bundle identifier is <code>com.humanlayer.riptide</code> (<code>apps/riptide-native/tauri.conf.json:3-5</code>). The Electron product name is <code>HumanLayerElectron</code>, and its identifier is <code>com.humanlayer.electron</code>. Second, the user documentation refers to <code>open /Applications/HumanLayer.app</code> (<code>apps/docs/guide/bedrock.md:99</code>). That path matches the Tauri product name. Third, the root development script <code>riptide:native</code> targets the Tauri application, and it appears before the Electron scripts in the manifest (<code>package.json:75-82</code>). Position is weak evidence, because the manifest does not execute scripts in order. The name and the documentation carry more weight.</p>
+<p>This is an inference from names and scripts, not a declared policy. Electron remains a full shell with a larger native command surface and its own update channel. Both shells load the same interface, and both can run the daemon. A reader should not remove either shell without checking the release process.</p>
+<p><strong>Aha:</strong> The Tauri renderer imports result types from <code>@humanlayer/riptide-electron-rpc</code> even though it never uses the Electron bridge (<code>apps/riptide-ui/src/integrations/tauri/daemon.ts:1</code>). The shared contract package therefore does two jobs. It defines the Electron RPC group, and it supplies the common TypeScript shapes for native results. The transport differs, but the data shape stays aligned.</p>
+<p><strong>Aha:</strong> Electron never gives the renderer a native method. It gives the renderer a port. The preload script has almost no logic: verify the origin, expose three values, and forward one port. All typed operations live in the shared RPC group, and all privileged work happens in the main process. This design keeps the privileged surface small, but it also means a lost port stops every native call until a replacement arrives.</p>
+<p>The two shells also fail differently. A failed Electron RPC call returns a typed Effect error over the port. A Tauri command fails with a rejected promise that carries a string from Rust. The dispatch modules in <code>apps/riptide-ui/src/integrations/desktop</code> are the intended conversion point for both failures. Read <a href="18-security-and-self-hosting.html">Security and self-hosting</a> for the trust boundaries around the native bridges. Read <a href="10-ui-application.html">The user interface application</a> for the React layer that both shells load. Read <a href="02-daemon-and-session-runtime.html">The daemon and session runtime</a> for the process that the sidecar starts. Read <a href="14-infrastructure-and-devstack.html">Infrastructure and the development stack</a> for the build scripts around both shells.</p>
+<h2>Next</h2>
+<p>The same desktop surface also has a command-line path. The next document explains the <code>humanlayer</code> command-line interface and the plugin families that copy agent session events into the product.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent integration: executors, model access, and what is mirrored -- humanlayer</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/humanlayer/docs</span>
+    <div class="nav-actions">
+      <a href="12-cli-and-agent-plugins.html" class="nav-breadcrumb">The command-line interface and the agent plugins</a><a href="13-cloud-billing-and-admin.html" class="nav-breadcrumb">Cloud, billing, and administration</a><a href="14-infrastructure-and-devstack.html" class="nav-breadcrumb">Infrastructure, the local stack, and the background jobs</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="14-infrastructure-and-devstack.html" class="nav-btn" title="Previous: Infrastructure, the local stack, and the background jobs">← prev</a>
+      <a href="16-observability-and-attribution.html" class="nav-btn nav-btn-next" title="Next: Observability: errors, metrics, and git attribution">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Agent integration: executors, model access, and what is mirrored</h1>
+<p>HumanLayer names seven coding agents, but the daemon can start only three of them. The other four are not launchable by the daemon. Three of those four — <code>opencode</code>, <code>pi</code>, and <code>claude-code</code> — have a mirroring plugin in this repository. <code>codex</code> is declared mirror-only in the schema comment, but this snapshot holds no Codex plugin, so no sender implements that mirror here. This document explains that split. It gives the exact list, the code that enforces it, the three executors and their failure paths, the model providers, the token accounting fields, the Artificial Intelligence (AI) package, and the Model Context Protocol (MCP) mirroring path.</p>
+<h2>The seven coding-agent values</h2>
+<p>The enumeration lives in one file and drives every schema, launcher, and database column. It has seven values. The values are <code>claude</code>, <code>opencode</code>, <code>codelayer</code>, <code>fold</code>, <code>pi</code>, <code>codex</code>, and <code>claude-code</code>.</p>
+<p>The file also declares a strict subset. The subset holds the agents that the daemon can launch and continue today. The subset has three values: <code>claude</code>, <code>codelayer</code>, and <code>fold</code>.</p>
+<pre><code class="language-ts">// packages/schemas/coding-agent/coding-agent.ts:14-32
+/**
+ * The coding agents the daemon can launch and continue today, and the only options the task
+ * launchers offer. This list grows as agents become supported (opencode, pi, …); anything
+ * absent is rejected by the daemon session handlers and hidden from the launcher. It is a strict
+ * subset of CODING_AGENT_VALUES, enforced by `satisfies`.
+ *
+ * `fold` is exposed in launchers only while the default-off Fold experiment is enabled. The
+ * daemon dispatches it to the Fold executor, while the default CodeLayer path remains Codex-only.
+ */
+export const LAUNCHABLE_CODING_AGENT_VALUES = [&#x27;claude&#x27;, &#x27;codelayer&#x27;, &#x27;fold&#x27;] as const satisfies readonly CodingAgent[]
+
+/**
+ * Whether the daemon runs this agent&#x27;s sessions. A session it doesn&#x27;t run (pi, opencode, codex) is
+ * mirrored from the user&#x27;s own terminal, which never reads model, effort or fast mode changes made
+ * in the app.
+ */
+export function isLaunchableCodingAgent(agent: string | null | undefined): agent is LaunchableCodingAgent {
+	return LAUNCHABLE_CODING_AGENT_VALUES.some((value) =&gt; value === agent)
+}
+</code></pre>
+<p>The comment states four rules. The launchable list is a strict subset, and <code>satisfies</code> makes the compiler enforce it. An agent outside the list is rejected by the handlers and hidden from the launchers. A mirrored agent never reads model, effort, or fast-mode changes that a person makes in the application. The cloud can show the session, but it cannot steer it.</p>
+<p>The guard <code>isLaunchableCodingAgent</code> takes a string, a null, or an undefined value. It returns true only for the three launchable values. The tests confirm the behavior. <code>packages/schemas/test/coding-agent.test.ts:52-53</code> asserts that <code>claude</code>, <code>codelayer</code>, and <code>fold</code> are launchable. The same test covers <code>pi</code>, <code>opencode</code>, <code>codex</code>, null, and undefined. It does not test <code>claude-code</code>.</p>
+<table><tr><th>Coding-agent value</th><th>Launchable</th><th>Evidence</th></tr><tr><td><code>claude</code></td><td>Yes</td><td>In <code>LAUNCHABLE_CODING_AGENT_VALUES</code> at <code>packages/schemas/coding-agent/coding-agent.ts:23</code>; executor branch at <code>apps/riptide-daemon/src/handlers/sessions/on-session-launch.ts:37</code></td></tr><tr><td><code>codelayer</code></td><td>Yes</td><td>In the same list; executor branch at <code>apps/riptide-daemon/src/handlers/sessions/on-session-launch.ts:38</code></td></tr><tr><td><code>fold</code></td><td>Yes</td><td>In the same list; executor branch at <code>apps/riptide-daemon/src/handlers/sessions/on-session-launch.ts:39</code>; behind a default-off experiment per the comment at <code>packages/schemas/coding-agent/coding-agent.ts:20-21</code></td></tr><tr><td><code>pi</code></td><td>No</td><td>Absent from the list; named as mirrored in <code>packages/schemas/coding-agent/coding-agent.ts:26</code>; extension sets its own host identity in <code>apps/riptide-pi-extension/src/capture.ts</code></td></tr><tr><td><code>opencode</code></td><td>No</td><td>Absent from the list; named as mirrored at <code>packages/schemas/coding-agent/coding-agent.ts:26</code>; plugin runs inside the OpenCode server in <code>apps/riptide-opencode-plugin/src/index.ts</code></td></tr><tr><td><code>codex</code></td><td>No</td><td>Absent from the list; named as mirrored at <code>packages/schemas/coding-agent/coding-agent.ts:26</code>; no executor branch exists</td></tr><tr><td><code>claude-code</code></td><td>No</td><td>Absent from the list; the Claude Code plugin writes <code>CODING_AGENT = 'claude-code'</code> with a "not launchable" comment at <code>apps/riptide-claude-code-plugin/src/config.ts:88</code></td></tr></table>
+<p><strong>Aha:</strong> The word "launchable" is a compile-time contract, not a runtime convention. The <code>satisfies readonly CodingAgent[]</code> clause stops a typo or a removed value. The <code>Match.exhaustive</code> call in the handler stops a missing executor branch. A new value in the launchable list breaks the build until a person writes its branch. This is why <code>fold</code> could not silently fall through to Claude.</p>
+<h2>Which agents the daemon can launch</h2>
+<p>The decision is small. A session launch is accepted only if the session status is <code>ready_for_launch</code> or <code>waiting_for_workspace</code>. The handler then parses the <code>coding_agent</code> column against the launchable schema. A failure sets the status to <code>failed</code> with a clear message. A success selects the executor and starts it.</p>
+<div class="mermaid">
+flowchart TD
+    A[&quot;Session row arrives from Electric&quot;] --&gt; B{&quot;Status is ready_for_launch or waiting_for_workspace?&quot;}
+    B --&gt;|&quot;No&quot;| C[&quot;Ignore this change&quot;]
+    B --&gt;|&quot;Yes&quot;| D{&quot;coding_agent is in LAUNCHABLE_CODING_AGENT_VALUES?&quot;}
+    D --&gt;|&quot;No: opencode, pi, codex, claude-code&quot;| E[&quot;Set status failed with a not-supported message&quot;]
+    D --&gt;|&quot;Yes&quot;| F{&quot;Which launchable agent?&quot;}
+    F --&gt;|&quot;claude&quot;| G[&quot;Claude executor: claude-agent-sdk&quot;]
+    F --&gt;|&quot;codelayer&quot;| H[&quot;CodeLayer executor: createCodelayerAgent&quot;]
+    F --&gt;|&quot;fold&quot;| I[&quot;Fold executor: FoldSessionRunner.runPrompt&quot;]
+    G --&gt; J[&quot;runSession wrapper&quot;]
+    H --&gt; J
+    I --&gt; J
+    J --&gt; K[&quot;Mirror work into events and usage rows&quot;]
+
+</div>
+<h2>The executor map and the dispatch</h2>
+<p>An executor is a function that runs one coding agent for one session. The daemon builds one services record at start. The record holds the three executors under exact keys. The keys match the three launchable values. The start function builds <code>claudeExecutor</code> and <code>foldExecutor</code> by calling the two factories at <code>apps/riptide-daemon/src/start.ts:192-193</code>.</p>
+<pre><code class="language-ts">// apps/riptide-daemon/src/start.ts:209-213
+			executors: {
+				claude: claudeExecutor,
+				codelayer: executeCodelayer,
+				fold: foldExecutor,
+			},
+</code></pre>
+<p>The handler uses a <code>Match</code> expression from Effect. Effect is a TypeScript library for typed effects. An Effect value describes work and runs only when a runner such as <code>Effect.runPromise</code> executes it. Each branch returns the function for one value. The final <code>Match.exhaustive</code> call makes the compiler demand a branch for every launchable value. If a person adds a fourth value to the launchable list, this expression stops type-checking.</p>
+<pre><code class="language-ts">// apps/riptide-daemon/src/handlers/sessions/on-session-launch.ts:27-41
+/**
+ * Select the executor for a launchable agent. Exhaustive by design: `Match.exhaustive` stops
+ * type-checking the moment a value is added to LAUNCHABLE_CODING_AGENT_VALUES without a branch here,
+ * which is what keeps `fold` (and every future agent) from silently falling through to Claude.
+ */
+const executorForLaunchableAgent = (
+	agent: LaunchableCodingAgent,
+	executors: DaemonServices[&#x27;executors&#x27;],
+): SessionExecutor =&gt;
+	Match.value(agent).pipe(
+		Match.when(&#x27;claude&#x27;, () =&gt; executors.claude),
+		Match.when(&#x27;codelayer&#x27;, () =&gt; executors.codelayer),
+		Match.when(&#x27;fold&#x27;, () =&gt; executors.fold),
+		Match.exhaustive,
+	)
+</code></pre>
+<p>The rejection path parses the stored string with the launchable Zod schema. If the parse fails, the handler logs one line, then calls <code>sessions.update</code> with status <code>failed</code> and the message <code>The &lt;agent&gt; coding agent is not currently supported.</code> It returns without a throw, so the daemon keeps running and the row shows the reason.</p>
+<pre><code class="language-ts">// apps/riptide-daemon/src/handlers/sessions/on-session-launch.ts:124-138
+	// Parse the agent against the set the daemon can actually run. Anything outside it — opencode
+	// today — is rejected here until its execution path lands. See
+	// .humanlayer/tasks/putting-fold-in-humanlayer/06-structure-outline-fold-agent-platform.md.
+	const launchableAgent = LaunchableCodingAgentZodSchema.safeParse(session.coding_agent)
+	if (!launchableAgent.success) {
+		logger.error(
+			`Coding agent ${session.coding_agent} is not supported for launching sessions yet (session ${session.id})`,
+		)
+		await services.orpc.sessions.update({
+			sessionId: session.id,
+			status: &#x27;failed&#x27;,
+			errorMessage: `The ${session.coding_agent} coding agent is not currently supported.`,
+		})
+		return
+	}
+</code></pre>
+<p>This is defense in depth. The launcher hides the mirror-only agents, and the type system excludes them. A plugin can still write a row with <code>opencode</code>, <code>pi</code>, <code>codex</code>, or <code>claude-code</code>. The handler must refuse it, because no executor can run it.</p>
+<h2>The shared session wrapper</h2>
+<p>All three executors go through <code>runSession</code>. The wrapper owns the lifecycle work that is the same for every agent. It registers a completion promise for shutdown. It creates an interrupt state. It runs the agent-specific callback. It marks the session <code>failed</code> on an error, unless the error was an interrupt. It always starts the post-run capture in the <code>finally</code> block.</p>
+<p>Post-run capture is the detached work in the <code>finally</code> block. It resolves the shutdown completion promise and reports the session repositories. It does not record commits; the continuous commit watcher owns commit capture (<code>apps/riptide-daemon/src/agents/shared/run-session.ts:92-105</code>, <code>:149-163</code>). <code>repositoryObserver</code> is a daemon service that probes each session checkout. It reads the Git root, the branch, and the <code>origin</code> Uniform Resource Locator (URL), then reports up to 50 repositories to <code>sessions/repositories/report</code> (<code>apps/riptide-daemon/src/lib/git/repository-observer.ts:14-33</code>, <code>:110-145</code>). It runs at session start and end, and every 30 seconds (<code>:13</code>, <code>:80-83</code>).</p>
+<pre><code class="language-ts">// apps/riptide-daemon/src/agents/shared/run-session.ts:122-150
+export async function runSession(opts: RunSessionOptions): Promise&lt;void&gt; {
+	const { session, services, resumeSessionId, forkMeta, execute, continuationKind = &#x27;ordinary&#x27; } = opts
+	const sessionId = session.id
+
+	// Register completion promise for shutdown coordination
+	// This MUST be resolved before the function returns (in finally block)
+	services.shutdown.registerSessionCompletion(sessionId)
+
+	const interruptState = await createInterruptState()
+
+	void services.repositoryObserver?.observeSession(sessionId)
+
+	try {
+		await execute({ session, services, interruptState, continuationKind }, resumeSessionId, forkMeta)
+		logger.info(`Session ${sessionId} completed`)
+	} catch (error) {
+		const wasInterrupted = await Effect.runPromise(interruptState.wasInterrupted)
+		if (!wasInterrupted) {
+			logger.error({ sessionId, error }, &#x27;Session failed&#x27;)
+			// Extract error message, handling Effect&#x27;s error wrapping
+			const errorMessage = extractErrorMessage(error)
+			await services.orpc.sessions.update({
+				sessionId,
+				status: &#x27;failed&#x27;,
+				errorMessage,
+			})
+		}
+		throw error
+	} finally {
+</code></pre>
+<p><code>SessionExecutor</code> takes a session context, an optional resume identifier, and optional fork metadata. The context holds the session row, the services record, the interrupt state, and an optional continuation kind. The kind is <code>ordinary</code> when omitted, and <code>lost-resume</code> when a lost session resumes (<code>apps/riptide-daemon/src/agents/shared/run-session.ts:52-58</code>). The wrapper passes one context shape to every executor. A resume continues an existing agent session. A fork copies a session into a new one. The <code>finally</code> block starts the detached post-run capture and resolves the completion promise at <code>apps/riptide-daemon/src/agents/shared/run-session.ts:151-152</code>.</p>
+<p>An interrupt is a user action, not a failure. The wrapper checks <code>wasInterrupted</code> before it writes <code>failed</code>. On an interrupt, it rethrows the error and leaves the status alone.</p>
+<h2>The three executors</h2>
+<p>Four names recur below. CodeLayer is the private agent runtime in <code>@humanlayer/codelayer</code>, version 0.0.89 (root <code>package.json:162</code>). AgentLayer is the provider and core runtime under CodeLayer, in <code>@humanlayer/agentlayer-core</code> and the provider packages, also version 0.0.89 (<code>package.json:163-167</code>). Fold is a second executor and product path, in <code>@humanlayer/fold-agent</code>, <code>@humanlayer/fold-codex</code>, <code>@humanlayer/fold-core</code>, and <code>@humanlayer/fold-xai</code>, version 0.1.32 (<code>apps/riptide-daemon/package.json:63-66</code>). Codex is the OpenAI Codex model family and its wire protocol. The comment that calls the default CodeLayer path "Codex-only" names that protocol, not a provider limit (<code>packages/schemas/coding-agent/coding-agent.ts:14-32</code>).</p>
+<h3>Claude</h3>
+<p>The Claude executor is a thin adapter over the <code>ClaudeSessions</code> service. It builds an input record with the context and a setup callback for artifact paths. It also builds hooks, which are callbacks that run on agent events such as a tool call. It calls <code>sessions.executeClaudeSession</code> inside an Effect. It wraps the work in a Sentry trace named <code>claude.session_execution</code>. It treats a success and an interrupt-only cause as a normal end. <code>ClaudeSessions</code> prepares the run, <code>ClaudeSdk</code> owns the process, and the adapter joins them. For any other cause, it records the cause for diagnostics and rethrows its squashed form.</p>
+<pre><code class="language-ts">// apps/riptide-daemon/src/effects/services/claude-sessions/claude-session-executor.ts:11-34
+export function createClaudeSessionExecutor(daemonRuntime: DaemonRuntime): SessionExecutor {
+	return async (context, resumeSessionId, forkMeta) =&gt; {
+		const input = {
+			context,
+			setupArtifactPaths: (cwd: string, taskId: string, taskSlug: string) =&gt;
+				setupArtifactPaths(cwd, taskId, taskSlug, daemonRuntime),
+			resumeSessionId,
+			forkMeta,
+		}
+		const program = Effect.gen(function* () {
+			const sessions = yield* ClaudeSessions
+			yield* sessions.executeClaudeSession(input)
+		}).pipe(
+			Effect.annotateLogs({ &#x27;claude.executor&#x27;: &#x27;effect&#x27;, sessionId: context.session.id }),
+			Effect.withSpan(&#x27;claude.session_execution&#x27;, {
+				attributes: { &#x27;claude.executor&#x27;: &#x27;effect&#x27;, session_id: context.session.id },
+			}),
+		)
+		const exit = await Sentry.startNewTrace(() =&gt; daemonRuntime.runPromiseExit(program))
+		if (Exit.isSuccess(exit) || Cause.hasInterruptsOnly(exit.cause)) return
+		captureClaudeTerminalCause(exit.cause, input)
+		throw Cause.squash(exit.cause)
+	}
+}
+</code></pre>
+<p>The preparation step imports the <code>@anthropic-ai/claude-agent-sdk</code> package, builds the hooks, and attaches the MCP server. <code>ClaudeSdk</code> then opens a session that exposes an output stream, <code>sendMessage</code>, <code>close</code>, <code>interrupt</code>, <code>setModel</code>, <code>setPermissionMode</code>, and <code>readUsage</code>. The executor drives this object; it does not call the model directly.</p>
+<p>This design explains two behaviors. A resumed session works because the Software Development Kit (SDK) session carries the resume identifier. A fork works because the wrapper passes fork metadata to the preparation.</p>
+<h3>CodeLayer</h3>
+<p>The CodeLayer executor is a plain async function, not an Effect wrapper. It reads the session, normalizes the working directory, and resolves the provider and the model. The default provider is <code>anthropic</code>. The default model comes from <code>RIPTIDE_DEFAULT_MODELS[provider]</code>. It creates the agent with <code>createCodelayerAgent</code>. It sets the status to <code>running</code> only after the agent exists. It then loads, resumes, or forks the agent state. Agent state is the resumable CodeLayer conversation state. The daemon keeps a current row in <code>codelayer_agent_state</code>, keyed by session, and snapshots in <code>codelayer_agent_state_snapshots</code> (<code>packages/db/src/tables/codelayer-agent-state.ts:10-40</code>; <code>packages/db/src/tables/codelayer-agent-state-snapshots.ts:12-20</code>).</p>
+<pre><code class="language-ts">// apps/riptide-daemon/src/agents/codelayer/execute-codelayer.ts:159-165
+export async function executeCodelayer(
+	ctx: SessionContext,
+	resumeSessionId?: string,
+	forkMeta?: ForkMeta,
+): Promise&lt;void&gt; {
+	const { session, services, interruptState } = ctx
+	const cwd = normalizePath(session.working_directory)
+</code></pre>
+<p>The CodeLayer executor accepts any selectable provider: <code>anthropic</code>, <code>copilot</code>, <code>codex</code>, <code>firepass</code>, or <code>xai</code>. The comment in the schema calls the default CodeLayer path "Codex-only"; that phrase names the agent protocol that CodeLayer wraps, not the model provider list. The provider and the model are session columns, so the application can change them for a new session. The executor reads them at start time. A change to a running session does not reach the agent, because the agent already holds its model.</p>
+<p>A throw from <code>createCodelayerAgent</code> or the run loop goes to <code>runSession</code>, which writes <code>failed</code> with the extracted message. A supplied resume identifier or fork metadata selects the existing state instead of a fresh run.</p>
+<h3>Fold</h3>
+<p>The Fold executor decodes its input with an Effect schema, then calls the process-scoped runner. The input holds the session identifier, the prompt, and an admission policy. The policy is <code>recover-lost</code> for a lost resume and <code>serialize</code> for every other kind. The default kind is <code>ordinary</code>. <code>Serialize</code> means one run at a time. <code>Recover-lost</code> lets a run replace a lost one. The Fold signature reads only the context, so it ignores the resume identifier and the fork metadata.</p>
+<pre><code class="language-ts">// apps/riptide-daemon/src/effects/services/fold-sessions/fold-session-executor.ts:14-32
+export function createFoldSessionExecutor(daemonRuntime: DaemonRuntime): SessionExecutor {
+	return async (context) =&gt; {
+		const input = await Schema.decodeUnknownPromise(RunFoldPromptInput)({
+			sessionId: context.session.id,
+			prompt: context.session.prompt,
+			admissionPolicy: foldAdmissionPolicyFor(context.continuationKind),
+		})
+		const program = Effect.gen(function* () {
+			const runner = yield* FoldSessionRunner
+			yield* runner.runPrompt(input)
+		}).pipe(
+			Effect.annotateLogs({ &#x27;fold.executor&#x27;: &#x27;effect&#x27;, sessionId: context.session.id }),
+			Effect.withSpan(&#x27;fold.session_execution&#x27;, { attributes: { session_id: context.session.id } }),
+		)
+		const exit = await Sentry.startNewTrace(() =&gt; daemonRuntime.runPromiseExit(program))
+		if (Exit.isSuccess(exit) || Cause.hasInterruptsOnly(exit.cause)) return
+		throw Cause.squash(exit.cause)
+	}
+}
+</code></pre>
+<p><code>FoldSessionRunner.runPrompt</code> returns an Effect with three errors. <code>FoldSessionsShuttingDownError</code> means the daemon is stopping. <code>FoldPromptTakeoverError</code> means another run claimed the session. <code>FoldPromptRunError</code> is any other run failure. The executor converts a failed exit into a thrown cause, and the shared wrapper records it. A decode failure throws before the trace starts, but the shared wrapper still records the session as failed.</p>
+<p>The Fold provider set is smaller: only <code>codex</code> and <code>xai</code>.</p>
+<h2>Mirror-only adapters: OpenCode, Pi, and Claude Code</h2>
+<p>A mirror-only adapter is absent from the launchable list, so the handler refuses it, and it has no executor branch. Most important, the daemon does not own the runtime state: the agent started in a terminal, and its process and model session belong to that program.</p>
+<p>The OpenCode plugin runs inside the OpenCode version 2 background server and keeps its own session map. The pi extension runs inside pi and mirrors the session entry stream. The Claude Code plugin runs as a hooks module plus an MCP server and tracks a byte cursor for each transcript file.</p>
+<p>None of the three exposes a resume handle that the daemon could use. A cloud "continue" would need the original process, model session, and permission state. The daemon has none of them. The mirror is one-way by design. Here, mirror means copying session state, not exposing tools.</p>
+<p><strong>Aha:</strong> The split is not a missing feature. It is a consequence of process ownership. A launchable agent is one whose runtime the daemon can construct from a database row. A mirrored agent is one whose runtime already exists in another process. The seven values encode which case applies to each agent.</p>
+<h2>Declarations with no launch path: codex and claude-code</h2>
+<p>Two values need a separate explanation, because they look like they should be launchable.</p>
+<p><code>codex</code> is both a coding-agent value and a model provider. As a provider, it appears in the selectable list and the Fold list. As a coding agent, it is not launchable, because no executor branch exists. CodeLayer can use the Codex provider while the coding agent stays <code>codelayer</code>. The comment at <code>packages/schemas/coding-agent/coding-agent.ts:26</code> names <code>codex</code> as mirrored.</p>
+<p><code>claude-code</code> is the identity that the Claude Code plugin uses for mirrored sessions. The plugin sets it at <code>apps/riptide-claude-code-plugin/src/config.ts:88</code> and states that it is not launchable. A session with this value shows the mirror, and the application never offers fork or continue. The value is separate from <code>claude</code>, which is the daemon-launched agent.</p>
+<h2>Model provider configuration</h2>
+<p>The provider enumeration has five values. The Fold subset has two. Both the CodeLayer executor and the Fold session opener read <code>session.provider</code> (<code>apps/riptide-daemon/src/agents/codelayer/execute-codelayer.ts:168</code>; <code>apps/riptide-daemon/src/effects/services/fold-sessions/fold-session-opener.layer.ts:141-153</code>). The Claude path always uses <code>anthropic</code>. The Fold path decodes the column against its own two-value subset.</p>
+<pre><code class="language-ts">// packages/schemas/model-provider/model-provider.ts:1-14
+import * as Schema from &#x27;effect/Schema&#x27;
+import z from &#x27;zod/v4&#x27;
+
+export const SELECTABLE_MODEL_PROVIDER_VALUES = [&#x27;anthropic&#x27;, &#x27;copilot&#x27;, &#x27;codex&#x27;, &#x27;firepass&#x27;, &#x27;xai&#x27;] as const
+
+export const SelectableModelProvider = Schema.Literals(SELECTABLE_MODEL_PROVIDER_VALUES)
+export type SelectableModelProvider = typeof SelectableModelProvider.Type
+export const SelectableModelProviderZodSchema = z.enum(SELECTABLE_MODEL_PROVIDER_VALUES)
+
+export const FOLD_MODEL_PROVIDER_VALUES = [&#x27;codex&#x27;, &#x27;xai&#x27;] as const satisfies readonly SelectableModelProvider[]
+
+export const FoldModelProvider = Schema.Literals(FOLD_MODEL_PROVIDER_VALUES)
+export type FoldModelProvider = typeof FoldModelProvider.Type
+export const FoldModelProviderZodSchema = z.enum(FOLD_MODEL_PROVIDER_VALUES)
+</code></pre>
+<p>The <code>satisfies readonly SelectableModelProvider[]</code> clause does the same job as the coding-agent subset. A Fold provider that is not selectable cannot compile.</p>
+<table><tr><th>Provider</th><th>Selectable</th><th>Fold</th><th>How it is reached</th></tr><tr><td><code>anthropic</code></td><td>Yes</td><td>No</td><td>Claude executor default; CodeLayer default</td></tr><tr><td><code>copilot</code></td><td>Yes</td><td>No</td><td>CodeLayer provider choice</td></tr><tr><td><code>codex</code></td><td>Yes</td><td>Yes</td><td>CodeLayer provider choice; Fold provider choice</td></tr><tr><td><code>firepass</code></td><td>Yes</td><td>No</td><td>CodeLayer provider choice</td></tr><tr><td><code>xai</code></td><td>Yes</td><td>Yes</td><td>Fold provider choice</td></tr></table>
+<p>The five names are provider identifiers. <code>copilot</code> is the GitHub Copilot provider package. <code>xai</code> is xAI. <code>firepass</code> sends requests to the Fireworks inference gateway through an OpenAI-compatible client (<code>apps/riptide-daemon/src/agents/codelayer/execute-codelayer.ts:139-149</code>; root <code>package.json:166-167</code>). The repository gives no further definition for these names.</p>
+<p>The host model catalog is the model list that the local host reports to the picker. It is narrower. <code>HOST_MODEL_CATALOG_PROVIDERS</code> contains only <code>anthropic</code> and <code>codex</code> (<code>packages/schemas/src/zod/model-catalog.ts:3</code>). An entry carries the provider, the value, the resolved model, a label, a description, the default and hidden flags, the effort levels, the default effort, and capability flags for fast mode, automatic mode, and the context window. The application uses this catalog to draw the model picker. The fast-mode and automatic-mode flags say whether the model offers those modes; the catalog does not define their behaviour. A session can still carry a provider that the catalog does not list; the CodeLayer executor accepts all five selectable values.</p>
+<p>The picker is incomplete by design. A session gets a provider outside it through four paths. The Application Programming Interface (API) contracts accept any string provider for create and launch (<code>contracts/riptide-api-contract/src/api/sessions/create.ts:16</code>, <code>v2/create.ts:17</code>, <code>launch.ts:31</code>). The CLI <code>automation run</code> command has <code>--provider</code> (<code>apps/cli/src/index.ts:77</code>). The generated <code>api</code> command tree can call the create routes. A fork copies the source session provider (<code>apps/riptide-api/src/orpc/api/sessions/fork.ts:293</code>).</p>
+<p>The context window sizes are not stored in the catalog for every model. <code>packages/schemas/src/effect/model-context.ts</code> holds overrides for Codex at 258,400 tokens and xAI at 500,000 tokens. The generic Claude fallback is 968,000; Haiku and Opus 4.6 use 168,000; <code>gpt-5</code> uses 1,050,000. <code>getContextWindowUsagePercentage</code> subtracts a Codex baseline of 12,000 tokens from both the used count and the limit before it computes the share (<code>packages/schemas/src/effect/model-context.ts:27</code>, <code>:82-96</code>). The baseline is a fixed constant. The repository does not define what overhead it represents, and it does not derive the value from a model property. The stored <code>context_window_limit</code> is the full window, so it includes the baseline. The subtraction happens only in the percentage helper.</p>
+<p>Effort levels come from <code>packages/ai/src/config/index.ts</code>. Claude accepts <code>low</code>, <code>medium</code>, <code>high</code>, <code>xhigh</code>, and <code>max</code>. The base Codex list is <code>low</code>, <code>medium</code>, <code>high</code>, and <code>xhigh</code>; the larger list adds <code>max</code> (<code>:106-108</code>). <code>ultra</code> is a declared Codex level, but no model entry enables it (<code>:8</code>, <code>:107</code>). A comment says that the <code>gpt-5.6</code> models advertise <code>ultra</code>, but it depends on Codex command-line interface spawn-agent tools that this product does not expose (<code>:107-109</code>). Spawn-agent tools let a Codex run start and control child agents. This product does not provide them, so it does not enable <code>ultra</code>. The file maps supported levels per Claude model, so the picker hides a level that the model rejects.</p>
+<h2>Model usage and token accounting</h2>
+<p>Every session holds a live summary of its usage. The columns are <code>context_window_tokens</code>, <code>context_window_limit</code>, <code>is_compacting</code>, <code>total_cost_usd</code>, <code>model_usage</code>, and <code>applied_usage_report_keys</code>. These hold the latest occupancy, the effective limit, the compaction flag, the cumulative cost in United States Dollars (USD), the per-model map, and a bounded list of applied report keys (at most 20). The code block below is an excerpt; <code>applied_usage_report_keys</code> is declared at <code>packages/db/src/tables/sessions.ts:158</code>.</p>
+<pre><code class="language-ts">// packages/db/src/tables/sessions.ts:126-149
+		/**
+		 * Current context window usage (input + output tokens of latest message)
+		 */
+		context_window_tokens: integer().default(0),
+
+		/**
+		 * Effective context window limit for this session&#x27;s model
+		 */
+		context_window_limit: integer().default(168000),
+
+		is_compacting: boolean().notNull().default(false),
+
+		/**
+		 * Total cost in USD for this session (cumulative across all API calls)
+		 * Updated from result event&#x27;s total_cost_usd field
+		 */
+		total_cost_usd: real(),
+
+		/**
+		 * Cumulative model usage breakdown by model name
+		 * Format: { [modelName: string]: { input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens } }
+		 * Updated from result event&#x27;s modelUsage field
+		 */
+		model_usage: jsonb().$type&lt;SessionModelUsage&gt;(),
+</code></pre>
+<p>The per-model shape is a schema, not free-form JavaScript Object Notation (JSON). It has token counts for input and output, and optional counts for cache reads and writes. Two helpers combine them. <code>totalPromptTokens</code> adds the input and both cache counts. <code>contextOccupancyTokens</code> adds the output. The helpers compute totals; they do not write the columns.</p>
+<pre><code class="language-ts">// packages/schemas/src/effect/model-usage.ts:1-22
+import * as Schema from &#x27;effect/Schema&#x27;
+
+export const TokenCount = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
+
+export const ModelTokenUsage = Schema.Struct({
+	input_tokens: TokenCount,
+	output_tokens: TokenCount,
+	cache_read_input_tokens: Schema.optionalKey(TokenCount),
+	cache_creation_input_tokens: Schema.optionalKey(TokenCount),
+})
+export interface ModelTokenUsage extends Schema.Schema.Type&lt;typeof ModelTokenUsage&gt; {}
+
+export const SessionModelUsage = Schema.Record(Schema.String, ModelTokenUsage)
+export type SessionModelUsage = Schema.Schema.Type&lt;typeof SessionModelUsage&gt;
+
+export function totalPromptTokens(usage: ModelTokenUsage): number {
+	return usage.input_tokens + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0)
+}
+
+export function contextOccupancyTokens(usage: ModelTokenUsage): number {
+	return totalPromptTokens(usage) + usage.output_tokens
+}
+</code></pre>
+<p>The append-only event table is the detailed record. Each row is one usage report for one model. The rows are immutable, and the cost is frozen at ingest. The table carries the same four conventional counters, plus an open JSON Binary (JSONB) map, plus hoisted integer columns for cheap Structured Query Language (SQL) sums.</p>
+<pre><code class="language-ts">// packages/db/src/tables/session-usage-events.ts:15-32
+/**
+ * Append-only token usage events: one immutable row per (usage report, model).
+ *
+ * A &quot;report&quot; is one run&#x27;s usage, keyed by the same usageReportKey that
+ * sessions.update uses to merge snapshots (result-event uuid for claude,
+ * run-minted uuid for codelayer, &#x27;backfill:&lt;session_id&gt;&#x27; for backfill).
+ * Counters are cumulative PER RUN (reset on resume), so rows sum across runs.
+ *
+ * TOKEN SEMANTICS: `tokens` stores RAW provider fields (Anthropic semantics):
+ * `input_tokens` EXCLUDES cache_read/cache_creation (separate, additive keys).
+ * This differs from conversation_events.input_tokens (COMBINED total).
+ * Conventional keys: input_tokens, output_tokens, cache_read_input_tokens,
+ * cache_creation_input_tokens; open map so new categories need no migration.
+ * Hoisted int columns mirror the four conventional keys for cheap SQL.
+ *
+ * cost_usd is frozen at ingest (SDK-reported per-model cost); never repriced.
+ * Rows are immutable — never UPDATE; rollups are derived projections.
+ */
+</code></pre>
+<p>The token semantics differ between two tables, and the difference is deliberate. The conversation event column holds a combined input total. The usage event column holds the raw provider field, where input excludes the cache counters. The two conventions differ. AgentLayer, the runtime under CodeLayer, counts cached tokens inside its input number, like the OpenAI convention. The storage convention keeps them separate. The daemon subtracts the cache counters before it writes a usage event. A negative, fractional, or non-finite result is clamped to a non-negative integer.</p>
+<p><strong>Aha:</strong> The same request produces two totals that do not match, and both are correct. The conversation event answers "how large was this message." The usage event answers "what did the provider bill." The first includes cache tokens in the input. The second lists them as separate additive keys. Any report that mixes the two tables must pick one convention.</p>
+<p>The <code>usageReportKey</code> makes a retry safe. The key is the SDK result identifier for Claude, a daemon-generated identifier for CodeLayer, and a backfill key for imported history. The session keeps at most 20 applied keys (<code>apps/riptide-api/src/orpc/daemon/sessions/update.ts:36</code>). A new key is appended, and the oldest key is dropped, so eviction is first in, first out (<code>:142-143</code>). A delayed retry that arrives after a newer report is skipped while its key remains in the list. A retry that arrives after its key was evicted is applied again, so it can double count cost and usage. The code accepts that risk: the daemon client makes five attempts with a two-second delay (<code>apps/riptide-daemon/src/orpc/client.ts:14</code>, <code>:93</code>; <code>apps/riptide-api/src/orpc/daemon/sessions/update.ts:29-35</code>). The source comment says that 20 keys exceed the number of runs that can finish while one retry is pending, so eviction before a retry is unlikely. The usage event table has a unique constraint on the session, the report key, and the model.</p>
+<h2>The AI package</h2>
+<p><code>packages/ai</code> is a private package named <code>@humanlayer/ai</code>, version <code>0.0.1</code>. It holds eight small agents that support the product. None of these agents runs a coding session. They label, summarize, extract, and research.</p>
+<table><tr><th>Agent entry point</th><th>Job</th></tr><tr><td><code>classify-task-intent</code></td><td>Decides what a person wants from a task message</td></tr><tr><td><code>context-shards</code></td><td>Splits context into retrievable pieces</td></tr><tr><td><code>doc-researcher</code></td><td>Answers a question from documentation (the evaluation script is <code>eval:doc-research</code>)</td></tr><tr><td><code>design-doc-open-questions</code></td><td>Lists the open questions in a design document</td></tr><tr><td><code>extract-next-step</code></td><td>Pulls the next action from a conversation</td></tr><tr><td><code>generate-session-title</code></td><td>Names a session from its first turn</td></tr><tr><td><code>generate-task-summary</code></td><td>Summarizes a task</td></tr><tr><td><code>generate-learn-questions</code></td><td>Produces questions for a learning flow</td></tr></table>
+<p>The package exports one module per agent, plus <code>config</code>, <code>providers</code>, <code>reliable-language-model</code>, and an Effect entry point for <code>extract-next-step</code> (<code>packages/ai/package.json:6-19</code>). It depends on the Vercel AI SDK through <code>@ai-sdk/anthropic</code>, <code>@ai-sdk/openai</code>, and <code>@ai-sdk/provider</code>, plus the <code>ai</code> package, Effect, and Zod (<code>packages/ai/package.json:47-58</code>).</p>
+<p>The model choice is an alias, not a raw identifier. There are two aliases: <code>sonnet</code> and <code>haiku</code>. The primary models are Claude Sonnet 5 and Claude Haiku 4.5. The fallback models are <code>gpt-5</code> and <code>gpt-5-mini</code>, and they exist only when <code>OPENAI_API_KEY</code> is set. The fallback object exists only when the key is set, because the OpenAI call would fail at first inference without a key.</p>
+<pre><code class="language-ts">// packages/ai/src/providers/models.ts:9-29
+export type ModelAlias = &#x27;sonnet&#x27; | &#x27;haiku&#x27;
+
+const PRIMARY: Record&lt;ModelAlias, LanguageModelV3&gt; = {
+	sonnet: anthropic(&#x27;claude-sonnet-5&#x27;),
+	haiku: anthropic(&#x27;claude-haiku-4-5&#x27;),
+}
+
+const isFallbackEnabled = Boolean(process.env.OPENAI_API_KEY?.trim())
+
+if (!isFallbackEnabled) {
+	logger.warn({ event: &#x27;ai_fallback_disabled&#x27; }, &#x27;OPENAI_API_KEY not set — AI fallback disabled; primary-only mode&#x27;)
+}
+
+// Construct the OpenAI fallback models lazily so `openai(&#x27;gpt-5&#x27;)` is never invoked
+// when the key is missing (which would otherwise fail at first inference call).
+const FALLBACK: Record&lt;ModelAlias, LanguageModelV3&gt; | null = isFallbackEnabled
+	? {
+			sonnet: openai(&#x27;gpt-5&#x27;),
+			haiku: openai(&#x27;gpt-5-mini&#x27;),
+		}
+	: null
+</code></pre>
+<p><code>resolveModel</code> returns the primary model when the fallback is off. It returns a reliable wrapper when the fallback is on. The wrapper tries the primary provider first. If that call still fails after its retries, it calls the fallback (<code>packages/ai/src/reliable-language-model/handle-retries.ts:6-17</code>). The wrapper does not classify the primary error; any failure reaches the fallback. The caller sees a single <code>LanguageModelV3</code> and does not handle the switch. If both paths fail, the fallback error goes to the failure service and to the caller.</p>
+<p>The package also holds evaluation projects. The scripts are <code>eval</code>, <code>eval:context-shards</code>, <code>eval:classify-task-intent</code>, <code>eval:extract-next-step</code>, <code>eval:design-doc-open-questions</code>, <code>eval:doc-research</code>, <code>eval:generate-session-title</code>, <code>eval:generate-task-summary</code>, and <code>eval:generate-learn-questions</code>. Each project runs a set of cases and reports a score. This is how a prompt change is tested before release.</p>
+<h2>The MCP mirroring path</h2>
+<p>The MCP path serves two audiences, and they meet at one tool list. Both write through the HumanLayer API.</p>
+<p>For a daemon-launched session, the daemon builds an in-process MCP server. The server registers at most seven tools with <code>createSdkMcpServer</code> and <code>tool</code> from the Claude Agent SDK (<code>apps/riptide-daemon/src/agents/claudecode/mcp/humanlayer-server.ts:117-182</code>). Each tool wraps an executor and returns <code>isError: true</code> on a failure. <code>library_researcher</code> is always defined, but the caller can disable it. The six comment tools exist only when the session has a task. When no tool is available, the factory returns <code>null</code> and registers no server. The maximum set is <code>get_artifact_comments</code>, <code>update_artifact_comments</code>, <code>reply_to_artifact_comment</code>, <code>get_diff_comments</code>, <code>reply_to_diff_comment</code>, <code>update_diff_comments</code>, and <code>library_researcher</code>.</p>
+<p>For a mirrored session, the host plugin must supply the same tool list itself. The shared package <code>@humanlayer/session-sdk-tools</code> holds the neutral specifications. The names, descriptions, and output text copy the daemon versions on purpose, so a skill carries over between a launched session and a mirrored one.</p>
+<pre><code class="language-ts">// packages/session-sdk-tools/src/tools.ts:1-5
+// The HumanLayer tools riptide-daemon gives its agents, as specs any agent integration can
+// register. Names, descriptions and output text copy riptide-daemon&#x27;s
+// src/agents/shared/humanlayer-tools/{schemas,executors}.ts, so skills and habits carry over.
+// Parameters use a small neutral shape: toJsonSchema() turns them into JSON Schema, and an
+// integration whose agent wants another schema library converts them itself.
+</code></pre>
+<p>The three host paths differ in transport. OpenCode and pi register the specifications directly, so their model sees ordinary tools. Claude Code does not take the tool list from its MCP server, so the plugin uses a different trick. The Claude Code hooks module, called the mod, intercepts a tool call whose name starts with <code>mcp__humanlayer__</code>. It forwards the call over the Unix socket to the plugin server, and the server runs the executor. The MCP server itself lists no tools, because the mod is the real tool surface. The mod registers the tools on the <code>session.start</code> hook event. It calls the server <code>/hello</code> route and reads the <code>tools</code> field of the reply (<code>apps/riptide-claude-code-plugin/hooks/mod.ts:175-188</code>; <code>src/protocol.ts:27-33</code>). It calls <code>$.tool.register</code> for each item, so the hook engine supplies the names. The model can therefore call them without a <code>tools/list</code> result. This is why the plugin table in <a href="12-cli-and-agent-plugins.html">The command-line interface and the agent plugins</a> says the plugin "adds the seven HumanLayer tools", although its MCP server returns an empty list.</p>
+<div class="mermaid">
+sequenceDiagram
+    participant D as Agent runtime
+    participant M as In-process MCP server
+    participant T as HumanLayer tool
+    participant A as HumanLayer API
+    participant DB as PostgreSQL
+
+    D-&gt;&gt;M: Call mcp__humanlayer__get_diff_comments
+    M-&gt;&gt;T: Dispatch to the executor
+    T-&gt;&gt;A: Read comments for the task
+    A-&gt;&gt;DB: Select rows
+    DB--&gt;&gt;A: Comment rows
+    A--&gt;&gt;T: Comment list
+    T--&gt;&gt;M: Text result
+    M--&gt;&gt;D: Tool result to the model
+
+</div>
+<h2>One executor start, end to end</h2>
+<p>The sequence below combines the pieces above. It starts with a row that Electric delivered and ends with a failed status written back through the API. The success path differs only at the last step.</p>
+<div class="mermaid">
+sequenceDiagram
+    participant E as Electric
+    participant H as Session launch handler
+    participant R as runSession wrapper
+    participant X as Selected executor
+    participant SDK as Agent runtime
+    participant A as HumanLayer API
+    participant DB as PostgreSQL
+
+    E-&gt;&gt;H: Session row, status ready_for_launch
+    H-&gt;&gt;H: Parse coding_agent against launchable schema
+    alt Not launchable
+        H-&gt;&gt;A: sessions.update, status failed
+        A-&gt;&gt;DB: Update row
+    else Launchable
+        H-&gt;&gt;A: sessions.update, status launching
+        H-&gt;&gt;X: executorForLaunchableAgent(agent)
+        H-&gt;&gt;R: runSession with that executor
+        R-&gt;&gt;X: execute(context, resumeSessionId, forkMeta)
+        X-&gt;&gt;SDK: Open or create the agent runtime
+        SDK--&gt;&gt;X: Stream of messages and usage
+        X-&gt;&gt;A: sessions.update, status running
+        X-&gt;&gt;A: Events, status, and usage reports
+        A-&gt;&gt;DB: Insert and update rows
+        opt Error without interrupt
+            R-&gt;&gt;A: sessions.update, status failed
+            A-&gt;&gt;DB: Update row
+        end
+        R-&gt;&gt;R: Finally, start post-run capture
+    end
+
+</div>
+<p>The start order makes the status meaningful: <code>launching</code> means the handler accepted the row but the agent does not exist yet, and <code>running</code> means the agent is live. Each of the three executors writes <code>running</code> after its agent runtime exists (<code>apps/riptide-daemon/src/effects/services/claude-sessions/claude-sessions.live.ts:267</code>; <code>apps/riptide-daemon/src/agents/codelayer/execute-codelayer.ts:582</code>; <code>apps/riptide-daemon/src/effects/services/fold-sessions/fold-session-runner.layer.ts:319</code>).</p>
+<h2>Next</h2>
+<p>Read <a href="12-cli-and-agent-plugins.html">The command-line interface and the agent plugins</a> for the sender side of the mirror, the plugin manifests, and the outbox rules. Read <a href="03-session-lifecycle-and-state-machine.html">Session lifecycle and state machine</a> for the status values and the full launch path. Read <a href="04-session-sdk-and-durable-streams.html">Session SDK and durable streams</a> for the event schemas that a mirror writes. Read <a href="08-database-and-schemas.html">Database and schemas</a> for the table model behind the usage fields.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

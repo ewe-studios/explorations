@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Observability: errors, metrics, and git attribution -- humanlayer</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/humanlayer/docs</span>
+    <div class="nav-actions">
+      <a href="13-cloud-billing-and-admin.html" class="nav-breadcrumb">Cloud, billing, and administration</a><a href="14-infrastructure-and-devstack.html" class="nav-breadcrumb">Infrastructure, the local stack, and the background jobs</a><a href="15-agent-integration-and-ai.html" class="nav-breadcrumb">Agent integration: executors, model access, and what is mirrored</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="15-agent-integration-and-ai.html" class="nav-btn" title="Previous: Agent integration: executors, model access, and what is mirrored">← prev</a>
+      <a href="17-invariants-and-golden-documents.html" class="nav-btn nav-btn-next" title="Next: Invariants: the rules the project writes down for itself">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Observability: errors, metrics, and git attribution</h1>
+<p>The HumanLayer project treats observability as a privacy boundary, not only as a reporting feature. Every reporter has an explicit on-off switch. The Sentry reporters scrub event data before they send it. The attribution ledger separates evidence from guesswork. This document explains the four reporting systems, the code that implements them, and the rules that decide when a commit counts as agent work.</p>
+<p>HumanLayer is a product family. The Riptide Application Programming Interface (API) serves requests and owns the database. The Riptide daemon runs coding agents on a user machine. The Riptide User Interface (UI) is a React application in a browser or in Electron. A separate cloud application shows metrics. The Electric proxy sits between clients and Electric SQL, the sync engine that streams database changes.</p>
+<p>The four reporting systems are:</p>
+<ol><li>Sentry, a hosted error and trace collector.</li><li>PostHog, a hosted product analytics and feature-flag service.</li><li>The <code>@humanlayer/logger</code> package, which writes structured logs.</li><li>The <code>@humanlayer/git-attribution</code> package, which builds a commit and pull request ledger.</li></ol>
+<p>Sentry and PostHog receive data outside the deployment. The logger and the attribution package run inside it. Callers can forward output to the API or Sentry.</p>
+<h2>Error reporting in the API</h2>
+<p>The API initializes Sentry in <code>apps/riptide-api/src/instrument.ts</code>. A hot reload can import the module twice, so a global flag stops a second registration at <code>apps/riptide-api/src/instrument.ts:151</code>.</p>
+<p>The API disables default personally identifiable information (PII) capture at <code>apps/riptide-api/src/instrument.ts:157</code>. The Data Source Name (DSN) is the upload address and key for one Sentry project. The client is off without a DSN, and off in local unless a force flag is set.</p>
+<h3>Sampling</h3>
+<p>The sampler honors a parent decision first. The parent started the trace and sends its decision in a trace header, so a distributed trace stays whole. Health, readiness, and root status URLs return zero; the rest depends on the environment.</p>
+<pre><code class="language-ts">// apps/riptide-api/src/instrument.ts:160-175
+		tracesSampler: (samplingContext) =&gt; {
+			// Always honor parent sampling decision for distributed traces
+			if (samplingContext.parentSampled !== undefined) {
+				return samplingContext.parentSampled ? 1 : 0
+			}
+			const rawUrl = samplingContext.attributes?.[&#x27;http.url&#x27;]
+			const url = typeof rawUrl === &#x27;string&#x27; ? rawUrl : &#x27;&#x27;
+			// Drop health checks and root status endpoint
+			if (url.endsWith(&#x27;/health&#x27;) || url.endsWith(&#x27;/ready&#x27;) || /^https?:\/\/[^/]+\/?$/.test(url)) {
+				return 0
+			}
+			if (env === &#x27;local&#x27;) return 1.0
+			if (env === &#x27;devcloud&#x27;) return 0.001
+			if (env === &#x27;beta&#x27;) return 0.0001
+			return 0.0001 // prod
+		},
+</code></pre>
+<p>Production samples one trace in ten thousand requests. The local rate is 1.0, but the local client is off unless forced. The environment is <code>local</code>, <code>devcloud</code> (shared development cloud), <code>beta</code> (pre-release), or <code>prod</code>. This rate controls traces only. The block sets no error sample rate, so error events are not sampled by this value (<code>apps/riptide-api/src/instrument.ts:160-175</code>).</p>
+<h3>User and organization tags</h3>
+<p>The API attaches identity in two places. The HTTP middleware sets a user identifier and an organization tag after authentication at <code>apps/riptide-api/src/app.ts:150-153</code>. The oRPC base adds the authentication type and the organization identifier from WorkOS, the identity provider, at <code>apps/riptide-api/src/orpc/effect-base.ts:122-127</code>. oRPC is a typed remote procedure call library.</p>
+<p>An error report can then name the organization, not the request body.</p>
+<h3>Redaction</h3>
+<p>Every event passes through <code>scrubSensitiveData</code>. It removes the <code>state</code> context, redacts credentials in the request Uniform Resource Locator (URL), removes authentication headers, and deletes the body. The <code>query</code> parameter is sensitive because it can hold user search text.</p>
+<pre><code class="language-ts">// apps/riptide-api/src/instrument.ts:77-83
+	// Scrub request data
+	if (event.request?.url) {
+		event.request.url = event.request.url
+			.replace(/api_key=[^&amp;]+/g, &#x27;api_key=REDACTED&#x27;)
+			.replace(/token=[^&amp;]+/g, &#x27;token=REDACTED&#x27;)
+			.replace(/query=[^&amp;]+/g, &#x27;query=REDACTED&#x27;)
+	}
+</code></pre>
+<p>It also deletes the <code>Authorization</code>, <code>X-API-Key</code>, and <code>Cookie</code> headers at <code>apps/riptide-api/src/instrument.ts:85-92</code>. The body is always removed; it can contain user prompts.</p>
+<p>The <code>beforeSend</code> hook drops one expected class first. An expired JSON Web Token (JWT) is normal authentication noise. The hook checks the stable code and message at <code>apps/riptide-api/src/instrument.ts:181-194</code>.</p>
+<pre><code class="language-ts">// apps/riptide-api/src/instrument.ts:181-194
+		beforeSend(event, hint) {
+			// Drop expected auth noise: an expired JWT (&quot;exp&quot; in the past). Tokens are
+			// meant to expire and clients then re-auth/refresh, so these are never worth
+			// reporting (they otherwise dominate volume, e.g. RIPTIDE-API-D9). jose sets a
+			// stable `.code` that survives minification, unlike the renamed class name.
+			const err = hint?.originalException as { code?: unknown; message?: unknown } | undefined
+			if (
+				err?.code === &#x27;ERR_JWT_EXPIRED&#x27; ||
+				(typeof err?.message === &#x27;string&#x27; &amp;&amp; err.message.includes(&#x27;&quot;exp&quot; claim timestamp check failed&#x27;))
+			) {
+				return null
+			}
+			return scrubSensitiveData(event)
+		},
+</code></pre>
+<p>The hook also removes console breadcrumbs at <code>apps/riptide-api/src/instrument.ts:196-202</code>. A breadcrumb is a record of an event before an error, such as a console message or fetch. A console message can hold user data, so the API sends none.</p>
+<h3>Metrics services in the API</h3>
+<p>Business metrics live in <code>apps/riptide-api/src/effects/services/metrics/</code>; proxy metrics cover transport health only. Three services show the pattern:</p>
+<ul><li><code>metrics-audience.ts</code> decides who may read the Advanced Metrics page, an internal spend report.</li><li><code>person-spend-analytics.service.ts</code> answers spend questions. Spend is cost in United States dollars (USD) of model token use. The service sums <code>cost_usd</code> from <code>session_usage_events</code> through the read replica (<code>apps/riptide-api/src/effects/services/metrics/person-spend-analytics.service.ts:118-141</code>). This is internal analytics, not billing. No Stripe invoice uses this number.</li><li><code>stage-attribution.ts</code> maps session labels to a research, plan, and implement stage.</li></ul>
+<p>The audience check fails closed. A database failure goes to Sentry and returns false at <code>apps/riptide-api/src/effects/services/metrics/metrics-audience.ts:40-70</code>. A failure must never give every member access to per-person spend.</p>
+<p>The person spend service captures the rich database error, then narrows it to a domain error, a typed failure. <code>captureThenReportUnavailable</code> logs, reports, and returns a retryable failure at <code>apps/riptide-api/src/effects/services/metrics/person-spend-analytics.service.ts:88-93</code>.</p>
+<p>The stage file defines the order at <code>apps/riptide-api/src/effects/services/metrics/stage-attribution.ts:10-22</code>. A session can carry several labels. The structured query language (SQL) subquery ranks them and takes the most progressed. <code>DESC NULLS LAST</code> at <code>apps/riptide-api/src/effects/services/metrics/stage-attribution.ts:50</code> puts a NULL stage last, so a known label wins.</p>
+<h2>Error reporting in the daemon</h2>
+<p>The daemon runs on Bun, so it uses the Sentry client for Bun, not the Node client. It initializes at <code>apps/riptide-daemon/src/instrument.ts:143</code>. The daemon enables Sentry only when a DSN is present and the environment is not local (<code>apps/riptide-daemon/src/instrument.ts:143-145</code>). Unlike the API, it has no force flag. <code>SENTRY_ENVIRONMENT</code> sets the environment value, and the DSN presence is also required. <code>BUILD_TYPE</code> sets the sample rate.</p>
+<p>The daemon rule is coarser: it uses the build type, not the request URL. Local, development, and beta builds sample at 1.0; other builds at 0.0001 at <code>apps/riptide-daemon/src/instrument.ts:140-141</code>.</p>
+<pre><code class="language-ts">// apps/riptide-daemon/src/instrument.ts:140-158
+const isLocal = (SENTRY_ENVIRONMENT ?? &#x27;local&#x27;) === &#x27;local&#x27;
+const tracesSampleRate = [&#x27;local&#x27;, &#x27;dev&#x27;, &#x27;beta&#x27;].includes(BUILD_TYPE ?? &#x27;local&#x27;) ? 1 : 0.0001
+
+Sentry.init({
+	dsn: SENTRY_DSN,
+	enabled: SENTRY_DSN !== undefined &amp;&amp; !isLocal,
+	enableLogs: true,
+	ignoreErrors: [
+		/certificate/i,
+		&#x27;ERR_TLS_CERT_ALTNAME_INVALID&#x27;,
+		&#x27;self signed certificate&#x27;,
+		&#x27;unable to verify the first certificate&#x27;,
+		&#x27;unknown certificate verification error&#x27;,
+		&#x27;socket connection was closed unexpectedly&#x27;,
+	],
+	// SENTRY_ENVIRONMENT is set at build time (prod/devcloud), falls back to &#x27;local&#x27; for dev mode
+	environment: SENTRY_ENVIRONMENT ?? &#x27;local&#x27;,
+	release: BUILD_VERSION,
+	tracesSampleRate,
+</code></pre>
+<p>The daemon ignores certificate errors and one closed-socket error at <code>apps/riptide-daemon/src/instrument.ts:147-154</code>. These come from user networks, not product defects.</p>
+<p>The daemon redaction list is wider than the API list, because a daemon runs user code. It covers <code>stdin</code>, <code>stdout</code>, <code>stderr</code>, prompts, messages, and file content at <code>apps/riptide-daemon/src/instrument.ts:8-31</code>.</p>
+<p>The daemon wraps Sentry in an Effect layer. Effect is a TypeScript library for typed effects and dependency layers. <code>apps/riptide-daemon/src/effects/sentry-effect.ts</code> merges the Sentry tracer with the Sentry metrics layer, so Effect spans and metrics share one exporter.</p>
+<h2>Error reporting in the Electric proxy</h2>
+<p>The Electric proxy uses a Sentry Effect layer at <code>apps/riptide-electric-proxy/src/lib/effect/sentry.service.ts:167-220</code>. The layer initializes the client and exports traces and metrics.</p>
+<p>A shape is a filtered stream of one database table. The client names the filter in the shape URL, often with a <code>where</code> parameter. That parameter can contain an organization identifier.</p>
+<p>The proxy has the strongest redaction rule for sync data. Its sensitive key list is the shared list plus <code>where</code> and <code>shape_id</code> at <code>apps/riptide-electric-proxy/src/lib/effect/sentry.service.ts:34-59</code>.</p>
+<p><strong>Aha:</strong> The proxy keeps the shape URL, but removes the filter that makes the shape specific. The comment at <code>apps/riptide-electric-proxy/src/lib/effect/sentry.service.ts:145-146</code> says the field-level scrub keeps the shape URL. The URL replacer removes <code>where=</code> at <code>apps/riptide-electric-proxy/src/lib/effect/sentry.service.ts:95-101</code>, because a filter can contain an organization identifier.</p>
+<pre><code class="language-ts">// apps/riptide-electric-proxy/src/lib/effect/sentry.service.ts:95-101
+	if (event.request?.url) {
+		event.request.url = event.request.url
+			.replace(/api_key=[^&amp;]+/g, &#x27;api_key=REDACTED&#x27;)
+			.replace(/token=[^&amp;]+/g, &#x27;token=REDACTED&#x27;)
+			.replace(/query=[^&amp;]+/g, &#x27;query=REDACTED&#x27;)
+			.replace(/where=[^&amp;]+/g, &#x27;where=REDACTED&#x27;)
+	}
+</code></pre>
+<p>The context scrubber is recursive. It walks an error object to a depth of four and drops values whose field names match the sensitive list at <code>apps/riptide-electric-proxy/src/lib/effect/sentry.service.ts:68-88</code>. It removes fields such as <code>shape_id</code> from extra data, while the URL can still identify the shape path.</p>
+<p>The proxy sampler follows the same parent-first rule as the API. It also drops health, readiness, and root URLs. Its production rate is 0.0001 at <code>apps/riptide-electric-proxy/src/lib/effect/sentry.service.ts:180-193</code>.</p>
+<p>The proxy <code>beforeSend</code> drops one recovered socket error at <code>apps/riptide-electric-proxy/src/lib/effect/sentry.service.ts:194-197</code>. A recovered socket error is a closed connection that the client retried. It then applies the same scrubber.</p>
+<h3>Proxy metric export</h3>
+<p>The proxy sends Effect metrics to Sentry. The hook removes internal fiber metrics, then adds the Amazon Elastic Container Service (ECS) task identifier and service name to every metric at <code>apps/riptide-electric-proxy/src/lib/effect/sentry.service.ts:198-209</code>. An Effect fiber is a lightweight task; its metrics are internal.</p>
+<pre><code class="language-ts">// apps/riptide-electric-proxy/src/lib/effect/sentry.service.ts:198-209
+		beforeSendMetric(metric) {
+			if (metric.name.startsWith(&#x27;effect_fiber_&#x27;)) {
+				return null
+			}
+
+			metric.attributes = {
+				...metric.attributes,
+				ecs_task_id: taskId,
+				ecs_service: ecsService,
+			}
+			return metric
+		},
+</code></pre>
+<h2>Error reporting in the user interface</h2>
+<p>The UI initializes Sentry in <code>apps/riptide-ui/src/integrations/sentry/sentry.ts</code>. Initialization is skipped in a development build unless an operator forces it. It is also skipped when the build has no DSN.</p>
+<pre><code class="language-ts">// apps/riptide-ui/src/integrations/sentry/sentry.ts:49-62
+export function initializeSentry(router: AnyRouter): void {
+	const forceEnable = import.meta.env.VITE_PUBLIC_SENTRY_FORCE_ENABLE_IN_LOCAL_ENV === &#x27;true&#x27;
+
+	if (import.meta.env.DEV &amp;&amp; !forceEnable) {
+		logger.info(&#x27;Sentry initialization skipped (local development)&#x27;)
+		return
+	}
+
+	// Builds from source have no DSN, so they report nowhere.
+	const dsn = import.meta.env.VITE_PUBLIC_SENTRY_DSN
+	if (!dsn) {
+		logger.info(&#x27;Sentry initialization skipped (no VITE_PUBLIC_SENTRY_DSN)&#x27;)
+		return
+	}
+</code></pre>
+<p>The UI sampler returns 1.0 in local and development cloud builds, and 0.0001 in beta and production at <code>apps/riptide-ui/src/integrations/sentry/sentry.ts:78-87</code>. Session replay is disabled; both replay rates are zero at <code>apps/riptide-ui/src/integrations/sentry/sentry.ts:92-93</code>.</p>
+<p>The UI keeps more context: it sets the user identifier, electronic mail address, organization name, roles, and feature flags at <code>apps/riptide-ui/src/integrations/workos/AuthProvider.tsx:42-50</code>. It also sets an organization context. The Electron renderer forwards the same identity to the main process.</p>
+<p>The scrubber then rebuilds the user object from an allowlist. It keeps the identifier, electronic mail address, organization identifier, organization name, role, roles, and feature flags at <code>apps/riptide-ui/src/integrations/sentry/sentry.ts:232-245</code>. Any other user field is dropped.</p>
+<p>The UI also has a separate identifier allowlist at <code>apps/riptide-ui/src/integrations/sentry/sentry.ts:37-47</code>. These values pass the extra-data filter and the context scrubber, so an event can name a session without carrying its content (<code>:191</code>, <code>:275</code>). Tags have no such allowlist path. <code>captureException</code> sends the tag map to Sentry without a filter, while <code>extra</code> goes through <code>scrubSensitiveData</code> (<code>apps/riptide-ui/src/integrations/sentry/sentry.ts:306-313</code>). A caller must therefore keep free text out of a tag.</p>
+<pre><code class="language-ts">// apps/riptide-ui/src/integrations/sentry/sentry.ts:37-47
+const IDENTIFIER_ALLOWLIST = [
+	&#x27;sessionid&#x27;,
+	&#x27;taskid&#x27;,
+	&#x27;artifactid&#x27;,
+	&#x27;action&#x27;,
+	&#x27;transactionid&#x27;,
+	&#x27;conversationeventid&#x27;,
+	&#x27;blocksessionid&#x27;,
+	&#x27;messageseq&#x27;,
+	&#x27;blockseq&#x27;,
+]
+</code></pre>
+<p>The React error boundary reports the error and the component stack. It never reports component properties or state at <code>apps/riptide-ui/src/integrations/sentry/SentryErrorBoundary.tsx:44-57</code>. This is deliberate, because properties can contain conversation content.</p>
+<p>The cloud application, a separate React application for metrics, has a parallel integration in <code>apps/riptide-cloud/src/integrations/sentry/sentry.ts</code>. It tags events with the cloud platform and uses the same production rate. The Electron main process reads <code>RIPTIDE_ELECTRON_SENTRY_DSN</code>, samples at 0.01 outside local builds, and uses a no-op object outside Electron.</p>
+<h3>Sentry configuration summary</h3>
+<p>The table compares clients. The force flag is <code>VITE_PUBLIC_SENTRY_FORCE_ENABLE_IN_LOCAL_ENV</code> in the UI. Its backend equivalent is <code>SENTRY_FORCE_ENABLE_IN_LOCAL_ENV</code> in the API and the Electric proxy (<code>apps/riptide-api/src/instrument.ts:146</code>; <code>apps/riptide-electric-proxy/src/lib/effect/sentry.service.ts:160</code>).</p>
+<table><tr><th>Component</th><th>Client package</th><th>Enabled when</th><th>Production sample rate</th><th>Notable filter</th></tr><tr><td>API</td><td><code>@sentry/node</code></td><td>DSN present, and either the environment is not local or the force flag is set</td><td>0.0001</td><td>Drops expired JSON Web Token errors and console breadcrumbs</td></tr><tr><td>Daemon</td><td><code>@sentry/bun</code></td><td>DSN present and environment not local</td><td>0.0001</td><td>Ignores certificate errors and a closed-socket error</td></tr><tr><td>Electric proxy</td><td><code>@sentry/effect/server</code></td><td>DSN present, and either the environment is not local or the force flag is set</td><td>0.0001</td><td>Drops a recovered socket error and redacts the <code>where</code> filter</td></tr><tr><td>UI</td><td><code>@sentry/react</code></td><td>Not a development build, with a DSN; the force flag overrides the build check</td><td>0.0001</td><td>Drops session and conversation request breadcrumbs</td></tr><tr><td>Cloud application</td><td><code>@sentry/react</code></td><td>Not a development build, with a DSN</td><td>0.0001</td><td>Tags the platform as <code>cloud</code></td></tr><tr><td>Electron main process</td><td><code>@sentry/electron/main</code></td><td>Electron DSN present</td><td>0.01 outside local builds</td><td>Uses a no-op client outside Electron</td></tr></table>
+<p>The UI breadcrumb filter removes a fetch or XML Http Request breadcrumb when the URL contains <code>/api/v1/sessions</code> or <code>/conversation</code> at <code>apps/riptide-ui/src/integrations/sentry/sentry.ts:105-115</code>. It also replaces the <code>query</code> and <code>token</code> parameters in the remaining URLs at <code>apps/riptide-ui/src/integrations/sentry/sentry.ts:116-119</code>.</p>
+<h2>PostHog in the UI</h2>
+<p>PostHog is optional. The client starts only when <code>VITE_PUBLIC_POSTHOG_KEY</code> is present. The initialization configuration disables most automatic capture at <code>apps/riptide-ui/src/integrations/posthog/posthog.ts:22-32</code>.</p>
+<pre><code class="language-ts">// apps/riptide-ui/src/integrations/posthog/posthog.ts:22-32
+export const POSTHOG_INIT_CONFIG = {
+	api_host: POSTHOG_HOST,
+	person_profiles: &#x27;identified_only&#x27;,
+	autocapture: false,
+	capture_pageview: false,
+	capture_pageleave: false,
+	disable_session_recording: true,
+	disable_surveys: true,
+	disable_web_experiments: true,
+	disable_external_dependency_loading: true,
+} satisfies NonNullable&lt;Parameters&lt;typeof posthog.init&gt;[1]&gt;
+</code></pre>
+<p>The UI uses PostHog for two feature flags. The workflow selector flag chooses how a user describes a task. It maps to a <code>task-size</code> or <code>named</code> variant at <code>apps/riptide-ui/src/integrations/posthog/posthog.ts:91-93</code>. The Projects V2 flag chooses the project data model and maps to <code>v1</code> or <code>v2</code> at <code>apps/riptide-ui/src/integrations/posthog/posthog.ts:110-113</code>.</p>
+<p>A missing flag never changes the product. The selector falls back to <code>named</code>, and the Projects V2 resolver returns undefined, which keeps the existing version (<code>apps/riptide-ui/src/integrations/posthog/posthog.ts:91-93</code>, <code>:110-113</code>). The callback for a loaded flag also ignores a response for a different user identifier at <code>apps/riptide-ui/src/integrations/posthog/posthog.ts:122-130</code>. An identify call tells PostHog which user is active; a group is an organization-level entity. The check stops an early response from assigning a group before identify finishes.</p>
+<p>The only product events are artifact sharing events: dialog open, public access change, and link copy at <code>apps/riptide-ui/src/components/artifact-sharing/artifact-sharing-analytics.ts</code>. These are explicit calls, not autocapture.</p>
+<h2>Metrics in the Electric proxy</h2>
+<p>The proxy tracks requests with Effect metrics. A gauge is an instantaneous value, a timer records a duration, and a counter only increases. The service <code>ConnectionMetrics</code> defines metric names for Electric connections, durable streams, concurrent requests, request duration, the HTTP pool, and process file descriptors at <code>apps/riptide-electric-proxy/src/lib/effect/connection-metrics.service.ts:75-104</code>.</p>
+<p>The <code>http.pool.*</code> family describes the Hypertext Transfer Protocol (HTTP) connection pool. The request middleware wraps every request in <code>metrics.trackRequest</code> at <code>apps/riptide-electric-proxy/src/server.ts:40-47</code>, and the method increments the concurrent gauge and records the duration at <code>apps/riptide-electric-proxy/src/lib/effect/connection-metrics.service.ts:154-155</code>.</p>
+<p>The pool metrics come from a poller. It records a snapshot every 30 seconds at <code>apps/riptide-electric-proxy/src/lib/effect/http-pool-metrics.service.ts:81</code>.</p>
+<p>The file descriptor metrics come from Linux process files. The service reads <code>/proc/self/fd</code> and <code>/proc/self/limits</code> at <code>apps/riptide-electric-proxy/src/lib/effect/process-resource-metrics.service.ts:38-41</code>. It records a snapshot every 30 seconds at <code>apps/riptide-electric-proxy/src/lib/effect/process-resource-metrics.service.ts:73</code>.</p>
+<p>The proxy also counts connection lifecycle events, protocol-level events, and request errors with tagged counters at <code>apps/riptide-electric-proxy/src/lib/effect/connection-metrics.service.ts:177-205</code>. These separate a slow client from a saturated proxy.</p>
+<h2>The logger package</h2>
+<p>The <code>@humanlayer/logger</code> package is a small structured logger with no runtime dependency on Sentry. It has a core entry point and two runtime entry points. The browser entry point adds <code>ConsoleTransport</code>. The Node entry point adds <code>FileTransport</code> and <code>StandardStreamTransport</code>.</p>
+<p>The levels are numeric. A lower number is more verbose. The package defines seven levels from <code>silly</code> at 10 to <code>fatal</code> at 60 at <code>packages/logger/src/logger/types.ts:1-9</code>.</p>
+<pre><code class="language-ts">// packages/logger/src/logger/types.ts:1-9
+export const logLevels = {
+	silly: 10,
+	debug: 20,
+	http: 25,
+	info: 30,
+	warn: 40,
+	error: 50,
+	fatal: 60,
+} as const
+</code></pre>
+<p>The <code>Logger</code> class sends a record to every configured transport. It keeps a set of pending sends so <code>flush</code> can wait. It exposes <code>shutdown</code>, which flushes and then shuts down each transport at <code>packages/logger/src/logger/logger.ts:75-78</code>.</p>
+<p>A child logger shares transports and state with its parent. It adds a name and fixed properties to every record at <code>packages/logger/src/logger/logger.ts:87-96</code>. This is how a request identifier follows all messages for one request.</p>
+<p>The transports are small and separate. <code>ConsoleTransport</code> writes to the browser console, <code>FileTransport</code> writes to a file and can buffer, and <code>StandardStreamTransport</code> writes to standard output or standard error.</p>
+<p>The API, daemon, proxy, UI, cloud application, and the <code>@humanlayer/ai</code> package each create a logger from this package. The <code>@humanlayer/sync</code> package imports logger types only. The sync engine therefore does not choose a transport.</p>
+<h2>Git attribution</h2>
+<p>The <code>@humanlayer/git-attribution</code> package answers which agent session produced a commit or pull request. An agent session is one run of a coding agent. A harness runs the agent and records tool calls; the daemon is the harness here. A journal is an append-only record of the lines the agent edited. Attribution uses evidence with explicit confidence, not the author name.</p>
+<h3>The three commit tiers</h3>
+<p>The commit sequencer defines the methods and their tiers at <code>packages/git-attribution/src/attribute-commit.ts:28-36</code>. There are two methods and three tiers. A commit that no method claims gets the fallback tier <code>human</code>.</p>
+<pre><code class="language-ts">// packages/git-attribution/src/attribute-commit.ts:28-36
+export const ATTRIBUTION_METHODS: ReadonlyArray&lt;{
+	readonly enabled: boolean
+	readonly method: AttributionMethod
+	/** What a claim from this method books as — the meaning of the evidence, owned HERE. */
+	readonly tier: AttributionTier
+}&gt; = [
+	{ enabled: true, method: trailerMethod, tier: &#x27;confirmed&#x27; }, // the message names the committing session
+	{ enabled: true, method: journalOverlapMethod, tier: &#x27;inferred&#x27; }, // added lines match a session&#x27;s journal
+]
+</code></pre>
+<p>The tiers are:</p>
+<table><tr><th>Tier</th><th>Evidence</th><th>Confidence</th><th>Meaning</th></tr><tr><td><code>confirmed</code></td><td>A <code>HumanLayer-Session</code> trailer in the commit message</td><td>1.0</td><td>The commit itself names the session</td></tr><tr><td><code>inferred</code></td><td>Added line hashes overlap a session journal and pass a gate</td><td>Overlap fraction</td><td>The content matches agent work, but the commit does not say so</td></tr><tr><td><code>human</code></td><td>No method claims the commit</td><td>0.0</td><td>The commit is not agent work</td></tr></table>
+<p>A trailer is a key-value line at the end of a commit message, such as <code>HumanLayer-Session: &lt;id&gt;</code>. The trailer method claims every normalized line at <code>packages/git-attribution/src/evidence/trailer/method.ts:1-34</code>. Normalization collapses whitespace and drops empty lines. Environment variables and a Git hook carry the identity; the hook stamps the trailer.</p>
+<p>The journal method compares hashes of added lines with the hashes recorded for each candidate session. Each line hashes with Secure Hash Algorithm 1 (SHA-1). It claims a commit when the commit matches at least 10 lines, or at least 3 lines with a fraction of at least 0.25, at <code>packages/git-attribution/src/evidence/journal-overlap/method.ts:36-38</code>.</p>
+<p>Confidence is matched lines divided by distinct added lines. The gate has two branches, and each controls false positives in a different case. The absolute branch needs at least 10 matched lines; at that floor the measured false-positive rate is about 24 percent (<code>packages/git-attribution/src/evidence/journal-overlap/method.ts:20-31</code>). The proportional branch keeps small commits detectable: it needs at least 3 matched lines and a matched fraction of at least 0.25. A four-line agent fix that a person commits verbatim can score 1.0, while one shared <code>}</code> in a fifty-line commit scores 0.02 and fails.</p>
+<p>An exact tie resolves by session identifier at <code>packages/git-attribution/src/evidence/journal-overlap/method.ts:52-58</code>.</p>
+<p>The sequencer runs the methods in order. The first claim wins; no claim gives the <code>human</code> tier at <code>packages/git-attribution/src/attribute-commit.ts:65-74</code>.</p>
+<pre><code class="language-ts">// packages/git-attribution/src/attribute-commit.ts:65-75
+export function attributeCommit(
+	commit: CommitForAttribution,
+	options?: { readonly disabledMethods?: ReadonlyArray&lt;AttributionMethodName&gt; },
+): AttributionResult {
+	for (const { enabled, method, tier } of ATTRIBUTION_METHODS) {
+		if (!enabled || options?.disabledMethods?.includes(method.name)) continue
+		const claim = method.claim(commit)
+		if (claim) return { ...claim, tier }
+	}
+	return { tier: &#x27;human&#x27;, confidence: 0, aiAttributedLines: 0 }
+}
+</code></pre>
+<p>The algorithm version is stored per row; the current version is 2 at <code>packages/git-attribution/src/attribute-commit.ts:46</code>. An old row keeps its version, so trend charts stay stable.</p>
+<h3>How a commit gets attributed</h3>
+<p>The daemon watches each relevant repository. A watermark is the last processed commit. The watcher reads new commits since the watermark at <code>apps/riptide-daemon/src/lib/git/commit-watcher.ts:188-190</code>, attributes them, redacts human ones, records the batch, then advances the watermark at <code>apps/riptide-daemon/src/lib/git/commit-watcher.ts:241-277</code>.</p>
+<p>The watch is a reflog watcher, not a reference watch. A reference watch asks the operating system to report changes to one named reference, such as <code>HEAD</code>. A reflog watcher reads the reference log file instead. It watches <code>.git/logs/HEAD</code> with <code>fs.watch</code>, the append-only log of reference updates, and it treats each event as a trigger (<code>apps/riptide-daemon/src/lib/git/commit-watcher.ts:2</code>, <code>:115-121</code>, <code>:317-321</code>). It reconciles on a timer. The debounce is 5 seconds at <code>apps/riptide-daemon/src/lib/git/commit-watcher.ts:32</code>. The reconcile interval is 30 seconds at <code>apps/riptide-daemon/src/lib/git/commit-watcher.ts:34</code>. The journal sweep is 30 minutes at <code>apps/riptide-daemon/src/lib/git/commit-watcher.ts:36</code>. A missed event costs no data, because the reconcile poll rescans every watched repository.</p>
+<p>A session is relevant while its status is one of six non-terminal values: <code>launching</code>, <code>running</code>, <code>waiting_for_usage_limit</code>, <code>needs_approval</code>, <code>interrupt_requested</code>, and <code>resuming</code>. It is also relevant when its last agent edit is within the watch retention period, or its <code>updated_at</code> is within that period (<code>apps/riptide-daemon/src/lib/git/commit-watcher.ts:47-54</code>, <code>:72-80</code>). The agent-edit signal is independent of the session row.</p>
+<p>The session writes the evidence at session start. <code>armSessionAttribution</code> builds environment variables for the session identifier, URL, and expiry time at <code>packages/git-attribution/src/session-attribution.ts:97-114</code>. It also installs Git hooks. Each agent tool call records the added line hashes in the session journal at <code>packages/git-attribution/src/session-attribution.ts:182-201</code>.</p>
+<p>The gate has two inputs. The organization setting <code>commit_tracking_enabled</code> is the opt-in. The per-user flag <code>metrics_advanced_enabled</code> is a member-level opt-out that defaults on (<code>apps/riptide-api/src/orpc/daemon/settings/get.effect.ts:89-96</code>; <code>packages/db/src/tables/user-settings.ts:84</code>). Tracking is on only when the organization setting is on and the user flag is on. The daemon reads that effective answer on every call (<code>apps/riptide-daemon/src/lib/git/commit-attribution.ts:43-45</code>, <code>:103-116</code>). When the answer is on, the daemon installs the Git hooks and passes session environment variables to the agent process tree (<code>packages/git-attribution/src/session-attribution.ts:97-114</code>). The trailer stamper reads those session variables, not a separate enable variable (<code>packages/git-attribution/src/evidence/trailer/hook-scripts.ts:70-90</code>).</p>
+<p><code>HUMANLAYER_COMMIT_TRACKING</code> is intended plumbing for a launcher that cannot query the API. In this revision the repository defines the constant and documents that intent, but no code reads the variable (<code>packages/git-attribution/src/gate.ts:1-24</code>). A hand-set value therefore changes nothing in this revision.</p>
+<table><tr><th>Organization setting</th><th>User flag</th><th>Daemon arms hooks and session environment</th><th>Trailer stamping</th><th>Journal and ledger</th><th>API reports on</th></tr><tr><td>off</td><td>any</td><td>No</td><td>No</td><td>No</td><td>No</td></tr><tr><td>on</td><td>off</td><td>No</td><td>No</td><td>No</td><td>No</td></tr><tr><td>on</td><td>on</td><td>Yes</td><td>Yes, while the session variables are present and unexpired</td><td>Yes</td><td>Yes</td></tr></table>
+<p>The API records the observed commit. It builds the session map from a query filtered by organization, creating user, and host identifier (<code>apps/riptide-api/src/orpc/daemon/commits/record-observed.effect.ts:102-126</code>). A session that passes those filters keeps its tier and confidence. A session that does not resolve is downgraded to <code>human</code> at <code>apps/riptide-api/src/orpc/daemon/commits/record-observed.effect.ts:33-59</code>. This rule prevents a public fork from injecting another organization's session identifier into the ledger.</p>
+<pre><code class="language-ts">// apps/riptide-api/src/orpc/daemon/commits/record-observed.effect.ts:33-59
+function attributionColumns(
+	commit: ObservedCommit,
+	sessionsById: Map&lt;string, AttributionSession&gt;,
+	daemonUserId: string,
+) {
+	const session = commit.attributedSessionId !== undefined ? sessionsById.get(commit.attributedSessionId) : undefined
+	if (session === undefined) {
+		return {
+			session_id: null,
+			task_id: null,
+			resource_owner_user_id: daemonUserId,
+			coding_agent: null,
+			attribution_method: &#x27;human&#x27; as const,
+			ai_confidence: 0,
+			ai_attributed_lines: 0,
+		}
+	}
+	return {
+		session_id: session.id,
+		task_id: session.task_id,
+		resource_owner_user_id: session.resource_owner_user_id,
+		coding_agent: session.coding_agent,
+		attribution_method: commit.attributionMethod,
+		ai_confidence: commit.aiConfidence,
+		ai_attributed_lines: commit.aiAttributedLines,
+	}
+}
+</code></pre>
+<h3>Privacy for human commits</h3>
+<p>A human commit is somebody else's work, and the product has no claim on it. The redaction function keeps only counting fields and empties the subject, the first line of the commit message, at <code>packages/git-attribution/src/redact-human-commit.ts:27-34</code>.</p>
+<p>The counting fields at <code>contracts/riptide-api-contract/src/daemon/sessions/commits/record.ts:52-75</code> are commit and parent SHAs (Secure Hash Algorithm identifiers), repository coordinates, times, line and file counts, and a few bit flags. The repository coordinates are the remote URL, the full repository name, and the local directory. The bit flags are <code>isPrimaryBranch</code>, <code>authorMatchesDaemonUser</code>, and <code>coAuthoredByAgent</code> (<code>contracts/riptide-api-contract/src/daemon/sessions/commits/record.ts:52-75</code>).</p>
+<p>The function is an allowlist. A new commit field stays on the machine until a caller adds it to the counting fields. The daemon applies the redaction before transmission, so the message, author identity, per-file paths, and branch name never leave the machine.</p>
+<h3>Observed versus committed pull requests</h3>
+<p>Pull requests use a second sequencer with two tiers at <code>packages/git-attribution/src/attribute-pull-request.ts:37-43</code>. <code>committed</code> means the ledger holds a session commit on the pull request branch, and only that tier counts. <code>observed</code> means the session had the branch checked out but no session commit is in the ledger, so it is shown but not counted.</p>
+<p>An observation is valid for 30 days at <code>packages/git-attribution/src/attribute-pull-request.ts:29</code>. Branch names are reused, so an older observation is treated as coincidence.</p>
+<p>The link service writes one row per pull request and session. The tier only advances: <code>strongerTier</code> and <code>onConflictDoUpdate</code> at <code>apps/riptide-api/src/effects/services/github/pull-requests/attribution/link-sessions.ts:56-66</code> make a repeat idempotent, and the upsert keeps the stronger tier.</p>
+<h3>Where the data is stored</h3>
+<p>Commit attribution is stored in the <code>commits</code> table. The attribution columns are <code>attribution_method</code>, <code>ai_confidence</code>, <code>ai_attributed_lines</code>, and <code>attribution_algorithm_version</code> at <code>packages/db/src/tables/commits.ts:135-138</code>.</p>
+<p>The column name <code>attribution_method</code> is misleading. It stores the tier, not the method name. The type is <code>'confirmed' | 'inferred' | 'human'</code> at <code>packages/db/src/tables/commits.ts:135</code>. The method that produced the tier (the trailer method or the journal-overlap method) is not stored as a value; the algorithm version records the rule set that ran. A unique index on organization and commit SHA at <code>packages/db/src/tables/commits.ts:147</code> makes a repeated observation idempotent.</p>
+<p>Rows are insert-only. The table comment says there is no update time and no reconciliation in the first version at <code>packages/db/src/tables/commits.ts:144</code>.</p>
+<p>The <code>authored_commits</code> view filters out merge commits. It keeps rows with one parent, or with no parent array at <code>packages/db/src/tables/commits.ts:181-186</code>; a merge commit has more than one parent.</p>
+<p>Pull request attribution is stored in <code>pull_request_sessions</code>. Each row holds the pull request, session, task, resource owner, and tier at <code>packages/db/src/tables/pull-request-sessions.ts:16-41</code>. The resource owner is the user who owns the session. The tier only advances at <code>packages/db/src/tables/pull-request-sessions.ts:36</code>.</p>
+<h3>Where the data is shown</h3>
+<p>The main display is the "Agent commits by repository" card in the cloud metrics application. The API query counts only <code>confirmed</code> and <code>inferred</code> at <code>apps/riptide-api/src/orpc/api/metrics/agentCommitsByRepo.ts:15-22</code>. It excludes <code>human</code> rows, legacy rows where <code>attribution_method</code> is null, and rows with no repository name.</p>
+<p>The card draws a stacked bar chart with one segment per counted tier at <code>apps/riptide-cloud/src/components/metrics/AgentCommitsByRepoCard.tsx:35-42</code>. It shows absolute counts, not a share of all commits. It separates <code>inferred</code>, because the heuristic has a measured false-positive rate of about 24 percent.</p>
+<p>The session UI does not draw the ledger. The trailer points from the commit to the session, because its Uniform Resource Locator holds the session address (<code>packages/git-attribution/src/session-attribution.ts:91-95</code>). The UI therefore reads the commit message to link the other way.</p>
+<h2>Telemetry flow</h2>
+<p>The diagram below shows each component and its collector.</p>
+<div class="mermaid">
+flowchart LR
+    UI[&quot;Riptide UI (browser or Electron)&quot;] --&gt;|&quot;errors and traces&quot;| SENTRY[&quot;Sentry&quot;]
+    UI --&gt;|&quot;feature flags and product events&quot;| POSTHOG[&quot;PostHog&quot;]
+    CLOUD[&quot;Riptide cloud (React)&quot;] --&gt;|&quot;errors and traces&quot;| SENTRY
+    API[&quot;Riptide API&quot;] --&gt;|&quot;errors, traces, Effect logs, metrics&quot;| SENTRY
+    DAEMON[&quot;Riptide daemon&quot;] --&gt;|&quot;errors, traces, logs&quot;| SENTRY
+    PROXY[&quot;Electric proxy&quot;] --&gt;|&quot;errors, traces, metrics, logs&quot;| SENTRY
+    UI --&gt;|&quot;writes&quot;| API
+    DAEMON --&gt;|&quot;writes&quot;| API
+    PROXY --&gt;|&quot;sync stream&quot;| ELECTRIC[&quot;Electric SQL&quot;]
+    DAEMON --&gt;|&quot;observed commits&quot;| API
+    API --&gt;|&quot;commit ledger&quot;| DB[(&quot;PostgreSQL&quot;)]
+    SENTRY --&gt;|&quot;alerts&quot;| ONCALL[&quot;On-call engineer&quot;]
+    POSTHOG --&gt;|&quot;flag assignments&quot;| UI
+
+</div>
+<p>A local build reports nowhere by default. The API and proxy stay disabled in local unless an operator forces them; when forced, they sample every trace. The daemon needs a DSN and a non-local environment. The UI needs a production build or a force flag, plus a DSN. PostHog needs a public key.</p>
+<h2>An error report in sequence</h2>
+<p>The next diagram shows one API error from request to collector.</p>
+<div class="mermaid">
+sequenceDiagram
+    participant UI as Riptide UI
+    participant API as Riptide API
+    participant S as Sentry
+    UI-&gt;&gt;API: Request with sentry-trace header
+    API-&gt;&gt;API: Authenticate and set user tag
+    API-&gt;&gt;API: Handler throws an error
+    API-&gt;&gt;API: beforeSend removes headers and body
+    API-&gt;&gt;S: Send the scrubbed event
+    S--&gt;&gt;API: Return the event identifier
+    API--&gt;&gt;UI: Return the error response
+    Note over API,S: Production samples one trace in ten thousand
+
+</div>
+<p>The UI starts the trace and sends a <code>sentry-trace</code> header. The API honors the parent decision. If the UI trace is unsampled, the API returns 0 and stores no span. The sampler checks <code>parentSampled</code> before the environment rate. Sentry returns an event identifier, which an error message can show.</p>
+<h2>Turning telemetry off</h2>
+<p>The table below lists each system, what it captures, and the control that turns it off.</p>
+<table><tr><th>System</th><th>What it captures</th><th>Control</th></tr><tr><td>Sentry in the API</td><td>Errors, traces, Effect logs, some metrics</td><td>Unset the Sentry DSN, or set the environment to <code>local</code> without the force flag</td></tr><tr><td>Sentry in the daemon</td><td>Errors, traces, logs</td><td>Unset the Sentry DSN, or set the environment to <code>local</code></td></tr><tr><td>Sentry in the proxy</td><td>Errors, traces, Effect metrics, logs</td><td>Unset the Sentry DSN, or set the environment to <code>local</code> without the force flag</td></tr><tr><td>Sentry in the UI</td><td>Errors, traces, breadcrumbs</td><td>Use a development build, or build without the public Sentry DSN</td></tr><tr><td>Sentry in the cloud application</td><td>Errors, traces</td><td>Build without the cloud Sentry DSN</td></tr><tr><td>Sentry in Electron</td><td>Errors, traces</td><td>Build without the Electron Sentry DSN</td></tr><tr><td>PostHog</td><td>Feature flags and three artifact sharing events</td><td>Build without the public PostHog key</td></tr><tr><td>Local logger</td><td>Structured records</td><td>Set the transport level to a higher-priority value than the record's level, or configure no transport</td></tr><tr><td>Git attribution</td><td>Commit and pull request tiers</td><td>Turn off <code>commit_tracking_enabled</code> for the organization, or turn off the member's <code>metrics_advanced_enabled</code> flag</td></tr></table>
+<p>The Sentry DSN is the main switch. A build from source has no DSN and reports nowhere, a safe default.</p>
+<p><strong>Aha:</strong> The redaction design mixes two approaches. The UI and the Git package use allowlists, so a new field stays private. The proxy uses a denylist of sensitive keys and preserves the shape URL on purpose. The allowlists give the stronger default.</p>
+<h2>What this tells us about the project</h2>
+<p>The code shows one consistent rule: a collector is useful only when the product can name what leaves the machine. The API and proxy scrub URLs and bodies. The UI rebuilds a small user allowlist. For a human commit, the Git package sends only counting fields.</p>
+<p>The attribution system also separates evidence from policy. The package interprets evidence. The daemon decides when to watch. The API decides organization membership. The metrics layer decides which tiers count.</p>
+<p>For more context, read <a href="00-overview.html">the overview</a>, <a href="02-daemon-and-session-runtime.html">the daemon and session runtime</a>, <a href="05-sync-engine.html">the sync engine</a>, and <a href="07-api-and-contracts.html">the API and contracts</a>.</p>
+<h2>Next</h2>
+<p>Continue with <a href="17-invariants-and-golden-documents.html">the invariants document</a>. It compares the rules in the <code>golden/</code> folder with the code that enforces them, and it names the places where the two disagree.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

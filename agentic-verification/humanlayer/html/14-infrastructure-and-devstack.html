@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Infrastructure, the local stack, and the background jobs -- humanlayer</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/humanlayer/docs</span>
+    <div class="nav-actions">
+      <a href="11-desktop-shells.html" class="nav-breadcrumb">Desktop shells: Electron, Tauri, and the bridge to native</a><a href="12-cli-and-agent-plugins.html" class="nav-breadcrumb">The command-line interface and the agent plugins</a><a href="13-cloud-billing-and-admin.html" class="nav-breadcrumb">Cloud, billing, and administration</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="13-cloud-billing-and-admin.html" class="nav-btn" title="Previous: Cloud, billing, and administration">← prev</a>
+      <a href="15-agent-integration-and-ai.html" class="nav-btn nav-btn-next" title="Next: Agent integration: executors, model access, and what is mirrored">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Infrastructure, the local stack, and the background jobs</h1>
+<p>The repository keeps almost all of its infrastructure in two shapes. The first shape is a Docker Compose file that a developer runs on a laptop. The second shape is four small Amazon Web Services (AWS) Lambda handlers that run in the hosted product. A Lambda handler is a function that AWS runs on demand. A third shape is missing. There is no Pulumi program in the tree, and there is no Lambda definition file. Pulumi is an infrastructure-as-code tool that declares cloud resources in a general-purpose language. The cloud account, the networking, the buckets, and the function configuration all live outside this snapshot. This document explains what is present and what each local service does. It shows how <code>apps/devstack</code> gives every worktree its own isolated stack. It also shows how the environment block is generated rather than checked in, and how a commit triggers a release in an external repository.</p>
+<h2>The local stack in one picture</h2>
+<p><code>docker-compose.yaml</code> defines six services and four named volumes. The default project name is <code>electric_quickstart</code>, which is a legacy of the project's first prototype (<code>docker-compose.yaml:1</code>). Every port can be overridden by an environment variable, and every variable has a default that works on a fresh machine. Caddy is the reverse proxy. A reverse proxy is a server that receives a request and forwards it to the service that serves it.</p>
+<div class="mermaid">
+flowchart TB
+    subgraph Docker[&quot;Docker Compose&quot;]
+        PG[(&quot;Postgres :54321&quot;)]
+        Electric[&quot;Electric :3030&quot;]
+        Minio[(&quot;MinIO :9000 and :9001&quot;)]
+        MinioSetup[&quot;minio-setup&quot;]
+        DS[&quot;durable-streams :8642&quot;]
+        Redis[(&quot;Redis :7100&quot;)]
+    end
+    subgraph Host[&quot;Host processes&quot;]
+        Api[&quot;riptide-api&quot;]
+        Ui[&quot;riptide-ui&quot;]
+        Cloud[&quot;riptide-cloud&quot;]
+        Docs[&quot;docs dev server :5175&quot;]
+        Proxy[&quot;Electric proxy :8888&quot;]
+        Caddy[&quot;Caddy :4443 and :4444, or generated routes&quot;]
+        Browser[&quot;Browser&quot;]
+    end
+    Browser --&gt; Caddy
+    Caddy --&gt;|&quot;fixed route :4443&quot;| Proxy
+    Caddy -.-&gt;|&quot;generated ui route&quot;| Ui
+    Caddy -.-&gt;|&quot;generated cloud route&quot;| Cloud
+    Caddy -.-&gt;|&quot;generated api route&quot;| Api
+    Caddy -.-&gt;|&quot;generated sync route&quot;| Proxy
+    Caddy -.-&gt;|&quot;generated docs route&quot;| Docs
+    Caddy -.-&gt;|&quot;generated s3 route&quot;| Minio
+    Proxy --&gt; Electric
+    Ui --&gt; Api
+    Cloud --&gt; Api
+    Api --&gt; PG
+    Api --&gt; Redis
+    Api --&gt; DS
+    Api --&gt; Minio
+    PG --&gt; Electric
+    MinioSetup --&gt; Minio
+
+</div>
+<p>The generated configuration writes one block for each of the eight route names: <code>ui</code>, <code>cloud</code>, <code>api</code>, <code>sync</code>, <code>docs</code>, <code>adminApi</code>, <code>adminUi</code>, and <code>s3</code> (<code>apps/devstack/src/lib/caddy.ts:25-34</code>, <code>:145-161</code>). The fixed routes cover the proxy on port 4443 and a second local service on port 5537. The diagram shows only the proxy route. The repository does not name the port 5537 service. A dotted arrow from Caddy is a generated route, and a solid arrow from Caddy is a fixed route. The diagram is simplified: it merges <code>adminApi</code> and <code>adminUi</code> into the cloud arrow. The generated configuration has a separate block for each of them, with its own upstream port (<code>apps/devstack/src/lib/ports.ts:5-24</code>).</p>
+<p>The table gives the exact image and purpose of each Compose service. All values come from the service definitions in <code>docker-compose.yaml</code>.</p>
+<table><tr><th>Service</th><th>Image</th><th>Host port</th><th>Purpose</th></tr><tr><td><code>postgres</code></td><td><code>docker.io/postgres:18</code></td><td><code>54321</code></td><td>Primary database, with logical write-ahead logging enabled for Electric</td></tr><tr><td><code>electric</code></td><td><code>docker.io/electricsql/electric:1.7.12</code></td><td><code>3030</code></td><td>Change-data-capture server that exposes Structured Query Language (SQL) shapes over Hypertext Transfer Protocol (HTTP)</td></tr><tr><td><code>minio</code></td><td><code>docker.io/minio/minio:latest</code></td><td><code>9000</code>, <code>9001</code></td><td>Amazon Simple Storage Service (S3)-compatible object store for artifacts</td></tr><tr><td><code>minio-setup</code></td><td><code>docker.io/minio/mc:latest</code></td><td>none</td><td>One-shot job that creates the artifacts bucket and exits</td></tr><tr><td><code>durable-streams</code></td><td><code>humanlayer/durable-streams-server:0.3.0-cebb50e</code></td><td><code>8642</code></td><td>Append-only stream server for session events</td></tr><tr><td><code>redis</code></td><td><code>docker.io/redis:7-alpine</code></td><td><code>7100</code></td><td>Billing cache and general key-value store, with append-only persistence</td></tr></table>
+<p>Postgres is the anchor. It runs with <code>listen_addresses=*</code> and <code>wal_level=logical</code>, because Electric needs logical replication to see row changes (<code>docker-compose.yaml:17-21</code>). Electric waits for the Postgres health check, and <code>minio-setup</code> waits for the MinIO health check.</p>
+<table><tr><th>Volume</th><th>Owner service</th><th>Default name</th></tr><tr><td><code>postgresql_data</code></td><td><code>postgres</code></td><td><code>electric_quickstart_postgresql_data</code></td></tr><tr><td><code>minio_data</code></td><td><code>minio</code></td><td><code>electric_quickstart_minio_data</code></td></tr><tr><td><code>durable-streams-data</code></td><td><code>durable-streams</code></td><td><code>electric_quickstart_durable-streams-data</code></td></tr><tr><td><code>redis-data</code></td><td><code>redis</code></td><td><code>electric_quickstart_redis</code></td></tr></table>
+<p>Each name takes an override from a <code>DEVSTACK_*_VOLUME</code> variable (<code>docker-compose.yaml:110-118</code>).</p>
+<pre><code class="language-yaml"># docker-compose.yaml:8-28
+services:
+  postgres:
+    image: docker.io/postgres:18
+    environment:
+      POSTGRES_DB: electric
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DEVSTACK_POSTGRES_PASSWORD:-password}
+    ports:
+      - &quot;${DEVSTACK_POSTGRES_PORT:-54321}:5432&quot;
+    command:
+      - -c
+      - listen_addresses=*
+      - -c
+      - wal_level=logical
+    healthcheck:
+      test: [&quot;CMD-SHELL&quot;, &quot;pg_isready -U postgres&quot;]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - postgresql_data:/var/lib/postgresql
+</code></pre>
+<p>The durable stream server is the most constrained service. It keeps data in files, limits total memory to 187,904,819,200 bytes, limits a single stream to 104,857,600 bytes, and exposes a readiness endpoint. The memory ceiling is a practical no-limit sentinel. A client that writes a stream larger than 104,857,600 bytes receives an error rather than consuming the disk.</p>
+<pre><code class="language-yaml"># docker-compose.yaml:72-95
+  durable-streams:
+    image: humanlayer/durable-streams-server:0.3.0-cebb50e
+    build:
+      context: ./docker/durable-streams-server
+      args:
+        DURABLE_STREAMS_SOURCE_COMMIT: cebb50e49c62c534dd714ef84a8a4572e66724b2
+    ports:
+      # Keep using the already-allocated Durable Streams port in existing manifests.
+      - &quot;${DEVSTACK_DURABLE_STREAMS_PORT:-8642}:4437&quot;
+    environment:
+      DS_SERVER__BIND_ADDRESS: 0.0.0.0:4437
+      DS_STORAGE__MODE: file-fast
+      DS_STORAGE__DATA_DIR: /var/lib/durable-streams
+      DS_LIMITS__MAX_MEMORY_BYTES: &quot;187904819200&quot;
+      DS_LIMITS__MAX_STREAM_BYTES: &quot;104857600&quot;
+      DS_LIMITS__MAX_STREAM_NAME_SEGMENTS: &quot;256&quot;
+      DS_HTTP__ALLOW_WILDCARD_CORS: &quot;true&quot;
+    volumes:
+      - durable-streams-data:/var/lib/durable-streams
+    healthcheck:
+      test: [&quot;CMD&quot;, &quot;curl&quot;, &quot;--fail&quot;, &quot;--silent&quot;, &quot;http://localhost:4437/readyz&quot;]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+</code></pre>
+<p>MinIO is an S3 emulator. <code>minio-setup</code> waits for MinIO to become healthy, sets an alias, creates the <code>${S3_ARTIFACTS_BUCKET:-riptide-artifacts}</code> bucket when it is absent, and exits with status zero (<code>docker-compose.yaml:60-70</code>). The entrypoint always exits zero, so a failed bucket creation does not fail the container. That would leave artifact uploads broken while every other service looked healthy. The root user and password default to <code>minioadmin</code>, so the local object store has no real protection (<code>docker-compose.yaml:45-47</code>).</p>
+<p>Redis runs with <code>--appendonly yes</code> (<code>docker-compose.yaml:103</code>). The Compose volume key is <code>redis-data</code>, but its default external name is <code>electric_quickstart_redis</code> (<code>docker-compose.yaml:117-118</code>). That matters for billing, because the subscription cache lives there. A restart without persistence would empty the cache and the customer mapping. The next request blocks with <code>missing_customer_mapping</code>, because the decision cannot reach Stripe without a customer identifier. The mapping returns only after a Stripe-first path rebuilds it. <code>synchronizeStripeCustomerBillingCache</code> starts from the customer identifier, reads the organizations row, and writes both mappings (<code>apps/riptide-api/src/effects/services/stripe/stripe-billing-sync.ts:20-65</code>, <code>:67-84</code>). No path rebuilds the mapping from the organization identifier alone, so requests block until a Stripe event or checkout path runs. The service sets no password. Devstack writes the Redis address into <code>.env</code> as <code>KV_URL</code> (<code>apps/devstack/src/lib/env-block.ts:200</code>), and the API reads that variable (<code>apps/riptide-api/src/lib/environment.ts:36</code>). A host that exposes port 7100 exposes the billing cache.</p>
+<h2>The Caddy reverse proxy</h2>
+<p><code>Caddyfile</code> is short. It terminates Transport Layer Security (TLS) on two local ports and forwards each to a plain HTTP development server. Streaming responses are not buffered, and cache headers are disabled so a browser or proxy cannot replay stale development assets.</p>
+<pre><code class="language-caddyfile"># Caddyfile:7-25
+https://localhost:4443 {
+	reverse_proxy localhost:8888 {
+		flush_interval -1
+	}
+	header {
+		Cache-Control &quot;no-cache, no-transform&quot;
+		X-Accel-Buffering &quot;no&quot;
+	}
+}
+
+https://localhost:4444 {
+	reverse_proxy localhost:5537 {
+		flush_interval -1
+	}
+	header {
+		Cache-Control &quot;no-cache, no-transform&quot;
+		X-Accel-Buffering &quot;no&quot;
+	}
+}
+</code></pre>
+<p>The first block forwards to port 8888, which is the default port of the Electric proxy (<code>apps/riptide-electric-proxy/src/server-port.ts:4</code>). The second block forwards to port 5537. No application in this snapshot declares 5537 as a default, and the documentation development server uses 5175 (<code>apps/docs/package.json:7</code>). The second block therefore has no verified consumer in this tree. It may be a legacy route. A reader should not assume it serves the docs site.</p>
+<p><strong>Aha:</strong> the root <code>Caddyfile</code> is only used by the legacy path. <code>scripts/ensure-devstack-caddy.ts</code> checks for <code>.devstack.json</code> in the working directory. When the file is absent, the script runs <code>caddy run --config Caddyfile</code> in the foreground (<code>scripts/ensure-devstack-caddy.ts:7-23</code>). When the file is present, devstack owns Caddy and writes a generated configuration with one block per stack. <code>regenerateCaddyConfig</code> performs that write (<code>apps/devstack/src/lib/caddy.ts:173-197</code>). A worktree can therefore use either the two fixed routes or the many per-stack hostnames, never both.</p>
+<h2><code>apps/devstack</code>: one stack per worktree</h2>
+<p><code>apps/devstack</code> is a command-line application that reconciles a worktree's local environment. Two checkouts of the same repository would otherwise share ports, database names, Caddy routes, and a Redis instance, and they would corrupt each other's data. Devstack gives each worktree a stack identifier and an isolated set of resources. Compose takes its project name from <code>DEVSTACK_COMPOSE_PROJECT</code>, which devstack writes into the generated environment block (<code>docker-compose.yaml:1</code>; <code>apps/devstack/src/lib/env-block.ts:143</code>). That name prefixes the containers, volumes, and networks, so two worktrees do not share them.</p>
+<p>The identifier is derived from the worktree name, or from an explicit <code>--stack</code> value. It is lower-cased, restricted to letters, digits, and hyphens, and truncated to 63 characters (<code>apps/devstack/src/lib/stack-id.ts:10-21</code>). Docker names receive a <code>devstk-</code> prefix, and the Tauri application receives a suffix with underscores (<code>apps/devstack/src/lib/stack-id.ts:23-31</code>). Tauri is a desktop application framework that uses the operating system web view. The suffix keeps two native builds from overwriting each other in the application folder.</p>
+<p>The <code>sync</code>, <code>down</code>, <code>reallocate</code>, <code>status</code>, and <code>set-local-org</code> commands accept the four common options <code>--stack</code>, <code>--global-stacks</code>, <code>--repo-root</code>, and <code>--json</code> (<code>apps/devstack/src/cli.ts:75-81</code>, <code>:329-365</code>). The <code>--global-stacks</code> value is the path of the machine-wide registry file, and it defaults to a per-user location (<code>apps/devstack/src/cli.ts:78-87</code>). The option name is plural, but its value is one path. In the table below, "none" in the options column means no command-specific option beyond those four.</p>
+<table><tr><th>Command</th><th>What it does</th><th>Important flags</th></tr><tr><td><code>sync</code></td><td>Reconciles the worktree stack and rewrites its environment block</td><td><code>--compose</code>, <code>--seed</code>, <code>--dry-run</code></td></tr><tr><td><code>down</code></td><td>Tears down the stack and its containers, and removes the environment block</td><td><code>--dry-run</code>, <code>--force</code></td></tr><tr><td><code>reallocate</code></td><td>Probes and stores a fresh set of ports, without converging anything</td><td>none</td></tr><tr><td><code>status</code></td><td>Prints one stack, or a summary of every registered stack</td><td><code>--json</code></td></tr><tr><td><code>set-local-org</code></td><td>Stores the organization used when seeding</td><td><code>--workos-org-id</code>, <code>--name</code>, <code>--organization-id</code></td></tr><tr><td><code>help</code></td><td>Prints the command list</td><td>none</td></tr></table>
+<p>The registry is a JavaScript Object Notation (JSON) file at <code>~/.humanlayer/dev/default.json</code> by default (<code>apps/devstack/src/cli.ts:55-57</code>). It holds a version number, a record per stack, and optional organization defaults (<code>apps/devstack/src/lib/registry.ts:18-46</code>). Each stack record stores its worktree path, compose project, ports, routes, and per-service manifests. The file is the single source of truth for "which stack owns which port". <code>down</code> removes the record under a lock, so two simultaneous teardowns cannot both claim the same container.</p>
+<p>The eight route hostnames are fixed. Only the stack identifier changes.</p>
+<pre><code class="language-ts">// apps/devstack/src/lib/routes.ts:1-19
+export const ROUTE_NAMES = [&#x27;ui&#x27;, &#x27;cloud&#x27;, &#x27;api&#x27;, &#x27;sync&#x27;, &#x27;docs&#x27;, &#x27;adminApi&#x27;, &#x27;adminUi&#x27;, &#x27;s3&#x27;] as const
+export type StackRouteName = (typeof ROUTE_NAMES)[number]
+export type StackRoutes = Record&lt;StackRouteName, string&gt;
+
+const ROUTE_HOSTS: Record&lt;StackRouteName, string&gt; = {
+	ui: &#x27;app&#x27;,
+	cloud: &#x27;cloud&#x27;,
+	api: &#x27;api&#x27;,
+	sync: &#x27;sync&#x27;,
+	docs: &#x27;docs&#x27;,
+	adminApi: &#x27;admin-api&#x27;,
+	adminUi: &#x27;admin-ui&#x27;,
+	s3: &#x27;s3&#x27;,
+}
+
+export function createStackRoutes(stackId: string): StackRoutes {
+	return Object.fromEntries(
+		ROUTE_NAMES.map((name) =&gt; [name, `https://${ROUTE_HOSTS[name]}.${stackId}.localhost`]),
+	) as StackRoutes
+</code></pre>
+<p>A route such as <code>https://app.feature-one.localhost</code> resolves to the loopback address on modern systems. Caddy presents a certificate from its local certificate authority. The browser accepts that certificate only after the local root is trusted. The repository defines no command that installs this trust. A search of <code>apps/devstack</code> finds no trust call. Trust is a manual host step outside this tree. Until the operator completes it, the browser rejects the generated route with a certificate warning. A trusted route gives the desktop shells and the clipboard API a secure origin.</p>
+<p>Ports are allocated by probing, not by a fixed table. Eighteen names cover the application ports: <code>ui</code>, <code>cloud</code>, <code>api</code>, <code>electricProxy</code>, <code>docs</code>, <code>adminApi</code>, <code>adminUi</code>, <code>postgres</code>, <code>electric</code>, <code>rivetEngine</code>, <code>rivetServices</code>, <code>minioApi</code>, <code>minioConsole</code>, <code>tanstackDevtools</code>, <code>testPostgres</code>, <code>testElectric</code>, <code>testRivetEngine</code>, and <code>testRivetServices</code> (<code>apps/devstack/src/lib/ports.ts:5-24</code>). The names cover the application, the data services, the TanStack developer tools, and the four test-stack services. <code>reallocate</code> exists for the case where a port is taken after allocation, for example by a container that started later. It stores new ports and does not touch containers. A running Compose project keeps its published ports, because <code>sync</code> skips <code>start-compose</code> when the project is running (<code>apps/devstack/src/sync/stack-sync-plan.ts:184</code>). An operator must stop the project and run <code>sync --compose</code> again, or recreate the affected containers by hand. <code>status</code> reports the environment block as stale until the next sync.</p>
+<p>The <code>sync</code> command does not mutate anything during a dry run. It builds an ordered plan, prints it, and stops. The apply step performs these actions in order. It persists the registry record and installs the workspace projection. The workspace projection is the set of files in the worktree root that point the checkout at one stack. It holds the generated <code>.env</code> block, the native configuration, and the workspace configuration (<code>apps/devstack/src/environment/sync-apply-environment.ts:82-96</code>). It installs the Caddy routes, cleans up a legacy Redis container, and starts Compose. It then sets up Postgres and optionally seeds an organization.</p>
+<pre><code class="language-ts">// apps/devstack/src/sync/stack-sync-plan.ts:180-195
+	const routesChange = change(existing?.routes ?? null, desired.routes)
+	if (routesChange) actions.push({ type: &#x27;install-caddy-routes&#x27;, change: routesChange })
+	if (intent.compose) {
+		actions.push({ type: &#x27;cleanup-legacy-redis&#x27;, stack: desired })
+		if (!observation.composeRunning) actions.push({ type: &#x27;start-compose&#x27;, stack: desired })
+		actions.push({ type: &#x27;setup-postgres&#x27;, stack: desired })
+	}
+	if (intent.seed) {
+		const organization = observation.registry.defaults?.organization
+		if (!organization) {
+			throw new StackPlanningError({
+				reason: &#x27;No local organization is configured; run devstack set-local-org before using --seed&#x27;,
+			})
+		}
+		actions.push({ type: &#x27;seed-organization&#x27;, organization })
+	}
+</code></pre>
+<p><code>setup-postgres</code> waits for Postgres and runs <code>drizzle-kit migrate</code> in <code>packages/db</code> with the stack's database Uniform Resource Locator (URL) (<code>apps/devstack/src/environment/sync-apply-environment.ts:214-223</code>). A migration failure stops the action list before seeding, and the stack remains registered.</p>
+<p>Three details are easy to miss. First, <code>start-compose</code> is skipped when Compose is already running, so a second <code>sync</code> does not restart healthy containers. Second, <code>--seed</code> without a configured organization throws before any mutation, which prevents a half-seeded database. Third, <code>cleanup-legacy-redis</code> runs on every Compose sync, because an older version started a Redis container outside the current project layout.</p>
+<p>The startup sequence shows the order a developer observes.</p>
+<div class="mermaid">
+sequenceDiagram
+    participant Dev as Developer
+    participant Stack as devstack
+    participant Reg as Registry file
+    participant Caddy
+    participant Docker as Docker Compose
+    participant PG as Postgres
+    Dev-&gt;&gt;Stack: run devstack sync with compose and seed
+    Stack-&gt;&gt;Reg: read existing stack records
+    Stack-&gt;&gt;Stack: allocate free ports and build routes
+    Stack-&gt;&gt;Reg: persist the stack record
+    Stack-&gt;&gt;Dev: rewrite the .env autogenerated block
+    Stack-&gt;&gt;Caddy: write the per-stack route blocks
+    Stack-&gt;&gt;Docker: clean up a legacy Redis container
+    Stack-&gt;&gt;Docker: start the Compose bundle
+    Docker-&gt;&gt;PG: start Postgres and wait for health
+    Stack-&gt;&gt;PG: wait for health, then run migrations
+    Stack-&gt;&gt;PG: seed the configured organization
+
+</div>
+<p><code>status</code> is the diagnostic command. It reports whether the generated environment block is fresh and whether the API answers a health probe (<code>apps/devstack/src/lib/status.ts:51-85</code>). It does not inspect the Compose project. Fresh means the text between the two markers equals the lines that devstack would render now (<code>apps/devstack/src/lib/env-block.ts:6-17</code>). A stale block means <code>.env</code> points at old ports or origins, and <code>sync</code> repairs it. The health probe is an HTTP GET to the stack's API route plus <code>/health</code> (<code>apps/devstack/src/lib/status.ts:69-84</code>). <code>down</code> reverses the projection. It removes the worktree's autogenerated environment block, deletes the native configuration, and removes the registry entry. The <code>--force</code> flag lets the command continue when the stack is not registered (<code>apps/devstack/src/lib/down.ts:105-115</code>).</p>
+<h2>The generated environment block</h2>
+<p>Devstack does not rely on a checked-in environment file. It writes an autogenerated block into the worktree's <code>.env</code>, between two marker lines, and replaces that block on every sync. The markers are <code># &lt;devstack-autogenerated&gt;</code> and <code># &lt;/devstack-autogenerated&gt;</code>, and a warning line follows the opening marker (<code>apps/devstack/src/lib/env-block.ts:1-3</code>). The write is atomic. Devstack writes a temporary file with mode <code>0600</code>, then renames it over the old file (<code>apps/devstack/src/environment/sync-apply-environment.ts:88-95</code>).</p>
+<pre><code class="language-ts">// apps/devstack/src/environment/sync-apply-environment.ts:88-95
+	const envPath = join(repoRoot, &#x27;.env&#x27;)
+	const existing = await readEnv(envPath)
+	const updated = replaceDevstackEnvBlock(existing, renderStackEnvLines(stack, registryPath, organization?.id))
+	const temporaryPath = `${envPath}.${process.pid}.${crypto.randomUUID()}.tmp`
+	await writeFile(temporaryPath, updated, { mode: 0o600 })
+	await rename(temporaryPath, envPath)
+	await writeNativeStackConfig(repoRoot, stack)
+	await writeWorkspaceConfig(repoRoot, stack.id)
+</code></pre>
+<p>The replacement function refuses to touch a malformed or duplicated block. It throws instead of guessing (<code>apps/devstack/src/lib/env-block.ts:28-33</code>). A developer who edits inside the markers loses the edit on the next sync, and the warning line says so. A developer who needs a permanent override places it outside the markers, where the function preserves it. The exception is <code>RIPTIDE_DAEMON_ORGANIZATION_ID</code>, which devstack removes outside the block so its own value wins (<code>apps/devstack/src/lib/env-block.ts:4</code>, <code>:36-50</code>). A refused block needs manual repair: fix or remove the two marker lines, then run <code>sync</code> again.</p>
+<pre><code class="language-ts">// apps/devstack/src/lib/env-block.ts:139-168
+	const lines: string[] = [
+		`DEVSTACK_ID=${stack.id}`,
+		`DEVSTACK_REGISTRY_PATH=${registryPath}`,
+		`LOG_BASE=${stackLogDirectory(stack.id)}`,
+		`DEVSTACK_COMPOSE_PROJECT=${stack.composeProject}`,
+		`DEVSTACK_POSTGRES_PORT=${stack.postgres.postgresPort}`,
+		`DEVSTACK_POSTGRES_PASSWORD=${stack.postgres.postgresPassword}`,
+		`DEVSTACK_POSTGRES_VOLUME=${stack.postgres.postgresVolume}`,
+		`DATABASE_URL=${stack.postgres.databaseUrl}`,
+		`READ_REPLICA_DATABASE_URL=${stack.postgres.readReplicaDatabaseUrl}`,
+		`RIPTIDE_API_PORT=${apiPort}`,
+		`VITE_PUBLIC_RIPTIDE_API_ORIGIN=${apiRoute}`,
+		`RIPTIDE_API_ORIGIN=${apiRoute}`,
+		`RIPTIDE_UI_PORT=${stack.ports.ui}`,
+		`RIPTIDE_CLOUD_PORT=${stack.ports.cloud}`,
+		`RIPTIDE_UI_TANSTACK_DEVTOOLS_PORT=${stack.ports.tanstackDevtools}`,
+		`VITE_PUBLIC_DEEP_LINK_SCHEME=riptide-local-${stack.id.slice(0, 40)}`,
+		`VITE_PUBLIC_CLOUD_ORIGIN=https://cloud.${stack.id}.localhost`,
+		`CLOUD_ORIGIN=https://cloud.${stack.id}.localhost`,
+		`VITE_ADMIN_API_ORIGIN=${adminApiRoute}`,
+		`APP_ORIGIN=${uiRoute}`,
+		`RIPTIDE_ELECTRON_RENDERER_URL=${uiRoute}`,
+		`DEVSTACK_ELECTRIC_PORT=${stack.electric?.electricPort ?? stack.ports.electric}`,
+		`DEVSTACK_ELECTRIC_SECRET=${stack.electric?.electricSecret ?? &#x27;&#x27;}`,
+		`DEVSTACK_ELECTRIC_REPLICATION_STREAM_ID=${stack.electric?.electricReplicationStreamId ?? stack.id}`,
+		`RIPTIDE_ELECTRIC_PROXY_PORT=${stack.electric?.electricProxyPort ?? stack.ports.electricProxy}`,
+		`ELECTRIC_SHAPE_URL=${stack.electric?.shapeUrl ?? `http://127.0.0.1:${stack.ports.electric}/v1/shape`}`,
+		`ELECTRIC_SECRET=${stack.electric?.electricSecret ?? &#x27;&#x27;}`,
+		`VITE_PUBLIC_SYNC_ORIGIN=${syncRoute}`,
+		`RIPTIDE_SYNC_ORIGIN=${syncRoute}`,
+</code></pre>
+<p>The full function continues with daemon origins, durable-stream ports, MinIO endpoints, Redis variables, and the test-service block (<code>apps/devstack/src/lib/env-block.ts:176-235</code>). The MinIO endpoint deliberately uses the Caddy route, not the direct HTTP port. The comment explains why: the native application's WebKit webview blocks a plain HTTP presigned upload from an HTTPS page as mixed content (<code>apps/devstack/src/lib/env-block.ts:188-190</code>).</p>
+<p><strong>Aha:</strong> the repository has no <code>.env.example</code>. The first-run instructions in <code>README.md:31</code> and <code>CONTRIBUTING.md:11</code> tell a reader to copy that file, and <code>README.md:38</code> says it lists the observability and authentication variables. The file is absent from this commit, and <code>git log --all -- .env.example</code> returns no history. The ignore rule <code>.env*</code> at <code>.gitignore:100</code> has no negation for the example file, so a new example file would be ignored unless the rule changed. In practice, devstack writes the variables a local stack needs, and a person who does not use devstack must create <code>.env</code> by hand.</p>
+<p>The environment inventory is large, but it falls into six groups. The table lists representative variables and where each is read.</p>
+<table><tr><th>Group</th><th>Variables</th><th>Read by</th></tr><tr><td>Database</td><td><code>DATABASE_URL</code>, <code>READ_REPLICA_DATABASE_URL</code>, <code>DATABASE_URL_SECRET_ARN</code></td><td>API, migrator, sweeper, maintenance function</td></tr><tr><td>Sync</td><td><code>ELECTRIC_SHAPE_URL</code>, <code>ELECTRIC_SECRET</code>, <code>RIPTIDE_SYNC_ORIGIN</code>, <code>VITE_PUBLIC_SYNC_ORIGIN</code></td><td>Electric proxy, sync client, daemon</td></tr><tr><td>Authentication</td><td><code>WORKOS_API_KEY</code>, <code>WORKOS_CLIENT_ID</code>, <code>WORKOS_REDIRECT_URI</code>, <code>WORKOS_WEBHOOK_SECRET</code>, <code>VITE_PUBLIC_WORKOS_CLIENT_ID</code></td><td>API, cloud application</td></tr><tr><td>Storage</td><td><code>S3_ARTIFACTS_ENDPOINT</code>, <code>S3_ARTIFACTS_BUCKET</code>, <code>S3_ACCESS_KEY_ID</code>, <code>S3_SECRET_ACCESS_KEY</code>, <code>BUCKET_NAME</code>, <code>MANIFEST_PREFIX</code></td><td>API, updater server</td></tr><tr><td>Billing</td><td><code>STRIPE_SECRET_KEY</code>, <code>STRIPE_WEBHOOK_SECRET</code>, <code>STRIPE_PRICE_STARTER</code>, <code>STRIPE_PRICE_PRO</code>, <code>IS_BILLING_ENFORCEMENT_ENABLED</code>, <code>KV_URL</code></td><td>API, billing services</td></tr><tr><td>Observability</td><td><code>SENTRY_DSN</code>, <code>SENTRY_ENVIRONMENT</code>, <code>SENTRY_RELEASE</code>, <code>VITE_PUBLIC_POSTHOG_KEY</code>, <code>VITE_PUBLIC_BUILD_VERSION</code></td><td>API, browser applications, Lambda handlers</td></tr></table>
+<p>Most variables are read through helpers that throw when a value is missing (<code>apps/riptide-api/src/lib/environment.ts:7-13</code>). The WorkOS helpers are lazy, so a unit test that imports the Application Programming Interface module does not need every credential at module load (<code>apps/riptide-api/src/lib/workos.ts:5-31</code>). Sentry is the exception. When <code>SENTRY_DSN</code> is unset, the integration stays off rather than failing (<code>apps/riptide-api/src/instrument.ts:145-148</code>).</p>
+<p><strong>Aha:</strong> the local Compose file uses default passwords and no TLS. The project warns about this directly in <code>README.md:45</code>. That warning matters for self-hosting, because the same file is the suggested starting point. A reader who copies it to a server without changing <code>DEVSTACK_POSTGRES_PASSWORD</code>, the MinIO credentials, and the missing Redis password exposes data to anyone who can reach the host.</p>
+<h2>The four Lambda handlers</h2>
+<p>Four applications are written as AWS Lambda handlers. Each has a small <code>package.json</code> and a handler entry point. Three also have tests; <code>riptide-migrator</code> has none. None has a deployment definition in this repository.</p>
+<table><tr><th>Handler</th><th>Trigger (inferred from code)</th><th>What it does</th><th>Failure behaviour</th></tr><tr><td><code>riptide-migrator</code></td><td>Not defined here; a deploy step or a manual call</td><td>Applies Drizzle Structured Query Language (SQL) migrations from <code>drizzle/</code></td><td>Returns a result object with status <code>500</code> and reports to Sentry</td></tr><tr><td><code>updater-server</code></td><td>HTTP request from a Function URL or API Gateway</td><td>Serves the download redirect and the version manifest</td><td>Returns a <code>500</code> response</td></tr><tr><td><code>stale-daemon-sweeper</code></td><td>Schedule</td><td>Reconciles stale daemons, lost sessions, and expired hosts</td><td>A thrown pass skips the later passes; the next run retries</td></tr><tr><td><code>database-maintenance-function</code></td><td>Schedule</td><td>Deletes old agent-state snapshots in bounded batches</td><td>Stops before the invocation timeout and leaves the remainder for the next run</td></tr></table>
+<p>The migrator resolves its database Uniform Resource Locator (URL) from <code>DATABASE_URL</code> when present, or from AWS Secrets Manager when only <code>DATABASE_URL_SECRET_ARN</code> is present (<code>apps/riptide-migrator/index.js:20-40</code>). It uses a single connection, reads migrations relative to <code>process.cwd()</code>, and logs the SQL files it finds before running them (<code>apps/riptide-migrator/index.js:49-63</code>).</p>
+<pre><code class="language-js">// apps/riptide-migrator/index.js:20-40
+async function getDatabaseUrl() {
+	// Check if we have a direct DATABASE_URL (for local testing)
+	if (process.env.DATABASE_URL) {
+		return process.env.DATABASE_URL
+	}
+
+	// Otherwise fetch from Secrets Manager using the ARN
+	const secretArn = process.env.DATABASE_URL_SECRET_ARN
+	if (!secretArn) {
+		throw new Error(&#x27;Missing DATABASE_URL_SECRET_ARN environment variable&#x27;)
+	}
+
+	const command = new GetSecretValueCommand({ SecretId: secretArn })
+	const response = await secretsManager.send(command)
+
+	if (!response.SecretString) {
+		throw new Error(&#x27;Secret has no string value&#x27;)
+	}
+
+	return response.SecretString
+}
+</code></pre>
+<p>The updater server is a two-mode handler. The download path returns a <code>302</code> redirect to a stored Apple Disk Image (DMG) file. Every other path is an update check of the form <code>/{variant}/{target}-{arch}/{current_version}</code>. The variant is the first path segment, and it names the manifest folder in the bucket. The target is the operating system name, and the arch is the processor architecture. The manifest lists each combined target and arch value, such as <code>darwin-aarch64</code> (<code>apps/updater-server/index.js:82-104</code>). The handler reads <code>&lt;variant&gt;/latest.json</code> (<code>apps/updater-server/index.js:80-90</code>). The handler compares versions and returns the manifest only when a newer version exists (<code>apps/updater-server/index.js:64-118</code>).</p>
+<p>A missing <code>BUCKET_NAME</code> breaks both paths with a <code>500</code>. A missing <code>MANIFEST_PREFIX</code> breaks only the download path, because the update path builds its key from the variant name. A missing <code>DMG_FILENAME</code> breaks only the download path. A missing <code>latest.json</code> returns <code>204</code> to an update check and <code>500</code> to a download. A newer version returns <code>200</code>; no newer version, no platform entry, or no manifest returns <code>204</code>; a short path returns <code>400</code> (<code>apps/updater-server/index.js:64-125</code>).</p>
+<pre><code class="language-js">// apps/updater-server/index.js:64-78
+export async function handler(event) {
+	try {
+		const path = event.rawPath || event.requestContext?.http?.path || &#x27;&#x27;
+		if (path === DOWNLOAD_PATH) {
+			if (!MANIFEST_PREFIX) {
+				throw new Error(&#x27;MANIFEST_PREFIX is not configured&#x27;)
+			}
+
+			const latestJson = await loadManifest(`${MANIFEST_PREFIX}/latest.json`)
+			return {
+				statusCode: 302,
+				headers: { Location: getDmgUrl(latestJson) },
+				body: &#x27;&#x27;,
+			}
+		}
+</code></pre>
+<p>The redirect target is not taken directly from the manifest. The handler parses the artifact Uniform Resource Locator. It checks that the URL points at the expected GitHub release path, and it rejects query strings, fragments, and extra path segments. It then rebuilds the URL with the configured DMG filename (<code>apps/updater-server/index.js:25-51</code>). That validation prevents a corrupted manifest from turning the updater into an open redirect.</p>
+<p>The sweeper runs four passes in one invocation. It computes three cutoffs from the invocation time. Stale daemons expire after 120 seconds (<code>apps/stale-daemon-sweeper/stale-daemons.ts:7</code>), ephemeral hosts after 10 minutes, and offline hosts after 90 days (<code>apps/stale-daemon-sweeper/expired-hosts.ts:8-9</code>). The lost-session pass uses a separate threshold for each status. A running session is lost after 10 minutes without an event. A launching session is lost after 2 minutes, a resuming session after 1 minute, and an interrupt request after 30 seconds (<code>apps/stale-daemon-sweeper/lost-sessions.ts:22-47</code>).</p>
+<p>A running session can escape the lost state while a slow tool call is still open. An unresolved Bash call exempts the session until its declared timeout. An unresolved Model Context Protocol (MCP) call exempts the session for 20 minutes (<code>apps/stale-daemon-sweeper/lost-sessions.ts:138-156</code>). Without that rule, a long build would look like a dead daemon.</p>
+<pre><code class="language-ts">// apps/stale-daemon-sweeper/index.ts:96-119
+export async function runStaleDaemonSweep(options: SweepOptions = {}): Promise&lt;SweepResult&gt; {
+	const invocationTime = BigInt((options.now ?? Date.now)())
+	const staleDaemonCutoff = invocationTime - BigInt(STALE_DAEMON_AFTER_MS)
+	const ephemeralHostCutoff = invocationTime - BigInt(EPHEMERAL_HOST_AFTER_MS)
+	const offlineHostCutoff = invocationTime - BigInt(OFFLINE_HOST_AFTER_MS)
+	const loadDatabaseUrl = options.loadDatabaseUrl ?? getDatabaseUrl
+	const connect = options.createDatabaseConnection ?? createDatabaseConnection
+	const runDaemonPass = options.reconcileStaleDaemons ?? reconcileStaleDaemons
+	const runLostPass = options.reconcileLostSessions ?? reconcileLostSessions
+	const runEphemeralPass = options.reconcileExpiredEphemeralHosts ?? reconcileExpiredEphemeralHosts
+	const runOfflinePass = options.reconcileExpiredOfflineHosts ?? reconcileExpiredOfflineHosts
+	const captureException = options.captureException ?? Sentry.captureException
+	const flushSentry = options.flushSentry ?? (() =&gt; Sentry.flush(SENTRY_FLUSH_TIMEOUT_MS))
+	const logSummary =
+		options.logSummary ?? ((result) =&gt; console.log({ event: &#x27;session_reconciliation_completed&#x27;, ...result }))
+	let connection: DatabaseConnection | undefined
+
+	try {
+		const databaseUrl = await loadDatabaseUrl()
+		connection = await connect(databaseUrl)
+		const staleDaemons = await runDaemonPass(connection.db, staleDaemonCutoff)
+		const lostSessions = await runLostPass(connection.db, invocationTime)
+		const expiredEphemeralHosts = await runEphemeralPass(connection.db, ephemeralHostCutoff)
+		const expiredOfflineHosts = await runOfflinePass(connection.db, offlineHostCutoff)
+</code></pre>
+<p>The handler accepts a clock, a connection factory, a database-Uniform-Resource-Locator loader, four pass functions, a Sentry capture function, a Sentry flush function, and a logger. That design allows a unit test to run the whole sweep without a database. It also means the production wiring lives in one small place at the bottom of the file, and a missing injection would be visible as a default value.</p>
+<p>All four passes run inside one <code>try</code> block. If the daemon pass throws, the lost, ephemeral, and offline passes never run in that invocation. The <code>catch</code> sends the error to Sentry and rethrows it, and the <code>finally</code> flushes Sentry and closes the connection (<code>apps/stale-daemon-sweeper/index.ts:113-142</code>). Each pass commits its work in batches, so a later run continues from the rows that remain. A fault that always throws at the start therefore stops all cleanup, not only one pass.</p>
+<p>The maintenance function tombstones old rows in <code>codelayer_agent_state_snapshots</code>. It sets <code>state = NULL</code>, <code>tombstoned_at</code>, and <code>tombstone_reason = 'retention_expired'</code>, so the rows remain (<code>apps/database-maintenance-function/index.ts:124-149</code>). It keeps 90 days of history. It processes at most 250 rows per batch and 25 batches per invocation, and it sleeps 250 milliseconds between batches. It stops when less than 15 seconds remain in the invocation (<code>apps/database-maintenance-function/index.ts:20-26</code>).</p>
+<pre><code class="language-ts">// apps/database-maintenance-function/index.ts:20-26
+const SNAPSHOT_RETENTION_BATCH_SIZE = 250
+const SNAPSHOT_RETENTION_MAX_BATCHES = 25
+const SNAPSHOT_RETENTION_SLEEP_MS = 250
+const SNAPSHOT_RETENTION_MIN_REMAINING_MS = 15_000
+const SNAPSHOT_RETENTION_AGE_MS = 90 * 24 * 60 * 60 * 1000
+const STATEMENT_TIMEOUT_MS = 30_000
+const LOCK_TIMEOUT_MS = 5_000
+</code></pre>
+<p>The batch ceiling is a deliberate trade. A single invocation tombstones at most 6,250 rows. A backlog larger than that needs several scheduled runs. The alternative, one unbounded update, would hold locks and risk a timeout that rolls back the whole transaction. The statement timeout of 30 seconds and the lock timeout of 5 seconds make contention fail fast rather than block every reader.</p>
+<h2>What is missing from the infrastructure</h2>
+<p>The documentation and the package list imply a deployment program that is not in the tree. <code>apps/docs/README.md:4</code> says the documentation site is served "via the Pulumi program in <code>pulumi.ts</code>". The same file describes <code>pulumi up --stack dev</code> and <code>pulumi up --stack prod</code>, and it names a CloudFront function called <code>docs-url-rewrite</code> that lives in that program (<code>apps/docs/README.md:11-31</code>). The root <code>package.json:154-159</code> pins the Pulumi packages, including the Amazon Web Services (AWS) provider. <code>packages/pulumi-helpers</code> contains three helper modules for S3, CloudFront, and static-site assets, but no program that uses them. A <code>find</code> for any path matching <code><em>pulumi</em></code> returns only <code>packages/pulumi-helpers</code>. There is no <code>pulumi.ts</code> and no <code>Pulumi.yaml</code> in this checkout.</p>
+<p>The four Lambda handlers have the same gap. A <code>find</code> for <code>serverless<em></code>, <code>template.yaml</code>, <code>cdk.json</code>, <code>sst.config.</em></code>, <code>samconfig.toml</code>, or <code>*.tf</code> returns nothing. No file name contains "lambda". There is no AWS Cloud Development Kit (CDK) file and no Terraform file. These are negative results from this checkout, not proof that no deployment code exists in another repository. The function names, memory sizes, timeouts, schedules, environment variables, and IAM (Identity and Access Management) roles are all configured elsewhere. A reader cannot verify from this repository how a handler is deployed, how often the sweeper runs, or which secret the migrator reads.</p>
+<p><strong>Aha:</strong> the repository contains the code that runs in the cloud but not the code that creates the cloud. This is a common split for a small team, because the deployment program may live in a private repository, but it has three consequences. A self-hoster cannot reproduce the hosted environment from this tree. A security reviewer cannot audit the IAM policy. A new engineer cannot see which environment variables the Lambda functions actually receive.</p>
+<p>A third gap is the release repository. <code>notify-release.yml</code> dispatches a workflow in another repository, <code>humanlayer/homebrew-humanlayer</code>, and passes the commit, the public repository name, and a dry-run flag (<code>.github/workflows/notify-release.yml:14-35</code>). The build, signing, notarisation, and publication steps happen there. This tree can verify the trigger and the expected artifacts, not the signing identity.</p>
+<pre><code class="language-yaml"># .github/workflows/notify-release.yml:14-35
+jobs:
+  notify:
+    # head_branch alone would also match a fork PR from a branch named main
+    if: &gt;-
+      github.event.workflow_run.conclusion == &#x27;success&#x27; &amp;&amp;
+      github.event.workflow_run.event == &#x27;push&#x27; &amp;&amp;
+      github.event.workflow_run.head_repository.full_name == github.repository &amp;&amp;
+      vars.RELEASE_REPO != &#x27;&#x27;
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch the release repo&#x27;s main workflow
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_DISPATCH_PAT }}
+          RELEASE_REPO: ${{ vars.RELEASE_REPO }}
+          RELEASE_REF: ${{ vars.RELEASE_REF || &#x27;main&#x27; }}
+          DRY_RUN: ${{ vars.RELEASE_DRY_RUN || &#x27;false&#x27; }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          PUBLIC_REPO: ${{ github.repository }}
+        run: |
+          gh workflow run main.yml --repo &quot;$RELEASE_REPO&quot; --ref &quot;$RELEASE_REF&quot; \
+            -f sha=&quot;$SHA&quot; -f public_repo=&quot;$PUBLIC_REPO&quot; -f dry_run=&quot;$DRY_RUN&quot;
+          echo &quot;Dispatched $RELEASE_REPO main.yml on $RELEASE_REF for $PUBLIC_REPO@$SHA (dry_run=$DRY_RUN)&quot;
+</code></pre>
+<p>The <code>if</code> condition is careful. It requires a successful run, a push event rather than a pull request, a head repository equal to this repository, and a configured release repository. The head-repository check prevents a fork pull request from a branch named <code>main</code> from triggering a release. Forks without the variable skip the job entirely.</p>
+<h2>Continuous integration and the test stack</h2>
+<p><code>.github/workflows/ci.yml</code> runs on pull requests, pushes to <code>main</code>, and manual dispatch. It has eight jobs. The <code>typecheck</code> job runs the type check, the Zod version alignment check, and the quality checks. The <code>quality</code> job is a stub that preserves the required status check name without repeating the work. The <code>rust-inputs</code> and <code>rust-check</code> jobs decide whether the Rust crate must be checked on macOS. The <code>build</code>, <code>test-unit</code>, and <code>test-services</code> jobs run in parallel with <code>typecheck</code>, and the aggregate <code>test</code> job reports their result. The build and test jobs use Bun 1.4.2 and Node.js 24, and they install with a frozen lockfile (<code>.github/workflows/ci.yml:20-242</code>).</p>
+<p>The service tests need real services. <code>package.json:58</code> starts a Compose project, waits for readiness, and tears it down on exit for the local run. It runs the billing, API, fixtures, Electric proxy, and sweeper test suites with a concurrency of three. The CI job runs <code>bun run test:ci:services</code> (<code>.github/workflows/ci.yml:242</code>). That script starts the real Compose stack: it builds images, pulls missing images, starts containers, waits for readiness, runs the suites, and stops the stack (<code>package.json:61</code>; <code>scripts/test-services-up.ts:39-46</code>). The job also sets placeholder <code>DATABASE_URL</code> and <code>READ_REPLICA_DATABASE_URL</code> values. These are dummy strings for code that reads a database URL at import time. The service tests get their real connections from the <code>HUMANLAYER_TEST_POSTGRES_<em></code> and <code>HUMANLAYER_TEST_ELECTRIC_</em></code> values, which point at the Compose services on ports 55432 and 13030 (<code>.github/workflows/ci.yml:180-186</code>; <code>packages/test-fixtures/src/external-test-services.ts:57-61</code>). Both the local and CI service scripts pass <code>--env-file=.env</code> to Bun (<code>package.json:58</code>; <code>scripts/test-services-run.ts:3</code>). The service suites do not need a Stripe or WorkOS credential, and the CI job sets none. The test Compose file is a smaller copy of the development stack. It contains Postgres, Electric, durable-streams, and Redis, and it raises Postgres <code>max_connections</code> to 500 so parallel test databases can coexist (<code>docker-compose.test.yml:3-18</code>).</p>
+<table><tr><th>Test script</th><th>Purpose</th></tr><tr><td><code>test:ci:unit</code></td><td>Runs every package test except the five service-backed packages</td></tr><tr><td><code>test:local:services</code></td><td>Starts the test Compose stack, runs the service-backed packages, stops the stack</td></tr><tr><td><code>test:services:up</code>, <code>:wait</code>, <code>:down</code></td><td>Manual control of the test stack</td></tr><tr><td><code>scripts/test-services-run.ts</code></td><td>Creates per-worker databases and runs the suites</td></tr></table>
+<p>The split is deliberate. A unit test run needs no Docker. The service run is slower and runs fewer packages, but it exercises the real Postgres, Electric, and Redis behaviour that mocks would hide. A pull request from a fork gets the full run, because the workflow uses no secrets and only GitHub-hosted runners (<code>.github/workflows/ci.yml:1-2</code>).</p>
+<h2>The release and update path</h2>
+<p>Versions are derived, not committed. A version file holds a base such as <code>0.1.0</code>. The released version is the base with its patch number increased by the count of first-parent commits since that base was introduced. The count comes from <code>git rev-list --count --first-parent &lt;base-commit&gt;..HEAD</code>. When the caller supplies <code>countPaths</code>, only commits that touch those paths count. When the caller supplies none, every first-parent commit counts, including documentation changes (<code>ci-scripts/derive-version.ts:71-85</code>). The derivation refuses a shallow clone, because a shallow history would produce a smaller number and collide with an older release.</p>
+<pre><code class="language-ts">// ci-scripts/derive-version.ts:42-69
+export function deriveVersion({ versionFile, countPaths }: DeriveVersionOptions): string {
+  const base = JSON.parse(readFileSync(resolve(versionFile), &#x27;utf-8&#x27;)).version
+  const match = typeof base === &#x27;string&#x27; ? base.match(/^(\d+)\.(\d+)\.(\d+)$/) : null
+  if (!match) {
+    throw new Error(`version in ${versionFile} must be plain x.y.z to derive from (got &#x27;${base}&#x27;)`)
+  }
+
+  if (git(&#x27;rev-parse&#x27;, &#x27;--is-shallow-repository&#x27;) === &#x27;true&#x27;) {
+    throw new Error(&#x27;cannot derive a version from a shallow clone — check out with fetch-depth: 0&#x27;)
+  }
+
+  // Walk first-parent commits that touched the version file, newest first.
+  // The oldest one still carrying the current base version is the commit that
+  // introduced it; edits to other fields keep the count running.
+  const history = git(&#x27;log&#x27;, &#x27;--first-parent&#x27;, &#x27;--format=%H&#x27;, &#x27;--&#x27;, versionFile)
+    .split(&#x27;\n&#x27;)
+    .filter(Boolean)
+  let introducedBy: string | null = null
+  for (const sha of history) {
+    if (versionAtCommit(sha, versionFile) === base) {
+      introducedBy = sha
+    } else {
+      break
+    }
+  }
+  if (!introducedBy) {
+    throw new Error(`no commit in history carries version ${base} — is ${versionFile} modified but not committed?`)
+  }
+</code></pre>
+<p>The loop sets <code>introducedBy</code> to the oldest first-parent commit that still carries the current base version. The script then counts first-parent commits from <code>introducedBy</code> to <code>HEAD</code>. It adds the count to the patch number (<code>ci-scripts/derive-version.ts:71-85</code>).</p>
+<pre><code class="language-ts">// ci-scripts/derive-version.ts:71-85
+  const countArgs = [&#x27;rev-list&#x27;, &#x27;--count&#x27;, &#x27;--first-parent&#x27;, `${introducedBy}..HEAD`]
+  if (countPaths &amp;&amp; countPaths.length &gt; 0) {
+    // A typo&#x27;d or renamed path would count 0 commits and silently re-derive
+    // an already-released version (npm then skips the publish) — fail loudly.
+    for (const path of countPaths) {
+      if (!existsSync(resolve(path))) {
+        throw new Error(`countPaths entry &#x27;${path}&#x27; does not exist in the working tree`)
+      }
+    }
+    countArgs.push(&#x27;--&#x27;, ...countPaths)
+  }
+  const commitsSinceBase = Number(git(...countArgs))
+
+  const [, major, minor, patch] = match
+  return `${major}.${minor}.${Number(patch) + commitsSinceBase}`
+</code></pre>
+<p>The number is then stamped into build files in the continuous integration workspace, never committed (<code>ci-scripts/stamp-version.ts</code>). The desktop application derives from <code>apps/riptide-native/tauri.conf.json</code>, and every merge to <code>main</code> counts as a new dev build (<code>ci-scripts/generate-version.ts:31-38</code>). The command-line daemon derives from <code>apps/cli/package.json</code>, counting only changes under the CLI, the daemon, the API contract, and the Photon WebAssembly (WASM) build script, <code>scripts/bun-build-plugins/embed-photon-wasm.ts</code> (<code>ci-scripts/derive-daemon-version.ts:26-33</code>). That narrower list means a docs change does not publish a new CLI version.</p>
+<p>The updater manifest is a small JSON document for the Tauri version 2 updater. It requires a version, a release tag, an artifact name, a signature file, and an output path. The artifact URL always points at the release repository.</p>
+<pre><code class="language-ts">// ci-scripts/generate-updater-manifest.ts:19-42
+function main() {
+	const version = process.env.VERSION
+	const releaseTag = process.env.RELEASE_TAG
+	const artifactName = process.env.ARTIFACT_NAME
+	const signatureFile = process.env.SIGNATURE_FILE
+	const notes = process.env.NOTES || &#x27;&#x27;
+	const urgency = process.env.URGENCY || &#x27;normal&#x27;
+	const outputPath = process.env.OUTPUT_PATH
+
+	const missing: string[] = []
+	if (!version) missing.push(&#x27;VERSION&#x27;)
+	if (!releaseTag) missing.push(&#x27;RELEASE_TAG&#x27;)
+	if (!artifactName) missing.push(&#x27;ARTIFACT_NAME&#x27;)
+	if (!signatureFile) missing.push(&#x27;SIGNATURE_FILE&#x27;)
+	if (!outputPath) missing.push(&#x27;OUTPUT_PATH&#x27;)
+
+	if (missing.length &gt; 0) {
+		console.error(`ERROR: Missing required environment variables: ${missing.join(&#x27;, &#x27;)}`)
+		process.exit(1)
+	}
+
+	const signature = readFileSync(signatureFile!, &#x27;utf-8&#x27;).trim()
+	const artifactUrl = `https://github.com/humanlayer/homebrew-humanlayer/releases/download/${releaseTag}/${artifactName}`
+
+</code></pre>
+<p>Two manifests exist. The Tauri manifest supports the <code>darwin-aarch64</code> platform entry. The Electron manifest follows the <code>electron-updater</code> format. Electron is a desktop application framework that bundles a browser engine. The Homebrew generator emits two casks per release. One is the legacy <code>riptide-variant</code> cask, and the other is the new <code>humanlayer-variant</code> cask. The variant is the release type: <code>dev</code>, <code>beta</code>, or <code>prod</code> (<code>ci-scripts/generate-homebrew-cask.ts:72-86</code>). The generator marks the two casks as conflicting, because both install the same application and daemon binary (<code>ci-scripts/generate-homebrew-cask.ts:6-17</code>).</p>
+<p><code>ci-scripts</code> holds twenty-eight files, including tests. The table below lists the most important scripts.</p>
+<table><tr><th>Script</th><th>Role</th></tr><tr><td><code>derive-version.ts</code></td><td>Shared version derivation from first-parent history</td></tr><tr><td><code>generate-version.ts</code></td><td>Selects the release type and emits build variables</td></tr><tr><td><code>stamp-version.ts</code></td><td>Writes the derived version into build files</td></tr><tr><td><code>stamp-plugin-versions.ts</code></td><td>Aligns plugin package versions</td></tr><tr><td><code>generate-updater-manifest.ts</code></td><td>Builds the Tauri <code>latest.json</code></td></tr><tr><td><code>generate-electron-updater-manifest.ts</code></td><td>Builds the Electron update metadata</td></tr><tr><td><code>generate-homebrew-cask.ts</code></td><td>Emits the Tauri casks</td></tr><tr><td><code>generate-electron-homebrew-cask.ts</code></td><td>Emits the Electron casks</td></tr><tr><td><code>verify-binaries.ts</code></td><td>Checks the built artefacts</td></tr><tr><td><code>local-update-server.ts</code></td><td>Serves a fake update feed for end-to-end tests</td></tr><tr><td><code>rust-check-inputs.mjs</code></td><td>Defaults to a full Rust check unless every changed path is a known non-Rust file</td></tr></table>
+<p><strong>Aha:</strong> the derived-version scheme makes the commit graph part of the release contract. A rebase, a squash, or a force-push on <code>main</code> changes the first-parent count and therefore changes the next version. The script refuses shallow clones and refuses an uncommitted version base, so the failure is loud. The scheme also means a release is not reproducible from a source archive without the full Git history.</p>
+<h2>Failure modes an operator should know</h2>
+<p>The local stack fails in a few predictable ways. A port collision after allocation needs a new set of ports from <code>devstack reallocate</code>, which stores the ports without touching containers; the operator must then recreate the affected containers so they publish the new ports. A second Caddy process on the shared listeners is detected and reported with process identifiers, and the launch stops instead of fighting for the port (<code>scripts/ensure-devstack-caddy.ts:28-35</code>). A malformed environment block is refused rather than overwritten (<code>apps/devstack/src/lib/env-block.ts:28-33</code>). A stack whose Compose project is gone is reported by <code>status</code>, and <code>down</code> removes the stale registry record.</p>
+<p>The hosted stack fails in different ways. The migrator returns a <code>500</code> and leaves a partial migration, so a failed deploy must be inspected before a retry. The updater returns a <code>500</code> when <code>BUCKET_NAME</code> is unset, so both downloads and update checks fail. A missing <code>MANIFEST_PREFIX</code> or <code>DMG_FILENAME</code> breaks downloads while update checks still work. The sweeper aborts the remaining passes when an early pass throws, so a persistent fault at the start lets stale sessions accumulate. The maintenance function stops early by design, so a large backlog drains over several runs rather than one.</p>
+<p>The release path fails closed. A shallow clone stops version derivation. A missing signature file stops manifest generation. A fork without the release variable skips the dispatch. The one soft spot is the external release repository: this tree cannot verify that a dispatched build was signed with the expected identity.</p>
+<h2>Next</h2>
+<p>Read <a href="13-cloud-billing-and-admin.html">Cloud, billing, and administration</a> for the Redis cache and the WorkOS identity layer that the API depends on. Read <a href="05-sync-engine.html">The sync engine</a> and <a href="06-electric-proxy.html">The Electric proxy</a> for what the Electric service and the proxy on port 8888 actually do. Read <a href="08-database-and-schemas.html">Database and schemas</a> for the migrations the migrator applies. Read <a href="11-desktop-shells.html">Desktop shells</a> for the applications that consume the updater manifests. Read <a href="18-security-and-self-hosting.html">Security and self-hosting</a> for the trust boundaries a self-hoster must rebuild without the missing deployment program.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

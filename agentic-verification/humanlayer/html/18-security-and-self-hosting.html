@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Security and self-hosting: trust boundaries and what you must supply -- humanlayer</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/humanlayer/docs</span>
+    <div class="nav-actions">
+      <a href="15-agent-integration-and-ai.html" class="nav-breadcrumb">Agent integration: executors, model access, and what is mirrored</a><a href="16-observability-and-attribution.html" class="nav-breadcrumb">Observability: errors, metrics, and git attribution</a><a href="17-invariants-and-golden-documents.html" class="nav-breadcrumb">Invariants: the rules the project writes down for itself</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="17-invariants-and-golden-documents.html" class="nav-btn" title="Previous: Invariants: the rules the project writes down for itself">← prev</a>
+      <a href="19-comparisons-and-critical-assessment.html" class="nav-btn nav-btn-next" title="Next: Comparisons and critical assessment">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>Security and self-hosting: trust boundaries and what you must supply</h1>
+<p>HumanLayer's security rests on one fact: tenancy lives in application Structured Query Language (SQL) predicates, not in database row-level security. HumanLayer is the product; the code names it Riptide. It runs coding agents on a user's machine and lets a team steer them from one place. A daemon is a long-running local process that starts those agents. It has no inbound listener. A shape is a query subscription: a client names a table and a predicate, and Electric streams the matching rows. The Electric proxy injects the Electric secret into every upstream shape request, and Electric validates it.</p>
+<p>Five kinds of authority exist. WorkOS is the identity provider. A user access token names a person and an organization. A personal access token names a person through a WorkOS user Application Programming Interface (API) key and resolves an organization on each request. A daemon token names one host inside one organization. A launch token expires in 24 hours. It lets a client trade the token for a daemon token that names a user and an organization. The client supplies the host identifier at the exchange. A public share capability pairs an artifact identifier with a share key; neither alone is enough. The cloud application is the administration application in <code>apps/riptide-cloud</code>. The working application is the user interface in <code>apps/riptide-ui</code>. Both are browser clients. They hold the same user token, and neither grants extra authority; the administrative screens only hide controls that the API enforces. This document lists every trust boundary and every credential that authenticates a request at commit <code>2f66a45b186d88488fa356862be0117db1ccae9f</code>.</p>
+<p>A trust boundary is a place where a credential or a filter decides who may read or write. Tenancy means one organization's rows must never appear in another organization's view. No database row-level security policy exists; that is a rule that filters rows per user. The proxy builds a <code>WHERE</code> clause per request, and the API repeats the same predicate in Drizzle. One forgotten filter is a cross-tenant read. Library and product names are defined in <a href="20-glossary.html">the glossary</a>.</p>
+<h2>The trust boundaries at a glance</h2>
+<p>Three zones exist. The untrusted zone holds clients and the daemon. The edge zone holds the Electric proxy and the API. The data zone holds PostgreSQL, Electric, object storage, Redis, and the Durable Streams server. Among the application services, only the proxy holds the Electric secret; Electric itself holds the same secret, because Electric is the component that validates it. Only the API and the proxy hold the PostgreSQL credentials that serve application queries; Electric holds its own database connection for logical replication, which the Compose file (the local service definition) sets separately (<code>docker-compose.yaml:30-41</code>). The Durable Streams server carries live session output. Yjs is the shared-document library that the proxy relays for response-editor collaboration (<code>apps/riptide-electric-proxy/src/routes/response-editor-collaboration.ts:18-24</code>).</p>
+<div class="mermaid">
+flowchart LR
+    subgraph U[&quot;Untrusted zone&quot;]
+        B[&quot;Browser or desktop shell&quot;]
+        D[&quot;Daemon on a user host&quot;]
+    end
+    subgraph E[&quot;Edge zone&quot;]
+        P[&quot;Electric proxy&quot;]
+        A[&quot;API service&quot;]
+    end
+    subgraph S[&quot;Data zone&quot;]
+        EL[&quot;Electric sync service&quot;]
+        PG[(&quot;PostgreSQL&quot;)]
+        OB[(&quot;Object storage&quot;)]
+        DS[&quot;Durable Streams server&quot;]
+        RD[(&quot;Redis&quot;)]
+    end
+    B --&gt;|&quot;Bearer WorkOS access token&quot;| P
+    B --&gt;|&quot;x-share-key on shared-artifact routes&quot;| P
+    B --&gt;|&quot;Bearer WorkOS access token or personal access token&quot;| A
+    D --&gt;|&quot;x-daemon-authorization header&quot;| P
+    D --&gt;|&quot;x-daemon-authorization header&quot;| A
+    P --&gt;|&quot;WHERE clause plus Electric secret&quot;| EL
+    P --&gt;|&quot;capability and session checks&quot;| PG
+    P --&gt;|&quot;Yjs collaboration frames&quot;| DS
+    A --&gt;|&quot;SQL with organization_id&quot;| PG
+    A --&gt;|&quot;presigned upload and download URLs&quot;| OB
+    A --&gt;|&quot;billing and cache state&quot;| RD
+    EL --&gt;|&quot;reads logical replication&quot;| PG
+
+</div>
+<p>For user and daemon requests, the proxy accepts two credentials only. It accepts a WorkOS access token in the <code>Authorization</code> header, or a daemon token in <code>x-daemon-authorization</code> (<code>apps/riptide-electric-proxy/src/middleware.ts:75-90</code>). It has no personal-access-token path. A personal access token reaches the API only. The shared-artifact routes are separate: they require a share key and do not require a user or daemon credential.</p>
+<p>The daemon has no inbound listener. A search of <code>apps/riptide-daemon/src</code> finds no <code>Bun.serve</code>, no <code>createServer</code>, and no <code>listen</code> call outside a test. The daemon opens outbound calls only. Its API client sends the token in the <code>x-daemon-authorization</code> header (<code>apps/riptide-daemon/src/orpc/client.ts:31-34</code>).</p>
+<pre><code class="language-ts">// apps/riptide-daemon/src/orpc/client.ts:46-70
+						if (status === 401 || status === 403) {
+							if (authFailureTriggered) {
+								// Already handling auth failure - gracefulShutdown&#x27;s sendShutdown()
+								// will also hit this path, so we just bail out silently
+								return
+							}
+							authFailureTriggered = true
+
+							const code = &#x27;code&#x27; in error ? (error as { code: string }).code : &#x27;UNKNOWN&#x27;
+							logger.fatal(
+								{ err: error, status, code },
+								&#x27;Daemon auth failed on oRPC call. Triggering graceful shutdown.&#x27;,
+							)
+							console.error(
+								encodeDaemonProcessEvent({
+									type: &#x27;auth_failure&#x27;,
+									message: `Authentication failed (${status}). Please sign in again.`,
+								}),
+							)
+							// Set non-zero exit code before triggering graceful shutdown
+							setShutdownExitCode(1)
+							// Trigger graceful shutdown via SIGTERM so daemon.ts&#x27;s gracefulShutdown()
+							// handles session cleanup, API notification, and Sentry flush
+							process.kill(process.pid, &#x27;SIGTERM&#x27;)
+						}
+</code></pre>
+<p>A 401 or 403 is fatal for the daemon. It logs the event, sets exit code 1, and sends itself SIGTERM so that shutdown can clean up sessions.</p>
+<p>This makes a laptop behind a home router usable. It is also why the daemon polls and subscribes for instructions, as <a href="02-daemon-and-session-runtime.html">the daemon document</a> explains.</p>
+<h2>The credential inventory</h2>
+<p>The table below groups the credentials by the boundary they protect. Each row states where the value is read, what it protects, and what happens when it is absent or invalid. The table covers every credential that authenticates a request or protects a tenant read. The self-hosting section lists every deployment secret, including <code>STRIPE_SECRET_KEY</code>, <code>RESEND_API_KEY</code>, <code>RESEND_WEBHOOK_SECRET</code>, and <code>WORKOS_API_KEY</code>.</p>
+<table><tr><th>Credential</th><th>Read at</th><th>Protects</th><th>Absent or invalid</th></tr><tr><td>WorkOS access token</td><td>Proxy <code>apps/riptide-electric-proxy/src/auth/effect/jwt-validator.service.ts:91-120</code>; API <code>apps/riptide-api/src/auth/jwt-validator.ts:33-105</code></td><td>A person, an organization, roles, and an authentication session</td><td>401 from the middleware; no upstream request</td></tr><tr><td>Personal access token</td><td>API <code>apps/riptide-api/src/auth/personal-access-tokens.ts:89-123</code></td><td>One user through a WorkOS user API key</td><td><code>null</code>, then 401</td></tr><tr><td><code>WORKOS_API_KEY</code></td><td>API <code>apps/riptide-api/src/auth/personal-access-tokens.ts:89-112</code></td><td>Personal access token validation and its organization lookup</td><td>Validation fails; the request gets 401</td></tr><tr><td>Daemon token</td><td>Proxy <code>apps/riptide-electric-proxy/src/auth/daemon-tokens.ts:33-41</code>; API <code>apps/riptide-api/src/auth/daemon-tokens.ts:70-85</code></td><td>One host in one organization</td><td>401; the daemon shuts down on 401 or 403</td></tr><tr><td>Launch token</td><td>API <code>apps/riptide-api/src/orpc/base.ts:302-319</code>; exchange <code>apps/riptide-api/src/orpc/api/auth/daemon/token-exchange.ts:4-17</code></td><td>The trade of a launch token for a daemon token for a user and an organization</td><td>Rejected by the launch-token middleware; no daemon token is issued</td></tr><tr><td><code>RIPTIDE_DAEMON_TOKEN_PRIVATE_KEY</code></td><td>API <code>apps/riptide-api/src/auth/daemon-tokens.ts:24-43</code></td><td>Every daemon and launch token signature</td><td>Daemon and launch token creation fail</td></tr><tr><td><code>RIPTIDE_DAEMON_TOKEN_PUBLIC_KEY</code></td><td>API <code>apps/riptide-api/src/auth/daemon-tokens.ts:31-50</code>; proxy <code>apps/riptide-electric-proxy/src/auth/daemon-tokens.ts:14-25</code></td><td>Every daemon and launch token verification</td><td>Verification returns <code>null</code>; the request gets 401</td></tr><tr><td>Electric secret</td><td>Proxy <code>apps/riptide-electric-proxy/src/routes/electric-origin.ts:15</code></td><td>Every shape on the Electric service</td><td>Start-up failure in production; Electric runs without a secret in development</td></tr><tr><td><code>DATABASE_URL</code></td><td>API <code>apps/riptide-api/src/db/db.ts:28</code>; proxy <code>apps/riptide-electric-proxy/src/lib/db.ts:28</code></td><td>All tenant rows</td><td>Process throws at import</td></tr><tr><td><code>READ_REPLICA_DATABASE_URL</code></td><td>API <code>apps/riptide-api/src/db/db.ts:35</code></td><td>Read-only metrics queries</td><td>Process throws at import; no fallback exists</td></tr><tr><td><code>S3_ARTIFACTS_BUCKET</code></td><td>API <code>apps/riptide-api/src/app.ts:60</code></td><td>Artifact bodies</td><td>API throws at start-up</td></tr><tr><td><code>S3_ACCESS_KEY_ID</code>, <code>S3_SECRET_ACCESS_KEY</code></td><td>API <code>apps/riptide-api/src/app.ts:63-65</code></td><td>Signed object access</td><td>Falls back to the default Amazon Web Services (AWS) credential chain, the ordered credential sources that the AWS Software Development Kit (SDK) tries</td></tr><tr><td><code>STRIPE_WEBHOOK_SECRET</code></td><td>API <code>apps/riptide-api/src/lib/environment.ts:19-21</code></td><td>Stripe billing event authenticity</td><td>Process throws at start-up</td></tr><tr><td><code>WORKOS_WEBHOOK_SECRET</code></td><td>API <code>apps/riptide-api/src/workos.ts:10</code></td><td>Membership event authenticity</td><td>Verification throws; the route returns 400</td></tr><tr><td>Artifact share key</td><td>Proxy <code>apps/riptide-electric-proxy/src/routes/v1.ts:51-61</code></td><td>One artifact and its comments</td><td>401 when missing; 404 when wrong or disabled</td></tr></table>
+<h3>WorkOS access tokens</h3>
+<p>WorkOS is the identity provider. The API and the proxy parse the same claim set through one Effect schema (<code>packages/schemas/src/effect/workos-access-token.ts:3-15</code>). The proxy requires <code>internal_org_id</code>, because every proxy filter needs the internal organization identifier. The API treats that claim as optional (<code>packages/schemas/src/effect/workos-access-token.ts:9</code>). Some routes run before an organization is selected, and those routes do not build an organization predicate. Organization creation is one such route (<code>apps/riptide-api/src/orpc/api/auth/user/organizations-create.ts:146-152</code>).</p>
+<pre><code class="language-ts">// apps/riptide-electric-proxy/src/auth/effect/jwt-validator.service.ts:68-83
+const claimsToAuthContext = (claims: WorkOsAccessTokenClaims) =&gt; {
+	if (!claims.internal_org_id) {
+		return Effect.fail(new JWTMissingInternalOrgIdError({ workosOrganizationId: claims.org_id }))
+	}
+
+	return Effect.succeed({
+		userId: claims.sub,
+		organizationId: claims.internal_org_id,
+		workosOrganizationId: claims.org_id ?? &#x27;&#x27;,
+		roles: claims.roles ?? [],
+		permissions: claims.permissions ?? [],
+		entitlements: claims.entitlements ?? [],
+		sessionId: claims.sid,
+		actingUser: claims.act?.sub,
+	})
+}
+</code></pre>
+<p>The claim names matter:</p>
+<table><tr><th>Claim</th><th>Meaning</th><th>Used for access</th></tr><tr><td><code>iss</code></td><td>Issuer</td><td>Passed to <code>jwtVerify</code> as the expected issuer</td></tr><tr><td><code>sub</code></td><td>Subject, the user identifier</td><td>Every ownership check</td></tr><tr><td><code>org_id</code></td><td>WorkOS organization identifier</td><td>WorkOS API calls and organization switching</td></tr><tr><td><code>internal_org_id</code></td><td>Local organization identifier</td><td>Every SQL predicate</td></tr><tr><td><code>sid</code></td><td>Authentication session identifier</td><td>Stored in the auth context; not used as a filter</td></tr><tr><td><code>act.sub</code></td><td>Acting user</td><td>Stored as <code>actingUser</code>; not used as a filter</td></tr><tr><td><code>role</code>, <code>roles</code></td><td>Role names</td><td>Admin checks only</td></tr><tr><td><code>permissions</code></td><td>Permission names</td><td>Parsed and never read</td></tr><tr><td><code>entitlements</code></td><td>Entitlement names</td><td>Parsed and never read</td></tr></table>
+<p><code>sid</code> is the WorkOS authentication session. It is not the coding-agent session row in PostgreSQL. The two use the word "session" for different objects.</p>
+<p>A search of the API and proxy source finds <code>permissions</code> in the two token validators and in the personal-access-token context, which sets it to an empty array (<code>apps/riptide-api/src/auth/personal-access-tokens.ts:120</code>). Feature gating uses <code>hasFeature</code>, which reads the Stripe plan and not the token (<code>apps/riptide-api/src/effects/services/billing/entitlements.service.ts:29-44</code>). A self-hoster cannot grant a capability by editing a WorkOS role. The API ignores the permission claim.</p>
+<p>The issuer check is weaker than it looks. Both validators take <code>iss</code> from the unverified token payload, then pass that value back to <code>jwtVerify</code> (<code>apps/riptide-api/src/auth/jwt-validator.ts:68-80</code>, <code>apps/riptide-electric-proxy/src/auth/effect/jwt-validator.service.ts:57-66</code>). The signature must still match a WorkOS key from the JSON Web Key Set (JWKS). So a forged token fails.</p>
+<p>A token that WorkOS signs for a different issuer would pass the issuer check, because the expected value came from the token itself. The repository does not name such a token. The configured JWKS must also contain a key that verifies it. The <code>internal_org_id</code> claim is the only tenant gate. A token without that claim reaches no tenant read: the proxy rejects it (<code>apps/riptide-electric-proxy/src/auth/effect/jwt-validator.service.ts:68-83</code>), and the API rejects it on every route built on the organization-required base <code>apiBaseOrgRequired</code>, a middleware chain that requires an organization. A token that carries the claim is accepted, because the code does not compare the issuer to the organization. A route that runs before organization selection can accept it without the claim, because the API treats <code>internal_org_id</code> as optional and that route performs no tenant read (<code>packages/schemas/src/effect/workos-access-token.ts:9</code>, <code>apps/riptide-api/src/orpc/api/auth/user/organizations-create.ts:146-152</code>).</p>
+<p>The JWKS cache fetches keys from the Uniform Resource Locator (URL) that the WorkOS client builds (<code>apps/riptide-api/src/lib/workos.ts:43-48</code>, <code>apps/riptide-api/src/auth/jwks-cache.ts:24-37</code>). The API refreshes every five minutes (<code>apps/riptide-api/src/auth/jwks-cache.ts:12-17</code>). A token with no key identifier (<code>kid</code>) fails at once. An unknown <code>kid</code> triggers one forced refresh (<code>apps/riptide-api/src/auth/jwt-validator.ts:52-68</code>).</p>
+<h3>Personal access tokens</h3>
+<p>A personal access token is a WorkOS user API key, not a JSON Web Token (JWT). The API decides which validator to use by attempting <code>decodeJwt</code>.</p>
+<pre><code class="language-ts">// apps/riptide-api/src/auth/context.ts:11-30
+export const resolveUserAuthContext = Effect.fn(&#x27;auth.resolve_user_auth_context&#x27;)(function* (input: {
+	authorizationHeader: string | null
+}) {
+	const match = input.authorizationHeader?.match(/^Bearer (.+)$/)
+	if (!match?.[1]) return null
+	const credential = match[1]
+	if (isJwtCredential(credential)) {
+		return yield* Effect.promise(() =&gt; validateJWT(credential))
+	}
+	return yield* authenticatePersonalAccessToken({ value: credential })
+})
+
+function isJwtCredential(credential: string): boolean {
+	try {
+		decodeJwt(credential)
+		return true
+	} catch {
+		return false
+	}
+}
+</code></pre>
+<p>The token path sets <code>role: 'member'</code>, an empty <code>permissions</code> array, and an empty <code>entitlements</code> array (<code>apps/riptide-api/src/auth/personal-access-tokens.ts:114-122</code>). A personal access token therefore cannot reach an admin route. It also cannot carry a permission that the API does not read anyway.</p>
+<p>Organization resolution uses the WorkOS API key owner. The API calls <code>workos.validateApiKey</code>. It accepts only an owner of type <code>user</code>. It reads that owner's WorkOS organization identifier and finds the local <code>organizations</code> row with the same <code>workos_organization_id</code> (<code>apps/riptide-api/src/auth/personal-access-tokens.ts:89-112</code>). If the owner is not a user, or the local row is absent, the function returns <code>null</code> and the request gets 401. The token does not carry a local organization identifier. The API derives the local organization on every request.</p>
+<p>Expiry is chosen at creation time from a closed set: 7, 14, 30, 60, or 90 days (<code>apps/riptide-api/src/auth/personal-access-tokens.ts:12</code>). Revocation deletes the WorkOS key. A deleted key fails validation and yields 401.</p>
+<h3>Daemon tokens</h3>
+<p>Daemon tokens use RS256. RS256 means Rivest-Shamir-Adleman Signature with Secure Hash Algorithm 256. The claims are <code>userId</code>, <code>organizationId</code>, <code>hostId</code>, and <code>createdAt</code>. The header carries the signing algorithm only. One configured public key verifies every token, so the header needs no key identifier (<code>kid</code>) (<code>apps/riptide-api/src/auth/daemon-tokens.ts:63</code>, <code>:70-74</code>). The WorkOS validators require a key identifier; this validator does not. The public key is Privacy-Enhanced Mail (PEM) text that holds a Subject Public Key Info (SPKI) structure. The proxy imports it with <code>importSPKI</code> (<code>apps/riptide-electric-proxy/src/auth/daemon-tokens.ts:21-24</code>).</p>
+<p>The proxy is deliberately verify-only. Its core module states the rule in a comment.</p>
+<pre><code class="language-ts">// apps/riptide-electric-proxy/src/auth/daemon-token-core.ts:67-83
+/**
+ * Verify and decode a daemon token using the provided public key PEM.
+ * This is a pure function - no side effects, no env var access.
+ * Returns null if token is invalid or claims are malformed.
+ *
+ * Note: This module intentionally does NOT include signing functions.
+ * The electric proxy should only be able to validate tokens, not create them.
+ */
+export async function verifyDaemonToken(publicKeyPem: string, token: string): Promise&lt;DaemonTokenClaims | null&gt; {
+	try {
+		const publicKey = await importSPKI(publicKeyPem, ALG)
+		const { payload } = await jwtVerify(token, publicKey)
+		return parseDaemonTokenClaims(payload)
+	} catch {
+		return null
+	}
+}
+</code></pre>
+<p>The API is the issuer. It holds the private key and signs tokens for a host.</p>
+<pre><code class="language-ts">// apps/riptide-api/src/auth/daemon-tokens.ts:52-64
+/**
+ * Create a signed daemon token using env-configured private key.
+ * Key is imported once and cached for subsequent calls.
+ */
+export async function createSignedDaemonToken(
+	userId: string,
+	organizationId: string,
+	hostId: string,
+	createdAt: number = Date.now(),
+): Promise&lt;string&gt; {
+	const key = await getPrivateKey()
+	return await new SignJWT({ userId, organizationId, hostId, createdAt }).setProtectedHeader({ alg: ALG }).sign(key)
+}
+</code></pre>
+<p>The API mints a daemon token on two routes. A signed-in client calls <code>auth.daemon.token.create</code> with a host identifier and a WorkOS access token (<code>apps/riptide-api/src/orpc/api/auth/daemon/token-create.ts:5-10</code>; input <code>hostId</code> at <code>contracts/riptide-api-contract/src/api/auth/daemon/token-create.ts:5-12</code>). A headless client calls <code>auth.daemon.launchToken.create</code>, then exchanges the launch token at <code>auth.daemon.token.exchange</code> with a host identifier (<code>apps/riptide-api/src/orpc/api/auth/daemon/launch-token-create.ts:5-16</code>, <code>apps/riptide-api/src/orpc/api/auth/daemon/token-exchange.ts:4-17</code>). The <code>humanlayer automation run</code> command is one such client (<code>apps/cli/src/commands/automation-run.ts:89-95</code>). The desktop shell writes the returned string into the environment variable <code>DAEMON_IDENTITY</code> before it starts the daemon (<code>apps/riptide-electron/src/daemon/daemon-environment.ts:54-62</code>, <code>apps/riptide-native/src/daemon.rs:286-290</code>). The launch token is separate because it is short-lived and portable. The daemon token is host-bound and has no expiry.</p>
+<p>Two more facts matter. First, the token has no <code>exp</code> claim. A launch token is a second token that expires in 24 hours and is scoped to a user and an organization (<code>apps/riptide-api/src/auth/daemon-tokens.ts:87-97</code>). A daemon token stays valid until the signing key changes. Second, the daemon can self-sign only in development. It reads <code>RIPTIDE_DAEMON_TOKEN_PRIVATE_KEY</code> only when <code>RIPTIDE_DAEMON_LOAD_CREDS</code> is set (<code>apps/riptide-daemon/src/lib/auth.ts:147-168</code>). In that mode the daemon bypasses the API and signs with the shared private key. In production the desktop shell injects <code>DAEMON_IDENTITY</code> (<code>apps/riptide-daemon/src/lib/auth.ts:171-172</code>).</p>
+<p>The daemon does not verify its own token. It decodes the payload into <code>{userId, organizationId, hostId}</code> and trusts the claims (<code>packages/schemas/src/effect/daemon/identity.ts:5-9</code>, <code>apps/riptide-daemon/src/lib/auth.ts:41-54</code>). The identity schema drops <code>createdAt</code>, so the daemon ignores the claim. It uses <code>hostId</code> to scope its shape subscriptions. The API and proxy verify the token on every call. A forged <code>DAEMON_IDENTITY</code> value therefore changes the local host identifier only until the first rejected call. A stolen valid token is different: it carries a real signature, so it works until the signing key changes.</p>
+<p>The repository defines no rotation or revocation procedure. A token stays valid until the signing key changes. A new key pair invalidates every daemon token. A search finds no revocation list. A 401 or 403 stops the daemon (<code>apps/riptide-daemon/src/orpc/client.ts:46-75</code>). The user must sign in again and mint a new token.</p>
+<h3>The Electric secret</h3>
+<p>Electric reads the PostgreSQL replication stream. It has no per-user model. The secret is the only gate on the whole shape endpoint.</p>
+<pre><code class="language-ts">// apps/riptide-electric-proxy/src/index.ts:30-37
+if (ELECTRIC_SECRET) {
+	logger.info(&#x27;Successfully loaded ELECTRIC_SECRET from environment&#x27;)
+} else if (process.env.NODE_ENV === &#x27;production&#x27;) {
+	logger.error(&#x27;ELECTRIC_SECRET not found in process environment in production!&#x27;)
+	throw new Error(&#x27;ELECTRIC_SECRET not found in process environment in production mode.&#x27;)
+} else {
+	logger.warn(&#x27;ELECTRIC_SECRET not found in process environment, this is ok in non-production.&#x27;)
+}
+</code></pre>
+<p>The proxy appends the secret to every upstream request as a query parameter (<code>apps/riptide-electric-proxy/src/routes/electric-origin.ts:15</code>). A client never sees it. If the secret leaks, every row in every tenant is readable directly from Electric. If it is absent in production, the proxy refuses to start. If it is absent in development, Electric runs open, and the proxy still filters.</p>
+<h3>Database credentials</h3>
+<p>Both services require a database connection at module load. The API reads <code>DATABASE_URL</code> and <code>READ_REPLICA_DATABASE_URL</code> with <code>requireEnvironment</code>, so a missing value throws at import (<code>apps/riptide-api/src/db/db.ts:26-38</code>).</p>
+<p>The proxy has a second client in <code>apps/riptide-electric-proxy/src/lib/db.ts:28-31</code>. It uses the same <code>DATABASE_URL</code>.</p>
+<p>At runtime, a database error fails closed for authorization. To fail closed means to deny on error; to fail open means to allow on error. The shared-artifact check returns <code>false</code> on any error (<code>apps/riptide-electric-proxy/src/lib/queries.ts:139-145</code>). The session capability check returns <code>no_access</code> on any error (<code>apps/riptide-electric-proxy/src/lib/queries.ts:211-217</code>).</p>
+<p>The read replica is required even when metrics are unused. A self-hoster must set it to the primary connection string. The comment at <code>apps/riptide-api/src/db/db.ts:33-34</code> says so.</p>
+<h3>Storage credentials</h3>
+<p>Object storage holds binary artifacts. The store is Amazon Simple Storage Service (S3) or a compatible server such as MinIO. Markdown artifacts live in PostgreSQL instead. The API constructs the storage client at start-up (<code>apps/riptide-api/src/app.ts:59-66</code>).</p>
+<p>The bucket is mandatory. The region defaults to <code>us-east-1</code>. The endpoint is optional, and the presence of an endpoint enables path-style addressing for MinIO. Path-style addressing puts the bucket name in the URL path, such as <code>https://host/bucket/key</code>, instead of the host name. MinIO commonly requires it (<code>apps/riptide-api/src/lib/s3-service.ts:31-34</code>). The key pair is optional, and its absence selects the default AWS credential chain. That is the correct behavior on an AWS instance with an instance role. It is the wrong behavior on a MinIO host that expects static keys.</p>
+<p>A presigned URL is a signed object-store link that grants temporary access with no credential. Presigned upload URLs last 15 minutes. Presigned download URLs default to 10,080 minutes, which is 7 days (<code>apps/riptide-api/src/lib/s3-service.ts:39-51</code>). A shared-artifact download URL is therefore a long-lived capability once issued.</p>
+<p>The public viewer path has two steps. First, the browser loads <code>/shared/artifacts/&lt;identifier&gt;?key=&lt;shareKey&gt;</code>. The user interface sends the key to the proxy as <code>x-share-key</code>. The proxy checks the key before any authentication middleware and streams the public artifact shape (<code>apps/riptide-electric-proxy/src/routes/v1.ts:51-71</code>, <code>:95</code>). Second, for a binary artifact, the viewer asks the public API route <code>public.artifacts.downloadUrl</code> for a presigned URL. The API queries the artifact by identifier and share key, recomputes the effective permission (the share setting after the organization policy), and returns <code>NOT_FOUND</code> when sharing is off (<code>apps/riptide-api/src/orpc/api/public/artifacts/download-url.ts:19-53</code>). Only then does it call <code>s3.getPresignedDownloadUrl</code>. The share-key check therefore precedes the presign. The returned URL is a direct object-storage capability for 7 days. Anyone who holds it bypasses the proxy and the share key. Markdown artifacts skip this step because their content syncs through the shape.</p>
+<h3>Stripe and WorkOS webhook secrets</h3>
+<p>Both webhook routes verify a signature before any database work. Stripe uses the official SDK method <code>constructEventAsync</code> with the endpoint secret (<code>apps/riptide-api/src/lib/stripe-service.ts:194-197</code>). WorkOS uses the SDK method <code>constructEvent</code> with the webhook secret (<code>apps/riptide-api/src/lib/workos-service.ts:112-121</code>).</p>
+<p>A missing Stripe secret stops start-up, because the service is constructed at module load (<code>apps/riptide-api/src/app.ts:70-74</code>). A missing WorkOS secret does not stop start-up, because the adapter accepts <code>undefined</code>. It fails at request time instead, and the route returns 400 (<code>apps/riptide-api/src/webhooks/workos.ts:38-50</code>).</p>
+<h3>Public artifact share keys</h3>
+<p>A share key is neither a symmetric nor an asymmetric key. It is a random version 4 Universally Unique Identifier (UUID), produced by <code>crypto.randomUUID()</code> the first time a user shares an artifact (<code>apps/riptide-api/src/orpc/api/sharing/artifact/update.effect.ts:85</code>). It is stored in plaintext in a unique column (<code>packages/db/src/tables/artifacts.ts:56</code>). Validation is a string equality test inside the SQL predicate.</p>
+<pre><code class="language-ts">// apps/riptide-electric-proxy/src/routes/v1.ts:51-61
+	app.all(&#x27;/shared/artifacts/:artifactId&#x27;, async (c) =&gt; {
+		const shareKey = c.req.header(&#x27;x-share-key&#x27;)
+		if (!shareKey) return c.newResponse(null, StatusCodes.UNAUTHORIZED)
+
+		const artifactId = c.req.param(&#x27;artifactId&#x27;)
+		if (!isUuid(artifactId)) {
+			return c.json({ error: &#x27;Invalid artifactId format&#x27; }, StatusCodes.BAD_REQUEST)
+		}
+
+		const accessible = await isSharedArtifactAccessible(config.db, artifactId, shareKey)
+		if (!accessible) return c.newResponse(null, StatusCodes.NOT_FOUND)
+</code></pre>
+<p>The check loads the row and resolves the effective permission. The organization policy can veto the row.</p>
+<pre><code class="language-ts">// packages/db/src/artifact-public-permission.ts:15-30
+/**
+ * Resolves sharing state while legacy clients still write share_enabled.
+ * A legacy enabled write can only grant view access; only an aligned new-client
+ * write can grant comment access.
+ *
+ * The org policy is required so every reader denies public access while the org
+ * has public links turned off, even if an artifact row still says it is shared.
+ */
+export function effectivePublicPermission(
+	row: ArtifactPublicPermissionCompatibilityRow,
+	org: ArtifactPublicPermissionOrgPolicy,
+): ArtifactPublicPermission {
+	if (!org.publicLinksAllowed) return &#x27;off&#x27;
+	if (!row.share_enabled) return &#x27;off&#x27;
+	return row.public_permission === &#x27;comment&#x27; ? &#x27;comment&#x27; : &#x27;view&#x27;
+}
+</code></pre>
+<p>Three permissions exist: <code>off</code>, <code>view</code>, and <code>comment</code> (<code>packages/db/src/artifact-public-permission.ts:1</code>). The proxy route for comments requires the stronger <code>comment</code> level (<code>apps/riptide-electric-proxy/src/lib/queries.ts:149-156</code>). The public link carries the key in the query string as <code>?key=</code> (<code>apps/riptide-ui/src/utils/artifact-links.ts:21-24</code>). The user interface reads that parameter in the route search schema and passes it to the shared-artifact view, which sends it to the proxy as the <code>x-share-key</code> header (<code>apps/riptide-ui/src/routes/shared/artifacts/$artifactId.tsx:7-29</code>, <code>apps/riptide-ui/src/hooks/shared-artifact/useSharedArtifactCollection.ts:29</code>). The key therefore appears in browser history, referrer headers, and access logs.</p>
+<p><strong>Aha:</strong> the shared-artifact routes are registered before the authentication middleware in the same Hono application (<code>apps/riptide-electric-proxy/src/routes/v1.ts:51-95</code>). Mount order is the capability boundary. The share key is the only credential on those paths, and the capability check is the middleware. A shared route added after line 95 would require a WorkOS token instead.</p>
+<h2>Tenancy enforcement without row-level security</h2>
+<p>The repository contains 144 migrations. Exactly one line mentions row-level security, and it disables it (<code>packages/db/drizzle/0121_orange_silver_fox.sql:15</code>).</p>
+<p>A search for <code>CREATE POLICY</code> returns nothing. Tenancy is therefore an application obligation. The proxy meets it by generating a predicate with Drizzle's <code>QueryBuilder</code> and parameter placeholders. For the sessions shape, version 2 sets the table name and applies only the organization filter (<code>apps/riptide-electric-proxy/src/routes/v2.ts:56-61</code>).</p>
+<p>Version 1 of the same route adds Access Control List (ACL) subqueries, which are lists of users allowed to see a row (<code>apps/riptide-electric-proxy/src/routes/v1.ts:98-104</code>).</p>
+<p>Version 2 removed the ACL filter for sessions, tasks, events, approvals, artifacts, and comments. Any member can therefore sync every session row in the organization. The API still checks task permissions on writes; read scope is wider than write scope, as <a href="05-sync-engine.html">the sync engine document</a> and <a href="06-electric-proxy.html">the Electric proxy document</a> describe.</p>
+<p>The API repeats the same rule in Drizzle. Every task lookup includes <code>eq(tasks.organization_id, organizationId)</code> (<code>apps/riptide-api/src/db/task-auth.ts:74-81</code>). Every ACL subquery repeats the organization predicate. The duplication is deliberate: the API must work even when the proxy is bypassed.</p>
+<p>The identifier handling is careful. Column names pass through <code>sql.identifier()</code>, and values pass as bound parameters. That blocks injection. The proxy serializes the fragment into Electric's <code>where</code> parameter; Electric applies it to its own query. A malformed fragment fails at Electric, not at the proxy.</p>
+<h2>The daemon host check</h2>
+<p>A daemon token names one host. The API checks that name on every daemon write. The check appears in heartbeat (<code>apps/riptide-api/src/orpc/daemon/hosts/heartbeat.effect.ts:35-37</code>), shutdown (<code>apps/riptide-api/src/orpc/daemon/hosts/shutdown.effect.ts:20-22</code>), daemon sync (<code>apps/riptide-api/src/orpc/daemon/sync/sessions.ts:30-33</code>, called an Insecure Direct Object Reference (IDOR) guard), agent-command report (<code>apps/riptide-api/src/orpc/daemon/agent-commands/report.effect.ts:23-25</code>), and session update (<code>apps/riptide-api/src/orpc/daemon/sessions/update.ts:78-81</code>, which also checks <code>created_by</code>).</p>
+<p>The proxy applies the same rule to the host-scoped session shape.</p>
+<pre><code class="language-ts">// apps/riptide-electric-proxy/src/routes/v1.ts:231-238
+		const { userId, organizationId, hostId: authHostId } = c.var.authContext
+
+		if (authHostId &amp;&amp; authHostId !== hostId) {
+			return c.json(
+				{ error: &#x27;hostId mismatch: URL parameter does not match daemon token&#x27; },
+				StatusCodes.FORBIDDEN,
+			)
+		}
+</code></pre>
+<p>Two refinements matter. First, a missing <code>hostId</code> claim is not a mismatch. A user token can read the host route. Second, when the caller is a daemon, the proxy also adds <code>created_by = userId</code> (<code>apps/riptide-electric-proxy/src/routes/v1.ts:245-246</code>). The sessions table stores <code>working_directory</code>, which is the local checkout path on that host (<code>packages/db/src/tables/sessions.ts:76</code>). The host-scoped session shape returns that column. A task access-control list can grant another HumanLayer user visibility to a session on the same host. The host shape applies that list. Without the predicate, the daemon of one operating-system user could read the working directory of another person's session. The predicate limits the shape to sessions that the daemon's own user created.</p>
+<h2>The shared-artifact capability model</h2>
+<p>The model has five parts. The first four decide access:</p>
+<ol><li>The capability is the pair of artifact identifier and share key.</li><li>The row must have <code>share_enabled = true</code>.</li><li>The organization must allow public links.</li><li>The requested operation must be within the granted level.</li></ol>
+<p>The fifth is column projection. A public shape never returns tenant identifiers, task identifiers, storage keys, or the share key itself. The hidden-column map is subtractive.</p>
+<pre><code class="language-ts">// packages/db/src/tables/artifacts.ts:91-107
+export const artifactColumnsHiddenFromPublic = {
+	task_id: true,
+	task_slug: true,
+	resource_owner_user_id: true,
+	organization_id: true,
+	content_hash: true,
+	frontmatter: true,
+	created_by: true,
+	share_key: true,
+	shared_by: true,
+	share_enabled: true,
+	public_permission: true,
+	is_deleted: true,
+	s3_key: true,
+	content_type: true,
+	file_size_bytes: true,
+} as const
+</code></pre>
+<p><strong>Aha:</strong> this is a hidden-column list, which is a blocklist, not an allow-list. The map names the columns to remove; every column that the map does not name is public. The comment above the map (<code>packages/db/src/tables/artifacts.ts:87-90</code>) states the rule: every other column is public. That rule is convenient and is the single riskiest line in the sharing model. A future migration that adds a sensitive column to <code>artifacts</code> publishes it to every share link unless the author remembers this map. The codebase has no test that compares the table definition to this list.</p>
+<h2>Input validation and transport posture</h2>
+<p>Path parameters are validated as UUIDs before query construction. The regular expression accepts versions 1 through 7 and the nil UUID (<code>apps/riptide-electric-proxy/src/lib/validation.ts:13</code>). A bad value returns 400, not a database error. The proxy applies it to task, host, session, organization, and artifact identifiers.</p>
+<p>Null bytes get special handling. PostgreSQL rejects the code point U+0000 in <code>text</code> and <code>jsonb</code>, and coding agents produce it when they discuss null bytes in source code.</p>
+<pre><code class="language-ts">// apps/riptide-api/src/lib/strip-null-bytes.ts:16-27
+const NULL_BYTE = &#x27;\0&#x27;
+
+export function stripNullBytesFromString(value: string): string {
+	return value.includes(NULL_BYTE) ? value.replaceAll(NULL_BYTE, &#x27;&#x27;) : value
+}
+
+/**
+ * `JSON.stringify` replacer for callers that serialize once and hand the text straight to
+ * Postgres (`::jsonb`), so they do not pay for a parse round trip on large payloads.
+ */
+export const nullByteReplacer = (_key: string, value: unknown): unknown =&gt;
+	typeof value === &#x27;string&#x27; ? stripNullBytesFromString(value) : value
+</code></pre>
+<p>The second form is a <code>JSON.stringify</code> replacer for callers that serialize once and avoid a parse round trip (<code>apps/riptide-api/src/lib/strip-null-bytes.ts:22-27</code>).</p>
+<p>Request body size is capped globally. The API uses a 10-megabyte limit by default and a 50-megabyte limit for the codelayer state upsert path (<code>apps/riptide-api/src/lib/request-body-limit.ts:8-19</code>). The codelayer state upsert path is the daemon procedure <code>/rpc/daemon/v1/codelayerState/upsert</code>. It stores the CodeLayer editor state for one session (<code>apps/riptide-api/src/lib/request-body-limit.ts:6</code>, <code>apps/riptide-api/src/orpc/daemon/codelayer-state/upsert.effect.ts:17-23</code>). That path carries a whole editor document, so the larger cap is justified. Every other route, including daemon report routes, stays at 10 megabytes.</p>
+<p>The proxy has its own flat 10-megabyte limit, installed before every other middleware (<code>apps/riptide-electric-proxy/src/server.ts:29-33</code>). Its purpose is stated in a comment: to prevent out-of-memory failure from large payloads.</p>
+<p>Cross-Origin Resource Sharing (CORS) is permissive. Both applications call <code>cors()</code> with no arguments (<code>apps/riptide-electric-proxy/src/server.ts:39</code>, <code>apps/riptide-api/src/app.ts:99</code>). The repository supplies no origin allow-list, no allowed-header list, and no credentials flag. Authentication still requires a bearer token, a daemon header, or a share key, so a hostile page cannot read responses without stealing one. The wide policy does allow any page to send requests and to observe timing and status codes.</p>
+<h2>A rejected request, step by step</h2>
+<p>The sequence below shows an expired access token. The proxy decodes the header, finds a cached key, fails verification, and returns 401. No request reaches Electric.</p>
+<div class="mermaid">
+sequenceDiagram
+    participant U as User client
+    participant P as Electric proxy
+    participant C as JWKS cache
+    participant E as Electric
+    U-&gt;&gt;P: GET /v2/sessions with expired Bearer token
+    P-&gt;&gt;P: decode header, require kid and iss
+    P-&gt;&gt;C: getKey(kid)
+    C--&gt;&gt;P: cached public key
+    P-&gt;&gt;P: jwtVerify with issuer from the token
+    P--&gt;&gt;U: 401 with an empty body
+    Note over P,E: No upstream call and no SQL predicate are made
+    Note over C,P: This token used a cached key; an unknown kid forces one JWKS refresh, and a missing kid is rejected
+
+</div>
+<h2>Self-hosting checklist</h2>
+<p>The repository supports a self-hosted stack, but it does not ship a complete deployment. The checklist below contains what the code, the Compose file, and the Caddyfile require.</p>
+<h3>Services you must run</h3>
+<table><tr><th>Service</th><th>Why the repository needs it</th><th>Evidence</th></tr><tr><td>PostgreSQL 18 with <code>wal_level=logical</code></td><td>Source of truth and Electric replication</td><td><code>docker-compose.yaml:9-28</code></td></tr><tr><td>Electric 1.7.12</td><td>Shape sync</td><td><code>docker-compose.yaml:30-41</code></td></tr><tr><td>S3 or MinIO</td><td>Binary artifact bodies</td><td><code>docker-compose.yaml:43-70</code></td></tr><tr><td>Redis 7</td><td>Billing and cache state; required only when billing runs</td><td><code>docker-compose.yaml:97-108</code></td></tr><tr><td>Durable Streams server 0.3.0</td><td>Live session event streams and Yjs shared-document collaboration</td><td><code>docker-compose.yaml:73</code></td></tr><tr><td>API service</td><td>Writes, typed contracts, webhooks</td><td><code>apps/riptide-api</code></td></tr><tr><td>Electric proxy</td><td>Authentication, tenancy filters, streams</td><td><code>apps/riptide-electric-proxy</code></td></tr><tr><td>Web UI static build</td><td>Human interface</td><td><code>apps/riptide-ui</code></td></tr><tr><td>Transport Layer Security (TLS) terminator (Caddy reverse proxy)</td><td>The Compose file does not terminate TLS</td><td><code>Caddyfile:1-25</code></td></tr></table>
+<p>The <code>wal_level=logical</code> setting makes PostgreSQL record every change in a form Electric can read. The Durable Streams server carries live output; PostgreSQL keeps the same events as rows.</p>
+<p>The admin application (<code>apps/riptide-cloud</code>) is optional for a single organization. The four AWS Lambda jobs (migrations, stale daemon sweep, database maintenance, and update server) are useful but not required to serve traffic.</p>
+<h3>Variables to set</h3>
+<table><tr><th>Variable</th><th>Required</th><th>Consequence when unset</th></tr><tr><td><code>DATABASE_URL</code></td><td>Yes</td><td>API and proxy throw at import</td></tr><tr><td><code>READ_REPLICA_DATABASE_URL</code></td><td>Yes</td><td>API throws at import</td></tr><tr><td><code>ELECTRIC_SHAPE_URL</code></td><td>Yes</td><td>Proxy throws at start-up</td></tr><tr><td><code>DURABLE_STREAMS_ORIGIN</code></td><td>Yes</td><td>Proxy throws at start-up</td></tr><tr><td><code>ELECTRIC_SECRET</code></td><td>Yes in production</td><td>Proxy throws in production</td></tr><tr><td><code>RIPTIDE_DAEMON_TOKEN_PRIVATE_KEY</code></td><td>Yes for the API; a development daemon may also sign</td><td>Daemon and launch token creation fail</td></tr><tr><td><code>RIPTIDE_DAEMON_TOKEN_PUBLIC_KEY</code></td><td>Yes, API and proxy</td><td>Daemon and launch token validation returns <code>null</code></td></tr><tr><td><code>RIPTIDE_DAEMON_LOAD_CREDS</code></td><td>No; development only</td><td>The daemon does not read the local user identifier, organization identifier, or private key (<code>apps/riptide-daemon/src/lib/auth.ts:129-168</code>)</td></tr><tr><td><code>DAEMON_IDENTITY</code></td><td>Yes at runtime; the packaged shell or the command-line interface (CLI) supplies it</td><td>The daemon throws at start-up (<code>apps/riptide-daemon/src/lib/auth.ts:171-176</code>)</td></tr><tr><td><code>WORKOS_API_KEY</code></td><td>Yes</td><td>API and proxy fail on their first call to WorkOS</td></tr><tr><td><code>WORKOS_CLIENT_ID</code></td><td>Yes</td><td>JWKS URL cannot be built</td></tr><tr><td><code>WORKOS_REDIRECT_URI</code></td><td>Yes</td><td>Login redirect cannot be built</td></tr><tr><td><code>WORKOS_WEBHOOK_SECRET</code></td><td>Recommended</td><td>Webhook verification returns 400</td></tr><tr><td><code>S3_ARTIFACTS_BUCKET</code></td><td>Yes</td><td>API throws at start-up</td></tr><tr><td><code>S3_ARTIFACTS_REGION</code></td><td>No, defaults to <code>us-east-1</code></td><td>Wrong region for non-AWS stores</td></tr><tr><td><code>S3_ARTIFACTS_ENDPOINT</code></td><td>For MinIO</td><td>AWS endpoints are used</td></tr><tr><td><code>S3_ACCESS_KEY_ID</code>, <code>S3_SECRET_ACCESS_KEY</code></td><td>For MinIO</td><td>Default AWS credential chain</td></tr><tr><td><code>STRIPE_SECRET_KEY</code></td><td>Yes at start-up</td><td>API throws, even with billing disabled</td></tr><tr><td><code>STRIPE_WEBHOOK_SECRET</code></td><td>Yes at start-up</td><td>API throws</td></tr><tr><td><code>STRIPE_PRICE_STARTER</code>, <code>STRIPE_PRICE_PRO</code></td><td>Yes</td><td>Start-up validation rejects empty plan price identifiers</td></tr><tr><td><code>IS_BILLING_ENFORCEMENT_ENABLED</code></td><td>Yes</td><td>The environment reader <code>requireEnvironment</code> throws</td></tr><tr><td><code>RESEND_API_KEY</code>, <code>RESEND_WEBHOOK_SECRET</code> (Resend email service)</td><td>Yes at start-up</td><td>API throws</td></tr><tr><td><code>KV_URL</code> (Key-Value store URL)</td><td>When billing runs</td><td>The Redis client cannot be built, so the cache is absent</td></tr><tr><td><code>VITE_PUBLIC_WORKOS_CLIENT_ID</code></td><td>Yes, UI build</td><td>Login cannot start</td></tr><tr><td><code>VITE_PUBLIC_RIPTIDE_API_ORIGIN</code></td><td>Yes, UI build</td><td>The UI calls the wrong origin</td></tr></table>
+<p><code>ELECTRIC_SHAPE_URL</code> is the complete shape endpoint, not only the host. The proxy builds each upstream shape URL from it (<code>apps/riptide-electric-proxy/src/runtime-environment.ts:8-9</code>). The development stack renders a value such as <code>http://127.0.0.1:&lt;port&gt;/v1/shape</code> (<code>apps/devstack/src/lib/env-block.ts:165</code>). <code>KV_URL</code> is the Key-Value store URL for Redis.</p>
+<p>The Stripe and Resend requirements are easy to miss. Both services are constructed at module load (<code>apps/riptide-api/src/app.ts:70-76</code>). A self-hoster who disables billing still needs a syntactically valid Stripe key and a Resend email-service key to boot the API.</p>
+<h3>What degrades when optional values are unset</h3>
+<table><tr><th>Unset value</th><th>Behavior</th></tr><tr><td>Sentry Data Source Name (DSN)</td><td>Telemetry stays off; the README states this</td></tr><tr><td>PostHog key</td><td>Product analytics stays off</td></tr><tr><td><code>S3_ACCESS_KEY_ID</code></td><td>The AWS default credential chain is used</td></tr><tr><td><code>ELECTRIC_SECRET</code> in development</td><td>Electric is open; the proxy still filters</td></tr><tr><td><code>WORKOS_WEBHOOK_SECRET</code></td><td>Membership webhooks return 400; seats stop syncing</td></tr><tr><td><code>KV_URL</code></td><td>The cache is absent, so billing state cannot persist and billing decisions fail open</td></tr></table>
+<h3>The warning in the README</h3>
+<p>The README is explicit about the Compose file.</p>
+<pre><code class="language-markdown"># README.md:36-45
+`bun --bun run devstack help` explains how to run the whole stack locally. [CONTRIBUTING.md](CONTRIBUTING.md) lists every check a pull request must pass.
+
+A build from source sends nothing to us: Sentry, PostHog, and the WorkOS client ID come from env, and stay off when unset. `.env.example` lists them.
+
+## Self-hosting
+
+HumanLayer Cloud runs this code. Guides for running it yourself are in progress.
+
+
+⚠️ note - If you use the Docker Compose file as a starter for self hosting, please note that it uses default/simple passwords that should be updated before you deploy.
+</code></pre>
+<p>The warning is accurate. The Compose file defaults the PostgreSQL password to <code>password</code> (<code>docker-compose.yaml:14</code>), the MinIO root user and password to <code>minioadmin</code> (<code>docker-compose.yaml:46-47</code>), and the durable-streams policy to wildcard CORS (<code>docker-compose.yaml:88</code>).</p>
+<p>Two more gaps matter for a self-hoster. First, the README tells the reader to run <code>cp .env.example .env</code> (<code>README.md:31</code>). No <code>.env.example</code> exists. The file is ignored by <code>.gitignore:100</code> (<code>.env*</code>) and absent from all history. The working path is <code>bun --bun run devstack</code>, which renders an environment block (<code>apps/devstack/src/lib/env-block.ts:147-166</code>).</p>
+<p>Second, the repository contains no Pulumi program and no Lambda deployment definition. It has Pulumi dependencies (<code>package.json:154-159</code>), three helper modules under <code>packages/pulumi-helpers/src</code>, and four Lambda handler functions. But there is no <code>Pulumi.yaml</code> and no <code>pulumi.ts</code>. <code>apps/docs/README.md:3-4</code> still points to one. A self-hoster must write the deployment layer.</p>
+<h2>Next</h2>
+<p>Read <a href="07-api-and-contracts.html">the API and contracts document</a> for the middleware chain that consumes these credentials. Read <a href="08-database-and-schemas.html">the database document</a> for the table model behind the tenancy predicates. Read <a href="14-infrastructure-and-devstack.html">the infrastructure document</a> for the Compose stack and <code>devstack</code>. Read <a href="19-comparisons-and-critical-assessment.html">the comparisons document</a> for the risks that remain after this inventory.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

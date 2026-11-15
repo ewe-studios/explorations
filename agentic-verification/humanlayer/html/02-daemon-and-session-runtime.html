@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The daemon and the session runtime -- humanlayer</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue(dark ? '--bg-strong' : '--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      // ── Diagram zoom/pan modal ──────────────────────────────
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        var btnIn = mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); });
+        var btnOut = mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); });
+        var btnReset = mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); });
+        var btnClose = mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); });
+        toolbar.appendChild(btnIn); toolbar.appendChild(btnOut);
+        toolbar.appendChild(btnReset); toolbar.appendChild(btnClose);
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/humanlayer/docs</span>
+    <div class="nav-actions">
+      <a href="00-overview.html" class="nav-breadcrumb">Overview: three planes, one session row</a><a href="01-repository-map.html" class="nav-breadcrumb">Repository map: every application and package</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="01-repository-map.html" class="nav-btn" title="Previous: Repository map: every application and package">← prev</a>
+      <a href="03-session-lifecycle-and-state-machine.html" class="nav-btn nav-btn-next" title="Next: The session lifecycle: 13 statuses without a transition table">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>The daemon and the session runtime</h1>
+<p>The daemon is a long-lived process on the user's machine. It has no inbound network port, and it learns what to do by asking and by watching. This document explains the process layout, outbound control plane, heartbeat, shutdown, executors, workspace gate, and the read, write, and live-update paths.</p>
+<p>A <strong>host</strong> is one registered daemon identity: a user, an organization, and a machine identifier (<code>packages/schemas/src/effect/daemon/identity.ts:5-9</code>). The server keeps one registration row per host, with a <code>last_seen</code> time.</p>
+<p>The design rests on three required channels. The write channel is an outbound OpenAPI Remote Procedure Call (oRPC) call. The read channel is an Electric shape subscription, where a shape is a server-defined subset of a PostgreSQL table sent as ordered changes. The liveness channel is a heartbeat. A fourth channel, a durable stream of conversation events, is optional and serves live viewers. Remove a required channel, and the daemon cannot learn work or cannot report it.</p>
+<p>The concurrency comes from Effect, a TypeScript library for effectful programs. A fiber is a lightweight thread, a Layer is a dependency graph, and a Ref is mutable state.</p>
+<h2>The process layout</h2>
+<p>The binary entry point is <code>apps/riptide-daemon/src/daemon.ts</code>. It imports the Sentry instrumentation module first, validates two origins, and hands control to <code>startManagedDaemon</code> (<code>apps/riptide-daemon/src/daemon.ts:1-3</code>, <code>apps/riptide-daemon/src/daemon.ts:14-22</code>, <code>apps/riptide-daemon/src/daemon.ts:39-48</code>). The two origins are the API origin, from <code>RIPTIDE_DAEMON_API_ORIGIN</code>, and the sync origin, from <code>RIPTIDE_DAEMON_SYNC_ORIGIN</code>. A missing origin is a hard startup error, not a warning (<code>apps/riptide-daemon/src/daemon.ts:15-21</code>, <code>apps/riptide-daemon/src/lib/macros/index.ts:26-28</code>).</p>
+<p>The daemon token comes from the <code>DAEMON_IDENTITY</code> environment variable (<code>apps/riptide-daemon/src/daemon.ts:34</code>). A launcher can also set <code>RIPTIDE_DAEMON_EXPECTED_IDENTITY</code>, a JSON value with <code>userId</code>, <code>organizationId</code>, and <code>hostId</code> (<code>apps/riptide-daemon/src/daemon.ts:23-27</code>, <code>packages/schemas/src/effect/daemon/identity.ts:5-9</code>). The Tauri and Electron shells set both values together. When <code>RIPTIDE_DAEMON_LOAD_CREDS</code> is set and no expected identity exists, a present <code>DAEMON_IDENTITY</code> is treated as inherited from a parent process, such as a tmux server or a spawned agent shell, and is discarded (<code>apps/riptide-daemon/src/daemon.ts:28-37</code>). The daemon then signs its own token from three development variables: <code>RIPTIDE_DAEMON_USER_ID</code>, <code>RIPTIDE_DAEMON_ORGANIZATION_ID</code>, and <code>RIPTIDE_DAEMON_TOKEN_PRIVATE_KEY</code> (<code>apps/riptide-daemon/src/lib/auth.ts:147-176</code>).</p>
+<p>The source tree has ten top-level areas, each with one job.</p>
+<table><tr><th>Path</th><th>Job</th><th>Key entry</th></tr><tr><td><code>apps/riptide-daemon/src/daemon.ts</code></td><td>Process entry and fatal error handler</td><td><code>main</code></td></tr><tr><td><code>apps/riptide-daemon/src/start.ts</code></td><td>Build the runtime and start every service</td><td><code>startManagedDaemon</code></td></tr><tr><td><code>apps/riptide-daemon/src/managed-daemon-start.ts</code></td><td>Define the managed launch contract and resolve it</td><td><code>loadResolvedManagedDaemonLaunchRequestAtHostBoundary</code></td></tr><tr><td><code>apps/riptide-daemon/src/orpc</code></td><td>Outbound control plane client and retry rules</td><td><code>createDaemonORPCClient</code></td></tr><tr><td><code>apps/riptide-daemon/src/lib</code></td><td>Heartbeat, usage limits, sync service, orphan detection</td><td><code>startHeartbeat</code></td></tr><tr><td><code>apps/riptide-daemon/src/collections</code></td><td>Electric shapes on TanStack DB collections</td><td><code>createSessionsCollection</code></td></tr><tr><td><code>apps/riptide-daemon/src/subscriptions.ts</code></td><td>Turn collection changes into session actions</td><td><code>initializeSubscriptions</code></td></tr><tr><td><code>apps/riptide-daemon/src/agents</code></td><td>The three executors and their shared wrapper</td><td><code>runSession</code></td></tr><tr><td><code>apps/riptide-daemon/src/effects</code></td><td>Effect services, including the durable stream writer</td><td><code>DurableStreamWriterLive</code></td></tr><tr><td><code>apps/riptide-daemon/src/lifecycle</code></td><td>Startup shutdown path and graceful shutdown path</td><td><code>createGracefulShutdown</code></td></tr></table>
+<p>The start order matters. The runtime is built, the collections load, the model catalog probe starts, and the first heartbeat registers the host (<code>apps/riptide-daemon/src/start.ts:190-240</code>). The probe scans local models, and the daemon waits up to 10 seconds for its first result (<code>apps/riptide-daemon/src/start.ts:230-232</code>). Only after <code>startHeartbeat</code> returns do subscriptions start (<code>apps/riptide-daemon/src/start.ts:433</code>). A host that cannot register must not take work.</p>
+<p>For an authenticated identity, a local file lock enforces one daemon. The lock key hashes user, organization, host, and stage, where the stage is the release channel: <code>local</code>, <code>dev</code>, <code>beta</code>, or <code>prod</code> (<code>apps/riptide-daemon/src/effects/services/daemon-instance-lock/daemon-instance-lock.layer.ts:34</code>, <code>packages/schemas/src/effect/daemon/stage.ts:3</code>). A second daemon for the same key returns <code>daemon_already_running</code>, and the process exits with code zero, because the host is already served (<code>apps/riptide-daemon/src/daemon.ts:51</code>).</p>
+<h2>No inbound listener, and why that is the point</h2>
+<p>Production source opens no listening socket. A search for <code>Bun.serve</code>, <code>createServer</code>, and <code>.listen(</code> finds matches only in test files.</p>
+<p>The cost is that the daemon must ask for its own instructions. The benefit is that the machine needs no reachable address, so a laptop behind Network Address Translation (NAT) needs only outbound HyperText Transfer Protocol (HTTP) access. Every daemon channel uses HTTP: the control plane posts to the API, Electric serves long-poll requests, the heartbeat posts, and the durable stream appends with HTTP POST.</p>
+<p><strong>Aha:</strong> The daemon is a client with a mirror. A "command" is a row that changed in a database the daemon can read. The write path back is a separate outbound call. This inversion explains the subscriptions, the reconnect logic, and the sweeper.</p>
+<h2>The outbound control plane</h2>
+<p>The control plane is one typed oRPC client. <code>createDaemonORPCClient(apiOrigin, token)</code> builds it from the API (Application Programming Interface) origin and the daemon identity token. All daemon procedures live under one base path.</p>
+<pre><code class="language-ts">// apps/riptide-daemon/src/orpc/client.ts:27-33
+export function createDaemonORPCClient(apiOrigin: string, token: string): ORPCClient {
+	const rpcBaseUrl = `${apiOrigin}/rpc/daemon/v1`
+	const link = new OpenAPILink(RiptideDaemonApiContract, {
+		url: rpcBaseUrl,
+		headers: () =&gt; ({
+			&#x27;x-daemon-authorization&#x27;: token,
+		}),
+</code></pre>
+<p>The server reads exactly the <code>x-daemon-authorization</code> header in <code>getDaemonAuthContext</code> and returns null when it is absent or invalid (<code>apps/riptide-api/src/auth/context.ts:56-60</code>). There is no cookie, bearer token, or query parameter. The token is the whole credential.</p>
+<h3>Authentication failure stops the process</h3>
+<p>A 401 or 403 response is not retried. It is a terminal identity failure. The interceptor sets exit code 1, prints a structured process event, and sends SIGTERM to its own process identifier (<code>apps/riptide-daemon/src/orpc/client.ts:44-70</code>). The daemon then closes through the user-signal shutdown path. The module-level flag <code>authFailureTriggered</code> (<code>apps/riptide-daemon/src/orpc/client.ts:18</code>) stops the shutdown call, which also receives 401, from starting a second shutdown.</p>
+<p>The choice of SIGTERM is deliberate. The code comment says it lets <code>daemon.ts</code> handle "session cleanup, API notification, and Sentry flush" (<code>apps/riptide-daemon/src/orpc/client.ts:67-68</code>). A direct <code>process.exit(1)</code> would skip all three.</p>
+<h3>The retry policy</h3>
+<p>The client retries a failed call up to five times after the first attempt, with a fixed two-second delay (<code>apps/riptide-daemon/src/orpc/client.ts:14</code>, <code>apps/riptide-daemon/src/orpc/client.ts:93</code>). The retry policy therefore allows six attempts and ten seconds of delay. A heartbeat wraps the whole call, including that retry sequence, in a 10-second timeout (<code>apps/riptide-daemon/src/lib/heartbeat.ts:18</code>, <code>apps/riptide-daemon/src/lib/heartbeat.ts:102-105</code>). In the heartbeat path the timeout usually stops the sequence first, because six attempts plus ten seconds of delay cannot fit inside ten seconds. Other daemon calls that set no timeout can use the full retry budget. That wrapper sits inside each registration retry. One pure function decides whether a request is retried.</p>
+<pre><code class="language-ts">// apps/riptide-daemon/src/orpc/retry-policy.ts:31-35
+export function shouldRetryORPCRequest(error: unknown): boolean {
+	const status = getHttpStatus(error)
+	if (status === undefined) return true
+	return TRANSIENT_HTTP_STATUSES.has(status) || status &gt;= 500
+}
+</code></pre>
+<p><code>TRANSIENT_HTTP_STATUSES</code> holds 408, 425, and 429 (<code>apps/riptide-daemon/src/orpc/retry-policy.ts:4</code>). The function walks the error envelope, the nested response, and the cause to find a status (<code>apps/riptide-daemon/src/orpc/retry-policy.ts:17-22</code>). An error with no status is retried, because a network failure carries none.</p>
+<table><tr><th>Response</th><th>Retried?</th><th>Reason</th></tr><tr><td>No status (network failure)</td><td>Yes</td><td>The request may never have arrived</td></tr><tr><td>408, 425, 429</td><td>Yes</td><td>Explicit transient signals</td></tr><tr><td>500 and above</td><td>Yes</td><td>Server-side fault</td></tr><tr><td>400, 404, 409</td><td>No</td><td>The request is wrong and will stay wrong</td></tr><tr><td>401, 403</td><td>No</td><td>Identity failure; shutdown starts instead</td></tr></table>
+<p>The 404 rule applies to oRPC calls; a 404 on the durable stream has its own recovery path below. Exhausted retries reach Sentry only when the error is not a defined contract error (<code>apps/riptide-daemon/src/orpc/client.ts:123-127</code>). A defined error is an expected answer, not an incident.</p>
+<h2>The heartbeat</h2>
+<p><code>startHeartbeat</code> has one job before it returns: send one beat that succeeds. Session dispatch waits behind that promise. The doc comment states the contract: "Rejects when the registering beat fails for good, so the daemon does not dispatch sessions for an unregistered host" (<code>apps/riptide-daemon/src/lib/heartbeat.ts:126</code>).</p>
+<p>The constants carry the design.</p>
+<pre><code class="language-ts">// apps/riptide-daemon/src/lib/heartbeat.ts:14-23
+// Keep well under the API&#x27;s HOST_STALE_AFTER_MS (120s): a host is swept — running
+// sessions failed, approvals rejected — after missing 8 consecutive beats.
+const HEARTBEAT_INTERVAL = Duration.seconds(15)
+// A connection that died while the machine slept never settles; abort the beat so the next one runs.
+export const HEARTBEAT_TIMEOUT = Duration.seconds(10)
+const REGISTERING_BEAT_RETRY_INTERVAL = Duration.seconds(5)
+const REGISTERING_BEAT_RETRIES = 24
+// A rate-limit change is pushed after this quiet window so the UI reacts before the regular
+// interval, while a burst of events still costs one request.
+const USAGE_LIMITS_PUSH_DELAY = Duration.seconds(1)
+</code></pre>
+<p>A sleeping machine leaves a Transmission Control Protocol (TCP) connection half-open. Without the timeout, the beat would hang and the interval would never fire again. The code applies <code>Effect.timeout(HEARTBEAT_TIMEOUT)</code> and converts it to a <code>HeartbeatError</code> (<code>apps/riptide-daemon/src/lib/heartbeat.ts:102-105</code>).</p>
+<h3>The first beat and its retry window</h3>
+<pre><code class="language-ts">// apps/riptide-daemon/src/lib/heartbeat.ts:137-148
+	await runtime.runPromise(
+		sendHeartbeat(target).pipe(
+			Effect.tapError((error) =&gt;
+				Effect.logWarning(&#x27;Registering heartbeat failed&#x27;).pipe(Effect.annotateLogs({ hostId, error })),
+			),
+			Effect.retry({
+				schedule: Schedule.spaced(REGISTERING_BEAT_RETRY_INTERVAL),
+				times: REGISTERING_BEAT_RETRIES,
+				while: (error) =&gt; shouldRetryORPCRequest(error.cause),
+			}),
+		),
+	)
+</code></pre>
+<p>The retry condition reuses the oRPC predicate, so a 401 on the first beat stops the loop at once. The spacing alone is 120 seconds: 24 retries, each 5 seconds apart. Each registration retry is one <code>sendHeartbeat</code> call with its own 10-second timeout. The window is therefore at least the stale threshold, and possibly longer. A host that spends the full window re-registering can be swept while it still retries, because the sweep sees only the old <code>last_seen</code>.</p>
+<h3>The steady state</h3>
+<p>After the first beat succeeds, two fibers run together. One beats every 15 seconds. The other waits for a change from the local <code>HostUsageLimits</code> service and debounces it for one second. Claude rate-limit events and usage snapshots feed that service, not an API push (<code>apps/riptide-daemon/src/lib/usage-limits/host-usage-limits.ts:209-217</code>). A burst of limit events costs one request, and the user interface learns of a change before the next tick.</p>
+<pre><code class="language-ts">// apps/riptide-daemon/src/lib/heartbeat.ts:150-160
+	const beat = sendHeartbeatLoggingFailure(target)
+	const onInterval = Effect.sleep(HEARTBEAT_INTERVAL).pipe(Effect.andThen(beat), Effect.forever)
+	const onUsageLimitChange = HostUsageLimits.pipe(
+		Effect.flatMap((usageLimits) =&gt;
+			usageLimits.changes.pipe(
+				Stream.debounce(USAGE_LIMITS_PUSH_DELAY),
+				Stream.runForEach(() =&gt; beat),
+			),
+		),
+	)
+	const fiber = runtime.runFork(Effect.all([onInterval, onUsageLimitChange], { concurrency: &#x27;unbounded&#x27; }))
+</code></pre>
+<p>Each beat carries more than liveness: the host name, build version, capabilities, supported model catalog, distribution, self-update flag, ephemeral flag, usage limits, and machine statistics (<code>apps/riptide-daemon/src/lib/heartbeat.ts:84-97</code>). The response may contain an <code>updateRequest</code>, whose version goes to a queue (<code>apps/riptide-daemon/src/lib/heartbeat.ts:107-109</code>). The self-update section covers it.</p>
+<div class="mermaid">
+sequenceDiagram
+    participant S as start.ts
+    participant H as heartbeat fiber
+    participant A as API /rpc/daemon/v1
+    participant U as local usage limits
+    S-&gt;&gt;H: startHeartbeat(hostId, orpc)
+    H-&gt;&gt;A: hosts.heartbeat (first attempt)
+    Note over H,A: 10 s timeout per attempt
+    alt retryable failure
+        H-&gt;&gt;H: wait 5 s
+        H-&gt;&gt;A: retry, up to 24 retries
+    else 401 or 403
+        H-&gt;&gt;H: SIGTERM with exit code 1
+    end
+    H--&gt;&gt;S: resolve after one success
+    Note over S: subscriptions start after this
+    loop every 15 s
+        H-&gt;&gt;A: hosts.heartbeat
+        A--&gt;&gt;H: updateRequest (optional)
+    end
+    U--&gt;&gt;H: usage limit change
+    H-&gt;&gt;H: debounce 1 s
+    H-&gt;&gt;A: hosts.heartbeat
+
+</div>
+<h3>What the server does with a missing beat</h3>
+<p>The sweep is not in the API. It is an Amazon Web Services (AWS) Lambda job, <code>apps/stale-daemon-sweeper</code> (<code>README.md:16</code>); its invocation schedule is deployment configuration, not repository code. The heartbeat writes <code>last_seen</code> (<code>apps/riptide-api/src/orpc/daemon/hosts/heartbeat.effect.ts:72-73</code>). The sweep compares that column with <code>STALE_DAEMON_AFTER_MS</code>, which equals 120,000 milliseconds (<code>apps/stale-daemon-sweeper/stale-daemons.ts:7</code>). The daemon comment calls the same threshold <code>HOST_STALE_AFTER_MS</code> (<code>apps/riptide-daemon/src/lib/heartbeat.ts:14</code>). The names differ, the value does not.</p>
+<p>The sweep marks the registration offline, fails every active session, moves every <code>interrupt_requested</code> session to <code>interrupted</code>, and denies pending approvals (<code>apps/stale-daemon-sweeper/stale-daemons.ts:92-115</code>). A deliberate shutdown skips the sweep: <code>hosts.shutdown</code> performs the same writes at once and marks the host offline (<code>apps/riptide-api/src/orpc/daemon/hosts/shutdown.effect.ts:28-85</code>).</p>
+<pre><code class="language-ts">// apps/stale-daemon-sweeper/stale-daemons.ts:92-106
+		const failedSessions = await tx
+			.update(sessions)
+			.set({
+				status: &#x27;failed&#x27;,
+				error_message: &#x27;Session failed because the daemon timed out&#x27;,
+				updated_at: now,
+			})
+			.where(and(sessionFilter, inArray(sessions.status, DAEMON_ACTIVE_SESSION_STATUSES)))
+			.returning({ id: sessions.id })
+
+		const interruptedSessions = await tx
+			.update(sessions)
+			.set({ status: &#x27;interrupted&#x27;, updated_at: now })
+			.where(and(sessionFilter, eq(sessions.status, &#x27;interrupt_requested&#x27;)))
+			.returning({ id: sessions.id })
+</code></pre>
+<p><strong>Aha:</strong> The daemon does not decide that it is dead. Another process decides that for it, from the absence of a heartbeat. A crashed daemon therefore cannot leave a session stuck in <code>running</code>. The price is that a machine that sleeps for two minutes loses its running sessions. The daemon is not told directly; it sees the failed row through the same shape, and a run may still be executing when the server declares it failed.</p>
+<h2>Shutdown, and the five-second deadline</h2>
+<p>Shutdown has two layers: an ordered best-effort drain, and a hard deadline that kills the process if the drain does not finish.</p>
+<p>The deadline is 5,000 milliseconds (<code>apps/riptide-daemon/src/lifecycle/shutdown-deadline.ts:1</code>). The first signal starts the timer. A second signal, or the timer itself, calls <code>process.exit</code> at once through the configured force function (<code>apps/riptide-daemon/src/start.ts:145-150</code>).</p>
+<pre><code class="language-ts">// apps/riptide-daemon/src/lifecycle/shutdown-deadline.ts:23-36
+	return {
+		begin(signal: string): boolean {
+			if (initialSignal !== undefined) {
+				force(&#x27;repeated_request&#x27;, signal)
+				return false
+			}
+
+			initialSignal = signal
+			timeout = setTimeout(
+				() =&gt; force(&#x27;deadline_exceeded&#x27;, initialSignal ?? signal),
+				options.timeoutMs ?? GRACEFUL_SHUTDOWN_TIMEOUT_MS,
+			)
+			return true
+		},
+</code></pre>
+<p>The drain order is fixed (<code>apps/riptide-daemon/src/lifecycle/graceful-shutdown.ts:51-84</code>). It stops orphan detection and the heartbeat first, so no new work arrives and no false liveness is reported. Orphan detection is optional: it checks the parent process identifier every 5 seconds and shuts down when the parent dies (<code>apps/riptide-daemon/src/lib/orphan-detection.ts:3-27</code>). The drain then stops self-update, interrupts live Claude and Fold sessions, stops subscriptions, drains capture sources, stops the sync service, sends the shutdown notification, and disposes the runtime.</p>
+<p>Capture sources are the commit watcher, the repository observer, and the pending task-diff work (<code>apps/riptide-daemon/src/start.ts:291-305</code>). The sync service keeps per-task data current (<code>apps/riptide-daemon/src/lib/sync-service.ts:183-200</code>). A CodeLayer run has no service handle in this list; the forced exit or the process end stops it.</p>
+<pre><code class="language-ts">// apps/riptide-daemon/src/lifecycle/graceful-shutdown.ts:61-76
+			await attempt(&#x27;self_update&#x27;, () =&gt; options.stopSelfUpdate?.())
+			await attempt(&#x27;sessions&#x27;, async () =&gt; {
+				await options.runtime.runPromise(
+					Effect.gen(function* () {
+						const claudeSessions = yield* ClaudeSessions
+						const foldSessions = yield* FoldSessionRunner
+						yield* Effect.all(
+							[claudeSessions.shutdownActiveClaudeSessions, foldSessions.shutdownActiveSessions],
+							{ concurrency: &#x27;unbounded&#x27;, discard: true },
+						)
+					}),
+				)
+				await shutdownAllSessions()
+				logger.info(&#x27;Session shutdown complete&#x27;)
+			})
+			await attempt(&#x27;subscriptions&#x27;, options.stopSubscriptions)
+</code></pre>
+<p>Every step is wrapped in <code>attempt</code>: one failed step is logged and reported, and the next still runs. The notification is <code>hosts.shutdown</code>, which marks the host offline and fails its active sessions at once (<code>apps/riptide-api/src/orpc/daemon/hosts/shutdown.effect.ts:28-85</code>), with a 2,000-millisecond timeout (<code>apps/riptide-daemon/src/lifecycle/graceful-shutdown.ts:13</code>).</p>
+<p>The shutdown promise is memoized. A second call returns the first promise instead of running the sequence twice (<code>apps/riptide-daemon/src/lifecycle/graceful-shutdown.ts:45-47</code>). The deadline, a signal, and an authentication failure can all request shutdown together.</p>
+<p>The budget does not add up by design. The 2-second notification, 2-second stream flush, 1-second detach, and Sentry flushes can exceed 5 seconds together. The deadline is a hard ceiling, not a sum, and it kills a slow process.</p>
+<h2>Self-update</h2>
+<p>The daemon advertises <code>canSelfUpdate</code> in each heartbeat. If the API answers with <code>updateRequest</code>, the version enters a sliding queue of size one, so a newer request replaces a pending one (<code>apps/riptide-daemon/src/start.ts:217</code>). A consumer asks the updater to install each version (<code>apps/riptide-daemon/src/effects/services/self-update/self-update-requests.ts:6</code>).</p>
+<p>The updater refuses work when that version already runs or another update holds the semaphore (<code>apps/riptide-daemon/src/effects/services/self-update/self-update.layer.ts:107-110</code>). It installs with <code>npm install -g &lt;package&gt;@&lt;version&gt;</code>, bounded at 5 minutes, and reports progress through the heartbeat with three retries two seconds apart (<code>apps/riptide-daemon/src/effects/services/self-update/self-update-processes.layer.ts:44-76</code>, <code>apps/riptide-daemon/src/effects/services/self-update/self-update.layer.ts:11-12</code>).</p>
+<p>The capability names the supervisor: <code>systemd</code>, <code>shim</code>, or <code>none</code> (<code>apps/riptide-daemon/src/managed-daemon-start.ts:35-40</code>). With a supervisor, the daemon drains, then exits with 75, because systemd <code>Restart=on-failure</code> ignores a clean exit. Without one, the updater spawns the replacement command first, then exits with zero (<code>apps/riptide-daemon/src/effects/services/self-update/self-update.layer.ts:14-16</code>, <code>apps/riptide-daemon/src/effects/services/self-update/self-update.layer.ts:78-82</code>). The replacement waits on the instance lock, so two daemons cannot overlap.</p>
+<h2>The executor set</h2>
+<p>A launchable agent is one of three: <code>claude</code>, <code>codelayer</code>, or <code>fold</code> (<code>packages/schemas/coding-agent/coding-agent.ts:23</code>). An executor is a function that runs one session and returns when the run ends. Its type is <code>SessionExecutor</code>, which takes a session context, an optional resume identifier, and optional fork metadata, and returns a promise (<code>apps/riptide-daemon/src/agents/shared/run-session.ts:60</code>). The daemon selects one with an exhaustive match.</p>
+<pre><code class="language-ts">// apps/riptide-daemon/src/handlers/sessions/on-session-launch.ts:32-41
+const executorForLaunchableAgent = (
+	agent: LaunchableCodingAgent,
+	executors: DaemonServices[&#x27;executors&#x27;],
+): SessionExecutor =&gt;
+	Match.value(agent).pipe(
+		Match.when(&#x27;claude&#x27;, () =&gt; executors.claude),
+		Match.when(&#x27;codelayer&#x27;, () =&gt; executors.codelayer),
+		Match.when(&#x27;fold&#x27;, () =&gt; executors.fold),
+		Match.exhaustive,
+	)
+</code></pre>
+<p>The comment above the function explains the value: if a value joins <code>LAUNCHABLE_CODING_AGENT_VALUES</code> without a branch, type checking stops (<code>apps/riptide-daemon/src/handlers/sessions/on-session-launch.ts:27-31</code>). The compiler guards against silent fallthrough to Claude.</p>
+<p>All three executors share one wrapper, <code>runSession</code>. It registers the session for shutdown coordination, creates an interrupt state, calls the executor, and on failure writes <code>failed</code> unless the session was interrupted (<code>apps/riptide-daemon/src/agents/shared/run-session.ts:122-149</code>). The post-run hook observes the repository, and a failure there never fails the run (<code>apps/riptide-daemon/src/agents/shared/run-session.ts:150-160</code>).</p>
+<h2>The mirror-only adapters</h2>
+<p>Three coding agents have no executor: <code>opencode</code>, <code>pi</code>, and <code>codex</code> (<code>packages/schemas/coding-agent/coding-agent.ts:25-28</code>). "Mirror-only" means the daemon mirrors their session rows but does not run them. The agent runs in the user's own terminal, outside daemon control.</p>
+<p>The channel is the same Electric shape. The plugin or extension reads the host's session rows with the daemon token, which the launcher supplies. <code>packages/session-sdk-sessions/src/inbox.ts:1-11</code> describes the contract. The API writes the <code>prompt</code> and moves the row to <code>resuming</code>. A stop moves it to <code>interrupt_requested</code>. An approval answer moves an approval row from <code>pending</code> to <code>approved</code> or <code>denied</code>. The plugin acts on those rows.</p>
+<p>If a mirror-only agent reaches a launch handler, the handler rejects it and writes <code>failed</code> with a clear message (<code>apps/riptide-daemon/src/handlers/sessions/on-session-launch.ts:127-137</code>).</p>
+<h2>The workspace preparation path</h2>
+<p>A workspace is a set of repositories that the daemon prepares for a task: a worktree for each repository, copied configuration files, and an optional setup command. A task can name a workspace instead of a directory, and the launch is gated on readiness.</p>
+<p>Two models coexist. A task with <code>workspace_id</code> uses the V2 launch actor. A task with <code>workspace_spec</code> uses the legacy path, where the preparation service runs four operations (<code>apps/riptide-daemon/src/effects/services/workspace-setup-executor/workspace-setup-executor.service.ts:27-38</code>):</p>
+<table><tr><th>Operation</th><th>What it does</th><th>Failure type</th></tr><tr><td><code>preflightRepo</code></td><td>Resolve the source directory and the source commit</td><td><code>WorkspacePreflightError</code></td></tr><tr><td><code>createOrAdoptWorktree</code></td><td>Create a git worktree, or adopt an existing one</td><td><code>WorkspaceWorktreeError</code></td></tr><tr><td><code>copyConfiguredFiles</code></td><td>Copy the configured globs into the target</td><td><code>WorkspaceCopyError</code></td></tr><tr><td><code>runSetupCommand</code></td><td>Run the repository setup command in the target</td><td><code>WorkspaceSetupCommandError</code></td></tr></table>
+<p>The worktree step disables terminal prompts and has a 5-minute timeout (<code>apps/riptide-daemon/src/effects/services/workspace-setup-executor/create-or-adopt-worktree.ts:48-53</code>). An empty setup command returns exit code zero at once (<code>apps/riptide-daemon/src/effects/services/workspace-setup-executor/run-setup-command.ts:26-27</code>).</p>
+<p>The legacy gate reads a preparation ledger. The ledger is the <code>workspace_setup_state</code> JSON column of the <code>task_workspace_setup_for_host</code> table, one row for each task and host pair (<code>packages/db/src/tables/task-workspace-setup-for-host.ts:25</code>, <code>:40</code>). The daemon writes each stage through <code>workspaceSetup.update</code>; the API procedure applies the change and returns a transaction identifier (<code>apps/riptide-daemon/src/effects/services/daemon-api/daemon-api.layer.ts:76</code>, <code>apps/riptide-api/src/orpc/daemon/workspace-setup/update.ts:9-39</code>). The daemon reads the row back from the <code>/daemon/workspace-setup</code> shape. The ledger has six stages: <code>setup_requested</code>, <code>preflight</code>, <code>worktree</code>, <code>copy_globs</code>, <code>setup_command</code>, and <code>done</code> (<code>apps/riptide-daemon/src/lib/workspace/ledger.ts:3</code>). When the workspace spec sets <code>setupBlocksFirstSession</code>, every repository must reach <code>done</code>. Otherwise each repository must pass <code>worktree</code> (<code>apps/riptide-daemon/src/lib/workspace/ledger.ts:24-33</code>). That rule lets the agent start while the setup command still runs.</p>
+<p>For a V2 workspace session, the daemon spawns one actor per session, and a synced change is only a hint. The actor reloads authoritative readiness from the API, marks the row <code>waiting_for_workspace</code> once, and hands the session to the runner once (<code>apps/riptide-daemon/src/effects/services/workspace-session-launch/workspace-session-launch.machine.ts:15-21</code>, <code>apps/riptide-daemon/src/effects/services/workspace-session-launch/workspace-session-launch.machine.ts:84-115</code>). It rechecks every 2 seconds by default and doubles that delay after consecutive failures up to a 30-second ceiling, which is a delay cap, not a deadline (<code>apps/riptide-daemon/src/effects/services/workspace-session-launch/workspace-session-launch-actors.layer.ts:78-85</code>).</p>
+<p>The final states are <code>Launched</code>, <code>NotLaunchable</code>, and <code>Failed</code> (<code>apps/riptide-daemon/src/effects/services/workspace-session-launch/workspace-session-launch.machine.ts:259-261</code>). <code>NotLaunchable</code> means the session is no longer awaiting launch, or another runner took it. <code>Failed</code> means the handoff itself broke. A later hint starts a fresh actor.</p>
+<h2>Electric subscriptions inside the daemon</h2>
+<p>The daemon holds five TanStack DB collections: in-memory reactive tables fed by Electric shapes. Each shape authenticates with the daemon token (<code>apps/riptide-daemon/src/effects/services/daemon-collections/daemon-collections.layer.ts:180-186</code>).</p>
+<table><tr><th>Collection</th><th>Shape path</th><th>Scope</th></tr><tr><td>Sessions</td><td><code>/v1/sessions/${hostId}</code></td><td>One host</td></tr><tr><td>Tasks</td><td><code>/v1/tasks</code></td><td>On-demand subset for this host</td></tr><tr><td>Approvals</td><td><code>/v1/daemon/approvals</code></td><td>Rows for this host's sessions</td></tr><tr><td>Workspace setup</td><td><code>/daemon/workspace-setup</code></td><td>Rows for this host</td></tr><tr><td>Provider login requests</td><td><code>/daemon/provider-login-requests</code></td><td>Rows for this host</td></tr></table>
+<p>The subscription supervisor consumes exactly three streams: session changes, task changes, and workspace setup sessions (<code>apps/riptide-daemon/src/subscriptions.ts:366-391</code>). The other two feed the approval and provider login flows, not the launch flow.</p>
+<p>Three paths carry no host identifier in their address, and the proxy scopes each one from the token. <code>/v1/sessions/:hostId</code> compares the path value with the <code>hostId</code> claim and rejects a mismatch with 403 (<code>apps/riptide-electric-proxy/src/routes/v1.ts:225-236</code>). <code>/v1/daemon/approvals</code> and <code>/daemon/workspace-setup</code> add a <code>host_id</code> predicate from the claim (<code>apps/riptide-electric-proxy/src/routes/v1.ts:267-281</code>, <code>apps/riptide-electric-proxy/src/routes/v2.ts:206-215</code>). <code>/v1/tasks</code> is not host-filtered at the proxy. The daemon instead loads only the task identifiers that its own session and workspace-setup rows name (<code>apps/riptide-daemon/src/collections/electric/tasks.ts:71-92</code>).</p>
+<p>A session change becomes a launch when the row enters <code>ready_for_launch</code> or <code>waiting_for_workspace</code>. It becomes a continue when a resting row moves to <code>resuming</code> (<code>apps/riptide-daemon/src/subscriptions.ts:176-205</code>). A missing task row is not fatal: the task stream revisits waiting sessions when the task arrives (<code>apps/riptide-daemon/src/subscriptions.ts:235-249</code>).</p>
+<pre><code class="language-ts">// apps/riptide-daemon/src/subscriptions.ts:366-391
+	const program = superviseDaemonSubscriptionConsumer((markHealthy) =&gt;
+		Effect.gen(function* () {
+			const collections = yield* DaemonCollections
+			const sessions = collections.sessionChanges.pipe(
+				Stream.mapEffect((change) =&gt; processSessionChange(change, services, lifecycle)),
+				Stream.tap(() =&gt; markHealthy),
+				Stream.runDrain,
+			)
+			const tasks = collections.taskChanges.pipe(
+				Stream.mapEffect((change) =&gt; processTaskChange(change, services, lifecycle)),
+				Stream.tap(() =&gt; markHealthy),
+				Stream.runDrain,
+			)
+			const workspaceLaunches = collections.workspaceSetupSessions.pipe(
+				Stream.mapEffect((row) =&gt; processWorkspaceSessionChange(row, services)),
+				Stream.tap(() =&gt; markHealthy),
+				Stream.runDrain,
+			)
+			// Both generations recover through initial-state replay and subsequent synced changes.
+			// Task changes revisit waiting sessions when the task arrives after the session.
+			yield* Effect.all([sessions, tasks, workspaceLaunches], {
+				concurrency: &#x27;unbounded&#x27;,
+				discard: true,
+			})
+		}).pipe(Effect.withSpan(&#x27;daemon_subscriptions.run_once&#x27;)),
+	)
+</code></pre>
+<p>If any one of the three streams stops, the supervisor restarts the whole group. The delay doubles from 1 second and is capped at 30 seconds: <code>Math.min(1_000 <em> 2 </em>* attempt, 30_000)</code> (<code>apps/riptide-daemon/src/subscriptions.ts:327</code>).</p>
+<p>A successful change resets the attempt counter, because each stream calls <code>markHealthy</code> after it processes a change (<code>apps/riptide-daemon/src/subscriptions.ts:361-372</code>). A stream that fails before it handles one change keeps its delay, and the supervisor restarts the whole group.</p>
+<p>A failed change is isolated: the error is logged and reported, and the stream continues (<code>apps/riptide-daemon/src/subscriptions.ts:203-205</code>). The block comment states the recovery guarantee for both daemon generations: initial-state replay plus later synced changes.</p>
+<p>The Electric client has its own retry ladder, separate from the supervisor. <code>DEFAULT_BACKOFF_OPTIONS</code> sets an initial delay of 500 milliseconds, a multiplier of 1.3, a maximum delay of 10 seconds, and an infinite retry count (<code>apps/riptide-daemon/src/collections/types.ts:56-61</code>).</p>
+<p><strong>Aha:</strong> There are two backoff ladders, and they cover different failures. The Electric ladder covers a failed shape request inside a live consumer. The supervisor ladder covers a dead consumer stream. Confusing the two would give a 30-second recovery time for a single dropped request, or a 10-second cap for a stream that is fully down.</p>
+<p>A change that holds the stream for more than 5 seconds produces a head-of-line warning in the log and in Sentry (<code>apps/riptide-daemon/src/subscriptions.ts:42</code> and <code>apps/riptide-daemon/src/subscriptions.ts:211-219</code>). The stream is ordered, so one slow change delays every later change for that stream.</p>
+<h2>The durable stream producer</h2>
+<p>Conversation events also travel on an optional durable stream per session, an append-only log that live viewers follow. <code>createSessionStreamUrl</code> removes a trailing slash from the sync origin, then appends <code>/streams/sessions/${sessionId}</code> (<code>apps/riptide-daemon/src/effects/services/stream-producer/durable-stream-writer.ts:64-65</code>).</p>
+<p>The writer calls <code>ensureConversationStream</code> first, with a 3-second timeout. If it fails, the writer returns a no-op writer with empty <code>append</code> and <code>flush</code> functions (<code>apps/riptide-daemon/src/effects/services/stream-producer/durable-stream-writer.ts:93-110</code>). Streaming is optional: callers still persist events through oRPC, but live viewers lose the push path for that run.</p>
+<p>The producer itself is an <code>IdempotentProducer</code> with a per-run identifier, epoch 0, one in-flight batch, and a 50-millisecond linger.</p>
+<pre><code class="language-ts">// apps/riptide-daemon/src/effects/services/stream-producer/durable-stream-writer.ts:125-142
+			const producerId = `riptide-daemon:${input.sessionId}:${uuidv7()}`
+			// SDK adapter: cancellation belongs to the producer lifetime, not one Effect
+			// promise wait. Abort explicitly between the graceful drain and SDK detach.
+			// oxlint-disable-next-line effecttsgo/abort-controller-in-effect
+			const producerAbort = new AbortController()
+			const producer = new IdempotentProducer(stream, producerId, {
+				epoch: 0,
+				maxInFlight: 1,
+				lingerMs: 50,
+				signal: producerAbort.signal,
+				fetch: Object.assign(
+					async (...args: Parameters&lt;typeof fetch&gt;) =&gt; {
+						// The SDK can dequeue another batch after an aborted request settles.
+						producerAbort.signal.throwIfAborted()
+						return durableStreamFetch.fetch(...args)
+					},
+					{ preconnect: durableStreamFetch.fetch.preconnect },
+				),
+</code></pre>
+<p><code>maxInFlight: 1</code> keeps the append order strict. With two batches in flight, a retried batch could land after a later batch and reorder the conversation. The 50-millisecond linger makes a burst of small deltas into one request. The identifier is unique per run, and the epoch lets the server fence an older producer.</p>
+<p>The append path checks one invariant before it enqueues: the event's <code>session_id</code> must match the destination stream. A mismatch is logged and dropped, not thrown (<code>apps/riptide-daemon/src/effects/services/stream-producer/durable-stream-writer.ts:321-335</code>). One session cannot pollute another session's stream.</p>
+<p>Stream loss is handled by a stream-producer supervisor, not by the producer. A 404 increments a streak. The planner returns one of four actions (<code>apps/riptide-daemon/src/effects/services/stream-producer/stream-producer-recovery.ts:11-19</code>, <code>:53-59</code>):</p>
+<table><tr><th>Action</th><th>Condition</th><th>Effect</th></tr><tr><td><code>reset</code></td><td>The offset advanced despite the 404</td><td>Adopt the advanced offset and clear the streak, attempt, and backoff counters</td></tr><tr><td><code>wait</code></td><td>Fewer than three 404s, or a heal is running or in backoff</td><td>Send nothing on this tick</td></tr><tr><td><code>heal</code></td><td>Three or more 404s and fewer than five failed attempts</td><td>Re-run the ensure call with jittered backoff</td></tr><tr><td><code>halt</code></td><td>Five failed heal attempts</td><td>Set the halted flag and report to Sentry</td></tr></table>
+<p>A heal uses jittered backoff from 500 milliseconds to 10 seconds, and the supervisor ticks once per second (<code>apps/riptide-daemon/src/effects/services/stream-producer/stream-producer-recovery.ts:21-30</code>). A halt sets the halted flag and reports the condition to Sentry. Later appends return without sending (<code>apps/riptide-daemon/src/effects/services/stream-producer/durable-stream-writer.ts:179-190</code>, <code>:337-338</code>). The supervisor aborts the producer when a heal attempt fails, and the finalizer aborts it at the end (<code>:205-208</code>, <code>:305</code>).</p>
+<p>Shutdown uses the writer's finalizer. The flush is limited to 2 seconds, and the detach is limited to 1 second. A flush timeout reports a classification: <code>slow_drain</code> when the offset moved, <code>stalled</code> when it did not (<code>apps/riptide-daemon/src/effects/services/stream-producer/durable-stream-writer.ts:244-264</code>). Detach asks the stream server to release the producer (<code>apps/riptide-daemon/src/effects/services/stream-producer/durable-stream-writer.ts:273-278</code>). The classification tells an operator whether the network was slow or the producer was stuck.</p>
+<h2>Timers and limits</h2>
+<table><tr><th>Timer or limit</th><th>Value</th><th>Where</th><th>Effect</th></tr><tr><td>Heartbeat interval</td><td>15 seconds</td><td><code>apps/riptide-daemon/src/lib/heartbeat.ts:16</code></td><td>Steady-state liveness</td></tr><tr><td>Heartbeat request timeout</td><td>10 seconds</td><td><code>apps/riptide-daemon/src/lib/heartbeat.ts:18</code></td><td>Abort a half-open connection</td></tr><tr><td>Registration retry interval</td><td>5 seconds</td><td><code>apps/riptide-daemon/src/lib/heartbeat.ts:19</code></td><td>Space between first-beat attempts</td></tr><tr><td>Registration retries</td><td>24 retries, 25 attempts</td><td><code>apps/riptide-daemon/src/lib/heartbeat.ts:20</code></td><td>120 seconds of spacing, plus per-attempt timeouts</td></tr><tr><td>Host stale threshold</td><td>120,000 milliseconds</td><td><code>apps/stale-daemon-sweeper/stale-daemons.ts:7</code></td><td>Sweep fails active sessions</td></tr><tr><td>Graceful shutdown deadline</td><td>5,000 milliseconds</td><td><code>apps/riptide-daemon/src/lifecycle/shutdown-deadline.ts:1</code></td><td>Forced exit</td></tr><tr><td>Shutdown notification timeout</td><td>2,000 milliseconds</td><td><code>apps/riptide-daemon/src/lifecycle/graceful-shutdown.ts:13</code></td><td>Bounds the last API call</td></tr><tr><td>oRPC retries</td><td>5 retries, 6 attempts</td><td><code>apps/riptide-daemon/src/orpc/client.ts:14</code></td><td>Retry budget per call</td></tr><tr><td>oRPC retry delay</td><td>2 seconds</td><td><code>apps/riptide-daemon/src/orpc/client.ts:93</code></td><td>Fixed, not exponential</td></tr><tr><td>Electric backoff maximum</td><td>10 seconds</td><td><code>apps/riptide-daemon/src/collections/types.ts:58</code></td><td>Per-shape-request retry</td></tr><tr><td>Subscription restart cap</td><td>30 seconds</td><td><code>apps/riptide-daemon/src/subscriptions.ts:327</code></td><td>Whole-consumer restart</td></tr><tr><td>Session change warning</td><td>5 seconds</td><td><code>apps/riptide-daemon/src/subscriptions.ts:42</code></td><td>Head-of-line report</td></tr><tr><td>Workspace recheck</td><td>2 seconds</td><td><code>apps/riptide-daemon/src/effects/services/workspace-session-launch/workspace-session-launch-actors.layer.ts:80</code></td><td>Default poll</td></tr><tr><td>Workspace failure ceiling</td><td>30 seconds</td><td><code>apps/riptide-daemon/src/effects/services/workspace-session-launch/workspace-session-launch-actors.layer.ts:83</code></td><td>Maximum recheck delay, not a deadline</td></tr><tr><td>Stream ensure timeout</td><td>3 seconds</td><td><code>apps/riptide-daemon/src/effects/services/stream-producer/durable-stream-writer.ts:93</code></td><td>Fall back to no-op writer</td></tr><tr><td>Stream flush timeout</td><td>2 seconds</td><td><code>apps/riptide-daemon/src/effects/services/stream-producer/durable-stream-writer.ts:244</code></td><td>Bound the finalizer</td></tr><tr><td>Stream detach timeout</td><td>1 second</td><td><code>apps/riptide-daemon/src/effects/services/stream-producer/durable-stream-writer.ts:274</code></td><td>Bound the finalizer</td></tr></table>
+<div class="mermaid">
+flowchart TB
+    subgraph Host[&quot;User machine&quot;]
+        ENTRY[&quot;daemon.ts&quot;] --&gt; MS[&quot;managed start&quot;]
+        MS --&gt; START[&quot;start.ts&quot;]
+        START --&gt; HB[&quot;heartbeat&quot;]
+        START --&gt; COL[&quot;5 Electric collections&quot;]
+        START --&gt; EXEC[&quot;executors: claude, codelayer, fold&quot;]
+        START --&gt; WSA[&quot;workspace actors&quot;]
+        START --&gt; WSR[&quot;durable stream writer&quot;]
+        START --&gt; UPD[&quot;self-update&quot;]
+        START --&gt; LIFE[&quot;graceful shutdown&quot;]
+        START -- &quot;after first beat&quot; --&gt; SUBS[&quot;subscription supervisor&quot;]
+        COL --&gt; SUBS
+        SUBS --&gt; EXEC
+        SUBS --&gt; WSA
+    end
+    subgraph Server[&quot;Server&quot;]
+        API[&quot;API /rpc/daemon/v1&quot;]
+        ELEC[&quot;Electric proxy&quot;]
+        SWEEP[&quot;stale-daemon sweeper&quot;]
+        STREAM[&quot;durable stream server&quot;]
+        DB[(&quot;PostgreSQL&quot;)]
+    end
+    HB -- &quot;beat and last_seen&quot; --&gt; API
+    EXEC -- &quot;events and status&quot; --&gt; API
+    WSA -- &quot;readiness&quot; --&gt; API
+    UPD -- &quot;progress&quot; --&gt; API
+    LIFE -- &quot;hosts.shutdown&quot; --&gt; API
+    COL -- &quot;shapes&quot; --&gt; ELEC
+    ELEC --&gt; DB
+    API --&gt; DB
+    SWEEP -- &quot;reads last_seen&quot; --&gt; DB
+    WSR --&gt; STREAM
+
+</div>
+<h2>What this design costs</h2>
+<p>Three costs are real.</p>
+<p>First, the daemon depends on outbound connectivity for liveness. A machine that is online but cannot reach the API looks like a machine that is off. The user sees a failed session after the sweep, not a connection error.</p>
+<p>Second, the write path is retried, but it is not transactional with the read path. The daemon can read a row, write a status, and crash before the row arrives back through Electric. Idempotency keys keep that safe, as <a href="09-write-paths-and-idempotency.html">write paths and idempotency</a> explains.</p>
+<p>Third, the timers are coupled. The 15-second beat and the 120-second threshold leave room for eight missed beats, and the 24 registration retries can consume the whole stale window.</p>
+<p>For the process-level view, read <a href="01-repository-map.html">the repository map</a>. For the sync plane, read <a href="05-sync-engine.html">the sync engine</a> and <a href="06-electric-proxy.html">the Electric proxy</a>. For the client contract, read <a href="07-api-and-contracts.html">the API and the contracts</a>.</p>
+<h2>Next</h2>
+<p>The daemon turns a row into a run. The next document follows that row through all thirteen statuses, and shows the launch path step by step. Read <a href="03-session-lifecycle-and-state-machine.html">the session lifecycle and state machine</a>.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
