@@ -48,7 +48,7 @@ nested projects. The table fills in the order given in the spec.
 | Package | Start here |
 |---------|------------|
 | [open-design](open-design/html/README.html) | [Overview](open-design/html/00-overview.html), then [core mechanism](open-design/html/02-core-mechanism.html) |
-| [src.leonnix](src.leonnix/html/README.html) | In progress: 5 of 19 projects. Start with [tastecode](src.leonnix/tastecode/html/README.html), [taste-skill](src.leonnix/taste-skill/html/README.html), [cinetic](src.leonnix/cinetic/html/README.html), [valle-morta](src.leonnix/valle-morta/html/README.html) or [afterglow](src.leonnix/afterglow/html/README.html) |
+| [src.leonnix](src.leonnix/html/README.html) | In progress: 6 of 19 projects. Start with [tastecode](src.leonnix/tastecode/html/README.html), [taste-skill](src.leonnix/taste-skill/html/README.html), [cinetic](src.leonnix/cinetic/html/README.html), [valle-morta](src.leonnix/valle-morta/html/README.html), [afterglow](src.leonnix/afterglow/html/README.html) or [earshot](src.leonnix/earshot/html/README.html) |
 
 ## Reading order
 

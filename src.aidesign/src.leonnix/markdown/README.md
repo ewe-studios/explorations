@@ -78,7 +78,7 @@ tree of six documents. The **Start here** column fills as each project is publis
 | cinetic | Agent skills | 964 | f4bbfc8 | [Start here](../cinetic/html/README.html) |
 | valle-morta | Real-time worlds | 524 | 64471ca | [Start here](../valle-morta/html/README.html) |
 | afterglow | Offline films | 351 | ced1038 | [Start here](../afterglow/html/README.html) |
-| earshot | Tooling | 287 | 4ac3d2a | Planned |
+| earshot | Tooling | 287 | 4ac3d2a | [Start here](../earshot/html/README.html) |
 | unsung-vale | Real-time worlds | 239 | 9f61b0d | Planned |
 | athenaion | Real-time worlds | 220 | 9b8bd23 | Planned |
 | casa-ocaso | Real-time worlds | 193 | fcc3379 | Planned |
