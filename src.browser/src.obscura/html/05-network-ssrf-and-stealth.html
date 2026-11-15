@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>05 Network, SSRF and stealth: one deny-set and two transports -- src.obscura</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue('--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        toolbar.appendChild(mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); }));
+        toolbar.appendChild(mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); }));
+        toolbar.appendChild(mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); }));
+        toolbar.appendChild(mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); }));
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.obscura/docs</span>
+    <div class="nav-actions">
+      <a href="02-dom-and-html.html" class="nav-breadcrumb">02 DOM and HTML: an arena with integer handles</a><a href="03-javascript-runtime.html" class="nav-breadcrumb">03 JavaScript runtime: a snapshot, an op table and no reachable bridge</a><a href="04-browser-page-lifecycle.html" class="nav-breadcrumb">04 Browser and page lifecycle: four clocks and one state machine</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="04-browser-page-lifecycle.html" class="nav-btn" title="Previous: 04 Browser and page lifecycle: four clocks and one state machine">← prev</a>
+      <a href="06-cdp-server.html" class="nav-btn nav-btn-next" title="Next: 06 CDP server: a local control socket that assumes a hostile browser">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>05 Network, SSRF and stealth: one deny-set and two transports</h1>
+<p>Every outbound request in Obscura passes the same Server-Side Request Forgery (SSRF) policy. The policy lives in a crate with no dependencies, and it answers one question: may this Internet Protocol (IP) address receive a request from the engine? A host name check is not enough, because a name can resolve to a private address. The engine therefore checks the address twice: once against the literal host and once inside the Domain Name System (DNS) resolver, using the very addresses the client will dial. The thesis of this document is that the network layer is built around one shared deny-set and two transports. The plain transport uses <code>reqwest</code>. The stealth transport uses <code>wreq</code> with a Chrome fingerprint. Both transports call the same guard, so a better Transport Layer Security (TLS) fingerprint never buys a weaker policy.</p>
+<p>This document covers the deny-set, the two checks, the manual redirect loop, the body limits, cookies, robots rules, the stealth identity, and the operator hint. Document <a href="04-browser-page-lifecycle.html">04</a> explains how navigation uses the client. Document <a href="07-rendering-and-output.html">07</a> explains the image and font loader that uses the same guard.</p>
+<h2>The problem</h2>
+<p>An engine that fetches arbitrary addresses on behalf of a user has five requirements.</p>
+<ol><li><strong>A page must not reach the host's private network.</strong> The engine often runs on a server with a metadata endpoint, a database, and an administrative interface.</li><li><strong>A public name must not become private later.</strong> A name that resolves to a public address at check time can resolve to a private address at connect time.</li><li><strong>Every request path must obey the same rule.</strong> Navigation, script, stylesheet, image, font, <code>fetch</code>, and <code>XMLHttpRequest</code> all reach the network.</li><li><strong>A redirect must not bypass the rule.</strong> A public server can redirect to a private address.</li><li><strong>A response must not exhaust memory.</strong> A large body from any address can end the process.</li></ol>
+<p>The design answers each item with one mechanism.</p>
+<table><tr><th>Requirement</th><th>Mechanism</th></tr><tr><td>No private-network reach</td><td>One deny-set in <code>obscura-ssrf</code></td></tr><tr><td>No rebinding</td><td>A DNS resolver that checks the addresses it returns</td></tr><tr><td>One rule for every path</td><td>Both transports install the same resolver and call <code>validate_url</code></td></tr><tr><td>No redirect bypass</td><td>Manual redirect loop that revalidates every hop</td></tr><tr><td>No memory exhaustion</td><td>A per-request body cap with a streaming check</td></tr></table>
+<div class="mermaid">
+flowchart TB
+    subgraph JS[&quot;Page script&quot;]
+        F[&quot;fetch / XHR / img / script / font&quot;]
+    end
+    subgraph Net[&quot;obscura-net&quot;]
+        V[&quot;validate_url&lt;br/&gt;scheme, literal host&quot;]
+        C{&quot;Transport&quot;}
+        R[&quot;reqwest client&lt;br/&gt;SSRF resolver&quot;]
+        W[&quot;wreq client&lt;br/&gt;Chrome 145 profile&lt;br/&gt;SSRF resolver&quot;]
+        L[&quot;Redirect loop&lt;br/&gt;revalidate each hop&quot;]
+        B[&quot;Body cap&lt;br/&gt;Content-Length and stream&quot;]
+    end
+    S[&quot;obscura-ssrf&lt;br/&gt;is_forbidden_ip&quot;]
+    F --&gt; V
+    V --&gt; C
+    C --&gt;|plain| R
+    C --&gt;|stealth| W
+    R --&gt; L
+    W --&gt; L
+    L --&gt; B
+    V --&gt; S
+    R --&gt; S
+    W --&gt; S
+
+</div>
+<h2>One deny-set, three consumers</h2>
+<p>The policy crate is deliberately empty of dependencies:</p>
+<pre><code class="language-rust">// crates/obscura-ssrf/src/lib.rs:1-8
+//! The SSRF policy every Obscura transport shares: which IP addresses an
+//! outbound request may never reach, and the process-wide env opt-in that
+//! lifts the restriction for local testing.
+//!
+//! This crate has no dependencies on purpose. `obscura-net` (reqwest and wreq
+//! transports) and `obscura-render` (the synchronous compatibility loader for
+//! images and fonts) both enforce the same deny-set from here, so the checks
+//! can never disagree.
+</code></pre>
+<p>Three consumers use it: the plain client, the stealth client, and the renderer's synchronous resource loader. The comment gives the reason: two copies of a deny-set drift, and the copy that drifts is always the one that is not on the tested path.</p>
+<p>The deny-set covers more than <code>std</code>'s own predicates:</p>
+<pre><code class="language-rust">// crates/obscura-ssrf/src/lib.rs:35-56
+pub fn is_forbidden_ip(ip: IpAddr) -&gt; bool {
+    match ip {
+        IpAddr::V4(v4) =&gt; {
+            let o = v4.octets();
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.is_unspecified()
+                || v4.is_multicast()
+                || o[0] == 0
+                // std&#x27;s is_private() covers only RFC1918, so add the IANA
+                // special-purpose ranges that also host internal services and
+                // are common SSRF targets:
+                //   100.64.0.0/10  CGNAT / RFC6598 — cloud metadata (e.g.
+                //                  Alibaba 100.100.100.200) lives here.
+                //   198.18.0.0/15  benchmarking / RFC2544.
+                //   192.88.99.0/24 6to4 relay anycast / RFC7526.
+                || (o[0] == 100 &amp;&amp; (64..=127).contains(&amp;o[1]))
+                || (o[0] == 198 &amp;&amp; (o[1] == 18 || o[1] == 19))
+                || (o[0] == 192 &amp;&amp; o[1] == 88 &amp;&amp; o[2] == 99)
+</code></pre>
+<p>Each added range has a reason in the comment. The carrier-grade network address translation range matters because Alibaba Cloud places its instance metadata endpoint at <code>100.100.100.200</code>, which <code>is_private</code> does not cover. The engineering range matters because a test fleet uses it. The deny-set is a list of observed attack surfaces, not a copy of one language's classification.</p>
+<p>IPv6 needs the same care, because an IPv4 address can hide inside it:</p>
+<pre><code class="language-rust">// crates/obscura-ssrf/src/lib.rs:78-83
+            // Unwrap IPv4-mapped (::ffff:a.b.c.d) and IPv4-compatible (::a.b.c.d)
+            // forms and re-check the embedded v4 so e.g. [::ffff:127.0.0.1] or
+            // [::ffff:169.254.169.254] cannot slip past the v6 arm.
+            if let Some(v4) = v6.to_ipv4_mapped().or_else(|| v6.to_ipv4()) {
+                return is_forbidden_ip(IpAddr::V4(v4));
+            }
+</code></pre>
+<p>The same function also unwraps the network address translation prefix from RFC 6052, the 6to4 prefix, and Teredo. Each form carries an IPv4 address at a different bit offset, and each one is re-checked against the IPv4 arm.</p>
+<h2>The two checks</h2>
+<p>The first check is a literal host check on the Uniform Resource Locator (URL):</p>
+<pre><code class="language-rust">// crates/obscura-net/src/client.rs:675-692
+            // Octal, hex, decimal and overlong IPv4 spellings (&quot;0x7f000001&quot;,
+            // &quot;0177.0.0.1&quot;, &quot;2130706433&quot;) never reach this arm: for the http
+            // and https schemes the url crate normalizes them to Host::Ipv4,
+            // which is checked above. This arm is a belt-and-braces check on
+            // names, and the resolver re-checks whatever the name resolves to.
+            url::Host::Domain(domain) =&gt; {
+                let lower_domain = domain.to_lowercase();
+                if lower_domain == &quot;localhost&quot;
+                    || lower_domain.ends_with(&quot;.localhost&quot;)
+                    || lower_domain == &quot;127.0.0.1&quot;
+                    || lower_domain == &quot;::1&quot;
+                {
+                    return Err(ObscuraNetError::Network(format!(
+                        &quot;Access to localhost domain &#x27;{}&#x27; is not allowed&quot;,
+                        domain
+                    )));
+                }
+            }
+</code></pre>
+<p>The comment names an invariant of the URL library: it normalizes octal, hexadecimal, decimal, and overlong IPv4 spellings into <code>Host::Ipv4</code>. The literal check therefore cannot be fooled by <code>http://2130706433/</code>, because the parser has already produced <code>127.0.0.1</code>.</p>
+<p>The second check is in the resolver:</p>
+<pre><code class="language-rust">// crates/obscura-net/src/client.rs:597-610
+/// DNS resolver that performs the lookup and then rejects the whole request if
+/// ANY resolved address is in the SSRF deny-set. This closes the DNS-rebinding
+/// bypass a host-string check alone cannot: a public name that resolves to
+/// 127.0.0.1 / 169.254.169.254 / an RFC1918 address is blocked at connect time,
+/// using the very addresses the client will dial. When private access is
+/// permitted (`--allow-private-network` or `OBSCURA_ALLOW_PRIVATE_NETWORK`) the
+/// lookup passes through unfiltered.
+///
+/// Implemented for both transports: `reqwest::dns::Resolve` just below, and
+/// `wreq::dns::Resolve` in `wreq_client.rs`, so `--stealth` never trades the
+/// guard away for a better TLS fingerprint.
+pub struct SsrfGuardResolver {
+    pub(crate) allow_private: bool,
+}
+</code></pre>
+<p>The implementation rejects the whole name when any returned address is forbidden:</p>
+<pre><code class="language-rust">// crates/obscura-net/src/client.rs:618-641
+impl Resolve for SsrfGuardResolver {
+    fn resolve(&amp;self, name: Name) -&gt; Resolving {
+        let allow = self.allow_private || env_allows_private_network();
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let addrs: Vec&lt;SocketAddr&gt; = tokio::net::lookup_host((host.as_str(), 0))
+                .await
+                .map_err(|e| -&gt; Box&lt;dyn std::error::Error + Send + Sync&gt; { Box::new(e) })?
+                .collect();
+            if !allow {
+                if let Some(bad) = addrs.iter().find(|sa| is_forbidden_ip(sa.ip())) {
+                    return Err(format!(
+                        &quot;SSRF blocked: &#x27;{}&#x27; resolves to forbidden address {}&quot;,
+                        host,
+                        bad.ip()
+                    )
+                    .into());
+                }
+            }
+            let iter: Addrs = Box::new(addrs.into_iter());
+            Ok(iter)
+        })
+    }
+}
+</code></pre>
+<p>The word <code>ANY</code> is accurate. A name that returns both a public and a private address is rejected, not filtered to the public one. Filtering would create a difference between the set of addresses the checker saw and the set the client dials, which is exactly the gap that a rebinding attack needs.</p>
+<p><strong>Aha:</strong> The guard has to sit at the DNS resolution step, not at the URL check, and it has to reject rather than filter. A URL check sees a name. A resolver sees the addresses that the connection will use. Rejecting the whole name keeps one invariant: every address the client can dial has already passed the check.</p>
+<div class="mermaid">
+flowchart TB
+    U[&quot;URL from the page&quot;] --&gt; P[&quot;Parse and normalize&lt;br/&gt;url crate&quot;]
+    P --&gt; S{&quot;Scheme is http or https?&quot;}
+    S --&gt;|&quot;no&quot;| B1[&quot;Block: scheme&quot;]
+    S --&gt;|&quot;yes&quot;| L{&quot;Literal host forbidden?&quot;}
+    L --&gt;|&quot;localhost, 127.0.0.1, ::1&quot;| B2[&quot;Block: local host&quot;]
+    L --&gt;|&quot;no&quot;| D[&quot;DNS lookup&quot;]
+    D --&gt; A{&quot;Any address forbidden?&quot;}
+    A --&gt;|&quot;yes: reject the whole name&quot;| B3[&quot;Block: SSRF&quot;]
+    A --&gt;|&quot;no&quot;| C[&quot;Connect&quot;]
+    C --&gt; R{&quot;Redirect?&quot;}
+    R --&gt;|&quot;yes: revalidate URL, mode, and origin taint&quot;| U
+    R --&gt;|&quot;no&quot;| OK[&quot;Response body, capped by type&quot;]
+
+</div>
+<p>The loop on the right is the reason the checks cannot live in one place. A redirect produces a new URL, and the client must repeat the scheme check, the literal host check, and the resolver check for the new hop.</p>
+<h2>One client builder, two transports</h2>
+<p>The plain transport builds one client and installs the guard:</p>
+<pre><code class="language-rust">// crates/obscura-net/src/client.rs:1070-1080
+            let mut builder = Client::builder()
+                .redirect(Policy::none())
+                .timeout(self.timeout)
+                .danger_accept_invalid_certs(false)
+                // Read a folded header line (obs-fold) as browsers do instead of
+                // failing the response.
+                .http1_allow_obsolete_multiline_headers_in_responses(true)
+                // SSRF guard: reject hostnames that resolve to a private/loopback IP.
+                .dns_resolver(Arc::new(SsrfGuardResolver::new(self.allow_private_network)))
+;
+</code></pre>
+<p><code>Policy::none()</code> is the first important line. The library does not follow redirects, because the engine follows them itself. The timeout is 30 seconds by default, and certificate verification is never disabled.</p>
+<p>The stealth transport uses a different library with an emulated browser profile:</p>
+<pre><code class="language-rust">// crates/obscura-net/src/wreq_client.rs:215-221
+        let emulation_opts = wreq_util::Emulation::builder()
+            .profile(wreq_util::Profile::Chrome145)
+            .platform(wreq_util::Platform::Windows)
+            .build();
+
+        let mut builder = wreq::Client::builder()
+            .emulation(emulation_opts)
+</code></pre>
+<p>The emulation changes the TLS handshake, the HyperText Transfer Protocol version and headers, and the header order. A site that fingerprints the connection sees a Chrome client, not a Rust client. The guard is installed on this builder too, in the same position, with the same resolver type implemented for the other library's trait.</p>
+<h2>Redirects</h2>
+<p>Every hop passes the gate again:</p>
+<pre><code class="language-rust">// crates/obscura-net/src/client.rs:1406-1413
+        let mut current_url = url.clone();
+        let mut redirects = Vec::new();
+        // Follow up to 20 redirects, matching the Fetch spec and the fetch()/XHR
+        // path in obscura-js. `0..=max_redirects` makes max_redirects+1 requests
+        // (the initial one plus 20 hops), so the 20th redirect is still followed
+        // and only the 21st fails. The old `0..max_redirects` made 20 requests
+        // total and thus followed only 19 (WPT redirect-count: 20 must pass).
+        let max_redirects = 20;
+</code></pre>
+<p>The boundary comment is a Web Platform Tests (WPT) note. The test suite has a case named <code>redirect-count</code>, and it requires that the twentieth redirect is followed. An exclusive range made the client stop one hop early, and the test caught it.</p>
+<p>The hop handling does three checks:</p>
+<pre><code class="language-rust">// crates/obscura-net/src/client.rs:1607-1618
+            if status.is_redirection() {
+                if let Some(location) = resp.headers().get(reqwest::header::LOCATION) {
+                    let location_str = location.to_str().map_err(|_| {
+                        ObscuraNetError::Network(&quot;Invalid redirect Location header&quot;.into())
+                    })?;
+                    let next_url = current_url.join(location_str).map_err(|e| {
+                        ObscuraNetError::Network(format!(&quot;Invalid redirect URL: {}&quot;, e))
+                    })?;
+                    validate_url(&amp;next_url, self.allow_private_network)?;
+                    validate_request_mode(&amp;request, &amp;next_url)?;
+                    redirect_tainted |=
+                        redirect_taints_origin(&amp;request, &amp;current_url, &amp;next_url);
+</code></pre>
+<p>Three checks run before the next request exists. The URL check applies the scheme rule and the literal host rule. The request-mode check applies the Fetch mode, such as <code>same-origin</code>. The taint check records that the chain left its initiator origin, and a tainted chain serializes its <code>Origin</code> header as <code>null</code>.</p>
+<p>A 301, 302, or 303 response turns the request into a <code>GET</code> and drops the body. That is the Fetch rule, and it matters for a form submission that a server redirects to a result page.</p>
+<h2>Body limits</h2>
+<p>A response is bounded before it is read:</p>
+<pre><code class="language-rust">// crates/obscura-net/src/client.rs:793-812
+fn reject_oversized_content_length(
+    headers: &amp;HeaderMap,
+    url: &amp;Url,
+    limit: usize,
+) -&gt; Result&lt;(), ObscuraNetError&gt; {
+    let Some(value) = headers.get(reqwest::header::CONTENT_LENGTH) else {
+        return Ok(());
+    };
+    let Ok(value) = value.to_str() else {
+        return Ok(());
+    };
+    if value
+        .trim()
+        .parse::&lt;u64&gt;()
+        .is_ok_and(|length| length &gt; limit as u64)
+    {
+        return Err(response_too_large(url, limit));
+    }
+    Ok(())
+}
+</code></pre>
+<p>A declared length is a fast rejection, and it is not trusted as the only check. The stream is checked as it arrives:</p>
+<pre><code class="language-rust">// crates/obscura-net/src/client.rs:814-835
+async fn read_reqwest_body_limited(
+    mut response: reqwest::Response,
+    url: &amp;Url,
+    limit: usize,
+) -&gt; Result&lt;Vec&lt;u8&gt;, ObscuraNetError&gt; {
+    reject_oversized_content_length(response.headers(), url, limit)?;
+    let capacity = response
+        .content_length()
+        .and_then(|length| usize::try_from(length).ok())
+        .unwrap_or(0)
+        .min(limit);
+    let mut body = Vec::with_capacity(capacity);
+    while let Some(chunk) = response.chunk().await.map_err(|error| {
+        ObscuraNetError::Network(format!(&quot;Failed to read body: {}&quot;, error_chain(&amp;error)))
+    })? {
+        if chunk.len() &gt; limit.saturating_sub(body.len()) {
+            return Err(response_too_large(url, limit));
+        }
+        body.extend_from_slice(&amp;chunk);
+    }
+    Ok(body)
+}
+</code></pre>
+<p>A missing or false <code>Content-Length</code> header therefore cannot exceed the limit. The allocation is capped at the limit, so a declared 4 GiB body does not reserve 4 GiB.</p>
+<p>The limit depends on the resource type:</p>
+<pre><code class="language-rust">// crates/obscura-net/src/client.rs:245-252
+            max_response_bytes: match resource_type {
+                ResourceType::Stylesheet | ResourceType::Font =&gt; 16 * 1024 * 1024,
+                ResourceType::Script | ResourceType::Other =&gt; 32 * 1024 * 1024,
+                ResourceType::Document
+                | ResourceType::Image
+                | ResourceType::Xhr
+                | ResourceType::Fetch =&gt; 64 * 1024 * 1024,
+            },
+</code></pre>
+<p>A stylesheet and a font are capped at 16 MiB, a script at 32 MiB, and a document, image, or <code>fetch</code> response at 64 MiB. A module script takes its cap from <code>OBSCURA_FETCH_MAX_BODY_BYTES</code>, because a large single-page application bundle that exceeds 32 MiB would otherwise fail to load while the same bytes load through <code>fetch</code>.</p>
+<h2>Cookies</h2>
+<p>The jar is keyed by domain, then by name and path:</p>
+<pre><code class="language-rust">// crates/obscura-net/src/cookies.rs:27-33
+pub struct CookieJar {
+    /// domain -&gt; (name, path) -&gt; entry. RFC 6265 §5.3 identifies a cookie by
+    /// (name, domain, path); the outer map scopes by domain and the inner key
+    /// carries name+path so same-name cookies on different paths coexist
+    /// instead of clobbering each other.
+    cookies: RwLock&lt;HashMap&lt;String, HashMap&lt;(String, String), CookieEntry&gt;&gt;&gt;,
+}
+</code></pre>
+<p>The nested map follows RFC 6265. A site commonly sets two cookies with the same name at different paths, and a flat map keyed by name would lose one.</p>
+<p>A stored cookie also remembers whether it is host-only:</p>
+<pre><code class="language-rust">// crates/obscura-net/src/cookies.rs:49-53
+    /// Cookies set without a Domain attribute are host-only: sent to the exact
+    /// origin host and never to subdomains. `serde(default)` keeps persisted
+    /// cookie files from before this field existed loadable.
+    #[serde(default)]
+    host_only: bool,
+</code></pre>
+<p>The <code>serde</code> default is a migration rule. An old cookie file has no such field, and the default value keeps the file readable instead of discarding every saved cookie.</p>
+<p>Domain matching follows the case-insensitive rule, and <code>canonical_domain</code> removes a leading dot before a lookup. <code>SameSite</code> values are normalized to title case, and an unknown value becomes <code>Lax</code>, which is the stricter of the common defaults.</p>
+<h2>Robots rules</h2>
+<p>Robots support is opt-in per context, and the cache is bounded:</p>
+<pre><code class="language-rust">// crates/obscura-net/src/robots.rs:4-8
+/// Origins whose robots.txt rules are kept per context; past this the oldest is
+/// evicted and refetched if visited again.
+const MAX_ROBOTS_ENTRIES: usize = 4096;
+/// Bytes of a robots.txt body that are parsed (Google&#x27;s documented limit).
+const MAX_ROBOTS_BODY_BYTES: usize = 500 * 1024;
+</code></pre>
+<p>The byte limit is Google's documented parse limit, so the engine reads the same part of the file that the largest crawler reads. The cache holds 4096 origins in insertion order and evicts the oldest. The allow rule wins over the deny rule, which matches the common reading of the standard.</p>
+<p>A blocked navigation sets <code>LifecycleState::Failed</code> and returns an error that names the file:</p>
+<pre><code class="language-text">Blocked by robots.txt: &lt;url&gt;
+</code></pre>
+<h2>Stealth</h2>
+<p>The stealth transport is a second library, not a second policy. Three constants tie the JavaScript identity to the transport identity:</p>
+<pre><code class="language-rust">// crates/obscura-net/src/wreq_client.rs:64-73
+// The wreq emulation (Profile::Chrome145, Platform::Windows) sends this exact
+// UA and sec-ch-ua-platform &quot;Windows&quot; on the wire. navigator has to report the
+// same identity, otherwise the TLS/HTTP layer and the JS layer disagree and a
+// site cross-checks the mismatch as a bot signal.
+#[cfg(feature = &quot;stealth&quot;)]
+pub const STEALTH_NAVIGATOR_PLATFORM: &amp;str = &quot;Win32&quot;;
+#[cfg(feature = &quot;stealth&quot;)]
+pub const STEALTH_UA_PLATFORM: &amp;str = &quot;Windows&quot;;
+#[cfg(feature = &quot;stealth&quot;)]
+pub const STEALTH_UA_PLATFORM_VERSION: &amp;str = &quot;15.0.0&quot;;
+</code></pre>
+<p>The transport sends a Chrome user agent and a <code>sec-ch-ua-platform</code> header. The page reads <code>navigator.platform</code>, <code>navigator.userAgentData.platform</code>, and the platform version. A site can compare both layers, so the constants must agree with the emulated profile.</p>
+<p><strong>Aha:</strong> Stealth is an identity-consistency problem, not a header problem. The engine has four places where a site can observe its identity: the TLS handshake, the HyperText Transfer Protocol headers, <code>navigator</code> values, and the page's own script environment. A change to one place is a signal unless the other three change with it. That is why the stealth flag selects one profile and passes the matching constants to the page, and why profile rotation is opt-in.</p>
+<p>The certificate store takes special care:</p>
+<pre><code class="language-rust">// crates/obscura-net/src/wreq_client.rs:247-257
+        // Two deliberate constraints:
+        //
+        // 1. `tls_cert_store` is used, NOT `tls_options`. `emulation()` overwrites `tls_options`
+        //    wholesale (&quot;This will overwrite the existing configuration&quot;), so setting TLS options
+        //    here would silently discard the Chrome fingerprint — the whole point of this client.
+        //    `tls_cert_store` is a separate field on the config and composes with emulation.
+        //
+        // 2. Opt-in only. Supplying a store REPLACES the webpki roots (see `set_cert_store` in
+        //    `tls/conn/ext.rs`), it does not add to them. Applying it unconditionally would break
+        //    every ordinary site whenever the bundle is incomplete. With neither variable set,
+        //    behaviour is byte-for-byte what it was before.
+</code></pre>
+<p>Two rules follow. A custom certificate store must use a field that composes with the emulation, because the obvious field overwrites the fingerprint. A custom store must be opt-in, because it replaces the default roots instead of extending them.</p>
+<p>The tracker blocklist is a static domain set:</p>
+<pre><code class="language-rust">// crates/obscura-net/src/blocklist.rs:5-16
+const PGL_LIST: &amp;str = include_str!(&quot;pgl_domains.txt&quot;);
+
+fn blocklist() -&gt; &amp;&#x27;static HashSet&lt;&amp;&#x27;static str&gt; {
+    static BLOCKLIST: OnceLock&lt;HashSet&lt;&amp;str&gt;&gt; = OnceLock::new();
+    BLOCKLIST.get_or_init(|| {
+        let mut set = HashSet::with_capacity(4000);
+        for line in PGL_LIST.lines() {
+            let domain = line.trim();
+            if !domain.is_empty() &amp;&amp; !domain.starts_with(&#x27;#&#x27;) {
+                set.insert(domain);
+            }
+        }
+</code></pre>
+<p>The match walks parent domains:</p>
+<pre><code class="language-rust">// crates/obscura-net/src/blocklist.rs:24-40
+pub fn is_blocked(host: &amp;str) -&gt; bool {
+    let bl = blocklist();
+
+    if bl.contains(host) {
+        return true;
+    }
+
+    let mut domain = host;
+    while let Some(pos) = domain.find(&#x27;.&#x27;) {
+        domain = &amp;domain[pos + 1..];
+        if bl.contains(domain) {
+            return true;
+        }
+    }
+
+    false
+}
+</code></pre>
+<p>A list entry for <code>doubleclick.net</code> also blocks <code>ads.doubleclick.net</code>, because the loop removes one label at a time. The list is compiled into the binary and parsed once into a <code>OnceLock</code>.</p>
+<p>Tracker blocking is on by default in stealth mode and off otherwise. <code>OBSCURA_BLOCK_TRACKERS=0</code> turns it off, and the parser accepts <code>0</code>, <code>false</code>, <code>no</code>, and <code>off</code>.</p>
+<h2>The operator hint</h2>
+<p>A denied local address gets a hint, and a denied metadata address does not:</p>
+<pre><code class="language-rust">// crates/obscura-net/src/operator_hint.rs:5-10
+/// Hint for an operator-facing error, not a policy change. CLI and stdio MCP
+/// opt into presenting it; remote transports should keep the original error.
+/// Inspect the actual denied host, not the initial navigation URL, since a
+/// redirect can lead elsewhere. Metadata and other special-purpose ranges
+/// deliberately receive no opt-out suggestion.
+pub fn private_network_error_hint(mut error: &amp;str) -&gt; Option&lt;&amp;&#x27;static str&gt; {
+</code></pre>
+<p>The hint tells an operator that <code>--allow-private-network</code> exists. The function offers that hint only for loopback, private, and unique-local addresses. A metadata endpoint such as <code>169.254.169.254</code>, <code>100.100.100.200</code>, or <code>fd00:ec2::254</code> gets no suggestion, because the engine will not coach an operator into opening the one address that holds cloud credentials.</p>
+<p>The function also strips repeated <code>Network error: </code> prefixes. A page fetch can wrap a navigation error, and a client should not see the prefix chain instead of the cause.</p>
+<h2>Limits</h2>
+<table><tr><th>Limit</th><th>Value</th><th>Where</th></tr><tr><td>Request timeout</td><td>30 seconds</td><td>Client builder</td></tr><tr><td>Redirects</td><td>20 hops</td><td>Redirect loop</td></tr><tr><td>Document body</td><td>64 MiB</td><td><code>ResourceRequest::navigation</code></td></tr><tr><td>Script body</td><td>32 MiB</td><td><code>ResourceRequest::subresource</code></td></tr><tr><td>Stylesheet or font body</td><td>16 MiB</td><td><code>ResourceRequest::subresource</code></td></tr><tr><td>Resource cache</td><td>256 entries and 64 MiB</td><td><code>RESOURCE_CACHE_MAX_ENTRIES</code></td></tr><tr><td>Robots cache</td><td>4096 origins</td><td><code>MAX_ROBOTS_ENTRIES</code></td></tr><tr><td>Robots body parsed</td><td>500 KiB</td><td><code>MAX_ROBOTS_BODY_BYTES</code></td></tr><tr><td>Tracker list</td><td>About 4000 domains</td><td><code>pgl_domains.txt</code></td></tr></table>
+<p>Four limits are not in the table. The deny-set has no opt-out at the page level; only the context flag or the environment variable lifts it. The resolver rejects a name, so a host with one private address and one public address is unreachable. The body limit applies to the decoded bytes, so a compressed response can be smaller on the wire than the limit. The stealth identity is one fixed profile, so a site that expects a different Chrome version sees a mismatch no matter how many other surfaces agree.</p>
+<h2>Related documents</h2>
+<ul><li><a href="01-workspace-and-architecture.html">01 Workspace and architecture</a> explains the feature ladder that turns the stealth transport on.</li><li><a href="04-browser-page-lifecycle.html">04 Browser and page lifecycle</a> explains the navigation path that calls this client.</li><li><a href="07-rendering-and-output.html">07 Rendering and output</a> explains the synchronous loader that shares the deny-set.</li><li><a href="08-mcp-cli-and-operations.html">08 MCP, command line and operations</a> explains the flags that control these policies.</li><li><a href="09-testing-and-limits.html">09 Testing and limits</a> explains the tests for the guard and the redirect boundary.</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>04 Browser and page lifecycle: four clocks and one state machine -- src.obscura</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue('--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        toolbar.appendChild(mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); }));
+        toolbar.appendChild(mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); }));
+        toolbar.appendChild(mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); }));
+        toolbar.appendChild(mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); }));
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.obscura/docs</span>
+    <div class="nav-actions">
+      <a href="01-workspace-and-architecture.html" class="nav-breadcrumb">01 Workspace and architecture: ten crates on one ladder</a><a href="02-dom-and-html.html" class="nav-breadcrumb">02 DOM and HTML: an arena with integer handles</a><a href="03-javascript-runtime.html" class="nav-breadcrumb">03 JavaScript runtime: a snapshot, an op table and no reachable bridge</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="03-javascript-runtime.html" class="nav-btn" title="Previous: 03 JavaScript runtime: a snapshot, an op table and no reachable bridge">← prev</a>
+      <a href="05-network-ssrf-and-stealth.html" class="nav-btn nav-btn-next" title="Next: 05 Network, SSRF and stealth: one deny-set and two transports">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>04 Browser and page lifecycle: four clocks and one state machine</h1>
+<p>A page in Obscura is a <code>Page</code> object that owns a document tree, one JavaScript runtime, and a lifecycle state. Navigation is not one request. It is a pipeline with four independent time limits: a navigation deadline, a script-execution deadline, a network-idle deadline, and a settle window. The thesis of this document is that the lifecycle state is the only part a client can observe. The clocks decide whether the state is reached at all. The code keeps them separate on purpose. A client asks for <code>load</code>, <code>domcontentloaded</code>, or <code>networkidle0</code>, and the server translates that word into a state machine transition and a set of deadlines.</p>
+<p>This document covers the page and context objects, the four clocks, the navigation pipeline, script execution, frame building, tab suspension, and persistent storage. Document <a href="03-javascript-runtime.html">03</a> explains the runtime that a page owns. Document <a href="06-cdp-server.html">06</a> explains the protocol that reads the lifecycle.</p>
+<h2>The problem</h2>
+<p>A headless browser has five lifecycle requirements that conflict with each other.</p>
+<ol><li><strong>A page must be observed at a defined moment.</strong> A client that reads the document tree while it is still parsing sees a different page.</li><li><strong>A page must not run without a limit.</strong> A page can issue a synchronous loop, a redirect chain, or an endless timer.</li><li><strong>A frame belongs to a document.</strong> A frame is not a top-level page, and it must not add a second unbounded budget.</li><li><strong>A tab switch must not lose state.</strong> Chromium keeps a background tab alive, and a client that switches back must find its handles intact.</li><li><strong>Storage must outlive a document.</strong> <code>localStorage</code> belongs to an origin, not to a realm.</li></ol>
+<p>The design answers each item with one mechanism.</p>
+<table><tr><th>Requirement</th><th>Mechanism</th></tr><tr><td>A defined observation point</td><td><code>LifecycleState</code> and <code>WaitUntil</code></td></tr><tr><td>A bounded page</td><td>Four deadlines and a watchdog per phase</td></tr><tr><td>Frames belong to a document</td><td><code>PendingFrameWork</code> queue with a bounded number of rounds</td></tr><tr><td>A tab switch keeps state</td><td><code>suspend_js</code> and <code>resume_js</code> around a retained DOM</td></tr><tr><td>Storage outlives a document</td><td>Storage in <code>BrowserContext</code> and <code>Page</code>, not in the realm</td></tr></table>
+<h2>The two objects</h2>
+<p>A <code>BrowserContext</code> holds what pages share:</p>
+<pre><code class="language-rust">// crates/obscura-browser/src/context.rs:7-23
+pub struct BrowserContext {
+    pub id: String,
+    pub cookie_jar: Arc&lt;CookieJar&gt;,
+    /// `localStorage` backing store, keyed by origin. Owned by the context
+    /// rather than by a V8 realm, so an entry written in one document is still
+    /// there in the next (issue #678).
+    pub local_storage: Arc&lt;OriginStorage&gt;,
+    pub indexed_db: Arc&lt;obscura_js::indexed_db::IndexedDbStorage&gt;,
+    pub http_client: Arc&lt;ObscuraHttpClient&gt;,
+    pub user_agent: String,
+    pub platform: String,
+    pub ua_platform: String,
+    pub ua_platform_version: String,
+    pub proxy_url: Option&lt;String&gt;,
+    pub robots_cache: Arc&lt;RobotsCache&gt;,
+    pub obey_robots: bool,
+    pub stealth: bool,
+</code></pre>
+<p>The context is the profile. Cookies, <code>localStorage</code>, Indexed Database, the HyperText Transfer Protocol client, and the robots cache are shared by every page in it. Two contexts share nothing mutable. <code>isolated_copy</code> gives a second context its own network state, and an incognito copy starts empty.</p>
+<p>A <code>Page</code> holds what belongs to one tab:</p>
+<pre><code class="language-rust">// crates/obscura-browser/src/page.rs:239-251
+pub struct Page {
+    pub id: String,
+    pub frame_id: String,
+    pub url: Option&lt;Url&gt;,
+    pub dom: Option&lt;DomTree&gt;,
+    /// Live child frame realms, in creation order. Declared before `js` on
+    /// purpose: a realm holds a V8 handle into that isolate, and fields drop in
+    /// declaration order, so the frames must go first.
+    pub frames: Vec&lt;FrameRealm&gt;,
+    pub js: Option&lt;ObscuraJsRuntime&gt;,
+    pub lifecycle: LifecycleState,
+    pub http_client: Arc&lt;ObscuraHttpClient&gt;,
+    pub context: Arc&lt;BrowserContext&gt;,
+</code></pre>
+<p>The comment on <code>frames</code> is a safety rule, and it repeats the rule in <a href="03-javascript-runtime.html">03</a> for the runtime struct. Rust drops fields in declaration order. A frame realm holds a V8 handle into the page isolate, so the frames must drop before the isolate does. The order is not stylistic; the reverse order would free a handle after its isolate is gone.</p>
+<p><code>session_storage</code> is the one store on the page rather than on the context:</p>
+<pre><code class="language-rust">// crates/obscura-browser/src/page.rs:252-256
+    /// `sessionStorage` backing store, keyed by origin. Owned by the Page rather
+    /// than by the realm: `init_js` runs on every navigation and on CDP target
+    /// switching, but a session entry must survive both while never leaving the
+    /// tab (issue #678).
+    session_storage: Arc&lt;OriginStorage&gt;,
+</code></pre>
+<p>The three storage lifetimes are therefore distinct. A cookie belongs to the context and to the disk. A <code>localStorage</code> entry belongs to the context and to the origin. A <code>sessionStorage</code> entry belongs to the page and to the origin, and it dies with the tab.</p>
+<h2>The state machine</h2>
+<p>Six states are visible:</p>
+<pre><code class="language-rust">// crates/obscura-browser/src/lifecycle.rs:1-9
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LifecycleState {
+    Idle,
+    Loading,
+    DomContentLoaded,
+    Loaded,
+    NetworkIdle,
+    Failed,
+}
+</code></pre>
+<p>The query words are separate, because a client's word is not a state:</p>
+<pre><code class="language-rust">// crates/obscura-browser/src/lifecycle.rs:25-31
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitUntil {
+    Load,
+    DomContentLoaded,
+    NetworkIdle0,
+    NetworkIdle2,
+}
+</code></pre>
+
+<pre><code class="language-rust">// crates/obscura-browser/src/lifecycle.rs:33-42
+impl WaitUntil {
+    pub fn from_str(s: &amp;str) -&gt; Self {
+        match s {
+            &quot;domcontentloaded&quot; =&gt; WaitUntil::DomContentLoaded,
+            &quot;networkidle0&quot; | &quot;networkIdle&quot; | &quot;networkidle&quot; =&gt; WaitUntil::NetworkIdle0,
+            &quot;networkidle2&quot; =&gt; WaitUntil::NetworkIdle2,
+            _ =&gt; WaitUntil::Load,
+        }
+    }
+}
+</code></pre>
+<p>The parser is total. An unknown word becomes <code>Load</code>, not an error, because the Puppeteer and Playwright clients send their own spellings and a rejected word would fail a client for a cosmetic reason.</p>
+<div class="mermaid">
+stateDiagram-v2
+    [*] --&gt; Idle
+    Idle --&gt; Loading: navigate
+    Loading --&gt; Failed: network, robots or deadline
+    Loading --&gt; DomContentLoaded: document parsed and scripts run
+    DomContentLoaded --&gt; Loaded: wait_until load
+    Loaded --&gt; NetworkIdle: wait_until networkidle
+    DomContentLoaded --&gt; [*]: wait_until domcontentloaded
+    NetworkIdle --&gt; [*]
+    Failed --&gt; [*]
+
+</div>
+<p><code>is_loaded</code> treats <code>Loaded</code> and <code>NetworkIdle</code> as the same answer for a caller that asks whether the page is ready. <code>is_network_idle</code> is strict, because a screenshot after a network-idle wait must not run during <code>Loaded</code>.</p>
+<h2>The four clocks</h2>
+<table><tr><th>Clock</th><th>Default</th><th>Scope</th><th>Override</th></tr><tr><td>Navigation deadline</td><td>30 seconds</td><td>One <code>navigate</code> call, including the whole client-navigation chain</td><td><code>OBSCURA_NAV_TIMEOUT_MS</code> or a page-scoped timeout</td></tr><tr><td>Script-execution deadline</td><td>30 seconds</td><td>The script phase of one document</td><td><code>OBSCURA_SCRIPT_DEADLINE_MS</code></td></tr><tr><td>Script phase watchdog</td><td>Deadline plus 1 second</td><td>Terminates the isolate</td><td>None</td></tr><tr><td>Network-idle deadline</td><td>5 seconds</td><td>The network-idle wait, with a 500 millisecond quiet window</td><td>None</td></tr><tr><td>Settle quiescence window</td><td>150 milliseconds</td><td>The post-load event-loop pass</td><td><code>OBSCURA_STRICT_SETTLE</code></td></tr><tr><td>Frame rounds</td><td>8 rounds of 50 milliseconds</td><td>Attaching frames to a document</td><td>None</td></tr></table>
+<p>The navigation deadline is the outermost one:</p>
+<pre><code class="language-rust">        // Hard ceiling on a single end-to-end navigation. Without this a slow
+        // primary fetch or a runaway settle loop can hold the V8 lock for
+        // arbitrarily long (we&#x27;ve measured 60+ seconds on JS-heavy news
+        // sites), wedging every other in-flight CDP request because the
+        // dispatcher holds the lock across the entire handler. 30 seconds
+        // matches reqwest&#x27;s default per-request timeout — the worst case is
+        // one slow primary GET plus one slow JS-redirect chain step. Override
+        // with `OBSCURA_NAV_TIMEOUT_MS=NN`, or set a page-scoped deadline when
+        // the automation request already has an explicit timeout.
+        let nav_timeout = self.navigation_timeout();
+        let nav_timeout_ms = duration_millis_u64(nav_timeout);
+</code></pre>
+<p>The comment names the second cost that a deadline removes. The central dispatch loop holds a lock on the page across a command, so a navigation that runs for 60 seconds also blocks every other command on that page. The deadline is not only a user-experience rule; it is a concurrency rule.</p>
+<p>The script deadline has a different shape, because a JavaScript deadline cannot rely on a future:</p>
+<pre><code class="language-rust">        // Hard backstop over the WHOLE script-execution phase. Inline scripts
+        // run back-to-back with no await between them, so neither the soft
+        // deadline above (only checked between scripts) nor the per-script guard
+        // can interrupt a page that burns the budget across many synchronous
+        // scripts (the real-world SPA / anti-bot busy-loop hang). This watchdog
+        // terminates the isolate if cumulative synchronous script work overruns.
+        let exec_wd = self
+            .js
+            .as_mut()
+            .map(|js| js.arm_watchdog(std::time::Duration::from_millis(script_deadline_ms + 1000)));
+</code></pre>
+<p>The soft deadline is checked between scripts. A page whose first inline script never returns passes no check, so the hard watchdog is the only thing that ends it. One second of separation lets a script that finishes just at the soft deadline avoid termination.</p>
+<p>The network-idle wait has its own watchdog, armed <code>500</code> milliseconds past the deadline:</p>
+<pre><code class="language-rust">    async fn wait_for_network_idle(&amp;mut self, threshold: u32) {
+        // Same hazard as the post-script settle: a synchronous poll can pin
+        // the thread past the 5s network-idle deadline, so arm a watchdog
+        // that terminates the isolate ~500ms past it.
+        let netidle_wd = self
+            .js
+            .as_mut()
+            .map(|js| js.arm_watchdog(std::time::Duration::from_millis(5500)));
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+</code></pre>
+<p>The same hazard appears three times in the code. A Tokio timeout cancels a future at an <code>await</code> point. It cannot cancel synchronous work. Every phase that can run synchronous page work therefore gets a watchdog, and the watchdog acts on the V8 isolate rather than on the Rust task.</p>
+<p><strong>Aha:</strong> The four clocks are not four variants of "wait for the page". They measure different failure modes. The navigation deadline bounds the network. The script deadline bounds the parser and the page code. The idle deadline bounds a page whose traffic never settles. The settle window bounds asynchronous work after the load event. A design with one clock must set it to the slowest phase, and then a slow network hides a hanging script. Four clocks let each phase fail on its own terms.</p>
+<h2>The navigation pipeline</h2>
+<p>The public entry point is small, and both wait variants share one implementation:</p>
+<pre><code class="language-rust">// crates/obscura-browser/src/page.rs:3017-3020
+    pub async fn navigate(&amp;mut self, url_str: &amp;str) -&gt; Result&lt;(), PageError&gt; {
+        self.navigate_with_wait(url_str, crate::lifecycle::WaitUntil::Load)
+            .await
+    }
+</code></pre>
+<p>The outer function applies the deadline. The inner function applies the client-navigation chain:</p>
+<pre><code class="language-rust">    async fn navigate_with_wait_post_inner(
+        &amp;mut self,
+        url_str: &amp;str,
+        wait_until: crate::lifecycle::WaitUntil,
+        method: &amp;str,
+        body: &amp;str,
+        initial_referrer: &amp;str,
+    ) -&gt; Result&lt;(), PageError&gt; {
+        // file:// is a local file read. Every client route (CLI, CDP&#x27;s
+        // Page.navigate/reload/history and Target.createTarget, the MCP
+        // tools) ends up here, so the context&#x27;s opt-in is enforced once
+        // instead of being copied into each handler, where a route that
+        // missed its copy read local files (#1069).
+        if url_is_file_scheme(url_str) &amp;&amp; !self.context.allow_file_access {
+            return Err(PageError::NetworkError(format!(
+                &quot;file:// navigation is disabled for this browser context: {url_str}&quot;
+            )));
+        }
+</code></pre>
+<p>The file gate is in this function because this function is the single entry point for every route. The comment records the alternative: a copy of the check in each handler, one of which will be forgotten. That bug is issue <code>#1069</code>, and the fix moved the check down to the shared path.</p>
+<p>The chain loop handles page script that navigates during a load:</p>
+<pre><code class="language-rust">// crates/obscura-browser/src/page.rs:3343-3354
+        let chain_limit = self.navigation_chain_limit();
+        for chain in 0..chain_limit {
+            self.navigate_single(
+                &amp;current_url,
+                wait_until,
+                &amp;current_method,
+                &amp;current_body,
+                &amp;document_referrer,
+            )
+            .await?;
+            if let Some((next_url, next_method, next_body)) = self.take_pending_navigation() {
+                if cross_scheme_to_file(&amp;current_url, &amp;next_url) {
+</code></pre>
+<p>The limit is 10 by default, and the first navigation counts. A page that sets <code>location</code> on every load hits the limit and gets an error:</p>
+<pre><code class="language-rust">// crates/obscura-browser/src/page.rs:3386-3392
+                if chain + 1 == chain_limit {
+                    // Hit the cap and the page still wants to keep
+                    // chaining. Surface that as an error instead of
+                    // returning Ok(()) so callers can distinguish a
+                    // successful load from a navigation storm.
+                    return Err(PageError::TooManyClientNavigations(chain_limit));
+                }
+</code></pre>
+<p>An ordinary HyperText Transfer Protocol redirect is not a link in this chain. The network layer follows 3xx responses, and its own limit reports <code>TooManyRedirects</code>. The chain counts only navigations that page script starts, which is the case that can loop forever.</p>
+<p>Inside one chain step, the pipeline runs in a fixed order:</p>
+<div class="mermaid">
+flowchart TB
+    A[&quot;URL parsed&quot;] --&gt; B{&quot;robots.txt allows?&quot;}
+    B --&gt;|no| F[&quot;Failed&quot;]
+    B --&gt;|yes| C[&quot;Fetch document&lt;br/&gt;data URI, POST or GET&quot;]
+    C --&gt;|error| F
+    C --&gt; D[&quot;Decode charset&lt;br/&gt;Content-Type, meta, UTF-8&quot;]
+    D --&gt; E[&quot;Parse HTML&lt;br/&gt;or wrap plain text&quot;]
+    E --&gt; G[&quot;init_js&lt;br/&gt;new runtime, new realm&quot;]
+    G --&gt; H[&quot;Fetch stylesheets&lt;br/&gt;and inline imports&quot;]
+    H --&gt; I[&quot;Scripts execute&lt;br/&gt;under two deadlines&quot;]
+    I --&gt; J[&quot;Flush localStorage&quot;]
+    J --&gt; K[&quot;DomContentLoaded&quot;]
+    K --&gt; L[&quot;Build document frames&quot;]
+    L --&gt; M{&quot;wait_until&quot;}
+    M --&gt;|domcontentloaded| Z[&quot;return&quot;]
+    M --&gt;|load| N[&quot;Loaded&quot;]
+    N --&gt; O{&quot;networkidle?&quot;}
+    O --&gt;|yes| P[&quot;Wait for network idle&quot;]
+    O --&gt;|no| Z
+    P --&gt; Z
+
+</div>
+<p>Two steps deserve attention. The first is the plain-text rule:</p>
+<pre><code class="language-rust">        // A non-HTML text response is a plain-text document, not an HTML one
+        // that happens to hold text: every `&lt;word&gt;` in a .txt or .md body
+        // would otherwise be parsed as an element and its contents dropped
+        // from textContent (#1231). Chrome wraps the decoded text in a
+        // single &lt;pre&gt; instead.
+</code></pre>
+<p>A text file is wrapped in one <code>pre</code> element. Without the rule, an angle bracket in a text file silently deletes text, and a client that asks for the page text gets a partial document.</p>
+<p>The second is the order of script execution and the ready state:</p>
+<pre><code class="language-rust">// crates/obscura-browser/src/page.rs:3623-3629
+        // Spec: DOMContentLoaded fires AFTER parser-blocking scripts run,
+        // not before. Skipping execute_scripts() on the DCL path meant
+        // every inline &lt;script&gt; in the page was silently dropped: form
+        // listeners never registered, frameworks never bootstrapped,
+        // page.click() handlers were no-ops. Now scripts run regardless
+        // of waitUntil and DCL means &quot;DOM parsed AND scripts executed&quot;.
+        self.execute_scripts().await;
+</code></pre>
+<p>The comment states a design choice with a cost. <code>DomContentLoaded</code> means "the parser finished and the document's scripts have run". A browser would fire the event at the parser boundary and run blocking scripts before it. The server runs scripts first and sets the state after, because a client that asked for the early state still expects a usable page. The early state is therefore later than its name.</p>
+<h2>Script execution</h2>
+<p>The script phase collects every script element first, then drives two queues:</p>
+<pre><code class="language-rust">// crates/obscura-browser/src/page.rs:2167-2177
+    async fn drive_pending_scripts(
+        js: &amp;mut ObscuraJsRuntime,
+        deadline: tokio::time::Instant,
+        pending: fn(&amp;mut ObscuraJsRuntime) -&gt; bool,
+        label: &amp;str,
+    ) -&gt; bool {
+        while pending(js) {
+            let Some(remaining) = deadline.checked_duration_since(tokio::time::Instant::now())
+            else {
+                return false;
+            };
+</code></pre>
+<p>The two queues are parser-blocking scripts and load-delaying scripts. They stay separate because they have different lifecycle meaning. A parser-blocking script must finish before the document is complete. A load-delaying script, such as a <code>defer</code> script, must finish before the load event but can overlap with later parsing work.</p>
+<p>A page script that throws does not stop the pump:</p>
+<pre><code class="language-rust">                Ok(Err(error)) =&gt; {
+                    if obscura_js::runtime::is_fatal_event_loop_error(&amp;error) {
+                        tracing::warn!(&quot;{label} script event loop failed: {error}&quot;);
+                        return false;
+                    }
+                    // A load-delaying script threw or left an unhandled
+                    // rejection. Chrome reports the error and runs the rest;
+                    // killing the pump would strand every still-pending script
+                    // (#699). The absolute deadline above bounds a page that
+                    // errors on every turn.
+                    tracing::warn!(&quot;{label} script task error, continuing: {error}&quot;);
+                    tokio::task::yield_now().await;
+                }
+</code></pre>
+<p>The classifier from <a href="03-javascript-runtime.html">03</a> decides the branch. A page error is page-local. A terminated isolate, a heap-limit stop, or an exhausted task budget is engine-level.</p>
+<p>The parser marks every script element before any page code runs:</p>
+<pre><code class="language-rust">// crates/obscura-browser/src/page.rs:2384-2387
+        // HTML scripts have an &quot;already started&quot; flag. Mark every
+        // parser-discovered script before running page code so React/Next
+        // hydration can move or hoist those nodes without appendChild
+        // executing them a second time.
+</code></pre>
+<p>This is the "already started" flag from the HTML standard. A framework often moves a script element during hydration. Without the mark, the move would execute the script again, and a page would double its own initialization.</p>
+<h2>Frames</h2>
+<p>A document's frames are built during navigation, not during a later settle:</p>
+<pre><code class="language-rust">// crates/obscura-browser/src/page.rs:3755-3760
+    /// Builds the child frames of the document that just loaded.
+    ///
+    /// Loading a document includes loading the frames in it, so this belongs to
+    /// navigation rather than to `settle`: a CDP client that only navigates
+    /// would otherwise be told the page has no frames, because nothing had
+    /// given them realms yet.
+</code></pre>
+<p>The comment names a real client failure. Puppeteer and Playwright send <code>Page.navigate</code> with no <code>waitUntil</code> value, so the navigation returns at the earliest state. A frame built only during settle would not exist for those clients.</p>
+<p>The build is bounded:</p>
+<pre><code class="language-rust">        // How many rounds of &quot;attach a frame, let it start its own&quot; to follow.
+        // A frame can add a frame, so this needs a bound rather than a loop
+        // until quiet: a page that adds one on every turn would never finish.
+        const ROUNDS: usize = 8;
+        const ROUND_MS: u64 = 50;
+</code></pre>
+<p>One round attaches each fetched frame, gives it a realm, and lets it run. The loop stops when a round does nothing. The round count and the per-round time are the frame clock from the table above.</p>
+<p><code>advance_frames</code> also delivers messages:</p>
+<pre><code class="language-rust">    /// Moves the frame tree forward by one step: give any fetched frame
+    /// document a realm, then hand on any message waiting for a realm.
+    ///
+    /// Reports whether anything happened, so a caller can pump again. A new
+    /// frame runs scripts that can post, and a message usually causes a reply,
+    /// so neither queue is finished until both are quiet.
+    async fn advance_frames(&amp;mut self) -&gt; bool {
+</code></pre>
+<p>The return value is the loop condition. A frame that posts a message during its first script keeps the loop alive, and a frame that does nothing lets it end.</p>
+<h2>Settling</h2>
+<p><code>settle</code> drives deferred work after the load event:</p>
+<pre><code class="language-rust">    /// Drive the JS event loop after navigation so deferred work can run:
+    /// pending timers (setTimeout / setInterval), queued microtasks, in-flight
+    /// fetches, and completion callbacks such as testharness&#x27;s
+    /// `add_completion_callback`. Returns as soon as the loop goes idle, or
+    /// after `max_ms`. Without this the page is observed exactly as it stood at
+    /// the load event, before any async work settles, which silently strands
+    /// timer-driven tests and dynamic pages.
+</code></pre>
+<p>The loop uses a quiescence window, not an empty queue:</p>
+<pre><code class="language-rust">// crates/obscura-browser/src/page.rs:3095-3101
+                    // A deno_core event loop remains &quot;busy&quot; for any future timer,
+                    // including analytics intervals and animation loops which do
+                    // not make the page more ready. Require a short window without
+                    // observable document/network/script activity instead. The
+                    // absolute caller budget and V8 watchdog still bound both
+                    // asynchronous work and synchronous microtask storms.
+                    let _ = js.run_event_loop_until_quiescent(remaining, 150).await;
+</code></pre>
+<p>A page with a one-second analytics interval is never idle in the strict sense. It is quiet for 150 milliseconds, and that is the signal the server uses. The alternative, waiting for an empty queue, would wait until the page is closed.</p>
+<p>The loop alternates with frame work, because a frame that attaches can start more work:</p>
+<pre><code class="language-rust">// crates/obscura-browser/src/page.rs:3082-3086
+        // Pump, then give any frame document that finished fetching a realm of
+        // its own. Attaching one runs its scripts, which can start timers,
+        // fetches and further frames, so keep alternating until no new frame
+        // appears or the budget is gone (issue #600).
+        loop {
+</code></pre>
+<p>A strict mode exists for tests:</p>
+<pre><code class="language-rust">// crates/obscura-browser/src/page.rs:3092-3094
+                if std::env::var_os(&quot;OBSCURA_STRICT_SETTLE&quot;).is_some() {
+                    Self::settle_runtime_for_duration(js, remaining).await;
+                } else {
+</code></pre>
+<p>Set <code>OBSCURA_STRICT_SETTLE</code> to pump the loop for the full duration instead of stopping at quiescence. The mode is a test tool, not a production setting, because it makes every page cost its full budget.</p>
+<h2>Suspension and resumption</h2>
+<p>A tab switch in Chromium keeps the tab alive. Obscura does not keep a V8 isolate for a background tab, so it keeps everything else and rebuilds the runtime:</p>
+<pre><code class="language-rust">// crates/obscura-browser/src/page.rs:4772-4793
+        let started_script_ids = js.started_script_ids();
+        self.navigation_timing = js.navigation_timing();
+        // Preserve console messages logged before suspension: dropping the
+        // runtime below would otherwise lose any not yet drained (#971).
+        let pending_console = js.take_pending_console_messages();
+        self.suspended_cdp_object_state = js.take_cdp_object_state();
+        let dom = js.take_dom();
+        if let Some(dom) = dom {
+            self.dom = Some(dom);
+            self.suspended_started_script_ids = started_script_ids;
+        } else {
+            self.suspended_started_script_ids.clear();
+        }
+        // Every frame realm holds a V8 handle into this isolate, so the frames
+        // go before the runtime does — the same order init_js keeps on a new
+        // document. Suspending is a teardown of the realm the frames live in,
+        // and a realm cannot be suspended and resumed the way the page&#x27;s DOM
+        // can, so they are rebuilt when the page next loads a document.
+        self.pending_frame_work.clear();
+        self.frames.clear();
+        self.suspended_console_messages.extend(pending_console);
+        self.js = None;
+</code></pre>
+<p>The DOM survives, and the runtime does not. Four pieces of state cross the gap: the DOM tree, the set of started script identifiers, the CDP object handles, and undrained console messages. <code>resume_js</code> builds a new runtime and restores them:</p>
+<pre><code class="language-rust">// crates/obscura-browser/src/page.rs:4796-4807
+    pub fn resume_js(&amp;mut self) {
+        if self.js.is_some() {
+            return;
+        }
+        let started_script_ids = std::mem::take(&amp;mut self.suspended_started_script_ids);
+        let cdp_object_state = std::mem::take(&amp;mut self.suspended_cdp_object_state);
+        self.init_js();
+        if let Some(js) = &amp;mut self.js {
+            js.restore_started_script_ids(&amp;started_script_ids);
+            js.restore_cdp_object_state(cdp_object_state);
+        }
+    }
+</code></pre>
+
+<div class="mermaid">
+sequenceDiagram
+    participant CDP as CDP client
+    participant Page as Page
+    participant Runtime as V8 runtime
+    CDP-&gt;&gt;Page: Target.activateTarget on another tab
+    Page-&gt;&gt;Runtime: take_dom and take_pending_console
+    Page-&gt;&gt;Page: keep dom, script IDs, CDP handles
+    Page-&gt;&gt;Runtime: drop the isolate
+    Page--&gt;&gt;Page: frames are dropped and rebuilt later
+    CDP-&gt;&gt;Page: activate this tab again
+    Page-&gt;&gt;Runtime: create a new isolate
+    Runtime--&gt;&gt;Page: fresh realm over the saved DOM
+    Page-&gt;&gt;Runtime: restore script IDs and handles
+
+</div>
+<p>A frame is not saved. A frame realm is a V8 context, and a context cannot be detached and reattached. The frames are rebuilt on the next document load.</p>
+<h2>Persistent storage</h2>
+<p>A storage file name must be stable and must not collide:</p>
+<pre><code class="language-rust">/// Filename-safe stem for an origin: a sanitized prefix for readability plus the
+/// full FNV-1a digest of the origin, so `https://a-b.example` and
+/// `https://a_b.example` cannot share a file.
+fn storage_file_stem(origin: &amp;str) -&gt; String {
+    let prefix: String = origin
+        .chars()
+        .take(48)
+        .map(|c| if c.is_ascii_alphanumeric() || c == &#x27;.&#x27; { c } else { &#x27;_&#x27; })
+        .collect();
+    let mut digest: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in origin.as_bytes() {
+        digest ^= u64::from(*byte);
+        digest = digest.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!(&quot;{prefix}-{digest:016x}&quot;)
+}
+</code></pre>
+<p>A sanitized prefix alone would merge two origins that differ only in a character that the sanitizer maps to an underscore. The 64-bit digest from the Fowler–Noll–Vo (FNV) 1a hash of the full origin prevents that. The prefix is for a human who reads the directory.</p>
+<p>Writes are atomic and content-driven:</p>
+<pre><code class="language-rust">    /// Flush `localStorage` to `{storage_dir}/localStorage`. Only the origins
+    /// that changed since the last successful write are touched, and an origin
+    /// that lost its last entry has its file removed so a restart cannot
+    /// resurrect it. The store is only marked clean once every touched origin
+    /// reached the disk, so a failed write is retried instead of lost.
+    pub fn save_local_storage(&amp;self) {
+</code></pre>
+<p>The rule has three parts. A clean store is skipped. A dirty origin is written. A store becomes clean only after the disk write succeeds. A crash therefore loses at most the write that was in flight, and the next flush retries the failed one.</p>
+<p>The profile picks a stable identity:</p>
+<pre><code class="language-rust">/// Pick the profile for a new browser context.
+///
+/// The default is a single stable profile. Cycling through different browser
+/// identities from one address is itself a bot signal (a real address maps to a
+/// stable device), and the rotated profile does not yet carry a matching TLS or
+/// timezone fingerprint, so rotation is opt-in:
+///   OBSCURA_PROFILE=&lt;index&gt;   pin a specific profile from PROFILES
+///   OBSCURA_ROTATE_PROFILE=1  pick a random profile per context
+pub fn select_profile() -&gt; &amp;&#x27;static BrowserProfile {
+</code></pre>
+<p>The default is profile zero, and different identities from one address are a detection signal rather than a defence. Rotation is available and opt-in, and the comment states its limitation: Transport Layer Security (TLS) and time zone do not rotate with it.</p>
+<h2>Limits</h2>
+<table><tr><th>Limit</th><th>Value</th><th>Where</th></tr><tr><td>Navigation deadline</td><td>30 seconds</td><td><code>DEFAULT_NAVIGATION_TIMEOUT_MS</code></td></tr><tr><td>Script deadline</td><td>30 seconds</td><td><code>OBSCURA_SCRIPT_DEADLINE_MS</code></td></tr><tr><td>Script watchdog</td><td>Deadline plus 1 second</td><td><code>execute_scripts_with_module_budget</code></td></tr><tr><td>Network-idle deadline</td><td>5 seconds</td><td><code>wait_for_network_idle</code></td></tr><tr><td>Network-idle quiet window</td><td>500 milliseconds</td><td><code>wait_for_network_idle</code></td></tr><tr><td>Settle quiescence</td><td>150 milliseconds</td><td><code>settle</code></td></tr><tr><td>Frame rounds</td><td>8</td><td><code>build_document_frames</code></td></tr><tr><td>Frame round time</td><td>50 milliseconds</td><td><code>build_document_frames</code></td></tr><tr><td>Client-navigation chain</td><td>10 documents</td><td><code>DEFAULT_NAVIGATION_CHAIN_LIMIT</code></td></tr><tr><td>Stylesheet import depth</td><td>4</td><td><code>MAX_STYLESHEET_IMPORT_DEPTH</code></td></tr><tr><td>Stylesheet resources</td><td>128</td><td><code>MAX_STYLESHEET_RESOURCES</code></td></tr><tr><td>Response body entries</td><td>A page-scoped maximum</td><td><code>response_body_entry_limit</code></td></tr></table>
+<p>Four limits are not in the table. A script deadline does not stop synchronous work; only the watchdog does. A navigation deadline does not cancel the fetch; it cancels the navigation future. A frame budget bounds the frame tree, not the work inside one frame. A suspend drops the runtime, so a page that a client leaves for a long time loses its timers.</p>
+<h2>Related documents</h2>
+<ul><li><a href="01-workspace-and-architecture.html">01 Workspace and architecture</a> explains how the crates and binaries fit together.</li><li><a href="02-dom-and-html.html">02 DOM and HTML</a> explains the tree that a document installs.</li><li><a href="03-javascript-runtime.html">03 JavaScript runtime</a> explains the isolate that a page creates and drops.</li><li><a href="05-network-ssrf-and-stealth.html">05 Network, SSRF and stealth</a> explains the fetch path and the robots cache.</li><li><a href="06-cdp-server.html">06 CDP server</a> explains the commands that read the lifecycle and the tab-switch path.</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

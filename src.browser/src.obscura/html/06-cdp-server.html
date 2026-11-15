@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>06 CDP server: a local control socket that assumes a hostile browser -- src.obscura</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue('--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        toolbar.appendChild(mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); }));
+        toolbar.appendChild(mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); }));
+        toolbar.appendChild(mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); }));
+        toolbar.appendChild(mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); }));
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.obscura/docs</span>
+    <div class="nav-actions">
+      <a href="03-javascript-runtime.html" class="nav-breadcrumb">03 JavaScript runtime: a snapshot, an op table and no reachable bridge</a><a href="04-browser-page-lifecycle.html" class="nav-breadcrumb">04 Browser and page lifecycle: four clocks and one state machine</a><a href="05-network-ssrf-and-stealth.html" class="nav-breadcrumb">05 Network, SSRF and stealth: one deny-set and two transports</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="05-network-ssrf-and-stealth.html" class="nav-btn" title="Previous: 05 Network, SSRF and stealth: one deny-set and two transports">← prev</a>
+      <a href="07-rendering-and-output.html" class="nav-btn nav-btn-next" title="Next: 07 Rendering and output: two features, one deterministic pipeline">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>06 CDP server: a local control socket that assumes a hostile browser</h1>
+<p>The Chrome DevTools Protocol (CDP) server lets Puppeteer, Playwright, and custom tools drive the browser. It listens on a Transmission Control Protocol (TCP) port, and any process on the machine can connect. That fact drives the whole design. A web page can also send requests to <code>127.0.0.1</code>, so the server refuses any request that carries an <code>Origin</code> header, checks the <code>Host</code> header against the address it bound, and requires a bearer token when one is configured. The thesis of this document is that the server is not a web service. It is a local control socket with one client type, one protocol, and a threat model that starts from a hostile browser tab.</p>
+<p>This document covers the connection gate, the two-thread connection model, the protocol path, the page and session model, command dispatch, interception, and the limits. Document <a href="04-browser-page-lifecycle.html">04</a> explains what a page does when a command moves it. Document <a href="03-javascript-runtime.html">03</a> explains the watchdog that bounds a command.</p>
+<h2>The problem</h2>
+<p>A protocol server for a browser engine has five requirements.</p>
+<ol><li><strong>It must accept the real clients.</strong> Puppeteer and Playwright send their own command sequences, and a rejected command fails a user's test.</li><li><strong>It must not be reachable from a web page.</strong> A page on any origin can reach a loopback port.</li><li><strong>One connection must not block another.</strong> A slow navigation on one connection must not freeze the control plane.</li><li><strong>A page must stay on one thread.</strong> V8 isolates are not <code>Send</code>, and moving one between threads aborts the process.</li><li><strong>Queues must be bounded.</strong> A stalled client or a stalled navigation must not grow a queue without a limit.</li></ol>
+<p>The design answers each item with one mechanism.</p>
+<table><tr><th>Requirement</th><th>Mechanism</th></tr><tr><td>Real clients</td><td>Full CDP method set plus a fast path for no-op methods</td></tr><tr><td>No page access</td><td><code>Origin</code> refusal, <code>Host</code> check, optional token</td></tr><tr><td>No cross-connection blocking</td><td>One operating system thread per connection, each with its own runtime</td></tr><tr><td>One thread per page</td><td>A <code>current_thread</code> Tokio runtime and a <code>LocalSet</code> per connection</td></tr><tr><td>Bounded queues</td><td>Caps on connections, handoffs, deferred messages, and pending evaluations</td></tr></table>
+<h2>The control gate</h2>
+<p>The gate runs before the protocol:</p>
+<pre><code class="language-rust">// crates/obscura-cdp/src/server.rs:151-170
+fn control_refusal(
+    head: &amp;str,
+    bind_ip: std::net::IpAddr,
+    port: u16,
+    forwarded: Option&lt;(std::net::IpAddr, u16)&gt;,
+    auth_token: Option&lt;&amp;str&gt;,
+) -&gt; Option&lt;ControlRefusal&gt; {
+    if header_value(head, &quot;origin&quot;).is_some() {
+        return Some(ControlRefusal::BrowserOrigin);
+    }
+    if !header_value(head, &quot;host&quot;)
+        .is_some_and(|host| host_matches_bind(host, bind_ip, port, forwarded))
+    {
+        return Some(ControlRefusal::ForeignHost);
+    }
+    if !bearer_authorized(head, auth_token) {
+        return Some(ControlRefusal::Unauthorized);
+    }
+    None
+}
+</code></pre>
+<p>The first rule refuses a request that has an <code>Origin</code> header at all. It does not compare the origin against a list. A real CDP client is a native program, and a native program has no origin. A browser tab that posts to the port always sends one, so the presence of the header is enough to identify the client type.</p>
+<p>The second rule compares the <code>Host</code> header with the bound address and port. The comparison accepts a loopback name when the server binds to a loopback address, and it accepts a forwarded address and port when a proxy supplies one. A request with <code>Host: attacker.example</code> is refused even when it arrives over the loopback interface.</p>
+<p>The third rule is optional:</p>
+<pre><code class="language-rust">// crates/obscura-cdp/src/server.rs:66-74
+fn control_token_from_env() -&gt; anyhow::Result&lt;Option&lt;String&gt;&gt; {
+    let token = std::env::var(&quot;OBSCURA_CDP_TOKEN&quot;)
+        .ok()
+        .filter(|value| !value.is_empty());
+    if token.as_ref().is_some_and(|value| value.len() &lt; 32) {
+        anyhow::bail!(&quot;OBSCURA_CDP_TOKEN must be at least 32 bytes&quot;);
+    }
+    Ok(token)
+}
+</code></pre>
+<p>A token shorter than 32 bytes is a startup error, not a warning. The comparison uses a constant-time function:</p>
+<pre><code class="language-rust">// crates/obscura-cdp/src/server.rs:76-84
+fn constant_time_eq(left: &amp;str, right: &amp;str) -&gt; bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.bytes()
+        .zip(right.bytes())
+        .fold(0u8, |difference, (left, right)| difference | (left ^ right))
+        == 0
+}
+</code></pre>
+<p><strong>Aha:</strong> The server treats every request as if a web page wrote it, because a web page can reach a loopback port. The <code>Origin</code> rule is not a cross-origin policy; it is a client-class test. A correct cross-origin policy would need a list of allowed origins and would still admit a malicious page on an allowed origin. Refusing the header outright admits only native clients, which is the entire set the server wants.</p>
+<h2>The HTTP control plane</h2>
+<p>Three read-only endpoints exist:</p>
+<pre><code class="language-rust">// crates/obscura-cdp/src/server.rs:1107-1122
+    let endpoint = if head.contains(&quot;/json/version&quot;) {
+        Some(&quot;version&quot;)
+    } else if head.contains(&quot;/json/list&quot;) || head.contains(&quot;/json\r\n&quot;) || head.contains(&quot;/json HTTP&quot;) {
+        Some(&quot;list&quot;)
+    } else if head.contains(&quot;/json/protocol&quot;) {
+        Some(&quot;protocol&quot;)
+    } else {
+        None
+    };
+
+    if let Some(ep) = endpoint {
+        // The request head is already sitting in the kernel receive buffer;
+        // switch back to blocking mode for the synchronous /json serve.
+        let _ = stream.set_nonblocking(false);
+        return handle_http_json_blocking(stream, port, ep, head);
+    }
+</code></pre>
+<p>These endpoints are served on the accept thread with blocking input and output:</p>
+<pre><code class="language-rust">// crates/obscura-cdp/src/server.rs:1087-1092
+/// Dispatch a freshly-accepted TCP connection on the dedicated accept thread.
+///
+/// The connection&#x27;s request head has already been peeked by the accept loop
+/// (`peek_request_head`) and is passed in as `head`:
+/// - HTTP (`GET /json/*`): serve synchronously via blocking I/O so the
+///   response is never stalled by the LocalSet.
+</code></pre>
+<p>The reason is in the second half of the sentence. If the version endpoint waited on the connection's <code>LocalSet</code>, then a page that runs a long script would also delay the endpoint that a client uses to discover the browser.</p>
+<p>The version body reports a Chrome identity:</p>
+<pre><code class="language-rust">// crates/obscura-cdp/src/server.rs:1158-1165
+        &quot;version&quot; =&gt; serde_json::to_string_pretty(&amp;json!({
+            &quot;Browser&quot;: &quot;Chrome/145.0.0.0&quot;,
+            &quot;Protocol-Version&quot;: &quot;1.3&quot;,
+            &quot;User-Agent&quot;: &quot;Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36&quot;,
+            &quot;V8-Version&quot;: &quot;14.5.0.0&quot;,
+            &quot;WebKit-Version&quot;: &quot;537.36&quot;,
+            &quot;webSocketDebuggerUrl&quot;: format!(&quot;ws://{}/devtools/browser&quot;, authority),
+        }))?,
+</code></pre>
+<p>The protocol version is <code>1.3</code>, which is the version that the modern clients negotiate. The browser string is the Chrome version that the transport emulates, so a client that reads <code>/json/version</code> and then chooses a behaviour sees one consistent identity.</p>
+<p>One limit is worth stating. The <code>/json/list</code> endpoint returns a fixed <code>page-1</code> entry, not the live target list. A client that needs the real targets uses <code>Target.getTargets</code> on the WebSocket. The endpoint exists so that a client's discovery step succeeds, and it does not claim to be an enumeration.</p>
+<h2>Two threads per connection</h2>
+<p>Each connection gets two threads and one <code>LocalSet</code>:</p>
+<pre><code class="language-rust">// crates/obscura-cdp/src/server.rs:799-805
+/// Run each connection&#x27;s `cdp_processor` (with its own `CdpContext` and pages)
+/// on a dedicated `current_thread` Tokio runtime and `LocalSet`. A second thread
+/// handles WebSocket I/O independently. Confining a connection&#x27;s pages
+/// to one thread is what removes the #430 abort; the interception handshake and
+/// the nav `spawn_local` all stay on this one thread, so no cross-thread V8
+/// plumbing is needed.
+fn run_connection(
+</code></pre>
+<p>The split is deliberate:</p>
+<pre><code class="language-rust">// crates/obscura-cdp/src/server.rs:851-854
+            // Socket I/O must not share the renderer&#x27;s LocalSet: a synchronous
+            // V8/layout task otherwise delays even replies already queued by a
+            // completed navigation. Keep all page/isolate work on this thread,
+            // and move only Send protocol strings and the socket to an I/O thread.
+</code></pre>
+<p>A page thread runs V8. A V8 task can hold the thread for as long as a script runs, so a reply that is already computed cannot reach the socket from that thread. The input and output thread owns the socket, and the two threads exchange only strings through a channel.</p>
+<p>The processor runs inside the <code>LocalSet</code> future:</p>
+<pre><code class="language-rust">// crates/obscura-cdp/src/server.rs:898-905
+            let local = tokio::task::LocalSet::new();
+            local.block_on(&amp;rt, async move {
+                // Run the processor in the connection future. A self-waking
+                // LocalSet task can run 61 times before Tokio services I/O,
+                // starving fetch under a continuously ready page scheduler.
+                let processor = cdp_processor(
+                    msg_rx, default_context, shutdown_notify,
+                );
+</code></pre>
+<p>The <code>select!</code> after this code races the processor against the input thread's completion. When either side ends, the processor is dropped and the connection is torn down.</p>
+<div class="mermaid">
+flowchart TB
+    A[&quot;Accept thread&quot;] --&gt; B{&quot;Peek request head&quot;}
+    B --&gt;|&quot;Origin, bad Host, bad token&quot;| R[&quot;Refuse with 4xx&quot;]
+    B --&gt;|&quot;GET /json/*&quot;| H[&quot;Serve on accept thread&lt;br/&gt;blocking I/O&quot;]
+    B --&gt;|&quot;WebSocket upgrade&quot;| Q{&quot;Handoff queue full?&quot;}
+    Q --&gt;|yes| D[&quot;Close the connection&quot;]
+    Q --&gt;|no| I[&quot;I/O thread&lt;br/&gt;socket and strings&quot;]
+    I --&gt;|&quot;bounded messages&quot;| L[&quot;LocalSet&lt;br/&gt;cdp_processor and pages&quot;]
+    L --&gt;|&quot;replies&quot;| I
+    L --&gt; P[&quot;Page and V8 isolate&quot;]
+
+</div>
+<h2>The page and session model</h2>
+<p>One connection owns a map from sessions to pages:</p>
+<pre><code class="language-rust">// crates/obscura-cdp/src/dispatch.rs:51-66
+pub struct CdpContext {
+    pub pages: Vec&lt;Page&gt;,
+    pub sessions: HashMap&lt;String, String&gt;, // session_id -&gt; page_id
+    /// Current document loader per page. Navigation events and later
+    /// script-initiated Network events must share this id; inventing a loader
+    /// for each fetch breaks DevTools request grouping.
+    pub current_loader_ids: HashMap&lt;String, String&gt;,
+    /// Pages whose initial navigation event sequence has been emitted. A page
+    /// is created already loaded (about:blank), but Chrome emits that load&#x27;s
+    /// events when the client attaches; Page.enable emits them once per page
+    /// so clients waiting on the initial load (chromiumoxide, #833) unblock.
+    pub nav_events_emitted: std::collections::HashSet&lt;String&gt;,
+    /// Child frame ids already reported to the client, per page, so each frame
+    /// is announced once and a frame that goes away can be retracted.
+    pub announced_frames: HashMap&lt;String, Vec&lt;String&gt;&gt;,
+    pub pending_events: Vec&lt;CdpEvent&gt;,
+</code></pre>
+<p>Four pieces of state exist because a client expects them. A session maps to a page, not to a page and a frame, because the client addresses the rest of the hierarchy through frame identifiers. A loader identifier lets the network events of one navigation group together. A page that was created on <code>about:blank</code> still needs its load events when a client attaches, or a client that waits for the first load event waits forever. A frame that is announced must later be retracted, or the client keeps a stale frame in its model.</p>
+<p>The context also holds per-session subscriptions, because events are session-scoped in the protocol:</p>
+<pre><code class="language-rust">// crates/obscura-cdp/src/dispatch.rs:85-90
+    pub binding_sessions: HashMap&lt;String, Vec&lt;String&gt;&gt;, // binding name -&gt; session ids
+    /// Sessions that called Runtime.enable. Console and exception events are
+    /// page-scoped but only delivered to these subscribers.
+    pub runtime_enabled_sessions: HashSet&lt;String&gt;,
+    /// Page.setLifecycleEventsEnabled subscriptions, independent of Runtime.
+    pub(crate) lifecycle_enabled_sessions: HashSet&lt;String&gt;,
+</code></pre>
+<p>A binding is a callback that page script calls by name. Two sessions can register the same name, and the event must go back to each one. The comment records the failure of the alternative: a single subscriber chosen from a hash map gives the event to whichever session the iteration happened to visit first.</p>
+<h2>Command dispatch</h2>
+<p>The dispatcher takes the per-connection V8 lock, and it does one unwrap before the lock:</p>
+<pre><code class="language-rust">// crates/obscura-cdp/src/dispatch.rs:748-754
+    // headless_chrome (and older Puppeteer) wrap every CDP call inside
+    // Target.sendMessageToTarget. Unwrap and recurse BEFORE acquiring the
+    // per-connection V8 lock — the recursive dispatch will acquire it for the
+    // inner call, and tokio Mutex is not reentrant.
+    if req.method == &quot;Target.sendMessageToTarget&quot; {
+        return dispatch_send_message_to_target(req, ctx).await;
+    }
+</code></pre>
+<p>A non-reentrant lock and a recursive call are a deadlock. The unwrap happens first, and the inner call takes the lock once.</p>
+<p>Before the full dispatcher runs, a fast path answers methods that need no page state:</p>
+<pre><code class="language-rust">// crates/obscura-cdp/src/server.rs:2264-2275
+    let result = match req.method.as_str() {
+        &quot;Network.enable&quot; | &quot;Network.setCacheDisabled&quot; | &quot;Network.setRequestInterception&quot; |
+        &quot;Page.setInterceptFileChooserDialog&quot; |
+        &quot;Runtime.runIfWaitingForDebugger&quot; | &quot;Runtime.discardConsoleEntries&quot; |
+        &quot;Performance.enable&quot; | &quot;Log.enable&quot; | &quot;Security.enable&quot; |
+        &quot;Emulation.setTouchEmulationEnabled&quot; |
+        &quot;CSS.enable&quot; | &quot;Accessibility.enable&quot; | &quot;ServiceWorker.enable&quot; |
+        &quot;Inspector.enable&quot; | &quot;Debugger.enable&quot; | &quot;Profiler.enable&quot; |
+        &quot;HeapProfiler.enable&quot; | &quot;Overlay.enable&quot; | &quot;Storage.enable&quot; |
+        &quot;Target.setAutoAttach&quot; =&gt; {
+            Some(json!({}))
+        }
+</code></pre>
+<p>These methods are subscription requests or capability probes. A client sends them during startup, and each one would otherwise take the page lock and run a page method that does nothing. An empty object is the correct reply, because the protocol defines the result as empty.</p>
+<p>A pending evaluation is handled differently:</p>
+<pre><code class="language-rust">// crates/obscura-cdp/src/server.rs:2195-2203
+    let is_awaited = matches!(req.method.as_str(), &quot;Runtime.evaluate&quot; | &quot;Runtime.callFunctionOn&quot;)
+        &amp;&amp; req.params.get(&quot;awaitPromise&quot;).and_then(|value| value.as_bool()) == Some(true);
+    let response = if pending_runtime.as_ref().is_some_and(|pending| pending.len() &gt;= MAX_DEFERRED_MESSAGES) &amp;&amp; is_awaited {
+        crate::types::CdpResponse::error(req.id, -32000, &quot;Too many pending evaluations&quot;.into(), req.session_id.clone())
+    } else if pending_runtime.is_some() {
+        dispatch::dispatch_with_deferred(&amp;req, ctx, Some(&amp;mut evaluation)).await
+    } else {
+        dispatch::dispatch(&amp;req, ctx).await
+    };
+</code></pre>
+<p>An awaited promise takes more than one event-loop turn. The command becomes a <code>PendingRuntimeReply</code>, and the processor finishes it when the evaluation is ready. The cap turns a client that sends thousands of awaited evaluations into an error response, not into memory growth.</p>
+<h2>Interception</h2>
+<p>A paused request needs its own queue:</p>
+<pre><code class="language-rust">// crates/obscura-cdp/src/server.rs:21-24
+// PR #36 comment 4341743194: the deferral queue in `process_with_interception`
+// must be bounded so a stalled navigation cannot OOM the process. When the cap
+// is reached we return an explicit error response rather than silently dropping.
+const MAX_DEFERRED_MESSAGES: usize = 256;
+</code></pre>
+<p>A navigation that is paused for interception cannot run another command on the same <code>LocalSet</code> without breaking V8's "current isolate" rule. Commands that arrive during the pause go into this queue, and the processor drains the queue at the top of the next iteration, when no navigation is in flight.</p>
+<p>The WebSocket handoff queue has a separate cap:</p>
+<pre><code class="language-rust">// crates/obscura-cdp/src/server.rs:33-41
+// The WS-stream forwarding channel must also be bounded: if the LocalSet
+// (CDP processor + nav tasks) stalls, the accept thread keeps pushing
+// `std::net::TcpStream`s into the queue. An unbounded channel would let
+// that queue grow without limit and OOM the process. With a bounded
+// capacity, when the LocalSet is saturated the accept thread closes the
+// new connection on the spot instead of buffering it — the kernel TCP
+// backlog still absorbs short-term spikes, but a long-term stall now
+// fails loudly at accept time rather than silently piling up FDs.
+const MAX_PENDING_WS_HANDOFFS: usize = 128;
+</code></pre>
+<p>The alternative is a file descriptor leak that no error reports. A closed connection is visible to the client, and the client can retry.</p>
+<h2>Live connections</h2>
+<p>The accept loop also bounds live connections:</p>
+<pre><code class="language-rust">// crates/obscura-cdp/src/server.rs:43-53
+// Cap on *live* CDP connections, each of which costs one OS thread and its own
+// V8 isolates. `MAX_PENDING_WS_HANDOFFS` above bounds only the handoff queue —
+// connections that have already been handed off are unbounded without this.
+//
+// 128 matches the handoff bound and is well above any real client fan-out
+// (Playwright/Puppeteer use one connection per browser). Threads are what this
+// actually bounds: with arenas capped by `cap_malloc_arenas`, 128 idle
+// connections cost 146 threads, 33.2 GiB of reserved address space and 51 MiB
+// resident -- and nearly all of that 33.2 GiB is V8&#x27;s process-wide sandbox,
+// which is there at zero connections. Override with `--max-connections`.
+pub const DEFAULT_MAX_CONNECTIONS: usize = 128;
+</code></pre>
+<p>Two numbers matter more than the connection count. Each connection starts its own V8 platform work, and V8 reserves address space per process, not per isolate. The 33.2 GiB figure is mostly the process-wide sandbox, so the marginal cost of the first connection is large and the marginal cost of the hundredth is small.</p>
+<p>A connection at the cap gets an explicit refusal:</p>
+<pre><code class="language-text">HTTP/1.1 503 Service Unavailable
+X-Obscura-Reason: max-connections
+</code></pre>
+<p>The client sees a reason it can retry. A bare reset would look like a network fault.</p>
+<div class="mermaid">
+sequenceDiagram
+    participant C as CDP client
+    participant A as Accept thread
+    participant IO as I/O thread
+    participant PS as Page thread, LocalSet
+    C-&gt;&gt;A: GET /devtools/page/page-1, upgrade
+    A-&gt;&gt;A: origin, host and token checks
+    A-&gt;&gt;IO: hand over the socket
+    IO-&gt;&gt;PS: parsed message string
+    PS-&gt;&gt;PS: fast path or full dispatch
+    PS-&gt;&gt;PS: page method under the V8 lock
+    PS--&gt;&gt;IO: reply string and events
+    IO--&gt;&gt;C: WebSocket frames
+
+</div>
+<h2>Limits</h2>
+<table><tr><th>Limit</th><th>Value</th><th>Where</th></tr><tr><td>Live connections</td><td>128</td><td><code>DEFAULT_MAX_CONNECTIONS</code></td></tr><tr><td>Pending handoffs</td><td>128</td><td><code>MAX_PENDING_WS_HANDOFFS</code></td></tr><tr><td>Deferred messages</td><td>256</td><td><code>MAX_DEFERRED_MESSAGES</code></td></tr><tr><td>Token minimum</td><td>32 bytes</td><td><code>control_token_from_env</code></td></tr><tr><td>Command budget</td><td>60 seconds</td><td><code>OBSCURA_CDP_COMMAND_TIMEOUT_MS</code></td></tr><tr><td>Screencast rate</td><td>30 frames per second</td><td>Processor interval</td></tr><tr><td>Shutdown drain</td><td>3 seconds</td><td><code>SHUTDOWN_DRAIN_MS</code></td></tr><tr><td>WebSocket write buffer</td><td>0 bytes</td><td>Connection setup</td></tr></table>
+<p>Four limits are not in the table. The <code>/json/list</code> endpoint reports one stub page, so target discovery needs the WebSocket. A pending evaluation holds its result until the client reads it or the connection closes. The deferral queue returns errors instead of growing, so a client that sends commands during a paused navigation can see <code>-32000</code>. A connection owns its own cookie jar and merges a delta at exit, so two connections never overwrite each other's cookies.</p>
+<h2>Related documents</h2>
+<ul><li><a href="01-workspace-and-architecture.html">01 Workspace and architecture</a> explains the crate that contains the server.</li><li><a href="03-javascript-runtime.html">03 JavaScript runtime</a> explains the command watchdog and the isolate.</li><li><a href="04-browser-page-lifecycle.html">04 Browser and page lifecycle</a> explains navigation and tab switching.</li><li><a href="08-mcp-cli-and-operations.html">08 MCP, command line and operations</a> explains the flags that start the server.</li><li><a href="09-testing-and-limits.html">09 Testing and limits</a> explains the protocol tests and the load limits.</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>

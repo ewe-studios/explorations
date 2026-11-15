@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>03 JavaScript runtime: a snapshot, an op table and no reachable bridge -- src.obscura</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue('--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        toolbar.appendChild(mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); }));
+        toolbar.appendChild(mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); }));
+        toolbar.appendChild(mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); }));
+        toolbar.appendChild(mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); }));
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/src.obscura/docs</span>
+    <div class="nav-actions">
+      <a href="00-overview.html" class="nav-breadcrumb">00 Overview: a small browser that speaks a large protocol</a><a href="01-workspace-and-architecture.html" class="nav-breadcrumb">01 Workspace and architecture: ten crates on one ladder</a><a href="02-dom-and-html.html" class="nav-breadcrumb">02 DOM and HTML: an arena with integer handles</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="02-dom-and-html.html" class="nav-btn" title="Previous: 02 DOM and HTML: an arena with integer handles">← prev</a>
+      <a href="04-browser-page-lifecycle.html" class="nav-btn nav-btn-next" title="Next: 04 Browser and page lifecycle: four clocks and one state machine">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>03 JavaScript runtime: a snapshot, an op table and no reachable bridge</h1>
+<p>Obscura runs page JavaScript on V8 through <code>deno_core</code>. Each page owns its own isolate. The browser environment, which is about 849 kilobytes of JavaScript, is not parsed when a page opens. It is compiled into a V8 startup snapshot at build time and restored from bytes at run time. The Rust side exposes 59 operations, and the page cannot reach any of them. The bootstrap captures the bridge in a private closure. The host then deletes the public globals before page script runs. The thesis of this document is that the runtime is defined by its two boundaries. The build-time boundary turns JavaScript into an immutable snapshot. The run-time boundary turns native work into an operation call that page script cannot address directly.</p>
+<p>This document covers the snapshot build, the isolate, the operation table, the anti-panic rule, the frame realms, the timers and watchdogs, the module loader, and the limits. Document <a href="02-dom-and-html.html">02</a> explains the tree behind <code>op_dom</code>. Document <a href="04-browser-page-lifecycle.html">04</a> explains who owns a runtime.</p>
+<h2>The problem</h2>
+<p>A script runtime inside a browser engine has five hard requirements.</p>
+<ol><li><strong>Startup must be fast.</strong> A page that waits 100 milliseconds for its engine to parse its own shims is already slow.</li><li><strong>The bridge must be narrow.</strong> Every native call is a place where page input reaches Rust.</li><li><strong>A page fault must not kill the process.</strong> A bad script, a panic, or a runaway loop must stay inside one page.</li><li><strong>Isolation must be real.</strong> Two pages must not share mutable JavaScript state.</li><li><strong>Network work must fit an event loop.</strong> A module graph and a <code>fetch</code> call arrive asynchronously, and V8 is not <code>Send</code>.</li></ol>
+<p>The design answers each item with one mechanism.</p>
+<table><tr><th>Requirement</th><th>Mechanism</th></tr><tr><td>Fast startup</td><td>One V8 startup snapshot, built once</td></tr><tr><td>Narrow bridge</td><td>One string-dispatch operation plus 58 typed operations</td></tr><tr><td>Page fault containment</td><td><code>catch_unwind</code>, a heap guard, a watchdog that terminates one isolate</td></tr><tr><td>Isolation</td><td>One isolate per page, one realm per frame</td></tr><tr><td>Async network work</td><td><code>deno_core</code> module loader and a <code>tokio</code> <code>LocalSet</code></td></tr></table>
+<div class="mermaid">
+flowchart TB
+    subgraph Build[&quot;Build time&quot;]
+        B1[&quot;bootstrap.js&lt;br/&gt;849 KB&quot;] --&gt; B2[&quot;indexed_db.js spliced&lt;br/&gt;at a marker&quot;]
+        B2 --&gt; B3[&quot;V8 startup snapshot&lt;br/&gt;OBSCURA_SNAPSHOT.bin&quot;]
+    end
+    subgraph Run[&quot;Run time, one page&quot;]
+        I[&quot;V8 isolate&quot;] --&gt; C0[&quot;Main context&lt;br/&gt;restored from snapshot&quot;]
+        C0 --&gt; OPS[&quot;59 native ops&lt;br/&gt;bound by deno_core&quot;]
+        C0 --&gt; REALM[&quot;Frame realms&lt;br/&gt;extra v8::Context&quot;]
+        REALM --&gt; ALIAS[&quot;Borrowed op table&lt;br/&gt;and context state&quot;]
+        OPS --&gt; RUST[&quot;Rust state&lt;br/&gt;tree, cookies, fetch&quot;]
+    end
+    B3 --&gt; C0
+
+</div>
+<h2>The snapshot</h2>
+<p>The binary embeds the snapshot as a byte array:</p>
+<pre><code class="language-rust">// crates/obscura-js/src/runtime.rs:46-55
+static SNAPSHOT: &amp;[u8] = include_bytes!(env!(&quot;OBSCURA_SNAPSHOT_PATH&quot;));
+
+/// Serialize first initialization (#430), then allow two snapshot restorations
+/// at a time. Unbounded construction increases CPU and peak memory contention.
+static ISOLATE_CREATE_LOCK: std::sync::Mutex&lt;()&gt; = std::sync::Mutex::new(());
+static ISOLATE_CREATE_SECOND_LOCK: std::sync::Mutex&lt;()&gt; = std::sync::Mutex::new(());
+static NEXT_ISOLATE_CREATE_SLOT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+static ISOLATE_INITIALIZED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+</code></pre>
+<p>The first isolate creation is serialized. Later ones are allowed in pairs. The reason is in the comment: an unbounded number of simultaneous restorations raises central processing unit (CPU) time and peak memory. A server that starts 50 pages at once would otherwise run 50 snapshot restorations on the same cores.</p>
+<p>The snapshot is a build artifact:</p>
+<pre><code class="language-rust">// crates/obscura-js/build.rs:13-20
+    // Detect cross-compilation: build script runs on host, target differs.
+    let target = std::env::var(&quot;TARGET&quot;).unwrap_or_default();
+    let host = std::env::var(&quot;HOST&quot;).unwrap_or_default();
+    let is_cross = target != host;
+
+    let bootstrap_source = include_str!(&quot;js/bootstrap.js&quot;)
+        .replace(&quot;/* INDEXED_DB */&quot;, include_str!(&quot;js/indexed_db.js&quot;));
+    let bootstrap_js = bootstrap_source.as_str();
+</code></pre>
+<p>Two source files become one script. <code>bootstrap.js</code> holds the browser environment, and <code>indexed_db.js</code> holds the Indexed Database implementation. The build splices the second into a marker in the first, so the shipped environment is one file with no run-time include.</p>
+<p>A cross-compilation deserves a note, because a snapshot is architecture-specific. The build script says so and uses a target-specific <code>mksnapshot</code> tool:</p>
+<pre><code class="language-text">// crates/obscura-js/build.rs:23-29
+        // Cross-compilation: the host V8 (linked into this build script) produces
+        // snapshots for the host architecture, which crash on the target when
+        // deserializing due to architecture-specific heap layout differences.
+        //
+        // Solution: use the target-specific `mksnapshot` tool (built by V8&#x27;s GN
+        // build system) which runs on the host but generates snapshots for the
+        // target architecture. Then wrap the raw blob in deno_core&#x27;s format.
+</code></pre>
+<p>A host-built snapshot restores a heap layout with host pointer sizes. That crashes on a different target. The <code>mksnapshot</code> route produces a target-compatible blob from the host machine.</p>
+<p>The run-time construction then uses the snapshot:</p>
+<pre><code class="language-rust">// crates/obscura-js/src/runtime.rs:674-696
+            // ICU falls back to the host OS locale when no default is set,
+            // so Intl.* formats and resolvedOptions().locale leaked the
+            // operator&#x27;s real locale (an en-AU host showed en-AU) while
+            // navigator.language and Accept-Language say en-US. Pin the one
+            // locale the other surfaces claim (#734). This is process-global.
+            // Set it under the first-creation lock, before parallel restorations.
+            if !ISOLATE_INITIALIZED.load(std::sync::atomic::Ordering::Relaxed) {
+                deno_core::v8::icu::set_default_locale(&quot;en-US&quot;);
+            }
+
+            let mut runtime = JsRuntime::new(RuntimeOptions {
+                extensions: if cfg!(obscura_external_bootstrap) {
+                    vec![deno_core::Extension {
+                        name: &quot;obscura_bootstrap&quot;,
+                        ..Default::default()
+                    }, build_extension()]
+                } else {
+                    vec![build_extension()]
+                },
+                module_loader: Some(module_loader),
+                startup_snapshot: Some(SNAPSHOT),
+                ..Default::default()
+            });
+</code></pre>
+<p>The locale line is a fingerprint fix. International Components for Unicode (ICU) reads the host locale when the program does not set one. A page would then see the operator's locale in <code>Intl.DateTimeFormat().resolvedOptions().locale</code> while <code>navigator.language</code> reports <code>en-US</code>. One process-wide setting makes both surfaces agree.</p>
+<p><strong>Aha:</strong> The snapshot is why the runtime is both fast and constrained. The browser environment is parsed once, at build time, and every page restores it as a memory image. A page therefore pays only for its own scripts. The constraint is that everything that V8 makes global must be correct before the first restore: the locale, the flags, and the bootstrap itself. The source enforces that order with a one-shot lock and an atomic flag, because a late call to <code>V8::set_flags_from_string</code> is a fatal error rather than a no-op.</p>
+<p>The flag rule is explicit:</p>
+<pre><code class="language-rust">// crates/obscura-js/src/v8_flags.rs:17-28
+/// Apply user-supplied V8 flags exactly once, before the first isolate is
+/// created.
+///
+/// `flags` is a raw V8 flag string in the same form V8/Chromium/Node accept
+/// (e.g. `&quot;--max-old-space-size=4096 --max-semi-space-size=64&quot;`). An empty or
+/// whitespace-only string is a no-op and does not consume the one-shot guard,
+/// so a later non-empty call still takes effect.
+///
+/// V8 ignores `set_flags_from_string` once the platform is initialized, so the
+/// first non-empty call must run before any `JsRuntime` is constructed.
+/// Subsequent calls are silently dropped.
+pub fn set_v8_flags(flags: &amp;str) {
+</code></pre>
+<p>The documentation of the function says that later calls are dropped. The implementation keeps the call from reaching V8 at all, because V8's real behaviour is worse than the documentation. The comment in the guard names the actual failure: <code>V8_Fatal</code> and a <code>SIGTRAP</code> that ends the process. A warning replaces the abort.</p>
+<h2>The isolate</h2>
+<p>One runtime is one isolate. The type holds the isolate and every V8-backed field above it:</p>
+<pre><code class="language-rust">// crates/obscura-js/src/runtime.rs:258-299
+pub struct ObscuraJsRuntime {
+    state: Rc&lt;RefCell&lt;ObscuraState&gt;&gt;,
+    object_store: HashMap&lt;String, String&gt;,
+    evaluation_recipes: HashMap&lt;String, String&gt;,
+    object_counter: u64,
+    import_map: Rc&lt;RefCell&lt;ImportMap&gt;&gt;,
+    /// Loader-owned signal for pending dynamic-import graph fetches. This is
+    /// intentionally separate from page fetch/XHR activity so analytics does
+    /// not hold screenshot readiness open.
+    module_load_activity: std::sync::Arc&lt;ModuleLoadActivity&gt;,
+    /// Thread-safe handle to this runtime&#x27;s V8 isolate, captured at
+    /// construction. Lets a watchdog be armed from `&amp;self` (the CDP dispatcher
+    /// only holds `&amp;Page` on the hot path) and is stable for the isolate&#x27;s life.
+    isolate_handle: IsolateHandle,
+    /// Signals that V8 approached its configured heap limit. The callback
+    /// terminates the current script and temporarily raises the limit just
+    /// enough for V8 to unwind instead of aborting the worker process.
+    heap_limit_state: std::sync::Arc&lt;HeapLimitState&gt;,
+    /// Browser module-map evaluation is idempotent. deno_core 0.350 asserts if
+    /// the same ModuleId is evaluated twice, so retain the first outcome for
+    /// duplicate script tags and roots already seen by Obscura.
+    module_evaluations: HashMap&lt;deno_core::ModuleId, Result&lt;(), String&gt;&gt;,
+    /// Append-only record owned by the module loader. A cursor around each
+    /// graph load identifies the dependency specifiers that become evaluated
+    /// with its root.
+    loaded_module_specifiers: Rc&lt;RefCell&lt;Vec&lt;String&gt;&gt;&gt;,
+    /// Successful graph evaluation also evaluates every dependency. Remember
+    /// those URLs so a dependency later encountered as a top-level script is a
+    /// browser-style no-op instead of a second deno_core `mod_evaluate` call.
+    evaluated_module_specifiers: HashMap&lt;String, Result&lt;(), String&gt;&gt;,
+    /// The bound op table, taken from bootstrap at construction and removed from
+    /// the global in the same step. Child frame realms are handed this object so
+    /// their shims can call ops; nothing else can reach it, including page
+    /// script.
+    ops_handoff: Option&lt;deno_core::v8::Global&lt;deno_core::v8::Value&gt;&gt;,
+    // Pending commands are runtime-owned, not client handles that releaseObjectGroup can discard.
+    pending_cdp_evaluations: HashMap&lt;String, v8::Global&lt;v8::Value&gt;&gt;,
+    // Keep the runtime last: custom `Drop` enters its isolate, then every
+    // V8-backed field above is released before `OwnedIsolate` performs the
+    // matching exit and disposes the isolate.
+    js_runtime: JsRuntime,
+}
+</code></pre>
+<p>The field order is a safety rule, and the last comment states it. Rust drops fields in declaration order. Every V8 handle must drop before the isolate that owns it, so <code>js_runtime</code> is last. A custom <code>Drop</code> also enters the isolate, so each handle is released while its isolate is the current one.</p>
+<p>The isolate entry protocol is described in <a href="01-workspace-and-architecture.html">01</a>. The important point here is that the runtime is constructed, then exited, and entered again only around work that touches V8. The wrapper type that does this is <code>EnteredRuntime</code>.</p>
+<h2>The private bridge</h2>
+<p>The bootstrap reads the deno_core bridge once and keeps it in a closure variable:</p>
+<pre><code class="language-javascript">// crates/obscura-js/js/bootstrap.js:4-8
+// deno_core installs its privileged bridge in the page&#x27;s V8 context. Capture
+// it in this private bootstrap closure. The host removes the public global
+// after deno_core finishes binding ops and before any page script runs. All
+// browser APIs below close over this reference.
+const __obscuraCore = globalThis.Deno.core;
+</code></pre>
+<p>Every browser Application Programming Interface (API) in the file closes over <code>__obscuraCore</code>. Page script cannot name that variable, because it is inside the bootstrap function scope.</p>
+<p>A second global exists for child realms, and its own comment explains the handoff:</p>
+<pre><code class="language-javascript">// crates/obscura-js/js/bootstrap.js:112-118
+// Handoff for child frame realms. deno_core binds ops into the main context
+// only, so a realm restored from the snapshot arrives with its own empty
+// private core reference. The host reads this to take the main realm&#x27;s bound op table
+// and to find each new realm&#x27;s own table to fill, then deletes the global in
+// the same step, so page script never sees it (see runtime.rs
+// `take_ops_handoff` / `share_ops_with_realm`).
+globalThis.__obscura_core_handoff = __obscuraCore;
+</code></pre>
+<p>The host reads it and deletes it before page script runs:</p>
+<pre><code class="language-rust">// crates/obscura-js/src/runtime.rs:796-827
+    /// Takes the ops object bootstrap handed out, and removes the handoff from
+    /// the global so page script can never reach `Deno.core.ops`.
+    ///
+    /// Bootstrap keeps the core reference in a private const. Once deno_core
+    /// has bound the ops, this removes both public globals before page code can
+    /// run, leaving the handoff as the host&#x27;s only route to child realms.
+    fn take_ops_handoff(&amp;mut self) -&gt; Option&lt;deno_core::v8::Global&lt;deno_core::v8::Value&gt;&gt; {
+        use deno_core::v8;
+
+        let main = self.runtime().main_context();
+        let mut entered = self.runtime();
+        let isolate = entered.v8_isolate();
+        v8::scope!(let scope, isolate);
+        let context = v8::Local::new(scope, main);
+        let scope = &amp;mut v8::ContextScope::new(scope, context);
+
+        let handoff_key = v8::String::new(scope, &quot;__obscura_core_handoff&quot;)?;
+        let deno_key = v8::String::new(scope, &quot;Deno&quot;)?;
+        let ops_key = v8::String::new(scope, &quot;ops&quot;)?;
+        let global = context.global(scope);
+
+        let core = global.get(scope, handoff_key.into())?;
+        let core = core.to_object(scope)?;
+        let ops = core.get(scope, ops_key.into())?;
+        if !ops.is_object() {
+            return None;
+        }
+        let ops = v8::Global::new(scope, ops);
+        global.delete(scope, handoff_key.into());
+        global.delete(scope, deno_key.into());
+        Some(ops)
+    }
+</code></pre>
+<p>Three lines do the security work: two <code>delete</code> calls and one saved handle. The page's global object no longer has <code>Deno</code>, and it no longer has <code>__obscura_core_handoff</code>. The only reference to the operation table is a Rust <code>v8::Global</code>.</p>
+<p>The result is a page environment with browser APIs but no native bridge. <code>document.querySelector</code> works, because the shim closes over the bridge. <code>Deno.core.ops.op_dom("...")</code> fails, because <code>Deno</code> is undefined.</p>
+<h2>The operation table</h2>
+<p>The extension registers 59 operations:</p>
+<pre><code class="language-rust">// crates/obscura-js/src/ops.rs:7760-7764
+pub fn build_extension() -&gt; Extension {
+    let mut ops = vec![
+        op_dom(),
+        op_script_mark_started(),
+        op_script_try_start(),
+</code></pre>
+<p>The first operation is the general DOM route. The others are typed: cookies, storage, Indexed Database, fetch, navigation, frames, bindings, console, crypto, timers, and input. One operation is a dispatcher over a command string:</p>
+<pre><code class="language-rust">// crates/obscura-js/src/ops.rs:2093-2106
+    state: &amp;OpState,
+    #[string] cmd: String,
+    #[string] arg1: String,
+    #[string] arg2: String,
+    frame_id: u32,
+) -&gt; String {
+    let shared = frame_state(state, frame_id);
+    // Anti-panic boundary: a panic in a DOM op would unwind through deno_core
+    // into V8&#x27;s FFI frame, where V8_Fatal calls abort(3) and takes the whole
+    // engine (and every CDP client) down. Catch it so one malformed selector or
+    // inconsistent tree node degrades to a null result for that single call.
+    // No per-call clone: on the happy path this is just a landing pad, so the
+    // hot DOM path (querySelector/getAttribute/...) pays nothing measurable.
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+</code></pre>
+<p>The signature takes strings and returns a string. The command name selects a branch, and the two arguments carry the parameters. The reply is JavaScript Object Notation (JSON) text that the shim parses. The frame identifier selects the realm.</p>
+<p>That shape is a deliberate trade.</p>
+<ul><li><strong>The cost is parsing.</strong> Every DOM operation crosses a JSON boundary, and a string argument must be escaped.</li><li><strong>The gain is one native entry point.</strong> A new DOM method is a new branch in <code>op_dom_inner</code>, not a new V8 binding. The operation count stays small, and the shim owns the API surface.</li><li><strong>The gain is the panic boundary.</strong> One <code>catch_unwind</code> covers every DOM operation, so a malformed selector returns <code>null</code> instead of aborting the process.</li></ul>
+<p>The <code>catch_unwind</code> is not a general safety net for all native code. The comment in <code>Cargo.toml</code> explains the same rule at the workspace level, and <a href="01-workspace-and-architecture.html">01</a> quotes it.</p>
+<h2>Frame realms</h2>
+<p>An <code>iframe srcdoc</code> gets a real V8 context inside the same isolate. The context is restored from the same snapshot:</p>
+<pre><code class="language-rust">// crates/obscura-js/src/runtime.rs:763-794
+    /// The startup snapshot already contains the whole bootstrap (see
+    /// `build.rs`), so a context restored from it arrives with every DOM class
+    /// and shim installed. Building a realm is therefore a context restore, not
+    /// a re-parse of the whole bootstrap.
+    ///
+    /// The new context has no ops: deno_core binds those into the main context
+    /// only. Use [`Self::share_ops_with_realm`] to give it the same `Deno.core`
+    /// object, which is legal because native function objects are shareable
+    /// between contexts of one isolate.
+    pub(crate) fn create_realm_context(
+        &amp;mut self,
+    ) -&gt; Option&lt;deno_core::v8::Global&lt;deno_core::v8::Context&gt;&gt; {
+        let context = {
+            let mut entered = self.runtime();
+            let isolate = entered.v8_isolate();
+            deno_core::v8::scope!(let scope, isolate);
+            let context = deno_core::v8::Context::from_snapshot(
+                scope,
+                1,
+                deno_core::v8::ContextOptions::default(),
+            )
+            .or_else(|| {
+                deno_core::v8::Context::from_snapshot(
+                    scope,
+                    0,
+                    deno_core::v8::ContextOptions::default(),
+                )
+            })?;
+            deno_core::v8::Global::new(scope, context)
+        };
+        Some(context)
+    }
+</code></pre>
+<p><code>from_snapshot</code> takes a context index. The call tries index 1 and falls back to index 0. That is a version tolerance: the snapshot may contain one or two contexts, depending on how it was built.</p>
+<p>A realm needs more than an operation table. deno_core keeps per-context state in two embedder-data slots, and a snapshot context has null slots. The source aliases the main context's pointers:</p>
+<pre><code class="language-rust">// crates/obscura-js/src/runtime.rs:851-871
+    /// Points a child realm&#x27;s `Deno.core.ops` at the main realm&#x27;s ops object.
+    ///
+    /// A realm restored from the snapshot has its own `Deno.core` with an empty
+    /// ops table, and its bootstrap captured that exact object, so filling the
+    /// `ops` table on it is enough to give every shim in that realm a working
+    /// op surface. The functions are shared, not copied: same isolate.
+    /// deno_core&#x27;s isolate-global promise-reject and dynamic-`import()`
+    /// callbacks read per-context state from V8&#x27;s `ContextState` and
+    /// `ModuleMap` embedder-data slots in the *current* context. A
+    /// snapshot-created frame realm leaves those slots null, so a promise
+    /// rejection or dynamic import inside a frame null-dereferenced in
+    /// deno_core&#x27;s `clone_rc_raw` and segfaulted the whole process (#850, #841).
+    /// Alias the main context&#x27;s slot pointers into the frame context so those
+    /// callbacks resolve to the main realm&#x27;s state instead of crashing.
+    ///
+    /// Safe: the frame context only *borrows* these pointers. The callbacks
+    /// `clone_rc_raw` (increment then drop) them — net-zero on the strong count
+    /// — and obscura never tears a frame context down through deno_core&#x27;s
+    /// `Rc::from_raw` destroy path (only the main realm owns and frees the Rc),
+    /// so no double-free is possible.
+    pub(crate) fn share_deno_context_state_with_realm(
+</code></pre>
+<p>The comment is a proof of memory safety, and it names two issues. A frame realm borrows the pointers. The main realm owns and frees them. The callbacks increment and decrement the count, so the net change is zero.</p>
+<p>The bootstrap side then copies the operation table into the child realm's own object:</p>
+<pre><code class="language-javascript">// crates/obscura-js/js/bootstrap.js:15392-15397
+  const frameId = __obscuraCore.ops.op_initial_frame(_realmFrameId, (child, id, sandboxOpaque) =&gt; {
+    opaque = sandboxOpaque;
+    const core = child.__obscura_core_handoff;
+    for (const name of Object.keys(__obscuraCore.ops)) core.ops[name] = __obscuraCore.ops[name];
+    delete child.__obscura_core_handoff;
+    delete child.Deno;
+</code></pre>
+<p>The child gets the same native functions, not copies of the code. The two globals are deleted in the child as well. A sandbox without <code>allow-same-origin</code> gets an opaque realm, and the source checks the attribute before it builds the realm.</p>
+<div class="mermaid">
+sequenceDiagram
+    participant Page as Parent realm
+    participant Host as Rust host
+    participant V8 as V8 isolate
+    participant Child as Frame realm
+    Page-&gt;&gt;Host: create an iframe with srcdoc
+    Host-&gt;&gt;V8: Context::from_snapshot
+    V8--&gt;&gt;Host: new context
+    Host-&gt;&gt;V8: alias ContextState and ModuleMap slots
+    Host-&gt;&gt;Child: op_initial_frame callback
+    Child-&gt;&gt;Child: copy op functions from the handoff
+    Child-&gt;&gt;Child: delete handoff and Deno
+    Child-&gt;&gt;Page: postMessage and frame APIs
+
+</div>
+<h2>Fault containment</h2>
+<p>The runtime has three guards, and each one bounds a different failure.</p>
+<p><strong>The heap guard</strong> acts before V8's own out-of-memory abort:</p>
+<pre><code class="language-rust">// crates/obscura-js/src/runtime.rs:155-173
+fn install_heap_limit_guard(
+    runtime: &amp;mut JsRuntime,
+    isolate_handle: IsolateHandle,
+    state: std::sync::Arc&lt;HeapLimitState&gt;,
+) {
+    runtime.add_near_heap_limit_callback(move |current_limit, _initial_limit| {
+        let _ = state.restore_limit.compare_exchange(
+            0,
+            current_limit,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        state
+            .tripped
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        isolate_handle.terminate_execution();
+        current_limit.saturating_add(HEAP_LIMIT_RECOVERY_HEADROOM_BYTES)
+    });
+}
+</code></pre>
+<p>The callback stores the limit, marks the trip, terminates the script, and raises the limit by a fixed headroom. The raise is the important part: V8 must allocate a little memory to unwind. A script that hits the cap therefore ends with an error, and the process survives.</p>
+<p><strong>The command watchdog</strong> bounds a remote command:</p>
+<pre><code class="language-rust">// crates/obscura-js/src/cdp_watchdog.rs:1-11
+//! Shared per-command V8 watchdog for the CDP server.
+//!
+//! One long-lived watchdog thread bounds every in-flight V8 command with a
+//! deadline, instead of spawning and joining a thread per command (which adds
+//! ~240us per command on the hot dispatch path). `arm` and `disarm` are a mutex
+//! plus a condvar notify, in the low microseconds.
+//!
+//! With the thread-per-connection server (issue #430) several connections can
+//! have a command armed at the same time (one isolate per connection, each on
+//! its own OS thread), so a single global slot would let one connection&#x27;s arm
+//! overwrite another&#x27;s and leave that command unbounded. The watchdog therefore
+</code></pre>
+<p>One thread, a map of armed slots, and a condition variable. A slot holds a deadline and an <code>IsolateHandle</code>. When a deadline passes, the thread calls <code>terminate_execution</code> on that one isolate. The default command budget is 60 seconds, and <code>OBSCURA_CDP_COMMAND_TIMEOUT_MS</code> changes it.</p>
+<p><strong>The error classifier</strong> decides whether an event-loop error ends the page:</p>
+<pre><code class="language-rust">// crates/obscura-js/src/runtime.rs:184-193
+/// deno_core reports a task&#x27;s uncaught exception and an unhandled promise
+/// rejection as an event-loop error, but a browser treats both as page-local:
+/// window.onerror / unhandledrejection fire and later tasks still run. Only
+/// engine-level failures (watchdog termination, the heap cap, an exhausted
+/// task budget) make the loop itself unusable. (#699)
+pub fn is_fatal_event_loop_error(error: &amp;str) -&gt; bool {
+    error.contains(&quot;execution terminated&quot;)
+        || error.contains(&quot;heap limit exceeded&quot;)
+        || error.contains(&quot;task budget&quot;)
+}
+</code></pre>
+<p>A page that throws an exception is not an engine failure. A page that V8 terminated is. The classifier draws that line by the error text, which is brittle in general and stable here, because all three strings come from deno_core or from this crate.</p>
+<h2>Modules and network work</h2>
+<p>The module loader owns a separate activity counter:</p>
+<pre><code class="language-rust">// crates/obscura-js/src/module_loader.rs:22-30
+/// Observable network activity for ES-module graphs.
+///
+/// deno_core keeps dynamic-import state inside its private module map. The
+/// browser lifecycle still needs to distinguish a genuinely idle page from a
+/// graph whose fetch future is being advanced in short event-loop slices. A
+/// loader-owned counter provides that signal without treating unrelated
+/// fetch/XHR analytics as render-blocking work.
+#[derive(Debug, Default)]
+pub(crate) struct ModuleLoadActivity {
+</code></pre>
+<p>The counter exists because the lifecycle needs one question answered: is a module graph still loading? A general fetch counter would answer "yes" for an analytics beacon and would hold a screenshot open for no reason. The loader's counter covers exactly the imports that can delay a page's readiness.</p>
+<p>The loader also resolves imports through an import map and through a proxy. A classic script gets a code cache:</p>
+<pre><code class="language-rust">// crates/obscura-js/src/runtime.rs:75-103
+const CLASSIC_CODE_CACHE_BYTES: usize = 32 * 1024 * 1024;
+// ponytail: bounded FIFO; only add LRU bookkeeping if eviction profiles justify it.
+static CLASSIC_CODE_CACHE: std::sync::Mutex&lt;std::collections::VecDeque&lt;ClassicCodeCacheEntry&gt;&gt; =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+
+fn cached_classic_code(origin: &amp;str, name: &amp;str, source: &amp;str) -&gt; Option&lt;std::sync::Arc&lt;[u8]&gt;&gt; {
+    let cache = CLASSIC_CODE_CACHE.lock().unwrap_or_else(|error| error.into_inner());
+    cache.iter().rev().find(|entry| {
+        entry.origin == origin &amp;&amp; entry.name == name &amp;&amp; entry.source == source
+    }).map(|entry| entry.data.clone())
+}
+
+fn remember_classic_code(origin: &amp;str, name: &amp;str, source: &amp;str, data: &amp;[u8]) {
+    let bytes = origin.len() + name.len() + source.len() + data.len();
+    if bytes &gt; CLASSIC_CODE_CACHE_BYTES {
+        return;
+    }
+    let mut cache = CLASSIC_CODE_CACHE.lock().unwrap_or_else(|error| error.into_inner());
+    cache.retain(|entry| entry.origin != origin || entry.name != name);
+    let mut used = cache.iter().map(ClassicCodeCacheEntry::bytes).sum::&lt;usize&gt;();
+    while used + bytes &gt; CLASSIC_CODE_CACHE_BYTES || cache.len() &gt;= 64 {
+        let Some(old) = cache.pop_front() else { break };
+        used -= old.bytes();
+    }
+    cache.push_back(ClassicCodeCacheEntry {
+        origin: origin.to_string(), name: name.to_string(), source: source.to_string(),
+        data: std::sync::Arc::from(data),
+    });
+}
+</code></pre>
+<p>The cache holds compiled V8 code, keyed by origin, name, and source text. It is a process-wide <code>Mutex</code>, because compiled code is not page state. The bound is 32 MiB and 64 entries, with first-in-first-out eviction. The comment uses the word <code>ponytail</code> for a deliberately minimal design; the author accepts a FIFO until a profile shows a need for least-recently-used order.</p>
+<p>The key includes the source text, not only the URL. A changed script therefore gets a new entry, and a cached entry can never stand in for different bytes.</p>
+<h2>Limits</h2>
+<table><tr><th>Limit</th><th>Value</th><th>Where</th></tr><tr><td>Native operations</td><td>59</td><td><code>build_extension</code></td></tr><tr><td>Bootstrap source</td><td>About 849 KiB</td><td><code>js/bootstrap.js</code></td></tr><tr><td>Indexed Database source</td><td>About 39 KiB</td><td><code>js/indexed_db.js</code></td></tr><tr><td>Classic code cache</td><td>32 MiB and 64 entries</td><td>Classic script cache</td></tr><tr><td>Concurrent isolate restorations</td><td>2 after the first</td><td>Creation locks</td></tr><tr><td>CDP command budget</td><td>60 seconds</td><td><code>OBSCURA_CDP_COMMAND_TIMEOUT_MS</code></td></tr><tr><td>Heap recovery headroom</td><td>A fixed byte allowance</td><td><code>install_heap_limit_guard</code></td></tr><tr><td>Locale pin</td><td><code>en-US</code></td><td>First isolate creation</td></tr></table>
+<p>Five limits are not in the table.</p>
+<ol><li><strong>The op reply is a JSON string.</strong> A large DOM response costs a parse in JavaScript, and the bridge has no binary path.</li><li><strong>A frame realm shares one isolate.</strong> A page with many iframes shares one heap and one thread, so one frame can exhaust the budget of all of them.</li><li><strong>The heap guard is a near-limit callback.</strong> It acts just below the limit. A single allocation larger than the headroom can still fail before V8 calls the callback.</li><li><strong>The command watchdog terminates the isolate.</strong> It does not unwind the Rust stack. The page is left in a terminated state until it is reset.</li><li><strong>A sandboxed frame with no <code>srcdoc</code> gets no realm.</strong> The bootstrap returns false for that case, so the frame has no document to script.</li></ol>
+<h2>Related documents</h2>
+<ul><li><a href="01-workspace-and-architecture.html">01 Workspace and architecture</a> explains the crate ladder, the isolate entry protocol, and the panic rule.</li><li><a href="02-dom-and-html.html">02 DOM and HTML</a> explains the tree that <code>op_dom</code> commands mutate.</li><li><a href="04-browser-page-lifecycle.html">04 Browser and page lifecycle</a> explains navigation, the script deadline, and <code>awaitLoad</code>-style waits.</li><li><a href="06-cdp-server.html">06 CDP server</a> explains the dispatcher that arms the command watchdog.</li></ul>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
