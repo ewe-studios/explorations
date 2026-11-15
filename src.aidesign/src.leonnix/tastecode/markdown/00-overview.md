@@ -1,7 +1,7 @@
 # TasteCode: product, workspaces, and vocabulary
 
 TasteCode is a local desktop workspace for Artificial Intelligence (AI) coding agents.
-It adds a Design Mode. The public beta is version 0.1.1. The licence is the Apache
+It adds a Design Mode. The public beta is version 0.1.1. The desktop package declares version 0.5.1 at `apps/desktop/package.json:7`. The README release name and the desktop package version do not agree. This exploration records both values and does not resolve them. The licence is the Apache
 License 2.0. The source is a Git checkout at pin `c216616` with 3,519 tracked files.
 
 The product is not an agent. The product is a control surface above several agents.

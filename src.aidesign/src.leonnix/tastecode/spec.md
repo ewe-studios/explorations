@@ -20,7 +20,7 @@ languages: TypeScript, JavaScript, Markdown, Cascading Style Sheets (CSS), Hyper
 | Kind | Git checkout with its own history |
 | Pin | `c216616` (short local commit identifier) |
 | Tracked files | 3,519 |
-| Version | `0.1.1` (`README.md:9`). `package.json` has no version field |
+| Version | `0.1.1` (`README.md:9`). `apps/desktop/package.json:7` declares `0.5.1`. The two values disagree. `package.json` has no version field |
 | Licence | Apache License 2.0 (`LICENSE`). `package.json` has no licence field |
 | Package manager | pnpm `11.8.0` (`package.json:5`) |
 | Node.js engine | `>=22.18.0` (`package.json:7`) |
@@ -183,12 +183,12 @@ the cited source range. The sentence checker is `/tmp/ste.py`.
 | File | Words | Snippets | Bad | Mermaid | Aha |
 |---|---:|---:|---:|---:|---:|
 | `markdown/README.md` | 1,036 | 3 | 0 | 1 | 1 |
-| `markdown/00-overview.md` | 3,282 | 13 | 0 | 2 | 1 |
+| `markdown/00-overview.md` | 3,312 | 13 | 0 | 2 | 1 |
 | `markdown/01-architecture.md` | 3,345 | 14 | 0 | 2 | 1 |
 | `markdown/02-core-mechanism.md` | 3,981 | 17 | 0 | 2 | 1 |
 | `markdown/03-workflow-and-quality.md` | 3,745 | 16 | 0 | 2 | 1 |
 | `markdown/04-limits-and-comparison.md` | 3,912 | 14 | 0 | 2 | 1 |
-| **Total** | **19,301** | **77** | **0** | **11** | **6** |
+| **Total** | **19,331** | **77** | **0** | **11** | **6** |
 
 The fresh-reader review found 22 classes of gap. The writer verified each
 against the source and repaired the real ones. The writer rejected three

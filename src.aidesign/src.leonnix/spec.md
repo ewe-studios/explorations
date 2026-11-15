@@ -214,7 +214,7 @@ for finishing?
 | # | Subproject | State |
 |---:|---|---|
 | 1 | tastecode | DONE (6 documents, 77 snippets, fresh-reader review repaired) |
-| 2 | taste-skill | TODO |
+| 2 | taste-skill | DONE (6 documents, 66 snippets, fresh-reader review repaired) |
 | 3 | cinetic | TODO |
 | 4 | valle-morta | TODO |
 | 5 | afterglow | TODO |
@@ -282,8 +282,8 @@ and the push.
 
 | # | Subproject | Documents | Snippets | Bad | Words | Mermaid | Aha | Links | Fresh reader |
 |---:|---|---:|---:|---:|---:|---:|---:|---|---|
-| 1 | tastecode | 6 | 77 | 0 | 19,301 | 11 | 6 | 0 broken | Done |
-| 2 | taste-skill | pending | | | | | | | |
+| 1 | tastecode | 6 | 77 | 0 | 19,331 | 11 | 6 | 0 broken | Done |
+| 2 | taste-skill | 6 | 66 | 0 | 23,287 | 13 | 9 | 0 broken | Done |
 | 3 | cinetic | pending | | | | | | | |
 | 4 | valle-morta | pending | | | | | | | |
 | 5 | afterglow | pending | | | | | | | |
