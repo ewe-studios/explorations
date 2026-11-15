@@ -290,7 +290,7 @@ Status: verified. The warning is accurate.
 - The hosted product can use code that is not in this snapshot.
 - The external agent CLIs can change their flags after the snapshot date.
 - No runtime behavior was observed. All runtime claims come from source reading.
-- The fresh-reader review reported places where a first-time reader can lose the thread. This pass verified structure and the index. It did not rewrite the deep dives.
+- The fresh-reader review reported places where a first-time reader can lose the thread. The writer verified every finding against the source and repaired the real gaps in all six files. Findings that the source could not settle are marked as unexplained.
 
 ## 11. Verification record
 
@@ -330,4 +330,4 @@ The five deep-dive word counts are between 3,000 and 5,000. Each deep dive has a
 
 The final report gives the completed table. The report also gives the validator result for each file.
 
-The fresh-reader review is a separate check. A fresh agent read each deep dive with no tool use and no web search. The agent reported its findings. This pass checked every finding against the source and repaired the real gaps in the six files. It did not run the build and did not commit.
+The fresh-reader review is a separate check. A fresh agent read the six files with the Read tool only and no web access. The agent reported its findings. The writer checked every finding against the source and repaired the real gaps in the six files. Findings that the source could not settle are marked as unexplained.
