@@ -217,7 +217,7 @@ for finishing?
 | 2 | taste-skill | DONE (6 documents, 66 snippets, fresh-reader review repaired) |
 | 3 | cinetic | DONE (6 documents, 63 snippets, fresh-reader review repaired) |
 | 4 | valle-morta | DONE (6 documents, 76 snippets, fresh-reader review repaired) |
-| 5 | afterglow | TODO |
+| 5 | afterglow | DONE (6 documents, 69 snippets, fresh-reader review repaired) |
 | 6 | earshot | TODO |
 | 7 | unsung-vale | TODO |
 | 8 | athenaion | TODO |
@@ -286,7 +286,7 @@ and the push.
 | 2 | taste-skill | 6 | 66 | 0 | 23,287 | 13 | 9 | 0 broken | Done |
 | 3 | cinetic | 6 | 63 | 0 | 27,165 | 11 | 6 | 0 broken | Done |
 | 4 | valle-morta | 6 | 76 | 0 | 27,226 | 11 | 6 | 0 broken | Done |
-| 5 | afterglow | pending | | | | | | | |
+| 5 | afterglow | 6 | 69 | 0 | 28,271 | 11 | 7 | 0 broken | Done |
 | 6 | earshot | pending | | | | | | | |
 | 7 | unsung-vale | pending | | | | | | | |
 | 8 | athenaion | pending | | | | | | | |
