@@ -219,7 +219,7 @@ for finishing?
 | 4 | valle-morta | DONE (6 documents, 76 snippets, fresh-reader review repaired) |
 | 5 | afterglow | DONE (6 documents, 69 snippets, fresh-reader review repaired) |
 | 6 | earshot | DONE (6 documents, 66 snippets, fresh-reader review repaired) |
-| 7 | unsung-vale | TODO |
+| 7 | unsung-vale | DONE (6 documents, 90 snippets, fresh-reader review repaired) |
 | 8 | athenaion | TODO |
 | 9 | casa-ocaso | TODO |
 | 10 | shanshui | TODO |
@@ -288,7 +288,7 @@ and the push.
 | 4 | valle-morta | 6 | 76 | 0 | 27,226 | 11 | 6 | 0 broken | Done |
 | 5 | afterglow | 6 | 69 | 0 | 28,271 | 11 | 7 | 0 broken | Done |
 | 6 | earshot | 6 | 66 | 0 | 27,313 | 12 | 7 | 0 broken | Done |
-| 7 | unsung-vale | pending | | | | | | | |
+| 7 | unsung-vale | 6 | 90 | 0 | 28,705 | 13 | 6 | 0 broken | Done |
 | 8 | athenaion | pending | | | | | | | |
 | 9 | casa-ocaso | pending | | | | | | | |
 | 10 | shanshui | pending | | | | | | | |
