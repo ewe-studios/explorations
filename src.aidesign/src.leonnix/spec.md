@@ -216,7 +216,7 @@ for finishing?
 | 1 | tastecode | DONE (6 documents, 77 snippets, fresh-reader review repaired) |
 | 2 | taste-skill | DONE (6 documents, 66 snippets, fresh-reader review repaired) |
 | 3 | cinetic | DONE (6 documents, 63 snippets, fresh-reader review repaired) |
-| 4 | valle-morta | TODO |
+| 4 | valle-morta | DONE (6 documents, 76 snippets, fresh-reader review repaired) |
 | 5 | afterglow | TODO |
 | 6 | earshot | TODO |
 | 7 | unsung-vale | TODO |
@@ -285,7 +285,7 @@ and the push.
 | 1 | tastecode | 6 | 77 | 0 | 19,331 | 11 | 6 | 0 broken | Done |
 | 2 | taste-skill | 6 | 66 | 0 | 23,287 | 13 | 9 | 0 broken | Done |
 | 3 | cinetic | 6 | 63 | 0 | 27,165 | 11 | 6 | 0 broken | Done |
-| 4 | valle-morta | pending | | | | | | | |
+| 4 | valle-morta | 6 | 76 | 0 | 27,226 | 11 | 6 | 0 broken | Done |
 | 5 | afterglow | pending | | | | | | | |
 | 6 | earshot | pending | | | | | | | |
 | 7 | unsung-vale | pending | | | | | | | |
