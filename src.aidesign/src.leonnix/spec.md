@@ -223,7 +223,7 @@ for finishing?
 | 8 | athenaion | DONE (6 documents, 78 snippets, fresh-reader review repaired) |
 | 9 | casa-ocaso | DONE (6 documents, 65 snippets, fresh-reader review repaired) |
 | 10 | shanshui | DONE (6 documents, 59 snippets, fresh-reader review repaired) |
-| 11 | golden-temple | TODO |
+| 11 | golden-temple | DONE (6 documents, 71 snippets, fresh-reader review repaired) |
 | 12 | needle-drop | TODO |
 | 13 | feed-backrooms | TODO |
 | 14 | procedural-alpine-lake | TODO |
@@ -292,7 +292,7 @@ and the push.
 | 8 | athenaion | 6 | 78 | 0 | 24,075 | 11 | 5 | 0 broken | Done |
 | 9 | casa-ocaso | 6 | 65 | 0 | 27,652 | 11 | 10 | 0 broken | Done |
 | 10 | shanshui | 6 | 59 | 0 | 27,986 | 12 | 5 | 0 broken | Done |
-| 11 | golden-temple | pending | | | | | | | |
+| 11 | golden-temple | 6 | 71 | 0 | 29,624 | 11 | 7 | 0 broken | Done |
 | 12 | needle-drop | pending | | | | | | | |
 | 13 | feed-backrooms | pending | | | | | | | |
 | 14 | procedural-alpine-lake | pending | | | | | | | |
