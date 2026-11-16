@@ -86,7 +86,7 @@ tree of six documents. The **Start here** column fills as each project is publis
 | golden-temple | Offline films | 121 | 97fd9ec | [Start here](../golden-temple/html/README.html) |
 | needle-drop | Offline films | 100 | 8982f09 | [Start here](../needle-drop/html/README.html) |
 | feed-backrooms | Real-time worlds | 94 | 81cdb6a | [Start here](../feed-backrooms/html/README.html) |
-| procedural-alpine-lake | Offline films | 79 | b84c254 | Planned |
+| procedural-alpine-lake | Offline films | 79 | b84c254 | [Start here](../procedural-alpine-lake/html/README.html) |
 | halo-above-the-clouds | Films and worlds | 55 | 1d08819 | Planned |
 | first-bloom | Offline films | 52 | 713525b | Planned |
 | room-at-dawn | Films and worlds | 48 | aab8be2 | Planned |

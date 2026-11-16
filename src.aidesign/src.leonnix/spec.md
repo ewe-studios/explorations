@@ -226,7 +226,7 @@ for finishing?
 | 11 | golden-temple | DONE (6 documents, 71 snippets, fresh-reader review repaired) |
 | 12 | needle-drop | DONE (6 documents, 108 snippets, fresh-reader review repaired) |
 | 13 | feed-backrooms | DONE (6 documents, 84 snippets, fresh-reader review repaired) |
-| 14 | procedural-alpine-lake | TODO |
+| 14 | procedural-alpine-lake | DONE (6 documents, 69 snippets, fresh-reader review repaired) |
 | 15 | halo-above-the-clouds | TODO |
 | 16 | first-bloom | TODO |
 | 17 | room-at-dawn | TODO |
@@ -295,7 +295,7 @@ and the push.
 | 11 | golden-temple | 6 | 71 | 0 | 29,624 | 11 | 7 | 0 broken | Done |
 | 12 | needle-drop | 6 | 108 | 0 | 24,122 | 11 | 7 | 0 broken | Done |
 | 13 | feed-backrooms | 6 | 84 | 0 | 25,152 | 12 | 7 | 0 broken | Done |
-| 14 | procedural-alpine-lake | pending | | | | | | | |
+| 14 | procedural-alpine-lake | 6 | 69 | 0 | 26,546 | 12 | 9 | 0 broken | Done |
 | 15 | halo-above-the-clouds | pending | | | | | | | |
 | 16 | first-bloom | pending | | | | | | | |
 | 17 | room-at-dawn | pending | | | | | | | |

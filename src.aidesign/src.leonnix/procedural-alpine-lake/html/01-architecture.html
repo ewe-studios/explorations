@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>01 Architecture: modules, shaders, cache and process model -- procedural-alpine-lake</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script>
+    (function() {
+      var s = localStorage.getItem('theme');
+      var p = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', s || p);
+    })();
+  </script>
+  <script type="module">
+    (async function() {
+      var blocks = document.querySelectorAll('.mermaid');
+      if (blocks.length === 0) return;
+      var { default: m } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      function cfg() {
+        var d = document.documentElement;
+        var dark = d.getAttribute('data-theme') === 'dark';
+        var s = getComputedStyle(d);
+        var bg = s.getPropertyValue('--bg-strong').trim();
+        var fg = s.getPropertyValue('--fg').trim();
+        var line = s.getPropertyValue('--line-strong').trim();
+        var muted = s.getPropertyValue('--bg-muted').trim();
+        return { startOnLoad: false, securityLevel: 'strict', htmlLabels: false, theme: 'base', flowchart: { curve: 'linear' }, themeVariables: {
+          primaryColor: bg, primaryTextColor: fg, primaryBorderColor: line,
+          lineColor: line, secondaryColor: muted, tertiaryColor: s.getPropertyValue('--bg').trim(),
+          fontFamily: "'JetBrains Mono', monospace" } };
+      }
+      blocks.forEach(function(b) { b.setAttribute('data-src', b.textContent); });
+      async function render() {
+        m.initialize(cfg());
+        blocks.forEach(function(b) { b.removeAttribute('data-processed'); b.innerHTML = b.getAttribute('data-src'); });
+        await m.run({ nodes: blocks });
+      }
+      await render();
+      new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      var overlay = null, container = null, svg = null;
+      var scale = 1, panX = 0, panY = 0, dragging = false, startX, startY;
+      function openModal(src) {
+        if (overlay) return;
+        overlay = document.createElement('div');
+        overlay.className = 'diagram-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        container = document.createElement('div');
+        container.className = 'diagram-modal-container';
+        svg = src.cloneNode(true);
+        container.appendChild(svg);
+        var toolbar = document.createElement('div');
+        toolbar.className = 'diagram-modal-toolbar';
+        toolbar.appendChild(mkBtn('+', function(e) { e.stopPropagation(); zoom(1.3); }));
+        toolbar.appendChild(mkBtn('−', function(e) { e.stopPropagation(); zoom(0.7); }));
+        toolbar.appendChild(mkBtn('fit', function(e) { e.stopPropagation(); resetZoom(); }));
+        toolbar.appendChild(mkBtn('✕', function(e) { e.stopPropagation(); closeModal(); }));
+        container.appendChild(toolbar);
+        var hint = document.createElement('div');
+        hint.className = 'diagram-modal-hint';
+        hint.textContent = 'Scroll to zoom · Drag to pan · Esc to close';
+        document.body.appendChild(overlay);
+        overlay.appendChild(container);
+        document.body.appendChild(hint);
+        scale = 1; panX = 0; panY = 0;
+        container.addEventListener('mousedown', onDragStart);
+        container.addEventListener('wheel', onWheel, { passive: false });
+        overlay.addEventListener('mousedown', onOverlayClick);
+        document.addEventListener('keydown', onKey);
+        setTimeout(function() {
+          var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+          scale = fit; applyTransform();
+        }, 50);
+      }
+      function mkBtn(label, handler) {
+        var b = document.createElement('button');
+        b.className = 'diagram-modal-btn'; b.textContent = label;
+        b.addEventListener('click', handler); return b;
+      }
+      function zoom(f) { scale *= f; applyTransform(); }
+      function resetZoom() {
+        var fit = Math.min(window.innerWidth * 0.9 / svg.clientWidth, window.innerHeight * 0.85 / svg.clientHeight, 1);
+        scale = fit; panX = 0; panY = 0; applyTransform();
+      }
+      function applyTransform() { svg.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')'; }
+      function onWheel(e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); }
+      function onDragStart(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true; startX = e.clientX - panX; startY = e.clientY - panY;
+        container.classList.add('dragging');
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      }
+      function onDragMove(e) { panX = e.clientX - startX; panY = e.clientY - startY; applyTransform(); }
+      function onDragEnd() { dragging = false; container.classList.remove('dragging');
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      function onOverlayClick(e) { if (e.target === overlay) closeModal(); }
+      function onKey(e) { if (e.key === 'Escape') closeModal(); }
+      function closeModal() {
+        if (!overlay) return;
+        overlay.remove(); overlay = null; container = null; svg = null;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+      }
+      setTimeout(function() {
+        document.querySelectorAll('.mermaid').forEach(function(el) {
+          el.addEventListener('click', function() {
+            var rendered = el.querySelector('svg');
+            if (rendered) openModal(rendered);
+          });
+        });
+      }, 500);
+    })();
+  </script>
+</head>
+<body>
+  <nav class="nav">
+    <span class="nav-brand">~/procedural-alpine-lake/docs</span>
+    <div class="nav-actions">
+      <a href="00-overview.html" class="nav-breadcrumb">00 Overview: the film, the world and one finished frame</a>
+      <a href="index.html" class="nav-btn" title="Back to index">index</a>
+      <a href="00-overview.html" class="nav-btn" title="Previous: 00 Overview: the film, the world and one finished frame">← prev</a>
+      <a href="02-core-mechanism.html" class="nav-btn nav-btn-next" title="Next: 02 Core mechanism: terrain, erosion, tracing and shading">next →</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light theme">theme</button>
+    </div>
+  </nav>
+  <article class="prose">
+<h1>01 Architecture: modules, shaders, cache and process model</h1>
+<p><code>procedural-alpine-lake</code> is a Python and OpenGL Shading Language (GLSL) program. It renders a 60 second alpine-lake film offline. A graphics processing unit (GPU) does the render. <code>film.py</code> drives a film mode. <code>engine/</code> holds the library. <code>tools/</code> holds the bake and final-render drivers. Every world map and every frame comes from these files.</p>
+<h2>The source tree in numbers</h2>
+<p>The checkout has 79 tracked files (<code>spec.md:25</code>). The code divides into five groups.</p>
+<table><tr><th>Group</th><th>Files</th><th>Lines</th><th>Role</th></tr><tr><td><code>engine/*.py</code></td><td>12</td><td>5,042</td><td>renderer, bake, erosion, features, camera, finishing, GPU helpers</td></tr><tr><td><code>engine/shaders/</code></td><td>28</td><td>14,444</td><td>scene passes, materials, bake and erosion shaders</td></tr><tr><td><code>audio/*.py</code></td><td>6</td><td>8,221</td><td>nature bed, three scores, one shared score library, analysis</td></tr><tr><td><code>tools/*.py</code></td><td>7</td><td>293</td><td>final bake, final render, path check, map, memory and pass profiles</td></tr><tr><td>root Python</td><td>2</td><td>234</td><td><code>film.py</code> and <code>still.py</code></td></tr></table>
+<p>Measured totals are 13,790 Python lines and 14,444 GLSL lines. <code>spec.md:75</code> gives 26 shader files. The directory holds 28 files with a <code>.frag</code>, <code>.comp</code> or <code>.glsl</code> suffix. The line total is the same. The difference is a file count. The exploration uses the measured count and records the difference.</p>
+<p>The inventory rows in <code>spec.md:74-78</code> also differ from the measured tree in three places. The spec gives <code>engine/<em>.py</code> as 6,208 lines; the 12 files sum to 5,042. The spec gives <code>audio/</em>.py</code> as 7 files and 6,468 lines; the tree holds 6 files and 8,221 lines. The spec gives <code>tools/*.py</code> as 343 lines; the 7 files sum to 293. The measured rows add to the stated 13,790 line total: 5,042 + 8,221 + 293 + 234. The exploration therefore uses the measured rows and quotes the spec total as the checked fact. It does not repeat the three stale sub-totals.</p>
+<p>The table covers the 55 code files. The other 24 tracked files are <code>.gitignore</code>, <code>PROMPT.md</code>, the project <code>README.md</code>, <code>requirements.txt</code>, <code>audio/film_shots.json</code> and the 19 images under <code>docs/</code>.</p>
+<p>The 12 engine modules are <code>render.py</code> (506 lines), <code>bake.py</code> (783), <code>erosion.py</code> (1,687), <code>features.py</code> (396), <code>camera_path.py</code> (97), <code>post.py</code> (389), <code>gl.py</code> (135), <code>glstrip.py</code> (168), <code>gpuslot.py</code> (228) and <code>shots.py</code> (91). The last two are <code>shots_film.py</code> (422) and <code>treemap_port.py</code> (140). The audio modules are <code>soundtrack.py</code> (1,884), <code>score_a.py</code> (1,139), <code>score_b.py</code> (1,493), <code>score_c.py</code> (1,659), <code>music.py</code> (1,372) and <code>analysis.py</code> (674). <code>score_a.py</code> and <code>score_b.py</code> are alternate score candidates. <code>music.py</code> is a shared synthesis library and a music-only score; <code>score_a.py</code> imports it (<code>audio/score_a.py:39</code>). All four audio programs have a <code>__main__</code> block; the final path uses <code>score_c.py</code>. The tools are <code>bake_final.py</code> (57), <code>render_final.py</code> (66), <code>check_paths.py</code> (39), <code>worldmap.py</code> (53), <code>memwrap.py</code> (27), <code>passprof.py</code> (37) and <code>rebake_maps.py</code> (14).</p>
+<h2>The modules</h2>
+<p>Each module has one job. The table gives the job and the main entry point.</p>
+<table><tr><th>Module</th><th>Job</th><th>Entry point</th></tr><tr><td><code>film.py</code></td><td>run a film mode and encode the result</td><td><code>frame_samples</code>, <code>finish_save</code></td></tr><tr><td><code>still.py</code></td><td>render named stills from a small test shot table</td><td>top-level loop</td></tr><tr><td><code>engine/render.py</code></td><td>own the GPU context objects, the camera and the look, and render tiled frames</td><td><code>World</code>, <code>Renderer.render</code></td></tr><tr><td><code>engine/bake.py</code></td><td>build and cache the world maps</td><td><code>bake_all</code></td></tr><tr><td><code>engine/erosion.py</code></td><td>run the multi-level GPU erosion simulation</td><td><code>erode</code></td></tr><tr><td><code>engine/features.py</code></td><td>place and carve the waterfall and stream; place the trail polyline</td><td><code>place</code>, <code>carve</code></td></tr><tr><td><code>engine/camera_path.py</code></td><td>evaluate a smooth camera path</td><td><code>shot_camera</code></td></tr><tr><td><code>engine/shots_film.py</code></td><td>build the 9 shots, their looks and their grades</td><td><code>build</code></td></tr><tr><td><code>engine/post.py</code></td><td>tone map, grade and write the display image</td><td><code>finish</code>, <code>suggest_exposure</code></td></tr><tr><td><code>engine/gl.py</code></td><td>create the context, load includes and compile passes</td><td><code>ctx</code>, <code>Pass</code></td></tr><tr><td><code>engine/glstrip.py</code></td><td>remove functions that a pass cannot reach</td><td><code>reduce</code></td></tr><tr><td><code>engine/gpuslot.py</code></td><td>guard slots, commit memory, compiles and process size</td><td><code>acquire</code>, <code>compile_guard</code></td></tr><tr><td><code>engine/treemap_port.py</code></td><td>reproduce the tree placement on the central processing unit (CPU)</td><td><code>tree_final</code></td></tr><tr><td><code>engine/shots.py</code></td><td>small test shots and the lake axis helper</td><td><code>stills</code>, <code>axis_x</code></td></tr><tr><td><code>audio/soundtrack.py</code></td><td>synthesise and mix the nature bed</td><td>module body</td></tr><tr><td><code>audio/score_c.py</code></td><td>synthesise the film score and the final mix</td><td>module body</td></tr><tr><td><code>audio/analysis.py</code></td><td>measure loudness, peaks, clicks and loops</td><td><code>integrated_lufs</code></td></tr></table>
+<p><code>still.py</code> imports <code>shots</code>, not <code>shots_film</code> (<code>still.py:14</code>). <code>shots.py</code> is a small table for tests. The film uses <code>shots_film.py</code>. A reader must not confuse the two shot tables.</p>
+<h2>The import graph</h2>
+<p>The dependencies point in one direction. The film layer imports the renderer, the finisher and the shot table. The renderer imports the OpenGL helpers and the bake constants. The bake imports the erosion and feature modules inside functions, not at module load (<code>engine/bake.py:85</code>).</p>
+<div class="mermaid">
+flowchart TD
+    film[&quot;film.py&quot;] --&gt; render[&quot;engine/render.py&quot;]
+    film --&gt; post[&quot;engine/post.py&quot;]
+    film --&gt; shots[&quot;engine/shots_film.py&quot;]
+    still[&quot;still.py&quot;] --&gt; render
+    still --&gt; post
+    still --&gt; shotst[&quot;engine/shots.py&quot;]
+    shots --&gt; render
+    shots --&gt; post
+    shots --&gt; cam[&quot;engine/camera_path.py&quot;]
+    shots --&gt; bake[&quot;engine/bake.py&quot;]
+    cam --&gt; render
+    render --&gt; gl[&quot;engine/gl.py&quot;]
+    render --&gt; bake
+    bake --&gt; gl
+    bake -. inside functions .-&gt; ero[&quot;engine/erosion.py&quot;]
+    bake -. inside functions .-&gt; feat[&quot;engine/features.py&quot;]
+    feat --&gt; bake
+    gl --&gt; strip[&quot;engine/glstrip.py&quot;]
+    gl --&gt; slot[&quot;engine/gpuslot.py&quot;]
+    tools[&quot;tools/bake_final.py&quot;] --&gt; bake
+    tools --&gt; ero
+    tools2[&quot;tools/render_final.py&quot;] -. subprocess .-&gt; film
+
+</div>
+<p>The dotted edges are late or indirect. <code>bake.py</code> imports <code>features</code> inside <code>bake_heights</code> (<code>engine/bake.py:85</code>). <code>features.py</code> imports <code>bake</code> at the top (<code>engine/features.py:11</code>). The late import avoids a circular import at module load. <code>tools/render_final.py</code> does not import <code>film.py</code>. It starts <code>film.py</code> as a child process (<code>tools/render_final.py:51-52</code>).</p>
+<h2>Entry points</h2>
+<p>There are six picture-pipeline entry points. Each one is a command that runs from the repository root.</p>
+<ol><li><code>tools/bake_final.py</code> builds the final world. It writes the cache. It can reuse a previous erosion result or run a new one (<code>tools/bake_final.py:33-51</code>).</li><li><code>still.py</code> renders the named test stills from <code>engine/shots.py</code> (<code>still.py:18-21</code>).</li><li><code>film.py stills</code> renders one middle frame for each shot (<code>film.py:121-122</code>).</li><li><code>film.py preview</code> renders a 480 by 270 animatic at 1 sample per pixel (<code>film.py:45</code>).</li><li><code>film.py final</code> renders the final frames and is resumable (<code>film.py:146-149</code>).</li><li><code>tools/render_final.py</code> runs <code>film.py final</code> in a loop and then encodes (<code>tools/render_final.py:43-64</code>).</li></ol>
+<p>The audio has its own entry points. <code>audio/soundtrack.py</code> writes the nature bed. <code>audio/score_c.py</code> reads the bed and writes the final mix. They are not part of the six above. The project README gives the order: nature bed first, then the score (<code>README.md:84-86</code>).</p>
+<h2>Process model</h2>
+<p>Each process that opens a GPU context takes one machine-wide slot. The context is a standalone OpenGL 4.3 context, not a window.</p>
+<pre><code class="language-text"># engine/gl.py:18-25
+def ctx():
+    global _ctx, _vbo
+    if _ctx is None:
+        import gpuslot
+        gpuslot.acquire()      # machine-wide render slot + free-memory guard (see gpuslot.py)
+        _ctx = moderngl.create_standalone_context(require=430)
+        _vbo = _ctx.buffer(np.array([-1, -1, 3, -1, -1, 3], dtype=&quot;f4&quot;).tobytes())
+    return _ctx
+</code></pre>
+<p><code>gpuslot.acquire</code> blocks until a slot is free and the free commit memory is at least the minimum. The default maximum is 3 slots and the default minimum is 6 gigabytes.</p>
+<pre><code class="language-text"># engine/gpuslot.py:107-129
+def acquire():
+    &quot;&quot;&quot;block until a GPU slot is free and enough commit memory is available.&quot;&quot;&quot;
+    global _held
+    if _held is not None or os.environ.get(&quot;ALPINE_NO_SLOT&quot;) == &quot;1&quot;:
+        return
+    n = int(os.environ.get(&quot;ALPINE_MAX_GPU&quot;, &quot;3&quot;))
+    need = float(os.environ.get(&quot;ALPINE_MIN_COMMIT_GB&quot;, &quot;6&quot;))
+    SLOTS.mkdir(parents=True, exist_ok=True)
+    t0 = time.time(); last = 0.0
+    while True:
+        if free_commit_gb() &gt;= need:
+            for i in range(n):
+                f = SLOTS / f&quot;slot{i}.lock&quot;
+                try:
+                    fd = os.open(f, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                    os.write(fd, str(os.getpid()).encode()); os.close(fd)
+                    _held = f
+                    atexit.register(_release)
+                    import threading
+                    threading.Thread(target=_watchdog, daemon=True).start()
+                    if time.time() - t0 &gt; 5:
+                        print(f&quot;[gpuslot] got slot {i} after {time.time() - t0:.0f}s&quot;, file=sys.stderr, flush=True)
+                    return
+</code></pre>
+<p>The slot files live in <code><repo>/cache/slots</code> (<code>engine/gpuslot.py:26</code>). The guard is machine-wide for one checkout; <code>ALPINE_SLOTS</code> can point several checkouts at one directory. A slot file holds the process identifier. If the process is dead, the next process reclaims the slot (<code>engine/gpuslot.py:130-139</code>). The guard starts a watchdog thread with the slot. The watchdog reads the process commit size every 5 seconds.</p>
+<pre><code class="language-text"># engine/gpuslot.py:85-94
+        time.sleep(5)
+        if _compiling[0]:
+            continue
+        mine = proc_gb()
+        if mine &gt; lim or (mine &gt; 6.0 and free_commit_gb() &lt; 2.5):
+            print(f&quot;[gpuslot] WATCHDOG: this process uses {mine:.1f} GB (limit {lim:.0f} GB, machine free commit &quot;
+                  f&quot;{free_commit_gb():.1f} GB) - exiting to protect the machine. Restart it (memory is freed on exit); &quot;
+                  f&quot;long-lived processes that rebuild Renderers/shaders leak GPU memory.&quot;, file=sys.stderr, flush=True)
+            _release()
+            os._exit(3)
+</code></pre>
+<p>The default limit is 16 gigabytes. The final render driver raises it to 30 gigabytes with <code>ALPINE_MAX_PROC_GB</code> (<code>tools/render_final.py:30</code>). The watchdog also stops a process that uses more than 6 gigabytes while the machine has less than 2.5 gigabytes of commit memory free (<code>engine/gpuslot.py:89</code>). The comment gives the reason: a long-lived render server leaked GPU objects, reached 35 gigabytes and left the machine with 3 gigabytes (<code>engine/gpuslot.py:13-16</code>).</p>
+<p>The memory functions use Windows system calls. On a system where the call fails, <code>free_commit_gb</code> returns 1e9 gigabytes (<code>engine/gpuslot.py:39-45</code>). <code>_alive</code> returns true on failure (<code>engine/gpuslot.py:48-59</code>). <code>proc_gb</code> returns zero on failure (<code>:70-79</code>). The watchdog still runs, but it sees zero use and stops nothing. The memory part of the guard is therefore a Windows feature. The slot part still works on any system with a writable cache directory.</p>
+<div class="mermaid">
+sequenceDiagram
+    participant P as process
+    participant S as cache/slots
+    participant D as driver
+    P-&gt;&gt;S: acquire slot lock
+    S--&gt;&gt;P: slot i held
+    P-&gt;&gt;P: start watchdog thread
+    P-&gt;&gt;D: create OpenGL 4.3 context
+    P-&gt;&gt;S: compile_guard checks compiled key
+    alt key absent
+        P-&gt;&gt;S: take compile.lock
+        P-&gt;&gt;D: compile shader
+        P-&gt;&gt;S: touch compiled key
+    end
+    P-&gt;&gt;D: render tiles
+    P-&gt;&gt;S: release slot at exit
+
+</div>
+<p>The compile guard is the third part of the model. A fresh compile of the full scene shader peaked at 45 to 50 gigabytes, so the guard runs a large new compile one at a time on the machine.</p>
+<pre><code class="language-text"># engine/gpuslot.py:160-180
+    def __enter__(self):
+        if os.environ.get(&quot;ALPINE_NO_SLOT&quot;) == &quot;1&quot;:
+            return self
+        COMPILED.mkdir(parents=True, exist_ok=True)
+        if (COMPILED / self.key).exists() or len(self.key) &lt; 8:
+            return self
+        # the cost grows with the source: ~50 GB for the full ~535 KB scene shader, a few GB for the bake passes
+        big = float(os.environ.get(&quot;ALPINE_COMPILE_GB&quot;, &quot;50&quot;))
+        need0 = max(6.0, big * min(1.0, (self.size / 535000.0)) ** 1.3)
+        if self.need_gb is not None:          # (split scene passes: each &lt; 1 GB, tools/split_probe.py)
+            need0 = float(self.need_gb)
+        if self.need_gb is not None and self.need_gb &lt;= 8.0:
+            # small measured compiles (split scene passes, &lt; 1 GB each): no machine-wide lock, only wait
+            # for the free commit
+            t0 = time.time()
+            while free_commit_gb() &lt; need0:
+                if time.time() - t0 &gt; 60:
+                    print(f&quot;[gpuslot] waiting for {need0:.0f} GB free commit to compile&quot;, file=sys.stderr, flush=True); t0 = time.time()
+                time.sleep(3)
+            _compiling[0] = True
+            return self
+</code></pre>
+<p>The guard estimates the need from the source size. The full 535 kilobyte scene source maps to 50 gigabytes by default. A pass that declares a measured cost of 8 gigabytes or less skips the machine-wide lock and only waits for free commit (<code>engine/gpuslot.py:169-180</code>). The renderer declares 6 gigabytes for each scene pass (<code>engine/render.py:286-289</code>).</p>
+<p><code>self.key</code> is the hexadecimal SHA-1 digest of the source text, encoded as UTF-8 with replacement (<code>engine/gpuslot.py:153-155</code>). <code>COMPILED</code> is the directory <code>cache/slots/compiled</code> (<code>:147</code>). After a successful compile, <code>__exit__</code> creates a zero-length file with the key as its name (<code>:223-225</code>). On later runs that file makes the guard a no-op (<code>:164-165</code>). A SHA-1 digest is always 40 characters, so the <code>len(self.key) < 8</code> condition cannot trigger for a normal string source. The source does not state why that condition exists.</p>
+<p>For a large compile, the guard waits until the free commit reaches the estimate. It then creates <code>cache/slots/compile.lock</code> with an exclusive create and writes its process identifier into the file (<code>engine/gpuslot.py:181-190</code>). On exit it deletes the lock file (<code>:218-222</code>). If the lock exists, the guard reads the identifier. It deletes the lock when the process is dead, or when the file is empty and older than 30 seconds (<code>:195-209</code>).</p>
+<h2>Shader assembly</h2>
+<p>The shader source is assembled in three steps. First, <code>gl._preprocess</code> replaces each <code>#include</code> with the named file, once (<code>engine/gl.py:28-38</code>). Second, <code>glstrip</code> removes the functions that the pass cannot reach. Third, moderngl compiles the result.</p>
+<pre><code class="language-text"># engine/gl.py:44-66
+    def __init__(self, frag, defines=None, compile_gb=None, targets=1):
+        import os
+        c = ctx()
+        header = &quot;#version 430\n&quot; + &quot;&quot;.join(f&quot;#define {k} {v}\n&quot; for k, v in (defines or {}).items())
+        if os.environ.get(&quot;ALPINE_NONCE&quot;):           # force a fresh driver compile (compile-cost tests)
+            header += f&quot;#define ALPINE_NONCE {os.environ[&#x27;ALPINE_NONCE&#x27;]}\n&quot;
+        full = header + _preprocess(frag, set())
+        self.source = full
+        if os.environ.get(&quot;ALPINE_NO_STRIP&quot;) != &quot;1&quot;:
+            # only the code this pass runs (glstrip.py): a smaller compile, and edits elsewhere keep its
+            # driver cache entry valid
+            try:
+                import glstrip
+                self.source = glstrip.reduce(full)
+            except ValueError as e:
+                print(f&quot;[gl] {frag}: no source reduction ({e})&quot;, flush=True)
+        import gpuslot
+
+        def build():
+            # (the monolithic scene shader peaked at ~45-50 GB per fresh compile, see gpuslot.py; compile_gb =
+            # free commit to wait for, for passes measured to compile small)
+            with gpuslot.compile_guard(self.source, compile_gb):
+                self.prog = c.program(vertex_shader=VS, fragment_shader=self.source)
+</code></pre>
+<p>The reduction is optional. <code>ALPINE_NO_STRIP=1</code> skips it. If the reduced source fails to compile, the code prints a message and compiles the full source (<code>engine/gl.py:75-83</code>). The fallback protects a correct render when the reducer makes a mistake.</p>
+<p>The reducer starts from <code>main</code>. It adds every function named outside a function body and every function named in a <code>#define</code>. It then follows function names through the definitions, starting from those roots.</p>
+<pre><code class="language-text"># engine/glstrip.py:128-151
+    # roots: main, anything named outside function bodies (prototypes, global initialisers) and in #defines
+    outside, last = [], 0
+    for _, s, e in sorted(funcs, key=lambda f: f[1]):
+        outside.append(mk[last:s])
+        last = e
+    outside.append(mk[last:])
+    ids = set(_ID.findall(&quot;&quot;.join(outside)))
+    ids |= set(_ID.findall(&quot;\n&quot;.join(l for l in src.split(&quot;\n&quot;) if l.lstrip().startswith(&quot;#define&quot;))))
+    reach = {&quot;main&quot;} | (ids &amp; defs.keys())
+    todo = list(reach)
+    while todo:
+        n = todo.pop()
+        for _, s, e in defs[n]:
+            for k in set(_ID.findall(mk[s:e])) &amp; defs.keys():
+                if k not in reach:
+                    reach.add(k)
+                    todo.append(k)
+    drop = sorted((f for f in funcs if f[0] not in reach), key=lambda f: f[1])
+    out, last = [], 0
+    for _, s, e in drop:
+        out.append(src[last:s])
+        last = e
+    out.append(src[last:])
+    return &quot;&quot;.join(out)
+</code></pre>
+<p>The reducer raises an error when the braces do not balance or when the source has no <code>main</code> (<code>engine/glstrip.py:121-127</code>). A pass with an unparseable source therefore prints a message and uses the full source.</p>
+<p>The compiler may compile a shader lazily at the first draw. <code>Pass</code> forces the compile inside the guard. It draws a dummy 1 by 1 triangle into a framebuffer with the real target layout (<code>engine/gl.py:62-74</code>). The comment says the AMD driver often compiles at the first draw. The forced draw makes the compile happen inside the memory guard, not later during a tile.</p>
+<p>If the compile fails, <code>Pass</code> writes a numbered copy of the source to <code>cache/failed_<name>.glsl</code> (<code>engine/gl.py:84-88</code>). The error message gives the path. The code does not try to recover from a real compile error.</p>
+<h2>The shader set</h2>
+<p>The 28 shader files divide into five groups.</p>
+<table><tr><th>Group</th><th>Files</th><th>Job</th></tr><tr><td>Scene</td><td><code>scene.frag</code>, <code>probe.frag</code></td><td>the ten scene programs and the light probe</td></tr><tr><td>World and light</td><td><code>world.glsl</code>, <code>heightfn.glsl</code>, <code>common.glsl</code>, <code>lighting.glsl</code>, <code>sky.glsl</code></td><td>map access, analytic terrain, shared helpers, shadows and atmosphere</td></tr><tr><td>Materials</td><td><code>terrain_shade.glsl</code>, <code>shade_rocks.glsl</code>, <code>shade_trees.glsl</code>, <code>trees.glsl</code>, <code>rocks.glsl</code>, <code>hero.glsl</code>, <code>ground.glsl</code></td><td>terrain, rock, tree, placed boulder and ground-cover shading</td></tr><tr><td>Water and falls</td><td><code>water.glsl</code>, <code>water_shade.glsl</code>, <code>falls.glsl</code></td><td>lake waves, lake optics and the waterfall volume</td></tr><tr><td>Bake and erosion</td><td><code>bake_height.frag</code>, <code>bake_near.frag</code>, <code>bake_features.frag</code>, <code>bake_forest.frag</code>, <code>bake_trees.frag</code>, <code>bake_ao.frag</code>, <code>bake_shadow.frag</code>, <code>erosion_fill.comp</code>, <code>erosion_accum.comp</code>, <code>erosion_hill.comp</code>, <code>erosion_common.glsl</code></td><td>the world bake and the erosion compute kernels</td></tr></table>
+<p><code>engine/shaders/scene.frag</code> is one source with three roles. It is compiled with <code>SCENE_PASS 98</code> for the cone pre-pass. It is compiled with <code>SCENE_PASS 99</code> for the primary trace. It is compiled eight more times with <code>SCENE_PASS 0</code> to <code>SCENE_PASS 7</code> for the hit kinds (<code>engine/render.py:272-289</code>). The renderer therefore creates ten programs from one file: cone, trace and eight kinds.</p>
+<p><code>shade_rocks.glsl</code> and <code>shade_trees.glsl</code> are the largest files. They hold the material detail for the rocks and the trees. <code>water_shade.glsl</code> holds the lake optics and reads the trace functions, so it must be included after them (<code>engine/shaders/scene.frag:131</code>).</p>
+<h2>The cache layer</h2>
+<p>The bake writes named arrays into the cache directory. The default is <code>cache_final</code> (<code>engine/bake.py:15</code>). <code>ALPINE_CACHE</code> changes it. The renderer reads the cache at <code>World</code> construction.</p>
+<pre><code class="language-text"># engine/render.py:121-139
+class World:
+    def __init__(self):
+        if not all((bake.CACHE / f).exists() for f in (&quot;h_far.npy&quot;, &quot;h_near.npy&quot;, &quot;water_level.npy&quot;, &quot;forest.npy&quot;)):
+            raise RuntimeError(f&quot;world not baked in {bake.CACHE}: run python tools/bake_final.py first&quot;)
+        m = bake.bake_all()
+        self.t = {
+            &quot;uHFar&quot;: gl.tex2d(m[&quot;hfar&quot;]),
+            &quot;uHNear&quot;: gl.tex2d(m[&quot;hnear&quot;]),
+            &quot;uAOFar&quot;: gl.tex2d(m[&quot;aof&quot;].astype(np.float32)),
+            &quot;uAONear&quot;: gl.tex2d(m[&quot;aon&quot;].astype(np.float32)),
+            &quot;uForest&quot;: gl.tex2d(m[&quot;forest&quot;]),
+            &quot;uWaterLvl&quot;: gl.tex2d(m[&quot;level&quot;], filt=&quot;nearest&quot;),
+        }
+        n3 = m[&quot;noise3&quot;]
+        c = gl.ctx()
+        t3 = c.texture3d(n3.shape[:3][::-1], 4, np.ascontiguousarray(n3.transpose(2, 1, 0, 3)).tobytes(), dtype=&quot;f1&quot;)
+        t3.filter = (moderngl.LINEAR, moderngl.LINEAR)
+        t3.repeat_x = t3.repeat_y = t3.repeat_z = True
+        self.t[&quot;uNoise3&quot;] = t3
+</code></pre>
+<p>The four required files are <code>h_far.npy</code>, <code>h_near.npy</code>, <code>water_level.npy</code> and <code>forest.npy</code>. The other maps are optional. The renderer substitutes a small neutral array when an optional map is absent (<code>engine/render.py:140-151</code>). The near water level map becomes a 4 by 4 array of -1e4, so no near water surface is drawn. The near stream map becomes zeros, so no stream water or foam is drawn. The stream corridor map becomes 99, so rock placement sees no nearby stream. The check gives a clear error before the load. <code>bake_all()</code> runs with <code>force=False</code>, so each bake function returns its existing cache (<code>engine/bake.py:769-774</code>).</p>
+<p>The named producers are functions in <code>engine/bake.py</code>: <code>bake_heights</code>, <code>bake_near_from_far</code>, <code>talus_cones</code>, <code>river_post</code> and <code>bake_world_maps</code>. The stream corridor is <code>engine/features.py:_stream_corridor</code>. The shader producers are the bake passes in <code>engine/shaders/</code>.</p>
+<table><tr><th>Cache file</th><th>Shape and type</th><th>Producer</th><th>Consumer</th></tr><tr><td><code>h_far_raw.npy</code></td><td>8192 squared, 32 bit float</td><td><code>bake_height.frag</code></td><td><code>bake_heights</code></td></tr><tr><td><code>h_far.npy</code></td><td>8192 squared, 32 bit float</td><td><code>bake_heights</code></td><td><code>uHFar</code></td></tr><tr><td><code>h_near.npy</code></td><td>4096 squared, 32 bit float</td><td><code>bake_near_from_far</code></td><td><code>uHNear</code></td></tr><tr><td><code>h_eroded.npy</code></td><td>8192 squared, 32 bit float</td><td><code>bake_heights</code></td><td>shore-shaped height for offline re-runs</td></tr><tr><td><code>erosion_height.npy</code></td><td>8192 squared, 32 bit float</td><td><code>bake_heights</code></td><td>raw erosion output for later bakes</td></tr><tr><td><code>flow.npy</code></td><td>8192 squared, 32 bit float</td><td><code>bake_heights</code>, from the erosion output</td><td>forest and talus</td></tr><tr><td><code>talus.npy</code></td><td>8192 squared, 32 bit float</td><td><code>talus_cones</code></td><td>forest and boulders</td></tr><tr><td><code>sediment.npy</code></td><td>8192 squared, 32 bit float</td><td><code>bake_heights</code>, from the erosion output</td><td>later bake runs</td></tr><tr><td><code>ao_far.npy</code>, <code>ao_near.npy</code></td><td>far and near grids, 32 bit float</td><td><code>bake_ao</code></td><td><code>uAOFar</code>, <code>uAONear</code></td></tr><tr><td><code>water_level.npy</code></td><td>far grid, 32 bit float</td><td><code>bake_world_maps</code></td><td><code>uWaterLvl</code></td></tr><tr><td><code>water_level_near.npy</code></td><td>near grid, 32 bit float</td><td><code>bake_world_maps</code></td><td><code>uWaterLvlNear</code></td></tr><tr><td><code>forest.npy</code></td><td>far grid, 4 by 8 bit channels</td><td><code>bake_forest.frag</code></td><td><code>uForest</code></td></tr><tr><td><code>noise3d.npy</code></td><td>128 cubed, 4 by 8 bit channels</td><td><code>bake_noise3d</code></td><td><code>uNoise3</code></td></tr><tr><td><code>trees.npy</code></td><td>4096 squared, 4 by 32 bit float</td><td><code>bake_trees.frag</code></td><td><code>uTrees</code></td></tr><tr><td><code>stream_near.npy</code></td><td>near grid, 4 by 16 bit float</td><td><code>features.carve</code></td><td><code>uStreamNear</code></td></tr><tr><td><code>stream_corr.npy</code></td><td>near crop, 4 by 16 bit float</td><td><code>features._stream_corridor</code></td><td><code>uStreamCorr</code></td></tr><tr><td><code>river.npz</code></td><td>four float arrays</td><td><code>river_post</code></td><td><code>bake_world_maps</code></td></tr><tr><td><code>cones.npy</code></td><td>far grid, 16 bit float</td><td><code>talus_cones</code></td><td><code>bake_forest.frag</code></td></tr><tr><td><code>features.json</code></td><td>text</td><td><code>features.save_meta</code></td><td><code>World.features</code></td></tr></table>
+<p><code>erosion_height.npy</code> holds the raw erosion output (<code>engine/bake.py:64</code>). <code>h_eroded.npy</code> holds that surface after the shore shaping (<code>:83</code>). A later bake reuses the raw file; an offline re-run reads the shaped file.</p>
+<p>The types come from the save call and the shader uniform comment. <code>trees.npy</code> is 4096 by 4096 with 4 float channels (<code>engine/render.py:172</code>). The per-cell record is base height, signed height, crown radius and crown base (<code>engine/shaders/world.glsl:19</code>). A negative signed height marks a larch. The tree map covers plus or minus 8192 metres, so one texel is one 4 metre cell.</p>
+<p><code>features.json</code> is the link between the bake and the renderer. It holds the waterfall record, the stream polyline and the trail polyline. It also holds the 24 water knots for each fall. <code>World.features</code> loads it without a GPU call (<code>engine/render.py:149-150</code>). The renderer copies the knots into <code>uFallK</code>, <code>uFallInfo</code> and <code>uFallBox</code> (<code>engine/render.py:329-350</code>).</p>
+<h2>World load and CPU helpers</h2>
+<p><code>World</code> uploads the maps as textures. It creates the 3D noise texture with repeat on all three axes (<code>engine/render.py:134-139</code>). The load then checks the tree cell map, bakes it on the GPU if it is absent, uploads it, and builds a small CPU-side tree bound map.</p>
+<pre><code class="language-text"># engine/render.py:151-160
+        trees_p = bake.CACHE / &quot;trees.npy&quot;
+        if not trees_p.exists():
+            self._bake_trees(trees_p)
+        trees_a = np.load(trees_p)
+        self.t[&quot;uTrees&quot;] = gl.tex2d(trees_a, filt=&quot;nearest&quot;)
+        # (perf4) tree-free space for the march / the tree shadows (trees.glsl treeTopAt): per 16 m block (4 x 4 tree cells)
+        # R = upper bound of the tree tops over the block and its 8 neighbours, G = clearance (m) to the crowns of the
+        # trees further out
+        self.t[&quot;uTreeTop&quot;] = gl.tex2d(tree_tops(trees_a), filt=&quot;nearest&quot;)
+        del trees_a
+</code></pre>
+<p><code>tree_tops</code> is not the tree geometry. It is a conservative bound. For each block of 4 by 4 tree cells, it stores the highest possible tree top over the block and its eight neighbours. It also stores the horizontal clearance to the crowns of trees outside the 3 by 3 block group (<code>engine/render.py:233-243</code>).</p>
+<pre><code class="language-text"># engine/render.py:233-243
+def tree_tops(a, blk=4, cell=4.0, reach=12.0):   # (r4 merge: trees4 skirt x1.15 + treeLowWiden x1.2 -&gt; treeReach up to ~11.6 m)
+    &quot;&quot;&quot;(perf4) tree-free space per block of blk x blk tree cells (uTrees texel layout: [row = z cell, col = x cell],
+    (baseY, signed H, crown R, crown base)): R = max over the block and its 8 neighbours of the highest possible
+    point of any tree (trees.glsl treeFinish: H &lt;= min(1.6 |H0|, 34), a broken top&#x27;s snag &lt;= 2.4 m above it; -1e4 = none),
+    G = horizontal clearance (m) from any point of the block to the crowns (reach &lt;= 12 m, treeReach) of the trees
+    outside those 3 x 3 blocks (&gt;= 7.4 m).&quot;&quot;&quot;
+    n = a.shape[0] // blk
+    occ = a[..., 1] != 0.0
+    top = np.where(occ, a[..., 0] + np.minimum(1.6 * np.abs(a[..., 1]), 34.0) + 2.4, -1e4).astype(np.float32)
+    top = top.reshape(n, blk, n, blk).max(axis=(1, 3))
+    ob = occ.reshape(n, blk, n, blk).any(axis=(1, 3))
+</code></pre>
+<p>The trace uses this map to skip empty space (<code>engine/shaders/scene.frag:190-197</code>). A reader must not treat <code>tree_tops</code> as the tree shape. It is a bound for a march step.</p>
+<p><code>World.height</code> gives a CPU bilinear height. It uses the near map when the point is inside 95 percent of the near half width, and the far map otherwise (<code>engine/render.py:211-224</code>). The camera search and the shot builders call this function. The GPU never calls it.</p>
+<h2>The renderer object graph</h2>
+<p><code>Renderer.__init__</code> creates the ten programs, the probe, the accumulator, the two G-buffer (geometry buffer) textures and the cone texture. The probe reads sky light. The accumulator sums the samples. The G-buffer holds the trace result. The cone texture holds one start distance per 4 by 4 pixel block.</p>
+<pre><code class="language-text"># engine/render.py:278-303
+class Renderer:
+    def __init__(self, width, height, quality=1, world=None, tile=192):
+        self.w, self.h = width, height
+        self.world = world or World()
+        self.tile = tile
+        t0 = time.time()
+        # split renderer (scene.frag): the primary trace writes a G-buffer, then one program per hit kind
+        # shades its pixels into the accumulator (one program cost ~45-50 GB / 13-36 min to compile)
+        self.trace = gl.Pass(&quot;scene.frag&quot;, {&quot;QUALITY&quot;: quality, &quot;SCENE_PASS&quot;: 99}, compile_gb=6, targets=2)
+        self.kpass = [gl.Pass(&quot;scene.frag&quot;, {&quot;QUALITY&quot;: quality, &quot;SCENE_PASS&quot;: k}, compile_gb=6) for k in SCENE_KINDS]
+        # (perf4) cone pre-pass (scene.frag SCENE_PASS 98): per 4 x 4 pixel block the distance the primary rays start at
+        self.cone = gl.Pass(&quot;scene.frag&quot;, {&quot;QUALITY&quot;: quality, &quot;SCENE_PASS&quot;: 98}, compile_gb=6)
+        self.scene = self.trace
+        self.probe = gl.Pass(&quot;probe.frag&quot;)
+        print(f&quot;shaders compiled in {time.time()-t0:.1f}s&quot;, flush=True)
+        self._first = True
+        c = gl.ctx()
+        self.acc = c.texture((width, height), 4, dtype=&quot;f4&quot;)
+        self.fbo = c.framebuffer([self.acc])
+        self.gtex = [c.texture((width, height), 4, dtype=&quot;f4&quot;) for _ in range(2)]
+        for g in self.gtex:
+            g.filter = (moderngl.NEAREST, moderngl.NEAREST)
+        self.gfbo = c.framebuffer(self.gtex)
+        self.ctex = c.texture(((width + 3) // 4, (height + 3) // 4), 1, dtype=&quot;f4&quot;)
+        self.ctex.filter = (moderngl.NEAREST, moderngl.NEAREST)
+        self.cfbo = c.framebuffer([self.ctex])
+</code></pre>
+<p>The accumulator is a float texture with four channels. The G-buffer is two float textures with nearest filtering (<code>engine/render.py:295-300</code>). The cone texture is quarter size in each axis, because one cone covers each 4 by 4 pixel block (<code>engine/render.py:301-303</code>). The G-buffer is not quarter size: the trace writes one record for each pixel.</p>
+<p>The renderer sets <code>compile_gb=6</code> for each scene pass. The comment states the measured cost of the unsplit program again (<code>engine/render.py:284-286</code>). The <code>probe</code> pass has no declared cost, so the guard estimates from its source size.</p>
+<h2>Tile and kind loop</h2>
+<p><code>Renderer.render</code> loops over samples, then over tiles. The tile order is row by row, left to right (<code>engine/render.py:469-470</code>). The tile loop draws the cone pre-pass at quarter scale, then the trace, and then reads back the kind channel.</p>
+<pre><code class="language-text"># engine/render.py:479-498
+                    self.trace.draw(self.gfbo, rect)
+                    # (perf4) the hit kinds present in this tile (G-buffer readback = the tile&#x27;s one sync point): a kind
+                    # pass with no pixel here is skipped (it would only discard every pixel), the others are queued
+                    # back to back without a c.finish() each (under GPU sharing every finish waited for other
+                    # processes&#x27; work: ~7 % of the frame per empty pass)
+                    kb = np.frombuffer(self.gfbo.read(viewport=rect, components=2, attachment=0, dtype=&quot;f4&quot;), np.float32)[1::2]
+                    kin = np.bincount(np.clip(kb.astype(np.int32), 0, 15), minlength=16)
+                    if prof is not None:
+                        prof[&quot;trace&quot;] = prof.get(&quot;trace&quot;, 0.0) + time.time() - tp
+                    c.enable(moderngl.BLEND)
+                    for k, p in zip(SCENE_KINDS, self.kpass):
+                        if kin[k] == 0:
+                            continue
+                        tp = time.time()
+                        p.draw(self.fbo, rect)
+                        if prof is not None:
+                            c.finish()
+                        if prof is not None:
+                            nm = KIND_NAMES[k]
+                            prof[nm] = prof.get(nm, 0.0) + time.time() - tp
+</code></pre>
+<p>The readback is the only place where the CPU waits for the GPU inside the tile loop when profiling is off. With <code>prof</code> set, the code also calls <code>c.finish()</code> after each kind pass (<code>engine/render.py:494-495</code>). The kind histogram uses <code>np.bincount</code> with 16 bins, though only 8 kinds exist (<code>engine/render.py:484-485</code>). The extra bins are unused headroom; the clip keeps a stray value inside the array. The loop skips an empty kind pass. The alternative is to draw the pass and let every pixel discard. The comment gives the measured cost of the alternative under GPU sharing.</p>
+<p>The accumulator is additive across samples and across kind passes. Each pixel receives exactly one kind contribution per sample. The kind pass discards every pixel whose stored kind does not equal the pass number (<code>engine/shaders/scene.frag:286</code>). The additive blend then makes an empty pass harmless, but not free.</p>
+<h2>The final render driver</h2>
+<p><code>tools/render_final.py</code> does not implement rendering. It runs <code>film.py</code> in a restart loop. Each attempt counts the finished frames and stops when the count reaches the expected total.</p>
+<pre><code class="language-text"># tools/render_final.py:43-53
+for attempt in range(40):
+    done = len(list(outdir.glob(&quot;[0-9]&quot; * 5 + &quot;.png&quot;)))
+    log.write(f&quot;[{time.strftime(&#x27;%H:%M:%S&#x27;)}] attempt {attempt}: {done}/{expected()} frames present\n&quot;); log.flush()
+    if done &gt;= expected():
+        break
+    groups = [g.split(&quot;:&quot;) for g in args.spp_groups.split(&quot;;&quot;) if g] or [(&quot;&quot;, str(args.spp))]
+    ok = True
+    for shots, spp in groups:
+        r = subprocess.run([PY, str(ROOT / &quot;film.py&quot;), &quot;final&quot;, &quot;--w&quot;, str(args.w), &quot;--h&quot;, str(args.h),
+                            &quot;--spp&quot;, spp] + ([&quot;--shots&quot;, shots] if shots else []) + common, cwd=ROOT, env=env, stdout=log, stderr=log)
+        ok = ok and r.returncode == 0
+</code></pre>
+<p>The expected count comes from the last shot end time in <code>out/film_shots.json</code> (<code>tools/render_final.py:38-40</code>). The loop makes at most 40 attempts. A killed attempt keeps every finished frame, because <code>film.py final</code> skips a frame whose file already exists (<code>film.py:148-149</code>).</p>
+<p>The sample groups are per shot. Shots 1, 2, 6 and 7 use 6 samples per pixel. Shots 0, 3, 4, 5 and 8 use 8 samples (<code>tools/render_final.py:19-21</code>). The comment says the 6 sample shots are calm moves, and the 8 sample shots have crowns or rocks that move fast through the frame.</p>
+<h2>Aha: source reduction protects the driver cache, not only the memory</h2>
+<p><strong>Aha:</strong> The split renderer solves a memory limit, but the split alone would have a second cost. Every pass is a separate driver program with its own cache key. A naive build would recompile all ten programs after any edit to the huge shared source. <code>glstrip</code> prevents that. It reduces each pass to the functions that <code>main</code> can reach, so a change to a function used only by the tree pass leaves the terrain pass source byte-identical.</p>
+<p>The mechanism has three parts. <code>Pass</code> preprocesses the includes, then calls <code>glstrip.reduce</code> before the compile (<code>engine/gl.py:50-59</code>). The reducer builds the reachable set from <code>main</code>, from global names, and from names in <code>#define</code> lines (<code>engine/glstrip.py:128-145</code>). It deletes only whole function bodies that are unreachable. The header and the global declarations stay. A pass that does not use the terrain material therefore does not carry the 1,520 line terrain shader into its compile.</p>
+<p>The reason is measured, not stylistic. The full program cost 45 to 50 gigabytes and 13 to 36 minutes per fresh compile. Each reduced pass costs less than 1 gigabyte and 1 to 210 seconds (<code>engine/shaders/scene.frag:134-136</code>). The reduction also keeps the cache key of an unrelated pass valid after an edit. The source comment states both effects (<code>engine/gl.py:52-54</code>).</p>
+<p>The cost is a build-time risk. The reducer parses C-like source with a brace counter and a function-header pattern. It does not parse the full language. A macro that expands to a function call is covered only when the name appears in a <code>#define</code> line. The fallback to full source is the safety net (<code>engine/gl.py:75-83</code>).</p>
+<h2>What the architecture does not have</h2>
+<p>The source has no plugin system, no scene file format and no asset loader. A change to the world means a change to a function or a constant and a new bake. A change to a shot means a change to <code>engine/shots_film.py</code>.</p>
+<p>The source has no unit tests. The <code>tools/</code> directory holds checks, maps and profiles, not a test suite. <code>tools/check_paths.py</code> checks the camera paths (<code>tools/check_paths.py:1-39</code>). <code>tools/passprof.py</code> measures pass time. No file asserts a golden image or a hash of the cache.</p>
+<p>The source has no package metadata. There is no <code>pyproject.toml</code> and no <code>setup.py</code>. The program runs as scripts from the repository root (<code>README.md:74</code>). The dependencies are listed in <code>requirements.txt</code> and include moderngl, numpy, scipy and Pillow (<code>spec.md:30</code>).</p>
+<p>The exploration did not run any module. The function names, the line numbers and the call order come from the source text.</p>
+  </article>
+  <script>function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);}</script>
+</body>
+</html>
