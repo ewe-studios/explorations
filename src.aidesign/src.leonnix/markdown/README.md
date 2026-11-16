@@ -80,8 +80,8 @@ tree of six documents. The **Start here** column fills as each project is publis
 | afterglow | Offline films | 351 | ced1038 | [Start here](../afterglow/html/README.html) |
 | earshot | Tooling | 287 | 4ac3d2a | [Start here](../earshot/html/README.html) |
 | unsung-vale | Real-time worlds | 239 | 9f61b0d | [Start here](../unsung-vale/html/README.html) |
-| athenaion | Real-time worlds | 220 | 9b8bd23 | Planned |
-| casa-ocaso | Real-time worlds | 193 | fcc3379 | Planned |
+| athenaion | Real-time worlds | 220 | 9b8bd23 | [Start here](../athenaion/html/README.html) |
+| casa-ocaso | Real-time worlds | 193 | fcc3379 | [Start here](../casa-ocaso/html/README.html) |
 | shanshui | Offline films | 146 | b5357c0 | Planned |
 | golden-temple | Offline films | 121 | 97fd9ec | Planned |
 | needle-drop | Offline films | 100 | 8982f09 | Planned |

@@ -48,7 +48,7 @@ nested projects. The table fills in the order given in the spec.
 | Package | Start here |
 |---------|------------|
 | [open-design](open-design/html/README.html) | [Overview](open-design/html/00-overview.html), then [core mechanism](open-design/html/02-core-mechanism.html) |
-| [src.leonnix](src.leonnix/html/README.html) | In progress: 8 of 19 projects. Published: [tastecode](src.leonnix/tastecode/html/README.html), [taste-skill](src.leonnix/taste-skill/html/README.html), [cinetic](src.leonnix/cinetic/html/README.html), [valle-morta](src.leonnix/valle-morta/html/README.html), [afterglow](src.leonnix/afterglow/html/README.html), [earshot](src.leonnix/earshot/html/README.html), [unsung-vale](src.leonnix/unsung-vale/html/README.html) and [athenaion](src.leonnix/athenaion/html/README.html) |
+| [src.leonnix](src.leonnix/html/README.html) | In progress: 9 of 19 projects. Published: [tastecode](src.leonnix/tastecode/html/README.html), [taste-skill](src.leonnix/taste-skill/html/README.html), [cinetic](src.leonnix/cinetic/html/README.html), [valle-morta](src.leonnix/valle-morta/html/README.html), [afterglow](src.leonnix/afterglow/html/README.html), [earshot](src.leonnix/earshot/html/README.html), [unsung-vale](src.leonnix/unsung-vale/html/README.html), [athenaion](src.leonnix/athenaion/html/README.html) and [casa-ocaso](src.leonnix/casa-ocaso/html/README.html) |
 
 ## Reading order
 
