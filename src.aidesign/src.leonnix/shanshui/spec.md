@@ -196,7 +196,7 @@ shanshui root and the line range.
 | Fresh-reader review | DONE (two rounds, 43 and 11 findings) |
 | Repair reported gaps | DONE |
 | Build HyperText Markup Language (HTML) | DONE (8 pages plus style sheet) |
-| Commit and push | TODO |
+| Commit and push | DONE (`cfa74bb`, pushed) |
 
 ## 8. Resume point
 
@@ -276,4 +276,4 @@ The record fills after the writer and the fresh-reader review.
 | Links | 0 broken relative links | 22 checked, 0 broken |
 | Fresh-reader review | Gaps repaired or recorded | 43 findings in round one, 11 in round two, all repaired |
 | Build | HTML pages generated | Pass (8 pages plus style sheet) |
-| Commit and push | No Artificial Intelligence (AI) attribution | TODO |
+| Commit and push | No Artificial Intelligence (AI) attribution | Pass (`cfa74bb`, pushed) |
