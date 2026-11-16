@@ -150,7 +150,7 @@ The largest source files are `scripts/gate-check.mjs` (960 lines), `scripts/lib/
 | 6 | Fresh-reader review and repair | DONE (10 findings, all repaired) |
 | 7 | Build HyperText Markup Language (HTML) | DONE (8 pages and one stylesheet) |
 | 8 | Update the container index and spec | DONE (18 of 19 in `index.md`, `spec.md` and the container README) |
-| 9 | Commit and push | IN PROGRESS (commit pending) |
+| 9 | Commit and push | DONE (`f8a7ead`) |
 
 ## 9. Resume point
 
@@ -168,4 +168,4 @@ check passes and the result is recorded in the verification table.
 | Links | 21 checked, 0 broken |
 | Fresh-reader review | A separate reader agent with no writing context and no source access reported 10 gaps, including a stray diagram edge and a four-state versus five-state count mismatch. All 10 were repaired |
 | Build | DONE: 8 HTML pages and one stylesheet in `html/` |
-| Commit | Pending |
+| Commit | DONE: `f8a7ead`, pushed to `origin/master` |
