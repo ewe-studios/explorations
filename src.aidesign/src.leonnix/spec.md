@@ -229,7 +229,7 @@ for finishing?
 | 14 | procedural-alpine-lake | DONE (6 documents, 69 snippets, fresh-reader review repaired) |
 | 15 | halo-above-the-clouds | DONE (6 documents, 74 snippets, fresh-reader review repaired) |
 | 16 | first-bloom | DONE (6 documents, 88 snippets, fresh-reader review repaired) |
-| 17 | room-at-dawn | TODO |
+| 17 | room-at-dawn | DONE (6 documents, 80 snippets, fresh-reader review repaired) |
 | 18 | unlazy | TODO |
 | 19 | cook | TODO |
 
@@ -298,7 +298,7 @@ and the push.
 | 14 | procedural-alpine-lake | 6 | 69 | 0 | 26,546 | 12 | 9 | 0 broken | Done |
 | 15 | halo-above-the-clouds | 6 | 74 | 0 | 21,430 | 12 | 9 | 0 broken | Done |
 | 16 | first-bloom | 6 | 88 | 0 | 19,873 | 11 | 9 | 0 broken | Done |
-| 17 | room-at-dawn | pending | | | | | | | |
+| 17 | room-at-dawn | 6 | 80 | 0 | 20,314 | 11 | 6 | 0 broken | Done |
 | 18 | unlazy | pending | | | | | | | |
 | 19 | cook | pending | | | | | | | |
 

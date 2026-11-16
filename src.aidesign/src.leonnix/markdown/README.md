@@ -89,7 +89,7 @@ tree of six documents. The **Start here** column fills as each project is publis
 | procedural-alpine-lake | Offline films | 79 | b84c254 | [Start here](../procedural-alpine-lake/html/README.html) |
 | halo-above-the-clouds | Films and worlds | 55 | 1d08819 | [Start here](../halo-above-the-clouds/html/README.html) |
 | first-bloom | Offline films | 52 | 713525b | [Start here](../first-bloom/html/README.html) |
-| room-at-dawn | Films and worlds | 48 | aab8be2 | Planned |
+| room-at-dawn | Films and worlds | 48 | aab8be2 | [Start here](../room-at-dawn/html/README.html) |
 | unlazy | Agent skills | 37 | 1667149 | Planned |
 | cook | Agent skills | 12 | b23cac6 | Planned |
 

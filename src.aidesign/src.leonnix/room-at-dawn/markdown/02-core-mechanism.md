@@ -1,0 +1,723 @@
+---
+title: Core mechanism of the bake
+---
+
+# The bake: how one window lights a room
+
+## What the bake must produce
+
+The bake solves one problem. A room has one opening. The opening carries sky light. Every other
+surface is diffuse, and the image needs the light at each vertex. The central processing unit (CPU)
+traces the light once, and the result serves every later frame.
+
+The output is three vectors for each vertex. Two are irradiance divided by pi, and the third is a
+direction:
+
+- `gi` for the surface normal.
+- `gd`, a mean direction for the first light that arrives.
+- `giB` for the flipped normal of a two-sided translucent material.
+
+The bake has no area lights, no point lights and no sun disc. The only source is the sky function
+(`src/bake/worker.js:34-43`). The window is the only path from that sky into the room.
+
+The design must solve three problems at once. A small opening makes blind sampling noisy. A sealed
+room needs several bounces to fill the dark corners. A per-vertex result must be smooth across a
+mesh but sharp across a crease. The code answers each problem with a separate mechanism.
+
+## The ray-tracing structure
+
+The driver first copies the scene into flat arrays. It walks every mesh and keeps a mesh only if it
+passes three tests.
+
+```text
+# src/bake/baker.js:25-32
+  root.traverse((o) => {
+    if (!o.isMesh || !visibleDeep(o) || o.userData.bakeOccluder === false) return;
+    const mat = Array.isArray(o.material) ? o.material[0] : o.material;
+    if (!mat || (mat.userData.bake && mat.userData.bake.ignore)) return;
+    const g = o.geometry, inst = o.isInstancedMesh ? o.count : 1;
+    const ic = g.index ? g.index.count : g.attributes.position.count;
+    occ.push({ o, mat, inst, ic }); nV += g.attributes.position.count * inst; nI += ic * inst;
+  });
+```
+
+The tests are visibility, the `bakeOccluder` flag and the material ignore flag. An invisible mesh is
+skipped (`src/bake/baker.js:6`). A decal with `bakeOccluder = false` is skipped. A material with
+`bake.ignore` is skipped, and the sky uses that flag (`src/scene/sky.js:69`).
+
+The driver writes three arrays. `pos` holds world positions, `idx` holds triangle indices and
+`triMat` holds one material index for each triangle. An instanced mesh repeats its geometry once per
+instance, and the world matrix multiplies the instance matrix (`src/bake/baker.js:42-48`). The
+worker then builds one bounding volume hierarchy (BVH) over the union of all triangles
+(`src/bake/worker.js:22`).
+
+The material table holds nine floats per material.
+
+```text
+# src/bake/baker.js:8-16
+function bakeInfo(mat) {
+  const b = mat.userData.bake || {};
+  const c = mat.color || new THREE.Color(0.5, 0.5, 0.5);
+  const alb = (b.albedo || [c.r, c.g, c.b]).map((x) => Math.min(0.92, x));
+  const t = b.trans || 0;
+  const tc = b.transColor || alb;
+  const two = b.twoSided !== undefined ? b.twoSided : mat.side === THREE.DoubleSide;
+  return [alb[0], alb[1], alb[2], t, tc[0], tc[1], tc[2], two ? 1 : 0, b.thru || 0];
+}
+```
+
+The albedo is clamped to 0.92. The transmission value is a probability, and the transmission colour
+is a multiplier. The two-sided flag comes from the material side when the part does not set it. The
+last value is a straight-through probability for sheer cloth. The worker uses it in `trace`: a ray
+that meets such a surface passes through with that probability, up to six times
+(`src/bake/worker.js:71-81`).
+
+## Sample points and welding
+
+The bake does not store light per triangle vertex. It stores light per unique position and normal
+pair. Two vertices that meet at the same place with the same normal share one sample. This rule
+removes seams between meshes and reduces the sample count.
+
+```text
+# src/bake/baker.js:58-63
+  const sampleId = (px, py, pz, nx, ny, nz) => {
+    const k = `${Math.round(px * 5000)},${Math.round(py * 5000)},${Math.round(pz * 5000)},${Math.round(nx * 24)},${Math.round(ny * 24)},${Math.round(nz * 24)}`;
+    let id = key.get(k);
+    if (id === undefined) { id = S.length / 6; key.set(k, id); S.push(px, py, pz, nx, ny, nz); }
+    return id;
+  };
+```
+
+The key quantizes position to 1/5000 metre and each normal component to 1/24. Two positions land in
+the same bucket when every coordinate differs by less than 0.2 millimetres. The normal test is per
+component, not an angular bucket. Two normals share a bucket when each component rounds to the same
+1/24 step. The map returns an integer sample identifier, and the shared array `S` holds six floats
+for each sample.
+
+Before the key is computed, each vertex moves a small distance towards the inside of its own surface.
+
+```text
+# src/bake/baker.js:94-105
+    for (let i = 0; i < p.count; i++) {
+      let px = wp[i * 3], py = wp[i * 3 + 1], pz = wp[i * 3 + 2];
+      const nx = wn[i * 3], ny = wn[i * 3 + 1], nz = wn[i * 3 + 2];
+      if (cnt[i]) {
+        let dx = nud[i * 3] / cnt[i] - px, dy = nud[i * 3 + 1] / cnt[i] - py, dz = nud[i * 3 + 2] / cnt[i] - pz;
+        const dn = dx * nx + dy * ny + dz * nz; dx -= dn * nx; dy -= dn * ny; dz -= dn * nz;
+        const dl = Math.hypot(dx, dy, dz);
+        if (dl > 1e-6) { const s = Math.min(0.0025, dl * 0.3) / dl; px += dx * s; py += dy * s; pz += dz * s; }
+      }
+      e.ids[i] = sampleId(px, py, pz, nx, ny, nz);
+      if (e.back) e.idsB[i] = sampleId(px, py, pz, -nx, -ny, -nz);
+    }
+```
+
+The nudge has three limits. It removes the normal component, so the point stays on the surface plane.
+It uses 30 percent of the distance to the triangle centroid. It caps the move at 2.5 millimetres. The
+purpose is to keep a point that sits exactly on a seam from leaking light through the other surface.
+
+Each mesh keeps an `ids` array and an optional `idsB` array. `idsB` holds the sample for the flipped
+normal, and only a two-sided material has it (`src/bake/baker.js:103-104`). The mapping from a vertex
+to a sample is the bridge between the unique sample list and the per-vertex attributes.
+
+The driver also builds an edge graph over the samples.
+
+```text
+# src/bake/baker.js:106-112
+    for (let i = 0; i < nt; i += 3) {
+      const a = ind ? ind.getX(i) : i, b = ind ? ind.getX(i + 1) : i + 1, c = ind ? ind.getX(i + 2) : i + 2;
+      for (const ids of e.back ? [e.ids, e.idsB] : [e.ids]) {
+        const A = ids[a], B = ids[b], C = ids[c];
+        if (A !== B) { edgesA.push(A); edgesB.push(B); } if (B !== C) { edgesA.push(B); edgesB.push(C); } if (C !== A) { edgesA.push(C); edgesB.push(A); }
+      }
+    }
+```
+
+The graph has one directed edge for each triangle edge. An interior edge is stored twice, once from
+each triangle that shares it. A boundary edge is stored once. The graph uses sample identifiers, not
+vertex indices. Two meshes that share a welded sample are therefore connected through that sample.
+The graph later carries the hole fill and the smoothing pass. Each directed edge contributes to the
+average of its source sample.
+
+The shipped bake has 1,157,291 unique samples and 1,742,198 occluder triangles. Welding merges
+shared corners, so the sample list is smaller than the list of lit vertices that share a position
+and a normal.
+
+## The portal estimator
+
+The window is a rectangle at z = 0. The driver passes the rectangle, its area and the room bounds to
+every worker (`src/scene/room.js:274-277`). A worker treats the rectangle as a portal: a virtual
+surface that emits the radiance of the sky and the exterior.
+
+The worker uses two sampling strategies at each interior path vertex. The first strategy samples a
+point on the portal and traces towards it. The second strategy samples the cosine-weighted hemisphere
+and traces the resulting ray. Both strategies can find the same light, so the code combines them with
+multiple importance sampling (MIS) and the balance heuristic.
+
+The portal strategy needs a probability density function (PDF) in solid angle.
+
+```text
+# src/bake/worker.js:56-62
+function portalPdf(px, py, pz, dx, dy, dz) {
+  if (dz >= -1e-6) return 0;
+  const t = (P.z - pz) / dz; if (t <= 0) return 0;
+  const hx = px + dx * t, hy = py + dy * t;
+  if (hx < P.x0 || hx > P.x1 || hy < P.y0 || hy > P.y1) return 0;
+  return (t * t) / (P.area * -dz);
+}
+```
+
+The function rejects a direction that does not go through the portal. The distance to the plane is
+`t = (P.z - pz) / dz`. The PDF is `t * t / (area * -dz)`. The squared distance appears because the
+same solid angle covers a larger area at a larger distance. The `-dz` term appears because the
+rectangle is tilted relative to the ray.
+
+The cosine strategy has a simple PDF. For a cosine-weighted direction, the PDF is `cos(theta) / pi`,
+where `cos(theta)` is the dot product of the direction and the normal (`src/bake/worker.js:145`).
+The code calls the two PDFs `pp` and `pc`.
+
+The balance weight for the portal strategy is `pp / (pp + pc)`. The balance weight for the cosine
+strategy is `pc / (pp + pc)`. The two weights sum to one, so the estimator does not count one path
+twice. The code does not store the portal weight on its own. For a Lambert surface the portal
+estimator needs the factor `pc / pp`, because the cosine term `pc` is divided by the portal density
+`pp`. The code folds that factor into one variable at the portal step. It writes `w = pc / (pp +
+pc)`. That product is `(pc / pp)` times `pp / (pp + pc)`. The visible multiplier is therefore the
+cosine weight, not the portal weight. The cosine strategy already has a factor of one after the
+albedo, because its density cancels the cosine term. Its multiplier is its own weight `pc / (pc +
+pp)`. Near the window the distance t is small, so `pp` is small and the portal weight is small.
+Deep in the room `pp` is large and the portal weight approaches one.
+
+The first pass traces a full path.
+
+```text
+# src/bake/worker.js:127-141
+    const interior = inRoom(ox, oy, oz);
+    if (interior) {
+      const qx = P.x0 + (P.x1 - P.x0) * (depth === 0 ? u1 : rnd()), qy = P.y0 + (P.y1 - P.y0) * (depth === 0 ? u2 : rnd());
+      let dx = qx - ox, dy = qy - oy, dz = P.z - oz; const t2 = dx * dx + dy * dy + dz * dz, il = 1 / Math.sqrt(t2);
+      dx *= il; dy *= il; dz *= il;
+      const c = dx * nx + dy * ny + dz * nz;
+      if (c > 1e-5 && dz < -1e-6) {
+        const pp = t2 / (P.area * -dz), pc = c * INV_PI;
+        const tr = cr, tg = cg, tb = cb;
+        Lin(ox, oy, oz, dx, dy, dz);
+        cr = tr; cg = tg; cb = tb;
+        const w = pc / (pp + pc);
+        const r = cr * X[0] * w, g = cg * X[1] * w, b = cb * X[2] * w;
+        if (depth === 0) { N0[0] = r; N0[1] = g; N0[2] = b; ND[0] = dx; ND[1] = dy; ND[2] = dz; } else { L[0] += r; L[1] += g; L[2] += b; }
+      }
+```
+
+The block shows the portal step at every interior vertex. The code picks a point on the rectangle,
+builds a direction, tests the cosine term and the sign of `dz`, and computes both PDFs. It then calls
+`Lin`, which returns the radiance that arrives from that direction. The variable `w` is not the
+portal weight alone. It is `pc / (pp + pc)`, and it carries the `1 / pp` factor that the estimator
+needs. The depth-zero contribution goes into `N0`, and every later contribution goes into `L`.
+
+The cosine step follows.
+
+```text
+# src/bake/worker.js:143-157
+    cosDir(nx, ny, nz);
+    const dx = nd[0], dy = nd[1], dz = nd[2];
+    const pc = (dx * nx + dy * ny + dz * nz) * INV_PI;
+    const got = trace(ox, oy, oz, dx, dy, dz);
+    if (depth === 0) { ND[3] = dx; ND[4] = dy; ND[5] = dz; if (got && hBack && H.distance < 0.04 && !(mats[hm + 7] & 1)) firstBack = 1; }
+    if (!got) {
+      sky(dx, dy, dz);
+      if (!interior) { L[0] += cr * sk[0]; L[1] += cg * sk[1]; L[2] += cb * sk[2]; }
+      else { const pp = portalPdf(ox, oy, oz, dx, dy, dz); if (pp > 0) { const w = pc / (pc + pp); L[0] += cr * sk[0] * w; L[1] += cg * sk[1] * w; L[2] += cb * sk[2] * w; } }
+      return;
+    }
+    if (interior && H.point.z < 1e-4) {            // left the room through the window and hit something outside
+      const pp = portalPdf(ox, oy, oz, dx, dy, dz);
+      if (pp > 0) { const w = pc / (pc + pp); shadeExterior(); L[0] += cr * X[0] * w; L[1] += cg * X[1] * w; L[2] += cb * X[2] * w; }
+      return;
+```
+
+The cosine ray can end in four ways. It can leave the scene and reach the sky. It can leave the room
+and hit an exterior object, in which case the code applies the portal PDF and shades the exterior.
+It can hit the interior, in which case the path continues. It can hit a surface that absorbs the
+path, in which case the path stops.
+
+```mermaid
+flowchart LR
+  A["vertex with normal"] --> B["portal sample and NEE"]
+  A --> C["cosine sample and ray"]
+  B --> D["sky or exterior radiance"]
+  C --> E["hit sky"]
+  C --> F["hit outside object"]
+  C --> G["hit room surface"]
+  D --> H["portal factor pc over pp plus pc"]
+  E --> I["cosine weight pc over pc plus pp"]
+  F --> I
+  H --> J["add to radiance"]
+  I --> J
+  G --> K["scatter and continue"]
+  K --> B
+```
+
+The direct estimator is unbiased, because each strategy uses its own density and the two balance
+weights sum to one. The portal strategy divides by `pp` through the factor `w`, and the cosine
+strategy cancels `pc` by construction. A partly blocked portal raises the variance, because a portal
+sample can land behind an occluder. The weighted combination keeps the variance low in the common
+case.
+
+## The exterior sub-path
+
+A portal ray often passes the window and hits a tree, a wall or the sky beyond. The scene outside is
+in the same BVH. The worker shades a hit there with a short path.
+
+`shadeExterior` runs at most four bounces (`src/bake/worker.js:98-110`). It applies Russian roulette
+from depth 2 with a survival probability equal to the largest colour channel, capped at 0.9. It stops
+if the path returns into the room, and it treats that case as dark. If the path reaches the sky, it
+adds the sky value. This makes the window show the leaves and the distant houses as soft colour, not
+as a constant sky.
+
+`Lin` decides which case applies. It traces the ray, returns zero when the hit is inside the room,
+and calls `shadeExterior` otherwise (`src/bake/worker.js:112-116`). A hit outside the room at z below
+zero is valid, because the room wall ends at the window.
+
+## The two passes
+
+One full path per sample is too expensive for a bake with millions of samples. The code splits the
+work into two passes. The first pass computes a noisy but complete result. The second pass uses that
+result as a cached second bounce.
+
+The first pass uses a reduced sample count.
+
+```text
+# src/bake/baker.js:182-196
+  const spp1 = Math.max(12, Math.min(48, Math.round(spp / 5)));
+  clean(await runPass(0, spp1, 'paths'), 3);
+  // cache: irradiance/PI per occluder vertex (front and back side)
+  const ce = new Float32Array(nV * 3), cb = new Float32Array(nV * 3);
+  for (const e of list) {
+    const base = occBase.get(e.mesh); if (base === undefined) continue;
+    const vc = e.mesh.geometry.attributes.position.count;
+    const n = e.inst ? e.count * vc : vc;
+    for (let i = 0; i < n; i++) {
+      const q = e.inst ? Math.floor(i / vc) : i, sF = e.ids[q], sB = e.back ? e.idsB[q] : sF, o = (base + i) * 3;
+      ce[o] = E[sF * 3]; ce[o + 1] = E[sF * 3 + 1]; ce[o + 2] = E[sF * 3 + 2]; cb[o] = E[sB * 3]; cb[o + 1] = E[sB * 3 + 1]; cb[o + 2] = E[sB * 3 + 2];
+    }
+  }
+  await Promise.all(pool.map((wk) => new Promise((res) => { wk.onmessage = (ev) => { if (ev.data.type === 'cached') res(); }; wk.postMessage({ type: 'cache', ce, cb }); })));
+  clean(await runPass(1, spp, 'gather'), smooth);
+```
+
+`spp1` is the target sample count divided by five, rounded and clamped to the range 12 to 48. A
+160 sample bake therefore runs pass 0 at 32 samples. The first pass result is cleaned with three
+smoothing iterations. The driver then copies the cleaned irradiance into a cache with one record for
+each occluder vertex, on the front side and on the back side (`src/bake/baker.js:185-194`).
+
+The cache is keyed by vertex, not by sample. The loop reads the sample identifier of each vertex and
+copies only the irradiance at that sample. The mean direction is not cached
+(`src/bake/baker.js:186-193`). For an instanced mesh, every vertex of one instance reads the single
+anchor sample of that instance (`src/bake/baker.js:189-192`).
+
+The cache goes to every worker as one `cache` message. The worker stores it in `CE` and `CB`, then
+builds the environment table (`src/bake/worker.js:25-26`).
+
+The second pass runs the full target sample count. Its gather traces one bounce, and it reads the
+cache for the indirect term.
+
+```text
+# src/bake/worker.js:226-252
+function gather(ox, oy, oz, nx, ny, nz, u1, u2) {
+  L[0] = L[1] = L[2] = 0; N0[0] = N0[1] = N0[2] = 0;
+  const interior = inRoom(ox, oy, oz);
+  if (interior) {
+    const qx = P.x0 + (P.x1 - P.x0) * u1, qy = P.y0 + (P.y1 - P.y0) * u2;
+    let dx = qx - ox, dy = qy - oy, dz = P.z - oz; const t2 = dx * dx + dy * dy + dz * dz, il = 1 / Math.sqrt(t2);
+    dx *= il; dy *= il; dz *= il;
+    const c = dx * nx + dy * ny + dz * nz;
+    if (c > 1e-5 && dz < -1e-6) {
+      const pp = t2 / (P.area * -dz), pc = c * INV_PI, w = pc / (pp + pc);
+      if (!trace(ox, oy, oz, dx, dy, dz) || H.point.z < EXT_Z) envLook(dx, dy, dz);
+      else if (H.point.z > 1e-4) { X[0] = X[1] = X[2] = 0; } else cacheRad();
+      N0[0] = X[0] * w; N0[1] = X[1] * w; N0[2] = X[2] * w; ND[0] = dx; ND[1] = dy; ND[2] = dz;
+    }
+  }
+  cosDir(nx, ny, nz);
+  const dx = nd[0], dy = nd[1], dz = nd[2], pc = (dx * nx + dy * ny + dz * nz) * INV_PI;
+  ND[3] = dx; ND[4] = dy; ND[5] = dz;
+  const got = trace(ox, oy, oz, dx, dy, dz);
+  if (got && hBack && H.distance < 0.04 && !(mats[hm + 7] & 1)) firstBack = 1;
+  let w = 1;
+  if (interior && (!got || H.point.z < 1e-4)) { const pp = portalPdf(ox, oy, oz, dx, dy, dz); w = pp > 0 ? pc / (pc + pp) : 0; }
+  if (w <= 0) return;
+  if ((interior || oz > -0.4) && dz < -0.03 && (!got || H.point.z < EXT_Z)) envLook(dx, dy, dz);
+  else if (!got) { sky(dx, dy, dz); X[0] = sk[0]; X[1] = sk[1]; X[2] = sk[2]; } else cacheRad();
+  L[0] = X[0] * w; L[1] = X[1] * w; L[2] = X[2] * w;
+}
+```
+
+The gather does one portal next-event estimation (NEE) sample, one cosine sample, and then stops.
+The cosine sample either reads the environment table, reads the sky, or reads the cache through
+`cacheRad`. The portal sample uses the environment table for light that originates far outside the
+window. The result is one direct term plus one indirect term, with the MIS weights applied to both.
+
+The second pass is cheap because it does not trace a long path. The expensive multiple-bounce
+information comes from the smoothed first pass. This is a biased approximation. It trades physical
+accuracy for a large reduction in cost, and the source does not claim otherwise.
+
+The two passes share one job list. Each job covers 3,000 samples, and each job has a multiplier.
+
+```text
+# src/bake/baker.js:118-121
+  const CH = 3000, jobs = [];
+  for (let s = 0; s < nS; s += CH) jobs.push([s, Math.min(nS, s + CH)]);
+  const jobMult = jobs.map(([a, b]) => { let out = 0; for (let i = a; i < b; i++) if (SA[i * 6 + 2] < -0.4) out++; let win = 0; for (let i = a; i < b; i++) { const z = SA[i * 6 + 2]; if (z >= -0.4 && z < 0.08) win++; }
+    return out > (b - a) * 0.5 ? 0.3 : win > (b - a) * 0.4 ? 3 : 1; });
+```
+
+The multiplier is 0.3 for a job whose samples are mostly outside the room, 3 for a job near the
+window, and 1 for every other job. The window region gets more samples because the direct sky term
+dominates there and the MIS weight changes quickly across the opening. The exterior gets fewer
+samples because its light is smooth and the environment table already averages it.
+
+```mermaid
+flowchart TB
+  A["sample points welded and nudged"] --> B["pass 0 full paths at spp over 5"]
+  B --> C["hole fill and three smoothing iterations"]
+  C --> D["cache per occluder vertex front and back"]
+  D --> E["environment table 128 by 96"]
+  E --> F["pass 1 gather one bounce plus cache"]
+  F --> G["hole fill and smooth iterations"]
+  G --> H["three vectors per sample"]
+  H --> I["manifest and half floats"]
+```
+
+## The cache lookup
+
+The cache stores irradiance divided by pi at triangle vertices. A hit point is usually inside a
+triangle, so the worker interpolates the three vertex values with barycentric weights.
+
+```text
+# src/bake/worker.js:167-183
+function cacheRad() {
+  if (hBack && !(mats[hm + 7] & 1)) { X[0] = X[1] = X[2] = 0; return; }
+  const f = H.faceIndex * 3, a = IDX[f] * 3, b = IDX[f + 1] * 3, c = IDX[f + 2] * 3;
+  const ax = POS[a], ay = POS[a + 1], az = POS[a + 2];
+  const v0x = POS[b] - ax, v0y = POS[b + 1] - ay, v0z = POS[b + 2] - az, v1x = POS[c] - ax, v1y = POS[c + 1] - ay, v1z = POS[c + 2] - az;
+  const v2x = H.point.x - ax, v2y = H.point.y - ay, v2z = H.point.z - az;
+  const d00 = v0x * v0x + v0y * v0y + v0z * v0z, d01 = v0x * v1x + v0y * v1y + v0z * v1z, d11 = v1x * v1x + v1y * v1y + v1z * v1z;
+  const d20 = v2x * v0x + v2y * v0y + v2z * v0z, d21 = v2x * v1x + v2y * v1y + v2z * v1z, den = d00 * d11 - d01 * d01;
+  let v = 0.333, wq = 0.333; if (den > 1e-20) { v = (d11 * d20 - d01 * d21) / den; wq = (d00 * d21 - d01 * d20) / den; }
+  if (v < 0) v = 0; if (wq < 0) wq = 0; let u = 1 - v - wq; if (u < 0) u = 0;
+  const F = hBack ? CB : CE, O = hBack ? CE : CB, T = mats[hm + 3];
+  for (let k = 0; k < 3; k++) {
+    const ef = u * F[a + k] + v * F[b + k] + wq * F[c + k];
+    X[k] = (1 - T) * mats[hm + k] * ef;
+    if (T > 0) X[k] += T * mats[hm + 4 + k] * (u * O[a + k] + v * O[b + k] + wq * O[c + k]);
+  }
+}
+```
+
+The function first rejects a back-facing hit on a material that is not two-sided. It then builds two
+edge vectors from the hit triangle and solves for the barycentric coordinates `v` and `w`. A
+degenerate triangle falls back to equal weights. The triangle vertices index the cache arrays.
+
+The material response follows. The reflected term multiplies the front cache by the albedo and by
+`1 - T`. When the transmission value is positive, the function adds the opposite cache multiplied by
+the transmission colour and `T`. That opposite cache is `CB` for a front hit and `CE` for a back
+hit (`src/bake/worker.js:177`). This is how a thin curtain receives light on one side and passes a
+share of it to the other side.
+
+The lookup is constant time. It does not trace a ray. This is the main reason the second pass is
+affordable.
+
+## The environment table
+
+The direct light through the window comes from leaves, sky and distant objects. That light changes
+quickly from one direction to the next, and a per-point sample sees a noisy mix. The worker removes
+that noise with a small table.
+
+```text
+# src/bake/worker.js:188-202
+let EM = null; const EMW = 128, EMH = 96, EXT_Z = -0.45;
+function buildEnvMap() {
+  const save = seed; seed = 424242;
+  const M = new Float32Array(EMW * EMH * 3), K = 40;
+  for (let j = 0; j < EMH; j++) for (let i = 0; i < EMW; i++) {
+    let r = 0, g = 0, b = 0;
+    for (let k = 0; k < K; k++) {
+      const az = ((i + rnd()) / EMW - 0.5) * Math.PI, el = ((j + rnd()) / EMH - 0.5) * Math.PI;
+      const ce = Math.cos(el), dx = Math.sin(az) * ce, dy = Math.sin(el), dz = -Math.cos(az) * ce;
+      if (dz > -0.03) { sky(dx, dy, dz); r += sk[0]; g += sk[1]; b += sk[2]; continue; }
+      const qx = P.x0 + (P.x1 - P.x0) * rnd(), qy = P.y0 + (P.y1 - P.y0) * rnd(), t = (EXT_Z - P.z) / dz;
+      if (!trace(qx + dx * t, qy + dy * t, EXT_Z, dx, dy, dz)) { sky(dx, dy, dz); r += sk[0]; g += sk[1]; b += sk[2]; }
+      else { cacheRad(); r += X[0]; g += X[1]; b += X[2]; }
+    }
+    const o = (j * EMW + i) * 3; M[o] = r / K; M[o + 1] = g / K; M[o + 2] = b / K;
+```
+
+The table is 128 by 96 cells. Each cell averages 40 shots. A shot either samples the sky directly or
+shoots through a random point in the opening from a plane at z = -0.45. A hit object is shaded with
+`cacheRad`, so the table also carries the colour of the leaves and the exterior wall. The seed is
+fixed at 424,242, and the function restores the previous seed at the end (`src/bake/worker.js:190`,
+`src/bake/worker.js:217`).
+
+Two blur passes follow the average. Each pass uses a 3 by 3 kernel with corner weight 1 and edge
+weight 2 (`src/bake/worker.js:206-216`). The blur removes the salt-and-pepper pattern without moving
+the mean much.
+
+`envLook` converts a direction to azimuth and elevation, maps it to cell coordinates and interpolates
+four neighbours (`src/bake/worker.js:219-225`). The table covers the hemisphere that points away
+from the room, where z is at or below zero. A cell whose direction nearly grazes the window plane
+stores the sky function directly (`src/bake/worker.js:197`). The gather uses the table when the
+direction points through the window and the hit lies beyond the exterior plane or no hit exists
+(`src/bake/worker.js:249`).
+
+The table is an approximation. It assumes that the radiance through the opening does not depend on
+the position in the opening. The comment states the reason: the opening is small relative to the
+room, and a diffuse surface integrates over a wide angle (`src/bake/worker.js:184-187`).
+
+## Validity, hole fill and smoothing
+
+Some sample points sit inside another surface. A sofa cushion can overlap a frame, or a book can
+cover a shelf vertex. A point inside a solid object sees no sky, and its path returns black. The code
+marks such a point as invalid instead of trusting the black value.
+
+The rule uses the first cosine ray. `firstBack` is set when that ray hits a back face within 0.04
+metres and the material is not two-sided (`src/bake/worker.js:147`, `src/bake/worker.js:245`). At the
+end of a job, a sample is invalid when more than 35 percent of its samples set that flag
+(`src/bake/worker.js:278`).
+
+The clean function repairs the invalid samples along the edge graph.
+
+```text
+# src/bake/baker.js:150-180
+  const clean = (R, iters) => {
+    for (let i = 0; i < nS; i++) { E[i * 3] = R[i * 7]; E[i * 3 + 1] = R[i * 7 + 1]; E[i * 3 + 2] = R[i * 7 + 2]; D[i * 3] = R[i * 7 + 3]; D[i * 3 + 1] = R[i * 7 + 4]; D[i * 3 + 2] = R[i * 7 + 5]; ok[i] = R[i * 7 + 6]; }
+    for (let it = 0; it < 4; it++) {
+      acc.fill(0); wsum.fill(0); let bad = 0;
+      for (let k = 0; k < nE; k++) {
+        const a = edgesA[k], b = edgesB[k];
+        if (!ok[a] && ok[b] === 1) { for (let c = 0; c < 3; c++) { acc[a * 6 + c] += E[b * 3 + c]; acc[a * 6 + 3 + c] += D[b * 3 + c]; } wsum[a]++; }
+        if (!ok[b] && ok[a] === 1) { for (let c = 0; c < 3; c++) { acc[b * 6 + c] += E[a * 3 + c]; acc[b * 6 + 3 + c] += D[a * 3 + c]; } wsum[b]++; }
+      }
+      for (let i = 0; i < nS; i++) if (!ok[i] && wsum[i] > 0) { for (let c = 0; c < 3; c++) { E[i * 3 + c] = acc[i * 6 + c] / wsum[i]; D[i * 3 + c] = acc[i * 6 + 3 + c] / wsum[i]; } ok[i] = 2; bad++; }
+      for (let i = 0; i < nS; i++) if (ok[i] === 2) ok[i] = 1;
+      if (!bad) break;
+    }
+    for (let it = 0; it < iters; it++) {
+      acc.fill(0); wsum.fill(0);
+      for (let k = 0; k < nE; k++) {
+        const a = edgesA[k], b = edgesB[k];
+        const nd = SA[a * 6 + 3] * SA[b * 6 + 3] + SA[a * 6 + 4] * SA[b * 6 + 4] + SA[a * 6 + 5] * SA[b * 6 + 5];
+        if (nd < 0.9) continue;
+        const la = lum(a), lb = lum(b), dl = (la - lb) / (0.3 * (la + lb) * 0.5 + 1e-4);
+        const w = 1 / (1 + dl * dl);
+        for (let c = 0; c < 3; c++) { acc[a * 6 + c] += w * E[b * 3 + c]; acc[a * 6 + 3 + c] += w * D[b * 3 + c]; acc[b * 6 + c] += w * E[a * 3 + c]; acc[b * 6 + 3 + c] += w * D[a * 3 + c]; }
+        wsum[a] += w; wsum[b] += w;
+      }
+      for (let i = 0; i < nS; i++) {
+        const ws = wsum[i]; if (ws <= 0) continue;
+        const self = Math.max(1, ws * 0.6);
+        for (let c = 0; c < 3; c++) { E[i * 3 + c] = (E[i * 3 + c] * self + acc[i * 6 + c]) / (self + ws); D[i * 3 + c] = (D[i * 3 + c] * self + acc[i * 6 + 3 + c]) / (self + ws); }
+      }
+    }
+  };
+```
+
+The fill loop runs up to four times. In each pass, an invalid sample receives the mean of its valid
+neighbours along the edges. A repaired sample becomes valid for the next pass, so a small hole fills
+from its rim inward. The function stops early when a pass repairs nothing.
+
+The smoothing loop follows the fill. It uses the same edge list, but it now averages every valid
+sample with its neighbours. Two tests keep the average from crossing a feature. The dot product of
+the two sample normals must be at least 0.9, and a smaller value rejects the edge. The luminance
+difference only reduces the weight; it does not reject the edge. The weight is `1 / (1 + d * d)`,
+where `d` is the scaled luminance difference (`src/bake/baker.js:167-170`).
+
+The update is a Jacobi step. A Jacobi step computes every new value from the previous iteration's
+neighbour values, so the update order does not matter. Each sample keeps its own value with a weight
+of `max(1, 0.6 * sum)`, and it adds the weighted neighbour sum. The result is a local average with a
+stable self term (`src/bake/baker.js:174-178`). The driver runs three iterations after pass 0 and
+one after pass 1 by default (`src/bake/baker.js:183`, `src/bake/baker.js:196`,
+`src/bake/baker.js:18`).
+
+The guards are the reason a wall corner stays sharp. The edge graph connects the two walls at the
+corner, but the normals differ by 90 degrees, so the dot product fails the test. The corner keeps two
+separate values.
+
+## The firefly clamp
+
+A path can return a very large value when it hits a small bright region, such as a gap in the leaves
+near the sun direction. The code limits that value before it accumulates.
+
+In both modes the job clamps the accumulated indirect radiance `L` to 30 in each channel before it
+adds the portal term (`src/bake/worker.js:270`). The first portal term `N0` is not clamped. This
+choice keeps the direct window light accurate, and it limits only the indirect tail. The clamp adds a
+small bias, and it keeps one bright sample from dominating a vertex.
+
+The job then averages the samples and divides by the sample count. The mean direction is a luminance
+weighted sum of two directions, not of every direction.
+
+## The mean direction
+
+`gd` exists because a normal map changes the shading normal after the bake. A single irradiance value
+would light a bumped surface as if it were flat. The mean direction lets the shader compare the
+perturbed normal with the direction that the light came from.
+
+The job computes the direction from two contributions. The first is the depth-zero portal term `N0`,
+with its direction `ND[0..2]`. The second is the rest of the path `L`, with the first cosine
+direction `ND[3..5]`. It weights each direction by the luminance of its contribution and divides by
+the sum of the weights (`src/bake/worker.js:272-277`). When the total weight is near zero, `gd` stays
+at zero.
+
+The result is not the centroid of all arriving light. It is a weighted mean of the first portal
+direction and the first cosine direction. The source comment says "dominant direction", and the code
+is a two-sample approximation of that idea.
+
+## The buffer and the apply
+
+`packBake` serialises the attributes into one buffer.
+
+```text
+# src/core/gi.js:153-172
+export function packBake(list, meta = {}) {
+  const man = { version: 1, meta, meshes: [] };
+  let total = 0;
+  for (const e of list) { const per = e.back ? 9 : 6; man.meshes.push({ key: e.key, count: e.count, off: total, back: e.back }); total += e.count * per; }
+  const json = new TextEncoder().encode(JSON.stringify(man));
+  const pad = (4 - ((8 + json.length) % 4)) % 4;
+  const buf = new ArrayBuffer(8 + json.length + pad + total * 2);
+  const dv = new DataView(buf); dv.setUint32(0, 0x47494231, true); dv.setUint32(4, json.length, true);
+  new Uint8Array(buf, 8, json.length).set(json);
+  const data = new Uint16Array(buf, 8 + json.length + pad, total);
+  let o = 0;
+  for (const e of list) {
+    const g = e.mesh.geometry;
+    for (const name of e.back ? ['gi', 'gd', 'giB'] : ['gi', 'gd']) {
+      const a = g.attributes[name].array;
+      for (let i = 0; i < a.length; i++) data[o++] = THREE.DataUtils.toHalfFloat(Math.max(-60000, Math.min(60000, a[i])));
+    }
+  }
+  return buf;
+}
+```
+
+The buffer starts with an 8-byte header. The first four bytes hold the integer `0x47494231`, and the
+next four hold the manifest length. The file stores the integer little-endian. The digits of the
+integer, read from the most significant byte to the least, spell the mnemonic `GIB1`. The bytes on
+disk are `31 42 49 47`, so a byte dump reads `1BIG` (`src/core/gi.js:160`). The manifest is
+JavaScript Object Notation (JSON) with a version, a metadata object and one entry for each mesh.
+Each entry holds the key, the vertex count, the element offset and the back flag. The offset counts
+half-float elements, not bytes. The payload is an array of 16-bit half floats. Each value is clamped
+to plus or minus 60,000 before conversion.
+
+The order inside a mesh is fixed. A normal mesh stores `gi` then `gd`. A back mesh stores `gi`, `gd`
+then `giB` (`src/core/gi.js:166`). The manifest does not store positions, normals or triangle data.
+The scene must supply the same vertex order at load time.
+
+The load path checks the file and applies it.
+
+```text
+# src/core/gi.js:175-196
+export function applyBake(root, buf) {
+  const dv = new DataView(buf);
+  if (dv.getUint32(0, true) !== 0x47494231) return { ok: false, reason: 'bad magic' };
+  const jl = dv.getUint32(4, true);
+  const man = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 8, jl)));
+  const pad = (4 - ((8 + jl) % 4)) % 4;
+  const data = new Uint16Array(buf, 8 + jl + pad);
+  const byKey = new Map(man.meshes.map((m) => [m.key, m]));
+  let applied = 0, stale = 0;
+  for (const e of giMeshes(root)) {
+    const m = byKey.get(e.key);
+    if (!m || m.count !== e.count || m.back !== e.back) { stale++; zeroGi(e); continue; }
+    let o = m.off;
+    for (const name of e.back ? ['gi', 'gd', 'giB'] : ['gi', 'gd']) {
+      const arr = new Float32Array(e.count * 3);
+      for (let i = 0; i < arr.length; i++) arr[i] = THREE.DataUtils.fromHalfFloat(data[o++]);
+      setAttr(e, name, arr);
+    }
+    applied++;
+  }
+  return { ok: true, applied, stale, meta: man.meta };
+}
+```
+
+`applyBake` checks the magic number, parses the manifest and indexes the entries by key. It then
+walks `giMeshes`. A mesh with a matching key, count and back flag receives its attributes. Any
+mismatch calls `zeroGi`, which fills `gi` and `giB` with 0.06 and `gd` with zero
+(`src/core/gi.js:198-204`). The function returns the applied count, the stale count and the metadata.
+
+The stale rule is the important part. A vertex count change marks the mesh stale. A back flag change
+marks it stale. A position change with the same count does not mark it stale, because positions are
+not in the file. The light then belongs to the old shape. Document 04 treats that case as a limit.
+
+## The shader patch
+
+The baked attributes do nothing until the material reads them. `giPatch` adds the defines and the
+shader edits.
+
+```text
+# src/core/gi.js:79-103
+const FRAG_LIGHT = `
+#include <lights_fragment_maps>
+#ifdef USE_GI
+{
+	#ifdef GI_BACK
+	vec3 gF = gl_FrontFacing ? vGi : vGiB; vec3 gBk = gl_FrontFacing ? vGiB : vGi;
+	#else
+	vec3 gF = vGi;
+	#endif
+	if ( dot( vGd, vGd ) > 1e-6 && gl_FrontFacing ) {
+		float ga = dot( normal, vGd ); float gb = dot( nonPerturbedNormal, vGd );
+		gF *= clamp( ( 1.0 + giK * ga ) / max( 0.3, 1.0 + giK * gb ), 0.0, 2.5 );
+	}
+	#ifdef GI_BACK
+	gF += gBk * giTrans;
+	#endif
+	gF = gF * giScale + giFallback;
+	if ( vGiW.z < -0.33 ) gF *= giExt;
+	irradiance += gF * PI;
+	#if defined( USE_ENVMAP ) && defined( RE_IndirectSpecular )
+	radiance *= smoothstep( 0.0, giSpecOcc, dot( gF, vec3( 0.3333 ) ) );
+	#endif
+}
+#endif
+`;
+```
+
+The fragment patch replaces the standard indirect-light chunk. It chooses `vGi` on a front face and
+`vGiB` on a back face when the material is two-sided. It then applies a directional correction. The factor is
+`gF *= clamp( (1 + giK * ga) / max(0.3, 1 + giK * gb), 0, 2.5 )`.
+`ga` is the dot product of the shading normal and the mean direction. `gb` is the same product for
+the non-perturbed normal. The ratio compares the bump response with the flat response. A bump that
+faces the light gains brightness, and a bump that turns away loses it. `giK` is 1.6
+(`src/core/gi.js:16`). The correction applies only on a front face.
+
+The next lines add the transmitted term for a two-sided material, apply `giScale` and `giFallback`,
+and scale the exterior when the world z is below -0.33 (`src/core/gi.js:92-96`). The final line adds
+the value to `irradiance` with a factor of pi. The stored value is irradiance divided by pi, and the
+three.js lighting term expects irradiance.
+
+The patch also darkens indirect specular light in a dark corner. It multiplies the radiance by
+`smoothstep(0, giSpecOcc, average of gF)`, with `giSpecOcc` at 0.012 (`src/core/gi.js:98-100`). A
+surface with almost no diffuse light therefore loses most of its reflection. This is a cheap
+approximation of occlusion for reflections.
+
+`giPatch` installs the defines and the two shader replacements through `onBeforeCompile`
+(`src/core/gi.js:109-128`). The custom program cache key includes the option key, so two materials
+with different options do not share a compiled program.
+
+## Aha
+
+**Aha:** The two-pass design is not a denoiser bolted onto a path tracer. It is a different
+estimator. Pass 0 computes a complete but noisy multi-bounce solution, and the clean step turns it
+into a smooth irradiance field on the surface graph. Pass 1 then treats that field as the incoming
+light for one final bounce. The cache is the interface between the two estimators. The cache lives on occluder vertices, not on
+sample points, for this reason. The fill and the smoothing run before the cache is built for this
+reason. The second pass can use a full sample count and still finish in minutes rather than hours for
+this reason.
+
+## What this document leaves out
+
+This document explains the estimator, the data and the shader patch. It does not explain how to run
+a bake, how to check the result or how to resume a film. Document 03 covers the operating loop. It
+does not judge the physical accuracy of the result against a reference renderer. Document 04 covers
+the limits and the fair comparison with two sibling projects.
