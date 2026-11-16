@@ -224,7 +224,7 @@ for finishing?
 | 9 | casa-ocaso | DONE (6 documents, 65 snippets, fresh-reader review repaired) |
 | 10 | shanshui | DONE (6 documents, 59 snippets, fresh-reader review repaired) |
 | 11 | golden-temple | DONE (6 documents, 71 snippets, fresh-reader review repaired) |
-| 12 | needle-drop | TODO |
+| 12 | needle-drop | DONE (6 documents, 108 snippets, fresh-reader review repaired) |
 | 13 | feed-backrooms | TODO |
 | 14 | procedural-alpine-lake | TODO |
 | 15 | halo-above-the-clouds | TODO |
@@ -293,7 +293,7 @@ and the push.
 | 9 | casa-ocaso | 6 | 65 | 0 | 27,652 | 11 | 10 | 0 broken | Done |
 | 10 | shanshui | 6 | 59 | 0 | 27,986 | 12 | 5 | 0 broken | Done |
 | 11 | golden-temple | 6 | 71 | 0 | 29,624 | 11 | 7 | 0 broken | Done |
-| 12 | needle-drop | pending | | | | | | | |
+| 12 | needle-drop | 6 | 108 | 0 | 24,122 | 11 | 7 | 0 broken | Done |
 | 13 | feed-backrooms | pending | | | | | | | |
 | 14 | procedural-alpine-lake | pending | | | | | | | |
 | 15 | halo-above-the-clouds | pending | | | | | | | |
