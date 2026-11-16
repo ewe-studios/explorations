@@ -90,7 +90,7 @@ tree of six documents. The **Start here** column fills as each project is publis
 | halo-above-the-clouds | Films and worlds | 55 | 1d08819 | [Start here](../halo-above-the-clouds/html/README.html) |
 | first-bloom | Offline films | 52 | 713525b | [Start here](../first-bloom/html/README.html) |
 | room-at-dawn | Films and worlds | 48 | aab8be2 | [Start here](../room-at-dawn/html/README.html) |
-| unlazy | Agent skills | 37 | 1667149 | Planned |
+| unlazy | Agent skills | 37 | 1667149 | [Start here](../unlazy/html/README.html) |
 | cook | Agent skills | 12 | b23cac6 | Planned |
 
 The file counts exclude `.git` and `node_modules`. The commit column gives the short local

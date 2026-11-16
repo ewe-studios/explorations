@@ -230,7 +230,7 @@ for finishing?
 | 15 | halo-above-the-clouds | DONE (6 documents, 74 snippets, fresh-reader review repaired) |
 | 16 | first-bloom | DONE (6 documents, 88 snippets, fresh-reader review repaired) |
 | 17 | room-at-dawn | DONE (6 documents, 80 snippets, fresh-reader review repaired) |
-| 18 | unlazy | TODO |
+| 18 | unlazy | DONE (6 documents, 64 snippets, fresh-reader review repaired) |
 | 19 | cook | TODO |
 
 Container index: written. Container specification: this file.
@@ -299,7 +299,7 @@ and the push.
 | 15 | halo-above-the-clouds | 6 | 74 | 0 | 21,430 | 12 | 9 | 0 broken | Done |
 | 16 | first-bloom | 6 | 88 | 0 | 19,873 | 11 | 9 | 0 broken | Done |
 | 17 | room-at-dawn | 6 | 80 | 0 | 20,314 | 11 | 6 | 0 broken | Done |
-| 18 | unlazy | pending | | | | | | | |
+| 18 | unlazy | 6 | 64 | 0 | 21,003 | 12 | 6 | 0 broken | Done |
 | 19 | cook | pending | | | | | | | |
 
 Container checks:
