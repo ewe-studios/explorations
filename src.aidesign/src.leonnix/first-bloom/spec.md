@@ -148,9 +148,9 @@ each value and the disagreement. It does not choose one.
 | 4 | Validate Simplified Technical English | DONE (0 long sentences in 6 files) |
 | 5 | Validate links | DONE (10 links, 0 broken) |
 | 6 | Fresh-reader review and repair | DONE (34 findings: 31 fixed, 2 partial, 1 reader error) |
-| 7 | Build HyperText Markup Language (HTML) | TODO |
-| 8 | Update the container index and spec | TODO |
-| 9 | Commit and push | TODO |
+| 7 | Build HyperText Markup Language (HTML) | DONE (8 pages and one stylesheet) |
+| 8 | Update the container index and spec | DONE (16 of 19 in `index.md`, `spec.md` and the container README) |
+| 9 | Commit and push | DONE (`9a8526b`) |
 
 ## 9. Resume point
 
@@ -167,5 +167,5 @@ check passes and the result is recorded in the verification table.
 | Simplified Technical English | 0 long sentences in 6 files |
 | Links | 10 checked, 0 broken |
 | Fresh-reader review | 34 findings adjudicated: 31 repaired, 2 partly repaired, 1 reader error |
-| Build | Pending |
-| Commit | Pending |
+| Build | DONE: 8 HTML pages and one stylesheet in `html/` |
+| Commit | DONE: `9a8526b`, pushed to `origin/master` |
