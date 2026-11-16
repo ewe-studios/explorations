@@ -87,7 +87,7 @@ tree of six documents. The **Start here** column fills as each project is publis
 | needle-drop | Offline films | 100 | 8982f09 | [Start here](../needle-drop/html/README.html) |
 | feed-backrooms | Real-time worlds | 94 | 81cdb6a | [Start here](../feed-backrooms/html/README.html) |
 | procedural-alpine-lake | Offline films | 79 | b84c254 | [Start here](../procedural-alpine-lake/html/README.html) |
-| halo-above-the-clouds | Films and worlds | 55 | 1d08819 | Planned |
+| halo-above-the-clouds | Films and worlds | 55 | 1d08819 | [Start here](../halo-above-the-clouds/html/README.html) |
 | first-bloom | Offline films | 52 | 713525b | Planned |
 | room-at-dawn | Films and worlds | 48 | aab8be2 | Planned |
 | unlazy | Agent skills | 37 | 1667149 | Planned |
