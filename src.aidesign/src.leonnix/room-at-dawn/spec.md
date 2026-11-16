@@ -159,7 +159,7 @@ uses 256. The exploration quotes each number with its context.
 | 6 | Fresh-reader review and repair | DONE (61 findings: 59 repaired, 2 rejected with the text clarified) |
 | 7 | Build HyperText Markup Language (HTML) | DONE (8 pages and one stylesheet) |
 | 8 | Update the container index and spec | DONE (17 of 19 in `index.md`, `spec.md` and the container README) |
-| 9 | Commit and push | DONE |
+| 9 | Commit and push | DONE (`a30c8e7`) |
 
 ## 9. Resume point
 
@@ -177,4 +177,4 @@ check passes and the result is recorded in the verification table.
 | Links | 5 checked, 0 broken |
 | Fresh-reader review | 61 findings adjudicated: 1 blocker, 13 major, 47 minor. 59 repaired, 2 rejected with the text clarified |
 | Build | DONE: 8 HTML pages and one stylesheet in `html/` |
-| Commit | DONE: pushed to `origin/master` |
+| Commit | DONE: `a30c8e7`, pushed to `origin/master` |
