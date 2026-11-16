@@ -1,0 +1,878 @@
+# 02 Core mechanism: one seed, one building, one tick
+
+This document follows one seed through the game. The seed builds a macro graph. The graph becomes
+a grid of walls, doorways and pillars. The grid becomes 144 ceiling fixtures. The fixtures become a
+baked light texture. The texture feeds one material patch and one person visibility test. The same
+tick moves the monster, moves the eight people and resolves a strike.
+
+The document uses the terms from the [README](README.md) and [00](00-overview.md). A cell is 2
+metres across, a macro cell is 4 by 4 cells, and a fixture is a ceiling light panel. A
+breadth-first search (BFS) writes the step distance from one cell to every reachable cell. Line of
+sight (LOS) is a grid traversal that stops at a wall.
+
+## The generation pipeline
+
+The level constructor runs three steps in order: generate the grid, place the fixtures, bake the
+light. Each step reads the result of the earlier step. The light bake uses the finished grid, so a
+wall blocks light in the same way that it blocks a person.
+
+```mermaid
+flowchart TD
+    SEED["one seed"] --> FIELDS["two 5 by 5 value fields: density and darkness"]
+    FIELDS --> EDGES["12 by 12 macro edges: open, wall or doorway"]
+    EDGES --> REPAIR["union-find repair pass: reopen one wall per sealed pair"]
+    REPAIR --> MICRO["micro carve: one open cell among three positions"]
+    MICRO --> PILLARS["lattice nodes: junctions and 62 percent pillars"]
+    PILLARS --> FIX["144 fixtures: dead, steady or flicker"]
+    FIX --> BAKE["bake 98 by 98 light texels with LOS and blur"]
+    BAKE --> TEXTURE["half-float colour and alpha light texture"]
+```
+
+The pipeline runs each step once. The only step that changes an earlier edge decision is the
+union-find repair, and it runs before the micro carve. No later step changes the repair. This order
+is why the generator can promise a connected building without a second full generation.
+
+## The macro graph and the union-find
+
+The macro graph is 12 by 12 macro cells. Each interior edge between two macro cells gets one of
+three states: open, wall, or wall with a doorway. The code stores the vertical edges in one array and the
+horizontal edges in another. `V` holds `(M + 1) * M` vertical boundary records, indexed by
+boundary line `k` and macro row `mz`. `H` holds `M * (M + 1)` horizontal records, indexed by macro
+column `mx` and boundary line `k` (`src/level.js:127-128`). Each edge decision also merges the two
+cells in a union-find structure when the edge is passable. Union-find is a data structure that tracks separate groups
+and merges them. It answers whether two cells are already in the same group.
+
+```text
+# src/level.js:126-153
+    // partition edges between macro cells: 0 open, 1 wall, 2 wall with doorway
+    const V = new Uint8Array((M + 1) * M), H = new Uint8Array(M * (M + 1));
+    const vi = (k, mz) => k * M + mz, hi = (mx, k) => mx * (M + 1) + k;
+    const parent = Array.from({ length: M * M }, (_, i) => i);
+    const find = (a) => { while (parent[a] !== a) { parent[a] = parent[parent[a]]; a = parent[a]; } return a; };
+    const union = (a, b) => { parent[find(a)] = find(b); };
+    const closed = [];
+    const decide = (a, b, set) => {
+      const p = 0.1 + 0.62 * (density(a % M, (a / M) | 0) + density(b % M, (b / M) | 0)) * 0.5;
+      const r = rng();
+      const t = r < p ? 1 : r < p + 0.2 ? 2 : 0;
+      set(t);
+      if (t !== 1) union(a, b); else closed.push({ a, b, set });
+    };
+    for (let mz = 0; mz < M; mz++) {
+      for (let k = 1; k < M; k++) decide(mz * M + k - 1, mz * M + k, (t) => { V[vi(k, mz)] = t; });
+      V[vi(0, mz)] = 1; V[vi(M, mz)] = 1;
+    }
+    for (let mx = 0; mx < M; mx++) {
+      for (let k = 1; k < M; k++) decide((k - 1) * M + mx, k * M + mx, (t) => { H[hi(mx, k)] = t; });
+      H[hi(mx, 0)] = 1; H[hi(mx, M)] = 1;
+    }
+    // guarantee everything is reachable: open a doorway wherever two regions are still sealed apart
+    for (let i = closed.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      [closed[i], closed[j]] = [closed[j], closed[i]];
+    }
+    for (const e of closed) if (find(e.a) !== find(e.b)) { e.set(2); union(e.a, e.b); }
+```
+
+The wall probability comes from a low-frequency density field. `makeField` builds a 5 by 5 random
+lattice and interpolates it over the macro coordinates, so it returns a value from 0 to 1
+(`src/level.js:113-122`). The probability is `0.1 + 0.62 * average_density`. A dense region
+therefore has more walls, and an open region has fewer. The probability lies between 0.1 and 0.72.
+
+```text
+# src/level.js:113-122
+    const makeField = () => {
+      const lat = Array.from({ length: P * P }, () => rng());
+      return (mx, mz) => {
+        const x = (mx / (M - 1)) * (P - 1), z = (mz / (M - 1)) * (P - 1);
+        const xi = Math.min(P - 2, Math.floor(x)), zi = Math.min(P - 2, Math.floor(z));
+        const fx = x - xi, fz = z - zi;
+        const a = lat[zi * P + xi], b = lat[zi * P + xi + 1], c = lat[(zi + 1) * P + xi], d = lat[(zi + 1) * P + xi + 1];
+        return a + (b - a) * fx + (c - a) * fz + (a - b - c + d) * fx * fz;
+      };
+    };
+```
+
+The doorway band is 0.2 wide. If the random value lands between the wall threshold and the wall
+threshold plus 0.2, the edge is a doorway. The remaining probability is an
+open edge. A doorway is not a door. It is a wall with one cell of gap, so a person and the monster
+can pass but the wall still reads as a partition.
+
+The union-find pass is the reachability guarantee. The generator collects every closed edge during
+the decisions. It shuffles that list with the same random stream. It then walks the list and
+reopens an edge only when its two cells are in different sets. Such an edge is a sealed pair: two
+neighbouring macro cells whose shared edge is closed and whose groups differ. After the walk, every
+macro cell is in one set. The building is connected.
+
+The pass does not open every closed wall. It opens the smallest set that joins the components,
+given the shuffled order. Many walls stay closed, so the building keeps the dense look that the
+density field asked for.
+
+**Aha:** The level is not a maze. A maze algorithm starts with a connected space and adds walls
+until the space is a tree. FEED does the opposite. It starts with an independent random decision on
+every edge, then uses union-find to repair only the edges that separate two regions. The repair
+pass is a spanning forest over the closed edges in random order. A spanning forest is a set of
+edges that connects each group without a cycle. The forest has no weights, and the order is random.
+Every spanning tree of a connected graph has the same number of edges, so the order changes which
+walls open, not how many. This is why the building can look organic and dense while a
+proof of reachability stays simple. The generator never needs to regenerate the whole level,
+because the repair pass runs after all decisions and only changes the edges that break
+connectivity.
+
+## The micro carve
+
+The macro graph sets the room partitions. The micro carve turns each partition into grid cells. The
+grid stores 0 for open and 1 for wall (`src/level.js:28`, `:155`). A
+macro cell is 4 cells wide, so the partition line between two macro cells falls on one cell row or
+one cell column. The code blocks three cells along that line. A full wall blocks all three. A
+doorway leaves one cell open.
+
+```text
+# src/level.js:155-172
+    const set = (cx, cz) => { grid[cz * n + cx] = 1; };
+    const gapOf = () => (rng() < 0.5 ? 2 : rng() < 0.5 ? 1 : 3);
+    for (let k = 0; k <= M; k++) {
+      for (let mz = 0; mz < M; mz++) {
+        const t = V[vi(k, mz)];
+        if (!t) continue;
+        const gap = t === 2 ? gapOf() : 0;
+        for (let j = 1; j <= 3; j++) if (j !== gap) set(k * MACRO, mz * MACRO + j);
+      }
+    }
+    for (let mx = 0; mx < M; mx++) {
+      for (let k = 0; k <= M; k++) {
+        const t = H[hi(mx, k)];
+        if (!t) continue;
+        const gap = t === 2 ? gapOf() : 0;
+        for (let j = 1; j <= 3; j++) if (j !== gap) set(mx * MACRO + j, k * MACRO);
+      }
+    }
+```
+
+`gapOf()` returns the index of the one cell that stays open (`src/level.js:155-170`). Exactly one
+of the three interior cells stays open, so every doorway is one 2 metre cell wide. The index is 2
+half of the time. The other half splits evenly between 1 and 3. The index places the opening near
+one end, in the middle, or near the other end. The source does not place it at the centre.
+
+The outer border is closed by the earlier edge setup. The edge arrays cover index 0 and index M on
+both axes, and the code sets those border edges to wall. The micro carve then blocks the border
+cells. The level has no exit. This matches the fiction: the building is the whole world.
+
+The micro carve turns the macro graph into a place. It decides where the single open cell sits in
+each partition. The player feels the difference as an opening at one end or in the middle.
+
+## The lattice pillars
+
+The macro grid corners are lattice nodes. A node can be a wall junction, a free-standing pillar, or
+an open point. The code first checks the four incident edges. If any edge is a wall or a doorway,
+the node is a wall. If all four are open, the node becomes a pillar with probability 0.62.
+
+```text
+# src/level.js:173-183
+    // lattice nodes: wall junctions, or the free-standing square pillars
+    for (let kx = 0; kx <= M; kx++) {
+      for (let kz = 0; kz <= M; kz++) {
+        let any = false;
+        if (kz > 0 && V[vi(kx, kz - 1)]) any = true;
+        if (kz < M && V[vi(kx, kz)]) any = true;
+        if (kx > 0 && H[hi(kx - 1, kz)]) any = true;
+        if (kx < M && H[hi(kx, kz)]) any = true;
+        if (any || rng() < 0.62) set(kx * MACRO, kz * MACRO);
+      }
+    }
+```
+
+The 0.62 value creates open rooms with square columns. A room can have no walls on its sides and
+still have a pillar at one corner. The pillar breaks long sight lines and gives the player cover.
+The comment in the source calls these "free-standing square pillars", and the mesh builder uses the
+concrete texture set for them.
+
+The lattice step also closes the junction between wall segments. A wall end that stops in open
+space would look broken. The incident-edge test makes the end a wall cell, so every partition meets
+a solid node. The building has no floating wall tips.
+
+## The 144 fixtures
+
+The level places one ceiling fixture at the centre of every macro cell. The macro grid is 12 by 12,
+so the level has 144 fixtures. The fixture state is dead, steady or flickering. The dead
+probability rises with a separate low-frequency field, which the code calls the dark field.
+`_darkField` is a second `makeField()` instance with the same 0 to 1 range (`src/level.js:123-124`).
+The fields use independent values. A high dark value raises the dead probability.
+
+```text
+# src/level.js:186-205
+  _placeFixtures() {
+    const { M, rng } = this;
+    for (let mz = 0; mz < M; mz++) {
+      for (let mx = 0; mx < M; mx++) {
+        const dark = this._darkField(mx, mz);
+        const pDead = 0.06 + 0.8 * Math.pow(dark, 1.6);
+        const r = rng();
+        const state = r < pDead ? 0 : rng() < 0.2 ? 2 : 1;
+        const c = this.macroCenter(mx, mz);
+        const warm = rng();
+        this.fixtures.push({
+          x: c.x, z: c.z, state,
+          color: new THREE.Color(1.0, 0.9 + warm * 0.06, 0.62 + warm * 0.2),
+          value: state === 0 ? 0 : 1,
+          phase: rng() * 100,
+          rot: rng() < 0.5 ? 0 : Math.PI / 2,
+        });
+      }
+    }
+  }
+```
+
+The dead probability is `0.06 + 0.8 * dark^1.6`. A dark value of zero gives 6 percent. A dark value
+of one gives 86 percent. The exponent makes the dark regions much more likely to lose their light,
+while a bright region rarely does. The 0.2 branch gives a flickering fixture only after the fixture
+survives the dead test. So the state order is dead first, then flicker, then steady.
+
+The fixture colour is warm white with a small random shift. The red channel is fixed at 1. The
+green channel runs from 0.9 to 0.96. The blue channel runs from 0.62 to 0.82. The phase is a random
+number from 0 to 100, used by the flicker function. The flicker value is 1 or 0.06 from a product
+of two sines at 31 and 17.3 radians per second. A slow sine above 0.72 multiplies it by 0.04. The final
+factor adds 14 percent variation at 113 radians per second (`src/level.js:455-463`). The rotation
+is 0 or 90 degrees, so the panel shape follows the ceiling grid in both directions.
+
+```text
+# src/level.js:455-463
+    for (const [f, i] of this._flickers) {
+      const t = time + f.phase;
+      let v = Math.sin(t * 31.0) * Math.sin(t * 17.3 + f.phase) > -0.25 ? 1 : 0.06;
+      if (Math.sin(t * 0.9) > 0.72) v *= 0.04;
+      v *= 0.86 + 0.14 * Math.sin(t * 113);
+      f.value = v;
+      this._setPanelColor(i, f);
+    }
+    if (this._flickers.length) this.panels.instanceColor.needsUpdate = true;
+```
+
+The fixture is not a light source by itself. It is a record with a position, a state and a colour.
+The mesh builder places a panel instance from it, the bake adds light to the grid, and the light
+pool chooses real spotlights. Three systems share one record.
+
+## The light bake
+
+The bake writes one texture for the whole level. The texture is 98 by 98 texels, because the level
+is 49 cells each side and the bake uses 2 texels per cell. A texel is 1 metre. `isWall(cx, cz)`
+takes cell indices, and `isWallAt(x, z)` takes world metres and divides by the cell size
+(`src/level.js:26-32`). The bake skips a texel inside a wall. For every other texel, it walks all 144 fixtures and adds the ones that pass
+a distance test and a LOS test.
+
+```text
+# src/level.js:207-230
+  _bakeLightGrid() {
+    const R = (this.gridRes = this.n * GRID_RES);
+    const texel = CELL / GRID_RES;
+    const acc = new Float32Array(R * R * 3);
+    const RANGE = 13;
+    for (let tz = 0; tz < R; tz++) {
+      for (let tx = 0; tx < R; tx++) {
+        const x = (tx + 0.5) * texel, z = (tz + 0.5) * texel;
+        if (this.isWallAt(x, z)) continue;
+        let r = 0, g = 0, b = 0;
+        for (const f of this.fixtures) {
+          if (f.state === 0) continue;
+          const dx = f.x - x, dz = f.z - z, d2 = dx * dx + dz * dz;
+          if (d2 > RANGE * RANGE) continue;
+          if (!this.los(x, z, f.x, f.z)) continue;
+          const d = Math.sqrt(d2);
+          let w = (0.5 / (1 + d2 / 6)) * (1 - smoothstep(RANGE * 0.6, RANGE, d));
+          if (f.state === 2) w *= 0.4;
+          r += f.color.r * w; g += f.color.g * w; b += f.color.b * w;
+        }
+        const i = (tz * R + tx) * 3;
+        acc[i] = r; acc[i + 1] = g; acc[i + 2] = b;
+      }
+    }
+```
+
+The weight has two factors. The first factor, `0.5 / (1 + d2 / 6)`, falls with the square of the
+distance. The second is a smooth fade from 7.8 metres to 13 metres, and it reaches zero at the
+range limit. A flickering fixture multiplies its weight by 0.4, so it contributes less average
+light than a steady fixture.
+
+The LOS test is the same grid traversal that the people use for sight. It is a grid digital
+differential analyser (DDA). It starts in the cell of the first point. It computes the distance to
+the next vertical boundary and the next horizontal boundary. It steps to the nearer one and tests
+the entered cell. It stops at the target cell or after 256 steps. A wall returns false
+(`src/level.js:65-80`).
+
+```text
+# src/level.js:65-80
+  los(x0, z0, x1, z1) {
+    let cx = Math.floor(x0 / CELL), cz = Math.floor(z0 / CELL);
+    const ex = Math.floor(x1 / CELL), ez = Math.floor(z1 / CELL);
+    const dx = x1 - x0, dz = z1 - z0;
+    const sx = dx > 0 ? 1 : -1, sz = dz > 0 ? 1 : -1;
+    const tdx = dx !== 0 ? Math.abs(CELL / dx) : Infinity;
+    const tdz = dz !== 0 ? Math.abs(CELL / dz) : Infinity;
+    let tmx = dx !== 0 ? (dx > 0 ? (cx + 1) * CELL - x0 : x0 - cx * CELL) / Math.abs(dx) : Infinity;
+    let tmz = dz !== 0 ? (dz > 0 ? (cz + 1) * CELL - z0 : z0 - cz * CELL) / Math.abs(dz) : Infinity;
+    for (let i = 0; i < 256; i++) {
+      if (this.isWall(cx, cz)) return false;
+      if (cx === ex && cz === ez) return true;
+      if (tmx < tmz) { cx += sx; tmx += tdx; } else { cz += sz; tmz += tdz; }
+    }
+    return true;
+  }
+```
+
+The bake calls `los` from the texel centre to the fixture centre. A wall blocks the contribution.
+This is why the light has hard edges at first and why the next step blurs them.
+
+The blur is a 3 by 3 box with centre weight 4, edge weight 2 and corner weight 1. The weights sum
+to 16 in the interior. At a border, the code skips the missing neighbours and divides by the sum of
+the weights that exist, so the edge does not darken. A wall texel keeps 0.35 of its blurred value.
+This darkens the wall face without making it black. The result goes into a half-float red, green,
+blue, alpha (RGBA) texture, and the alpha channel is one. A half-float is a 16-bit floating-point
+value.
+
+```text
+# src/level.js:231-256
+    // one soft blur so line-of-sight edges read as penumbra, plus a little bounce into the dark
+    const out = new Uint16Array(R * R * 4);
+    this.lightLum = new Float32Array(R * R);
+    for (let tz = 0; tz < R; tz++) {
+      for (let tx = 0; tx < R; tx++) {
+        let r = 0, g = 0, b = 0, wsum = 0;
+        for (let oz = -1; oz <= 1; oz++) {
+          for (let ox = -1; ox <= 1; ox++) {
+            const x = tx + ox, z = tz + oz;
+            if (x < 0 || z < 0 || x >= R || z >= R) continue;
+            const w = ox === 0 && oz === 0 ? 4 : ox === 0 || oz === 0 ? 2 : 1;
+            const i = (z * R + x) * 3;
+            r += acc[i] * w; g += acc[i + 1] * w; b += acc[i + 2] * w; wsum += w;
+          }
+        }
+        const wall = this.isWallAt((tx + 0.5) * texel, (tz + 0.5) * texel);
+        const k = wall ? 0.35 : 1;
+        r = (r / wsum) * k; g = (g / wsum) * k; b = (b / wsum) * k;
+        const o = (tz * R + tx) * 4;
+        out[o] = THREE.DataUtils.toHalfFloat(r);
+        out[o + 1] = THREE.DataUtils.toHalfFloat(g);
+        out[o + 2] = THREE.DataUtils.toHalfFloat(b);
+        out[o + 3] = THREE.DataUtils.toHalfFloat(1);
+        this.lightLum[tz * R + tx] = r * 0.3 + g * 0.6 + b * 0.1;
+      }
+    }
+```
+
+The bake also writes a single luminance value per texel. The value is `0.3 r + 0.6 g + 0.1 b`.
+The people use this value for sight range. The shader uses the red, green and blue (RGB) value for
+shading. The two
+readings come from the same bake, so a change to the fixture layout changes both the look and the
+gameplay.
+
+The texture setup is small but important. It uses linear filtering, so a sample between two texels
+blends them. It uses clamp-to-edge wrapping, so a sample outside the level does not wrap to the
+other side. The shared uniform receives the texture and the inverse level size.
+
+```text
+# src/level.js:257-263
+    const tex = new THREE.DataTexture(out, R, R, THREE.RGBAFormat, THREE.HalfFloatType);
+    tex.magFilter = tex.minFilter = THREE.LinearFilter;
+    tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+    tex.needsUpdate = true;
+    this.lightTexture = tex;
+    shared.uLightGrid.value = tex;
+    shared.uGridInv.value = 1 / this.size;
+```
+
+The half-float format keeps values above 1 and very small values without the clamp or steps of an
+8-bit texture. The bake runs once, so the extra memory is a fixed cost. The source does not state
+the texture memory size.
+
+## One pixel of the patch
+
+The material patch reads the light texture in the fragment shader. It first computes a world
+position in the vertex shader. The position includes the instance matrix when the mesh is
+instanced, because the ceiling panels use an instanced mesh.
+
+```text
+# src/materials.js:36-52
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vGridPos;\nvarying vec3 vGridN;')
+      .replace(
+        '#include <project_vertex>',
+        `#include <project_vertex>
+        {
+          vec4 gwp = vec4( transformed, 1.0 );
+          vec3 gwn = objectNormal;
+          #ifdef USE_INSTANCING
+            gwp = instanceMatrix * gwp;
+            gwn = mat3( instanceMatrix ) * gwn;
+          #endif
+          gwp = modelMatrix * gwp;
+          vGridPos = gwp.xyz;
+          vGridN = mat3( modelMatrix ) * gwn;
+        }`
+      );
+```
+
+The fragment shader then takes the world position, adds the world normal times 0.6 metres along the
+horizontal axes, and divides by the level size. The push moves the sample off the wall face. The
+sample reads the light texture. The value is multiplied by the grid intensity and the per-material
+grid scale. A wall gets a height mix from 0.7 at the floor to 1.25 at the ceiling. The code then
+adds a night-vision term that falls off with camera distance.
+
+The per-material uniforms are `uGridScale`, `uGridOffset`, `uWall`, `uNV` and the grime terms. The
+defaults are 1, 0.6 metres, false, 1 and none. The offset is the push distance along the normal.
+The scale multiplies the baked light. The wall flag selects the height mix. The night-vision value
+scales its term.
+
+The patch does not replace the normal lighting. It adds to the indirect diffuse term. The direct
+spotlights still light the scene, and the bake supplies the ambient part that four real lights
+cannot cover.
+
+The patch has two program variants. The cache key returns `grid` or `grid-grime`. The grime variant
+adds the stain texture lookups and the wet roughness change. Every other difference is a uniform.
+This is why the walls, the floor, the ceiling, the people and the claws can share a small program
+set.
+
+```text
+# src/materials.js:14-22
+// Adds to a MeshStandardMaterial:
+//  - baked light-grid ambient (world-space lookup, pushed off walls along the normal)
+//  - "monster night vision" headlamp term that falls off with distance
+//  - optional world-space grime / damp stains that also lower roughness (wet patches)
+// Every tunable is a per-material uniform, so all patched materials share just two shader variants
+// (with / without the grime lookups) instead of compiling one big program each.
+export function patchMaterial(mat, o = {}) {
+  const opt = Object.assign({ grime: 0, wet: 0, gridScale: 1, gridOffset: 0.6, wall: false, nv: 1, grimeVariant: false }, o);
+  const useGrime = opt.grime > 0 || opt.grimeVariant;
+```
+
+The one-pixel cost is one texture read and a few arithmetic operations. The bake cost is paid once,
+at load. The trade is a fixed load time for a low per-frame cost. Document 03 gives the load and
+frame budget.
+
+## The light handoff
+
+The bake and the shader are only half of the light system. The level also keeps a small pool of
+real spotlights. The pool follows the camera and hands each light to a nearby working fixture. The
+bake supplies the distant ambient. The pool supplies the near shadows and the bright pool on the
+floor.
+
+The game calls `level.updateLights(camera.position, G.time, 46 * dim, movers)` every tick. The
+arguments are the camera position, the game time, a base intensity and a list of movers. A mover is the player, a living person, or a person who died less than 3
+seconds ago. The base intensity is `46 * dim`, where `dim` falls while the player smells. The pool
+sorts the working fixtures by squared distance and keeps the nearest four, or three on a phone. A
+light that loses its fixture is freed. A light that gains a fixture moves to the fixture position.
+
+The shadow map is not rebuilt every frame. A mover inside a squared distance of 56, about 7.48
+metres, sets the dirty flag. The code keeps the flag for one extra frame after the mover leaves
+(`src/level.js:488-496`).
+
+The torch pool uses the same handoff idea with a different owner. The pool is `flashPool`, an array
+of two spotlights on a desktop or one on a phone. The game collects every person
+with a working torch and computes the distance to the player. It sorts the list. It then gives the
+first two lights, or one on a phone, to the nearest torches. The light position and target come from
+the person's hand and beam direction. `fPos` and `fDir` are two reused vectors that receive the
+hand position and the beam direction. The intensity is 95 times a fade from 24 to 34 metres, times
+the smell dim.
+
+```text
+# src/main.js:562-580
+function updateFlashlights() {
+  const list = [];
+  for (const p of G.prey) {
+    if (!p.flashOn) continue;
+    p._fd = Math.hypot(p.pos.x - player.pos.x, p.pos.z - player.pos.z);
+    list.push(p);
+  }
+  list.sort((a, b) => a._fd - b._fd);
+  for (let i = 0; i < flashPool.length; i++) {
+    const l = flashPool[i], p = list[i];
+    if (!p || p._fd > 34) { l.intensity = 0; continue; }
+    p.getFlash(fPos, fDir);
+    l.position.copy(fPos);
+    l.target.position.copy(fPos).addScaledVector(fDir, 4);
+    l.target.updateMatrixWorld();
+    l.intensity = 95 * (1 - smoothstep(24, 34, p._fd)) * (G.dim ?? 1);
+    l.shadow.needsUpdate = true;
+  }
+}
+```
+
+The torch light target sits 4 metres along the beam direction. The light therefore aims where the
+person points the torch. The shadow map updates every frame for a torch light. That cost is
+accepted because a moving person and a moving beam change the shadow every frame.
+
+## The monster in one tick
+
+The player update receives one input object and one time step. It turns the look delta into a yaw
+and a pitch. It clamps the pitch to about 1.3 radians. It reads the smell input, but a strike blocks
+the smell mode. It then computes the move direction, the stamina and the speed.
+
+The walk speed is 3.5 metres per second. The run speed is 7.2. Smelling multiplies the speed by
+0.42. The velocity is damped toward the target with a rate of 9. The position then advances by the
+velocity and the lunge. The lunge starts at 8 metres per second and decays. The strike and the roar
+timers run after the movement.
+
+The collision step is a circle against the wall grid. The player radius is 0.42 metres. The code
+checks every wall cell that overlaps the circle box. For each wall, it finds the nearest point on
+the cell rectangle. If the distance is less than the radius, it pushes the circle out along the
+vector from that point. If the centre is inside the cell, it leaves through the nearest side.
+
+```text
+# src/level.js:37-62
+  // push a circle out of wall cells (in place)
+  resolveCircle(p, r) {
+    for (let it = 0; it < 2; it++) {
+      const c0x = Math.floor((p.x - r) / CELL), c1x = Math.floor((p.x + r) / CELL);
+      const c0z = Math.floor((p.z - r) / CELL), c1z = Math.floor((p.z + r) / CELL);
+      for (let cz = c0z; cz <= c1z; cz++) {
+        for (let cx = c0x; cx <= c1x; cx++) {
+          if (!this.isWall(cx, cz)) continue;
+          const x0 = cx * CELL, x1 = x0 + CELL, z0 = cz * CELL, z1 = z0 + CELL;
+          const qx = clamp(p.x, x0, x1), qz = clamp(p.z, z0, z1);
+          let dx = p.x - qx, dz = p.z - qz;
+          const d2 = dx * dx + dz * dz;
+          if (d2 >= r * r) continue;
+          if (d2 > 1e-9) {
+            const d = Math.sqrt(d2), k = (r - d) / d;
+            p.x += dx * k; p.z += dz * k;
+          } else {
+            // centre is inside the block: leave through the nearest side
+            const l = p.x - x0, rr = x1 - p.x, t = p.z - z0, b = z1 - p.z;
+            const m = Math.min(l, rr, t, b);
+            if (m === l) p.x = x0 - r; else if (m === rr) p.x = x1 + r; else if (m === t) p.z = z0 - r; else p.z = z1 + r;
+          }
+        }
+      }
+    }
+  }
+```
+
+The function runs two iterations. One iteration can push the circle into a second wall at a corner,
+so the second starts from the new position. The source does not prove that two are enough or
+measure a third iteration.
+
+The same function moves the people with a radius of 0.3 metres. Both the player and the people
+therefore use one collision routine. The monster is wider, so it needs a larger gap. The people can
+pass through a 1 cell doorway with more room.
+
+## The BFS field
+
+The game rebuilds one monster field every 0.15 seconds. The field starts at the player cell and
+fills every reachable cell with the step distance. A value of -1 means unreachable. The people use
+this field when they flee. A fleeing person climbs to a higher value, which moves away from the
+monster.
+
+```text
+# src/level.js:82-99
+  // breadth-first step distance from a cell into `out` (Int16Array n*n, -1 = unreachable)
+  bfs(cx, cz, out) {
+    const n = this.n, q = this._queue, g = this.grid;
+    out.fill(-1);
+    if (this.isWall(cx, cz)) return;
+    let head = 0, tail = 0;
+    const start = cz * n + cx;
+    out[start] = 0;
+    q[tail++] = start;
+    while (head < tail) {
+      const i = q[head++], d = out[i] + 1;
+      const x = i % n, z = (i / n) | 0;
+      if (x > 0 && g[i - 1] === 0 && out[i - 1] < 0) { out[i - 1] = d; q[tail++] = i - 1; }
+      if (x < n - 1 && g[i + 1] === 0 && out[i + 1] < 0) { out[i + 1] = d; q[tail++] = i + 1; }
+      if (z > 0 && g[i - n] === 0 && out[i - n] < 0) { out[i - n] = d; q[tail++] = i - n; }
+      if (z < n - 1 && g[i + n] === 0 && out[i + n] < 0) { out[i + n] = d; q[tail++] = i + n; }
+    }
+  }
+```
+
+The queue is a preallocated `Int32Array` of one cell per grid cell (`src/level.js:19`). The output is an `Int16Array`
+of the same size. The fill starts by setting every cell to -1. A wall start returns without a
+fill, and the field stays at -1. The loop pushes a cell only when its output is still -1, so each
+cell enters the queue once. The cost is linear in the number of cells.
+
+The field is a step distance, not a path. The follow helper is `_follow(dt, field, sign, speed,
+turn)`. The third argument is the sign, and the fifth is the maximum turn rate in radians per
+second (`src/prey.js:333-334`, `:371`). A sign of -1 descends to the field origin. A sign of +1
+climbs away from it. A person reads the eight neighbours of the current cell, rejects walls, and
+picks the neighbour with the best score. The score is `sign * v`, where `v` is the neighbour field
+value (`src/prey.js:352-356`). A climb also adds a random value up to 0.7. It subtracts 1.4 when
+the neighbour is the previous cell. The random term breaks ties and stops pacing. If no neighbour
+improves the value, the helper reports `cornered` on a climb or `arrived` on a descent. A diagonal
+move is rejected when either orthogonal cell at the corner is a wall. This prevents a person from
+cutting through a corner.
+
+The wander behaviour uses a second field, one per person. The person picks a random macro centre.
+It tries up to six centres (`src/prey.js:387`). If the person is nervous, which means recently
+alerted, it rejects a centre within 22 metres of the monster. It runs a BFS from the first centre that gives a positive distance at the current cell,
+and then descends to the centre. Eight people therefore hold eight fields, and the game holds one
+monster field.
+
+The monster field refresh interval is 0.15 seconds. A fleeing person can use a field that is up to
+nine frames old at 60 frames per second. In that time the monster moves at most about 1.1 metres
+at run speed. The wander field is built when the person chooses a new target, not every frame.
+
+The field gives the people a cheap path around walls. They run one flood fill for the target, then
+follow the gradient, so eight people move every frame on a 49 by 49 grid.
+
+## Prey perception and the state machine
+
+A person thinks every 0.1 seconds. The think step computes the distance and the angle to the
+monster. It computes LOS with a 26 metre limit. It then tests vision and hearing. Vision needs LOS,
+an angle inside 1.3 radians, and a distance inside a range. The angle is measured from the facing
+direction, which is the heading plus `lookYaw`. The range is 6.5 metres plus 15 metres times the
+light factor `clamp(lit * 3.2, 0, 1)`. A working torch raises the range to at least 15 metres when
+the monster is inside 0.42 radians of the person's facing direction. A fleeing or cowering person adds 6 metres. The
+effective maximum is 26 metres because the LOS test stops there. Within 3 metres, the cone test is
+skipped, but LOS is still required.
+
+Hearing is simpler. A person hears the monster within 2.4 metres. A person hears a running monster
+within 9.5 metres. The hearing result does not need LOS. A wall does not stop the sound.
+
+The brain runs every frame and switches on the state. The seven states are wander, alert, startle,
+flee, frozen, cower and dead. The transitions use the perception results and a few timers.
+
+```mermaid
+stateDiagram-v2
+    [*] --> wander
+    wander --> startle: sees the monster
+    wander --> alert: a sound
+    alert --> startle: sees the monster
+    alert --> wander: alert time ends
+    startle --> flee: 0.55 seconds
+    frozen --> flee: freeze time ends
+    flee --> cower: cornered and close
+    flee --> wander: lost and far
+    cower --> flee: safe or cower timer ends
+    wander --> frozen: roar within 14 m
+    alert --> frozen: roar within 14 m
+    startle --> frozen: roar within 14 m
+    flee --> frozen: roar within 14 m
+    cower --> frozen: roar within 14 m
+    wander --> dead: strike
+    alert --> dead: strike
+    startle --> dead: strike
+    flee --> dead: strike
+    frozen --> dead: strike
+    cower --> dead: strike
+```
+
+The flee state is the most complex. It drains stamina at 0.085 per second. It moves at 4.9 metres
+per second with stamina and 3.1 without. It follows the monster field with a climb sign. It looks
+back over the shoulder when `sin(g.time * 2.6 + this.id * 3) > 0.35`, where `this.id` is the person
+index. It enters cower when it is
+cornered, within 6 metres of the monster, and has LOS. Cornered means the climb field has no
+neighbour with a higher value, so the follow function returns `cornered`. It returns to wander when
+it has not seen the monster for 7 seconds and is more than 15 metres away. It screams when it is
+within 7 metres with LOS, and the scream spreads panic.
+
+```text
+# src/prey.js:441-467
+      case 'flee': {
+        this.fear = 1;
+        this.lastSeenT = this.sees ? 0 : this.lastSeenT + dt;
+        this.stamina = Math.max(0, this.stamina - dt * 0.085);
+        const speed = this.stamina > 0 ? 4.9 : 3.1;
+        const r = this._follow(dt, g.monsterField, 1, speed, 9);
+        // glance back over the shoulder
+        const glance = Math.sin(g.time * 2.6 + this.id * 3) > 0.35 ? clamp(angleDiff(this.heading, this.angTo), -2.0, 2.0) : 0;
+        this.lookYaw = damp(this.lookYaw, glance, 9, dt);
+        if (r === 'cornered') {
+          this._face(this.angTo, dt, 8);
+          if (this.dist < 6 && this.hasLos) { this._set('cower'); this.cowerSafeT = 0; this.cowerBreak = 5 + rng() * 5; return; }
+        }
+        if (this.lastSeenT > 7 && this.dist > 15) {
+          this._set('wander'); this.nervous = 16; this.hasTarget = false; this.idleT = 0.5;
+          return;
+        }
+        if (this.screamCd <= 0 && this.dist < 7 && this.hasLos) {
+          g.preyVoice(this, 'prey_scream', 1, rng() * 0.25);
+          this.screamCd = 2.6 + rng() * 2.5; this.mouth = 1;
+          g.spreadPanic(this);
+        } else if (this.whimperCd <= 0) {
+          g.preyVoice(this, 'prey_whimper', 0.75);
+          this.whimperCd = 2.5 + rng() * 3.5; this.mouth = 0.7;
+        }
+        return;
+      }
+```
+
+The cower state is the end of a failed chase from the person's side. The person faces the monster,
+stops, recovers stamina at 0.1 per second, and screams when the monster is within 3.6 metres. The
+state ends in one of two ways. The person can become safe for more than 3 seconds while more than
+8 metres away. The safe timer is `cowerSafeT`, which counts time without seeing the monster. Or the
+cower timer can expire while the monster is more than 3.2 metres away (`src/prey.js:482`). The cower timer is
+`cowerBreak`, a random value from 5 to 10 seconds. In both cases the person flees again.
+
+The frozen state comes only from the roar. It lasts 1.3 to 2.4 seconds. The person faces the
+monster and then flees. The startle state lasts 0.55 seconds and then becomes flee. The alert state
+lasts 0.9 to 2.2 seconds and then returns to wander if the monster does not appear.
+
+A person can scream from three paths. The startle state calls `onPreySpotted`, which plays one
+scream and spreads panic. The flee state screams when the person is within 7 metres with LOS, and
+that scream also spreads panic. The cower state screams at 3.6 metres, but that call does not
+spread panic. `preyVoice` and `spreadPanic` are callbacks defined in document 01 and at
+`src/main.js:219-238`.
+
+The animation reads the state and the speed. A running person leans forward and uses a larger
+swing, and a cowering person crouches and shakes. The fear value sets the shake amplitude and the
+face. The animation damps a small set of joint values toward a target pose, with no skeleton or
+clip.
+
+## The kill test
+
+A strike checks the nearest live person within 2.9 metres. It rejects a person beyond 0.9 metres
+whose direction is more than about 66 degrees from the view direction. The cone test uses a dot
+product of 0.4. It rejects a person without LOS. The nearest person that passes all checks dies.
+
+The death function marks the person dead, sets the dead state, clears the sense layer, picks a fall
+direction and may turn off the torch. The 45 percent chance to lose the torch is a random
+detail. `this.lens` is the bright front face of the torch (`src/prey.js:208-211`). The death
+function sets it to dark grey when the torch turns off (`:322`). A dead person with a working torch
+still lights the floor, which can lead the player to the body.
+
+```text
+# src/prey.js:315-323
+  die() {
+    this.alive = false;
+    this._set('dead');
+    this.deadT = 0;
+    this.speed = 0;
+    this.setSense(0, 0, 0);
+    this.fallDir = this.rng() < 0.5 ? 1 : -1;
+    if (this.beam && this.rng() < 0.45) { this.flashOn = false; this.beam.visible = false; this.lens.material.color.set(0x111111); }
+  }
+```
+
+The kill callback adds 0.36 hunger, capped at 1, and increases the kill count. The hit stop drops
+the time step to 5 percent for 0.13 seconds. It spawns blood and a fading decal, alerts wandering
+people within 18 metres, updates the tally and plays the death sound. At the eighth kill it sets
+the 3 second win timer (`src/main.js:275-304`).
+
+The kill is the only way to gain hunger. The run is therefore a sequence of approach decisions.
+Each approach must pass the cone, the range and the LOS test. A person behind a wall is safe. A
+person outside the cone is safe beyond 0.9 metres. Inside 0.9 metres the cone test is skipped, but
+LOS still applies.
+
+## The smell layer and the post stack
+
+The smell mode starts from one input flag. The player update damps a sense value toward 1 while the
+flag is held and toward 0 when it is released. The damp rate is 7. The sense value then drives the
+uniforms, the panel colour and the post shader.
+
+The world dim is `1 - 0.86 * sense`. At full sense the dim is 0.14. The shared grid intensity, the
+night-vision strength and the night-vision colour all follow the sense value. The panel material
+colour is multiplied by the dim. The world therefore loses its normal light while the thermal layer
+stays bright.
+
+The thermal layers draw with depth testing off. The depth test normally hides a pixel behind a
+nearer surface. With the test off, a later draw covers the wall. A person ghost, heart, halo and
+trail can show through a wall. The ghost material is additive, so its colours add to the image. It
+uses a rim term, which brightens the edge of the shape. The heart beats at a rate that rises with
+fear. The halo grows with distance, so a far person remains findable. The trail is a point cloud
+that records the person path.
+
+The post shader is the last step. The first part of the fragment shader applies the barrel
+distortion and the three colour samples. Barrel distortion is a lens bend that pushes points away
+from the centre. The samples use a red offset and a blue offset, so the edge of the image separates
+into colour fringes. The green sample stays at the centre.
+
+```text
+# src/post.js:36-44
+    void main() {
+      vec2 c = vUv - 0.5;
+      float r2 = dot( c, c );
+      vec2 uv = 0.5 + c * ( 1.0 - uDistort * 0.5 + uDistort * r2 );
+      vec2 dir = c * ( uCA * ( 0.35 + 3.2 * r2 ) );
+      vec3 col;
+      col.r = texture2D( tDiffuse, uv + dir ).r;
+      col.g = texture2D( tDiffuse, uv ).g;
+      col.b = texture2D( tDiffuse, uv - dir ).b;
+```
+
+The distortion term is stronger at the edge because it scales with `r2`. The chromatic aberration
+also scales with `r2`, so the centre stays sharp. The vignette weight is
+`v = smoothstep(0.1, 0.6, r2)` (`src/post.js:52`). The shader adds a vignette, a darkening at the
+image edge, a blood tint and a starvation pulse. The blood tint is stronger at the edge. The
+starvation pulse uses a sine at 4.2 radians per second. The grain uses a hash of the pixel
+position and the time.
+
+```text
+# src/post.js:55-61
+      float pulse = 0.5 + 0.5 * sin( uTime * 4.2 );
+      col += vec3( 0.42, 0.01, 0.0 ) * v * ( uBlood * 1.4 + uStarve * ( 0.3 + 0.4 * pulse ) );
+      col = mix( col, vec3( 0.32, 0.0, 0.0 ), uBlood * 0.3 );
+
+      float n = hash( vUv * uRes + fract( uTime * 7.31 ) * 311.0 );
+      col += ( n - 0.5 ) * uGrain * ( 1.15 - 0.6 * l );
+      gl_FragColor = vec4( col * uFade, 1.0 );
+```
+
+The grain is weaker in bright areas because of the `(1.15 - 0.6 * l)` factor. A dark wall shows
+more grain than a bright panel. This matches the look of a high-sensitivity camera in a dark room.
+
+The post stack has four passes: render, bloom, output and eye. The eye pass is last. The bloom pass
+uses a strength of 0.42, a radius of 0.7 and a threshold of 0.9, so only pixels above the threshold
+bloom.
+
+The eye shader has ten uniforms: `uTime`, `uRes`, `uCA`, `uVig`, `uGrain`, `uSense`, `uBlood`,
+`uStarve`, `uDistort` and `uFade`. `uTime` is the clock. `uRes` is the pixel size. The next three
+are the aberration, vignette and grain. `uSense` is the smell value. `uBlood` is the blood amount.
+`uStarve` is `smoothstep(0.32, 0, hunger)`, with the edges in reverse order. Here `hunger` is
+`G.hunger`, from 0 to 1. The result is 1 at hunger 0 and 0 at hunger 0.32 and above
+(`src/main.js:711`), so it rises as hunger falls. The last two are the barrel distortion and the final
+fade. The tick writes them every frame.
+
+## One tick end to end
+
+The frame function measures the real time and clamps it to 0.05 seconds. The tick applies the hit
+stop, updates the game, then updates the presentation. The sequence diagram shows the order on a
+playing frame.
+
+```mermaid
+sequenceDiagram
+    participant F as frame
+    participant T as tick
+    participant U as update
+    participant P as player
+    participant L as level
+    participant Y as prey
+    participant R as post
+    F->>T: real seconds, clamped to 0.05
+    T->>U: dt and real
+    U->>P: update with input
+    P->>L: resolveCircle with radius 0.42
+    U->>L: bfs monster field every 0.15 s
+    U->>Y: update each person
+    Y->>L: los, lightAt and resolveCircle
+    U->>U: hunger and end test
+    T->>L: updateLights
+    T->>Y: torch handoff
+    T->>R: write uniforms and render
+```
+
+The update step starts with the input. It moves the player and clears the look delta. It refreshes
+the monster field when the timer expires. It updates each person in array order. It applies the
+separation pass, a short pass that pushes overlapping circles apart, so two people do not stand in
+one point. It drains hunger. It updates the blood and the sound timers. It writes the heads-up
+display.
+
+The presentation step runs after the game logic. It writes the smell uniforms, collects the
+movers, updates the fixture pool, updates the torch pool and writes the post uniforms. It then
+renders the composer. The order matters, because the light pool uses the new player and person
+positions, and the post pass uses the new hunger and blood values.
+
+The game state machine guards the update. A loading frame returns at once. A title frame updates
+only the camera on a slow orbit. The title input sets `dx = -22` per second (`src/main.js:688`).
+The player yaw uses 0.0021 radians per unit, so the view drifts 0.0462 radians per second. A
+paused frame updates nothing. A playing frame runs the full
+update. An ended frame draws the final scene and the end screen.
+
+## What this document leaves
+
+This document does not cover the development server, the production build, the phone layout, the
+performance scale or the trailer recorder. Document [03](03-workflow-and-quality.md) covers those.
+It does not cover the project limits, the unused assets, the determinism gaps or the comparison with
+the sibling worlds. Document [04](04-limits-and-comparison.md) covers those. The module graph and
+the shared state are in [01](01-architecture.md). The fiction and the play loop are in
+[00](00-overview.md).
+
+[Previous: the module graph](01-architecture.md) · [Next: from source to build to
+trailer](03-workflow-and-quality.md).
