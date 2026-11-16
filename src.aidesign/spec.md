@@ -138,7 +138,7 @@ small packages reuse. Every row receives six documents, as section 3 states.
 | # | Package | State |
 |---|---------|-------|
 | 1 | `open-design` | DONE (6 documents, 67 snippets, fresh-reader review repaired) |
-| 2 | `src.leonnix` | IN PROGRESS (container index and 19-subproject plan written; 9 of 19 nested projects published: tastecode, taste-skill, cinetic, valle-morta, afterglow, earshot, unsung-vale, athenaion, casa-ocaso) |
+| 2 | `src.leonnix` | IN PROGRESS (container index and 19-subproject plan written; 10 of 19 nested projects published: tastecode, taste-skill, cinetic, valle-morta, afterglow, earshot, unsung-vale, athenaion, casa-ocaso, shanshui) |
 | 3 | `impeccable` | TODO |
 | 4 | `openui` | TODO |
 | 5 | `motion` | TODO |

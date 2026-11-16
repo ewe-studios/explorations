@@ -82,7 +82,7 @@ tree of six documents. The **Start here** column fills as each project is publis
 | unsung-vale | Real-time worlds | 239 | 9f61b0d | [Start here](../unsung-vale/html/README.html) |
 | athenaion | Real-time worlds | 220 | 9b8bd23 | [Start here](../athenaion/html/README.html) |
 | casa-ocaso | Real-time worlds | 193 | fcc3379 | [Start here](../casa-ocaso/html/README.html) |
-| shanshui | Offline films | 146 | b5357c0 | Planned |
+| shanshui | Offline films | 146 | b5357c0 | [Start here](../shanshui/html/README.html) |
 | golden-temple | Offline films | 121 | 97fd9ec | Planned |
 | needle-drop | Offline films | 100 | 8982f09 | Planned |
 | feed-backrooms | Real-time worlds | 94 | 81cdb6a | Planned |
